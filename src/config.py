@@ -46,13 +46,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_ORG = os.getenv("GITHUB_ORG", "")  # GitHub org or user to create repos under
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 
-# ── Database / Fabric IQ Integration ─────────────────────────
-# InfraForge uses Microsoft Fabric SQL Database exclusively (Azure AD auth).
-# Operational data lives in the same platform as Fabric IQ ontology,
-# Power BI semantic models, and Fabric data agents — enabling
-# cross-platform analytics and AI grounding.
-FABRIC_SQL_CONNECTION_STRING = os.getenv("FABRIC_SQL_CONNECTION_STRING", "")
-FABRIC_WORKSPACE_ID = os.getenv("FABRIC_WORKSPACE_ID", "")
+# ── Database ───────────────────────────────────────────────
+# Azure SQL Database with Azure AD auth (pyodbc + DefaultAzureCredential).
+AZURE_SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING", "")
 
 # ── Supported IaC Formats ────────────────────────────────────
 IAC_FORMATS = ["bicep", "terraform", "arm"]
@@ -160,9 +156,17 @@ Follow this order for every infrastructure request:
 7. **DESIGN DOCUMENT** — Use `generate_design_document` with approval status per service,
    phased deployment plan, and sign-off block.
 
-8. **SAVE and REGISTER** — Save outputs and offer to register new templates.
+8. **PREVIEW DEPLOYMENT** — Use `validate_deployment` (ARM What-If) to show what changes the
+   deployment would make — like `terraform plan` but machine-native. Let the user review
+   the change summary (creates, modifies, deletes) before proceeding.
 
-9. **PUBLISH** — Use `publish_to_github` to create a repo and PR.
+9. **DEPLOY** — Use `deploy_infrastructure` to deploy ARM JSON directly to Azure via the SDK.
+   No CLI deps needed. Creates resource group, validates, deploys in incremental mode, and
+   returns provisioned resources + template outputs. Progress is streamed live.
+
+10. **SAVE and REGISTER** — Save outputs and offer to register new templates.
+
+11. **PUBLISH** — Use `publish_to_github` to create a repo and PR.
 
 ## SERVICE APPROVAL LIFECYCLE
 
@@ -207,7 +211,10 @@ User Request → Governance Check → Approval Request Submitted
 15. **Design documents** — Approval-ready artifacts with full project context
 16. **Estimate costs** — Approximate monthly Azure costs before provisioning
 17. **Check policy compliance** — Validate against DB-backed governance policies and security standards
-18. **Publish to GitHub** — Create repos, commit files, and open PRs for review
+18. **Validate deployment (What-If)** — Preview what ARM changes would occur (like terraform plan)
+19. **Deploy infrastructure** — Deploy ARM JSON directly to Azure via SDK with live progress
+20. **Get deployment status** — Check running/completed deployments
+21. **Publish to GitHub** — Create repos, commit files, and open PRs for review
 
 When composing or generating infrastructure:
 - Always follow Azure Well-Architected Framework principles

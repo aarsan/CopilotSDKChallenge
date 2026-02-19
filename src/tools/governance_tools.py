@@ -3,7 +3,7 @@ Governance & compliance tools.
 
 Provides tools for security standards management, compliance framework
 browsing, and compliance assessments. All data lives in the InfraForge
-Fabric SQL Database.
+database.
 """
 
 from pydantic import BaseModel, Field

@@ -1,19 +1,15 @@
 """
-InfraForge — Database Layer (Microsoft Fabric SQL Database)
+InfraForge — Database Layer (Azure SQL Database)
 
-All persistent data lives in Microsoft Fabric SQL Database — the same data
-platform that powers Fabric IQ ontology, Power BI semantic models, and Fabric
-data agents. This gives InfraForge enterprise-grade persistence with
-organizational analytics built in.
+All persistent data lives in Azure SQL Database with Azure AD authentication
+via DefaultAzureCredential (managed identity in Azure, Azure CLI locally).
 
-Authentication uses Azure AD via DefaultAzureCredential, which automatically
-picks up managed identity (in Azure), Azure CLI credentials (local dev),
-or environment variables (CI/CD).
+Requires AZURE_SQL_CONNECTION_STRING to be set in the environment.
 
 Tables:
   user_sessions            — Auth sessions (persists across server restarts)
   chat_messages            — Conversation history
-  usage_logs               — Work IQ / Fabric IQ analytics
+  usage_logs               — Work IQ analytics
   approval_requests        — Service approval requests with lifecycle tracking
   projects                 — Infrastructure project proposals and phase tracking
   security_standards       — Machine-readable security rules (HTTPS, TLS, managed identity...)
@@ -67,21 +63,17 @@ class DatabaseBackend(ABC):
 
 
 # ══════════════════════════════════════════════════════════════
-# FABRIC SQL DATABASE BACKEND
+# AZURE SQL DATABASE BACKEND
 # ══════════════════════════════════════════════════════════════
 
-class FabricSQLBackend(DatabaseBackend):
-    """Microsoft Fabric SQL Database backend.
+class AzureSQLBackend(DatabaseBackend):
+    """Azure SQL Database backend.
 
-    Connects to a Fabric SQL endpoint using Azure AD authentication
-    (DefaultAzureCredential), which automatically picks up:
+    Connects using Azure AD authentication (DefaultAzureCredential),
+    which automatically picks up:
     - Managed identity (in Azure)
     - Azure CLI credentials (local dev)
     - Environment variables (CI/CD)
-
-    This puts InfraForge's operational data in the same platform as
-    Fabric IQ ontology, Power BI semantic models, and Fabric data agents,
-    enabling cross-platform analytics and AI grounding.
     """
 
     def __init__(self, connection_string: str):
@@ -130,13 +122,13 @@ class FabricSQLBackend(DatabaseBackend):
         try:
             cursor = conn.cursor()
             # Create tables if they don't exist (T-SQL syntax)
-            for statement in FABRIC_SCHEMA_STATEMENTS:
+            for statement in AZURE_SQL_SCHEMA_STATEMENTS:
                 try:
                     cursor.execute(statement)
                 except pyodbc.ProgrammingError:
                     pass  # Table already exists
             conn.commit()
-            logger.info("Fabric SQL Database initialized")
+            logger.info("Azure SQL Database initialized")
         finally:
             conn.close()
 
@@ -187,11 +179,11 @@ class FabricSQLBackend(DatabaseBackend):
 
 
 # ══════════════════════════════════════════════════════════════
-# SCHEMA DEFINITION (Fabric SQL — T-SQL)
+# SCHEMA DEFINITION (Azure SQL — T-SQL)
 # ══════════════════════════════════════════════════════════════
 
-# Fabric SQL schema (T-SQL — individual statements)
-FABRIC_SCHEMA_STATEMENTS = [
+# Azure SQL schema (T-SQL — individual statements)
+AZURE_SQL_SCHEMA_STATEMENTS = [
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'user_sessions')
     CREATE TABLE user_sessions (
@@ -429,6 +421,54 @@ FABRIC_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_service_policies_service ON service_policies(service_id)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_compliance_assessments_request')
     CREATE INDEX idx_compliance_assessments_request ON compliance_assessments(approval_request_id)""",
+    # ── Deployments ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'deployments')
+    CREATE TABLE deployments (
+        deployment_id       NVARCHAR(100) PRIMARY KEY,
+        deployment_name     NVARCHAR(200) NOT NULL,
+        resource_group      NVARCHAR(200) NOT NULL,
+        region              NVARCHAR(100) NOT NULL,
+        status              NVARCHAR(50) NOT NULL DEFAULT 'pending',
+        phase               NVARCHAR(50) DEFAULT 'init',
+        progress            FLOAT DEFAULT 0.0,
+        detail              NVARCHAR(MAX) DEFAULT '',
+        template_hash       NVARCHAR(100) DEFAULT '',
+        initiated_by        NVARCHAR(200) DEFAULT 'agent',
+        started_at          NVARCHAR(50) NOT NULL,
+        completed_at        NVARCHAR(50),
+        error               NVARCHAR(MAX),
+        resources_json      NVARCHAR(MAX) DEFAULT '[]',
+        what_if_json        NVARCHAR(MAX),
+        outputs_json        NVARCHAR(MAX) DEFAULT '{}'
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_deployments_status')
+    CREATE INDEX idx_deployments_status ON deployments(status)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_deployments_rg')
+    CREATE INDEX idx_deployments_rg ON deployments(resource_group)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_deployments_initiated_by')
+    CREATE INDEX idx_deployments_initiated_by ON deployments(initiated_by)""",
+    # ── Service Artifacts (3-gate approval) ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_artifacts')
+    CREATE TABLE service_artifacts (
+        id              NVARCHAR(300) PRIMARY KEY,
+        service_id      NVARCHAR(200) NOT NULL,
+        artifact_type   NVARCHAR(50) NOT NULL,
+        status          NVARCHAR(50) DEFAULT 'not_started',
+        content         NVARCHAR(MAX),
+        notes           NVARCHAR(MAX) DEFAULT '',
+        approved_by     NVARCHAR(200),
+        approved_at     NVARCHAR(50),
+        created_at      NVARCHAR(50) NOT NULL,
+        updated_at      NVARCHAR(50) NOT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_artifacts_service')
+    CREATE INDEX idx_artifacts_service ON service_artifacts(service_id)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_artifacts_type')
+    CREATE INDEX idx_artifacts_type ON service_artifacts(artifact_type)""",
     # ── Template Catalog ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')
@@ -469,24 +509,23 @@ _backend: Optional[DatabaseBackend] = None
 
 
 async def get_backend() -> DatabaseBackend:
-    """Get or create the Fabric SQL Database backend singleton.
+    """Get or create the Azure SQL Database backend singleton.
 
-    Requires FABRIC_SQL_CONNECTION_STRING to be set in the environment.
-    Raises RuntimeError if the connection string is missing.
+    Requires AZURE_SQL_CONNECTION_STRING to be set in the environment.
     """
     global _backend
     if _backend is not None:
         return _backend
 
-    connection_string = os.getenv("FABRIC_SQL_CONNECTION_STRING", "")
+    connection_string = os.getenv("AZURE_SQL_CONNECTION_STRING", "")
     if not connection_string:
         raise RuntimeError(
-            "FABRIC_SQL_CONNECTION_STRING environment variable is required. "
-            "Set it to your Microsoft Fabric SQL Database connection string."
+            "AZURE_SQL_CONNECTION_STRING environment variable is required. "
+            "Set it to your Azure SQL Database connection string."
         )
 
-    _backend = FabricSQLBackend(connection_string)
-    logger.info("Using Fabric SQL Database backend")
+    _backend = AzureSQLBackend(connection_string)
+    logger.info("Using Azure SQL Database backend")
     return _backend
 
 
@@ -641,16 +680,15 @@ async def get_user_chat_history(email: str, limit: int = 50) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
-# USAGE LOGS (Work IQ / Fabric IQ Analytics)
+# USAGE LOGS (Work IQ Analytics)
 # ══════════════════════════════════════════════════════════════
 
 async def log_usage(record: dict) -> None:
-    """Log a usage record for Work IQ / Fabric IQ analytics.
+    """Log a usage record for Work IQ analytics.
 
-    When backed by Fabric SQL, this data is directly accessible to:
-    - Power BI semantic models for org-wide dashboards
-    - Fabric IQ ontology for business concept grounding
-    - Fabric data agents for conversational analytics
+    When backed by Azure SQL, this data can be surfaced in:
+    - Power BI dashboards for org-wide spend visibility
+    - M365 Copilot for conversational analytics
     """
     backend = await get_backend()
     await backend.execute_write(
@@ -675,11 +713,7 @@ async def get_usage_stats(
     department: Optional[str] = None,
     since_timestamp: Optional[float] = None,
 ) -> dict:
-    """Aggregate usage statistics for the Work IQ analytics dashboard.
-
-    When backed by Fabric SQL, this same data powers Power BI reports
-    and Fabric IQ ontology queries across the organization.
-    """
+    """Aggregate usage statistics for the Work IQ analytics dashboard."""
     backend = await get_backend()
 
     where_clauses: list[str] = []
@@ -963,36 +997,43 @@ async def bulk_insert_services(services: list[dict]) -> int:
             cursor = conn.cursor()
             count = 0
             for svc in services:
-                cursor.execute(
-                    """INSERT INTO services
-                       (id, name, category, status, risk_tier, conditions_json,
-                        review_notes, documentation, contact, rejection_reason,
-                        approved_date, reviewed_by, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        svc["id"],
-                        svc.get("name", ""),
-                        svc.get("category", "other"),
-                        svc.get("status", "not_approved"),
-                        svc.get("risk_tier", "medium"),
-                        "[]",
-                        svc.get("review_notes", ""),
-                        "",
-                        svc.get("contact", ""),
-                        "",
-                        "",
-                        "",
-                        now,
-                        now,
-                    ),
-                )
-                # Insert regions if provided
-                for region in svc.get("approved_regions", []):
+                try:
                     cursor.execute(
-                        "INSERT INTO service_approved_regions (service_id, region) VALUES (?, ?)",
-                        (svc["id"], region),
+                        """IF NOT EXISTS (SELECT 1 FROM services WHERE id = ?)
+                           INSERT INTO services
+                           (id, name, category, status, risk_tier, conditions_json,
+                            review_notes, documentation, contact, rejection_reason,
+                            approved_date, reviewed_by, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            svc["id"],
+                            svc["id"],
+                            svc.get("name", ""),
+                            svc.get("category", "other"),
+                            svc.get("status", "not_approved"),
+                            svc.get("risk_tier", "medium"),
+                            "[]",
+                            svc.get("review_notes", ""),
+                            "",
+                            svc.get("contact", ""),
+                            "",
+                            "",
+                            "",
+                            now,
+                            now,
+                        ),
                     )
-                count += 1
+                    if cursor.rowcount > 0:
+                        # Insert regions if provided
+                        for region in svc.get("approved_regions", []):
+                            cursor.execute(
+                                "INSERT INTO service_approved_regions (service_id, region) VALUES (?, ?)",
+                                (svc["id"], region),
+                            )
+                        count += 1
+                except Exception:
+                    # Skip duplicates silently
+                    pass
             conn.commit()
             return count
         finally:
@@ -1083,7 +1124,7 @@ async def get_all_services(
     if not rows:
         return []
 
-    # 2. Batch-fetch ALL related data in 3 queries (not 3 × N)
+    # 2. Batch-fetch ALL related data in 4 queries (not N+1)
     all_skus = await backend.execute(
         "SELECT service_id, sku FROM service_approved_skus", ())
     all_regions = await backend.execute(
@@ -1091,6 +1132,8 @@ async def get_all_services(
     all_policies = await backend.execute(
         "SELECT service_id, policy_text, security_standard_id "
         "FROM service_policies WHERE enabled = 1", ())
+    all_artifacts = await backend.execute(
+        "SELECT service_id, artifact_type, status FROM service_artifacts", ())
 
     # Group by service_id for O(1) lookup
     from collections import defaultdict
@@ -1106,6 +1149,10 @@ async def get_all_services(
     for p in all_policies:
         policies_map[p["service_id"]].append(p)
 
+    artifacts_map: dict[str, dict[str, str]] = defaultdict(dict)
+    for a in all_artifacts:
+        artifacts_map[a["service_id"]][a["artifact_type"]] = a["status"]
+
     # 3. Assemble hydrated results
     result = []
     for row in rows:
@@ -1120,6 +1167,17 @@ async def get_all_services(
             for p in svc_policies if p.get("security_standard_id")
         ]
         svc["conditions"] = json.loads(svc.pop("conditions_json", "[]"))
+
+        # Approval gate summary
+        svc_arts = artifacts_map.get(svc_id, {})
+        svc["gates"] = {
+            "policy": svc_arts.get("policy", "not_started"),
+            "template": svc_arts.get("template", "not_started"),
+        }
+        svc["gates_approved"] = sum(
+            1 for s in svc["gates"].values() if s == "approved"
+        )
+
         result.append(svc)
 
     return result
@@ -1254,6 +1312,351 @@ async def delete_template(template_id: str) -> bool:
     await backend.execute_write(
         "DELETE FROM catalog_templates WHERE id = ?", (template_id,)
     )
+    return True
+
+
+# ══════════════════════════════════════════════════════════════
+# DEPLOYMENTS
+# ══════════════════════════════════════════════════════════════
+
+async def save_deployment(deployment: dict) -> None:
+    """Insert or update a deployment record."""
+    backend = await get_backend()
+    # Upsert: delete then insert
+    await backend.execute_write(
+        "DELETE FROM deployments WHERE deployment_id = ?",
+        (deployment["deployment_id"],),
+    )
+    await backend.execute_write(
+        """INSERT INTO deployments
+           (deployment_id, deployment_name, resource_group, region,
+            status, phase, progress, detail, template_hash,
+            initiated_by, started_at, completed_at, error,
+            resources_json, what_if_json, outputs_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            deployment["deployment_id"],
+            deployment["deployment_name"],
+            deployment["resource_group"],
+            deployment["region"],
+            deployment.get("status", "pending"),
+            deployment.get("phase", "init"),
+            deployment.get("progress", 0.0),
+            deployment.get("detail", ""),
+            deployment.get("template_hash", ""),
+            deployment.get("initiated_by", "agent"),
+            deployment["started_at"],
+            deployment.get("completed_at"),
+            deployment.get("error"),
+            json.dumps(deployment.get("provisioned_resources", [])),
+            json.dumps(deployment.get("what_if_results")),
+            json.dumps(deployment.get("outputs", {})),
+        ),
+    )
+
+
+async def get_deployments(
+    status: Optional[str] = None,
+    resource_group: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List deployment records from the database."""
+    backend = await get_backend()
+    where_clauses: list[str] = []
+    params: list = []
+
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    if resource_group:
+        where_clauses.append("resource_group = ?")
+        params.append(resource_group)
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    rows = await backend.execute(
+        f"SELECT * FROM deployments {where_sql} ORDER BY started_at DESC",
+        tuple(params),
+    )
+
+    result = []
+    for row in rows[:limit]:
+        d = dict(row)
+        d["provisioned_resources"] = json.loads(d.pop("resources_json", "[]"))
+        d["what_if_results"] = json.loads(d.pop("what_if_json", "null"))
+        d["outputs"] = json.loads(d.pop("outputs_json", "{}"))
+        result.append(d)
+    return result
+
+
+async def get_deployment(deployment_id: str) -> Optional[dict]:
+    """Get a single deployment by ID."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM deployments WHERE deployment_id = ?",
+        (deployment_id,),
+    )
+    if not rows:
+        return None
+    d = dict(rows[0])
+    d["provisioned_resources"] = json.loads(d.pop("resources_json", "[]"))
+    d["what_if_results"] = json.loads(d.pop("what_if_json", "null"))
+    d["outputs"] = json.loads(d.pop("outputs_json", "{}"))
+    return d
+
+
+# ══════════════════════════════════════════════════════════════
+# SERVICE APPROVAL ARTIFACTS (2-Gate Workflow)
+# ══════════════════════════════════════════════════════════════
+
+ARTIFACT_TYPES = ("policy", "template")
+
+
+async def save_service_artifact(
+    service_id: str,
+    artifact_type: str,
+    content: str = "",
+    status: str = "draft",
+    notes: str = "",
+    approved_by: Optional[str] = None,
+) -> dict:
+    """Save or update a service approval artifact (policy or template).
+
+    When status is set to 'approved', the approved_at timestamp is recorded.
+    After every save, auto-promotion is checked — if all 2 gates are approved
+    the service itself is promoted to 'approved'.
+    """
+    if artifact_type not in ARTIFACT_TYPES:
+        raise ValueError(f"artifact_type must be one of {ARTIFACT_TYPES}")
+
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    artifact_id = f"{service_id}:{artifact_type}"
+
+    existing = await backend.execute(
+        "SELECT id FROM service_artifacts WHERE id = ?", (artifact_id,)
+    )
+
+    if existing:
+        await backend.execute_write(
+            """UPDATE service_artifacts
+               SET content = ?, status = ?, notes = ?, approved_by = ?,
+                   approved_at = CASE WHEN ? = 'approved' THEN ? ELSE approved_at END,
+                   updated_at = ?
+               WHERE id = ?""",
+            (content, status, notes, approved_by,
+             status, now, now, artifact_id),
+        )
+    else:
+        await backend.execute_write(
+            """INSERT INTO service_artifacts
+               (id, service_id, artifact_type, status, content, notes,
+                approved_by, approved_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (artifact_id, service_id, artifact_type, status, content, notes,
+             approved_by, now if status == "approved" else None, now, now),
+        )
+
+    # Check if all 2 gates are approved → auto-promote service
+    await _check_and_promote_service(service_id)
+
+    return await get_service_artifact(service_id, artifact_type)
+
+
+async def get_service_artifact(
+    service_id: str,
+    artifact_type: str,
+) -> Optional[dict]:
+    """Get a specific artifact for a service."""
+    backend = await get_backend()
+    artifact_id = f"{service_id}:{artifact_type}"
+    rows = await backend.execute(
+        "SELECT * FROM service_artifacts WHERE id = ?", (artifact_id,)
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def get_service_artifacts(service_id: str) -> dict:
+    """Get all artifact gates for a service.
+
+    Returns a dict with keys: policy, template, _summary.
+    Each artifact value is either the DB record or a 'not_started' placeholder.
+    """
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM service_artifacts WHERE service_id = ? ORDER BY artifact_type",
+        (service_id,),
+    )
+
+    artifacts_by_type = {row["artifact_type"]: dict(row) for row in rows}
+
+    result = {}
+    for atype in ARTIFACT_TYPES:
+        if atype in artifacts_by_type:
+            result[atype] = artifacts_by_type[atype]
+        else:
+            result[atype] = {
+                "id": f"{service_id}:{atype}",
+                "service_id": service_id,
+                "artifact_type": atype,
+                "status": "not_started",
+                "content": "",
+                "notes": "",
+                "approved_by": None,
+                "approved_at": None,
+            }
+
+    approved_count = sum(1 for a in result.values() if a.get("status") == "approved")
+    result["_summary"] = {
+        "approved_count": approved_count,
+        "total_gates": 2,
+        "all_approved": approved_count == 2,
+    }
+    return result
+
+
+async def approve_service_artifact(
+    service_id: str,
+    artifact_type: str,
+    approved_by: str = "IT Staff",
+) -> dict:
+    """Mark an artifact as approved. Artifact must have content (draft status)."""
+    artifact = await get_service_artifact(service_id, artifact_type)
+    if not artifact or artifact["status"] == "not_started":
+        raise ValueError("Cannot approve artifact without content. Save a draft first.")
+
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    artifact_id = f"{service_id}:{artifact_type}"
+
+    await backend.execute_write(
+        """UPDATE service_artifacts
+           SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (approved_by, now, now, artifact_id),
+    )
+
+    await _check_and_promote_service(service_id)
+    return await get_service_artifact(service_id, artifact_type)
+
+
+async def unapprove_service_artifact(
+    service_id: str,
+    artifact_type: str,
+) -> dict:
+    """Revert an artifact back to draft status (e.g. for edits)."""
+    backend = await get_backend()
+    artifact_id = f"{service_id}:{artifact_type}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    await backend.execute_write(
+        """UPDATE service_artifacts
+           SET status = 'draft', approved_by = NULL, approved_at = NULL, updated_at = ?
+           WHERE id = ?""",
+        (now, artifact_id),
+    )
+
+    await _check_and_promote_service(service_id)
+    return await get_service_artifact(service_id, artifact_type)
+
+
+async def _check_and_promote_service(service_id: str) -> str:
+    """Check gate status and update service lifecycle state.
+
+    Lifecycle: not_approved → validating (2/2 gates) → approved (deploy test passes)
+
+    When both gates are approved, sets the service to 'validating' — the caller
+    is responsible for triggering the deployment test.  Only
+    promote_service_after_validation() sets status to 'approved'.
+
+    Returns the resulting status: 'not_approved', 'validating', or 'approved'.
+    """
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT COUNT(*) as cnt FROM service_artifacts "
+        "WHERE service_id = ? AND status = 'approved'",
+        (service_id,),
+    )
+
+    approved_count = rows[0]["cnt"] if rows else 0
+
+    if approved_count >= 2:
+        # Both gates approved — move to 'validating' (not directly to 'approved')
+        now = datetime.now(timezone.utc).isoformat()
+        await backend.execute_write(
+            """UPDATE services
+               SET status = 'validating', approved_date = NULL,
+                   reviewed_by = NULL
+               WHERE id = ? AND status NOT IN ('validating', 'approved')""",
+            (service_id,),
+        )
+        logger.info(
+            f"Service {service_id} moved to 'validating' (both gates passed, awaiting deployment test)"
+        )
+        return "validating"
+    else:
+        # Demote if a gate was reverted
+        await backend.execute_write(
+            """UPDATE services SET status = 'not_approved'
+               WHERE id = ? AND status IN ('approved', 'validating')
+               AND reviewed_by IN ('Deployment Validated', 'Two-Gate Approval', 'Three-Gate Approval', NULL, '')""",
+            (service_id,),
+        )
+        return "not_approved"
+
+
+async def promote_service_after_validation(
+    service_id: str,
+    validation_result: dict,
+) -> bool:
+    """Promote a service to 'approved' after successful deployment validation.
+
+    Called only when the deployment test (What-If + validation) passes.
+    """
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Save validation result as a note on the service
+    notes = json.dumps({
+        "validation_passed": True,
+        "validated_at": now,
+        "what_if_summary": validation_result.get("change_counts", {}),
+        "total_changes": validation_result.get("total_changes", 0),
+    })
+
+    await backend.execute_write(
+        """UPDATE services
+           SET status = 'approved', approved_date = ?,
+               reviewed_by = 'Deployment Validated',
+               review_notes = ?
+           WHERE id = ?""",
+        (now, notes, service_id),
+    )
+    logger.info(f"Service {service_id} promoted to 'approved' after deployment validation")
+    return True
+
+
+async def fail_service_validation(
+    service_id: str,
+    error: str,
+) -> bool:
+    """Mark a service as failed validation — back to not_approved with error."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    notes = json.dumps({
+        "validation_passed": False,
+        "validated_at": now,
+        "error": error,
+    })
+
+    await backend.execute_write(
+        """UPDATE services
+           SET status = 'validation_failed',
+               review_notes = ?
+           WHERE id = ?""",
+        (notes, service_id),
+    )
+    logger.info(f"Service {service_id} failed deployment validation: {error}")
     return True
 
 
@@ -1833,244 +2236,80 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
     summary["governance_policies"] = len(governance_policies_data)
 
     # ══════════════════════════════════════════════════════════
-    # 4. SERVICES CATALOG
+    # 4. SERVICES CATALOG — all start as not_approved
+    #    Approval requires the 3-gate process (policy + template + pipeline)
     # ══════════════════════════════════════════════════════════
     services_data = [
         # ── Compute ──
         {"id": "Microsoft.Web/serverfarms", "name": "App Service Plan", "category": "compute",
-         "status": "approved", "risk_tier": "low",
-         "approved_skus": ["B1", "B2", "S1", "S2", "P1v3", "P2v3"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Must use Linux unless .NET Framework is required",
-                      "Production workloads require P1v3 or higher",
-                      "Auto-scale must be enabled for production"],
-         "documentation": "https://wiki.contoso.com/azure/app-service",
-         "approved_date": "2025-03-15", "reviewed_by": "Platform Engineering"},
-
+         "status": "not_approved", "risk_tier": "low"},
         {"id": "Microsoft.Web/sites", "name": "App Service", "category": "compute",
-         "status": "approved", "risk_tier": "low",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["HTTPS only — HTTP must be disabled",
-                      "Managed identity required — no stored credentials",
-                      "Diagnostic logging must be enabled",
-                      "Minimum TLS version 1.2",
-                      "Remote debugging must be disabled in production"],
-         "documentation": "https://wiki.contoso.com/azure/app-service",
-         "approved_date": "2025-03-15", "reviewed_by": "Platform Engineering"},
-
+         "status": "not_approved", "risk_tier": "low"},
         {"id": "Microsoft.ContainerInstance/containerGroups",
          "name": "Azure Container Instances", "category": "compute",
-         "status": "conditional", "risk_tier": "medium",
-         "conditions": ["Dev/test only — not approved for production workloads",
-                        "Must use private networking (VNet injection)",
-                        "No public IP unless explicitly approved"],
-         "approved_regions": ["eastus2", "westus2"],
-         "policies": ["Container images must come from approved ACR only",
-                      "Resource limits (CPU/memory) must be set"],
-         "documentation": "https://wiki.contoso.com/azure/container-instances",
-         "approved_date": "2025-06-01", "reviewed_by": "Platform Engineering"},
-
+         "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.App/containerApps", "name": "Azure Container Apps",
-         "category": "compute", "status": "approved", "risk_tier": "medium",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Must use managed identity", "Ingress must use HTTPS only",
-                      "Container images from approved ACR only",
-                      "Scaling rules must be defined"],
-         "documentation": "https://wiki.contoso.com/azure/container-apps",
-         "approved_date": "2025-09-01", "reviewed_by": "Platform Engineering"},
-
+         "category": "compute", "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.ContainerService/managedClusters",
          "name": "Azure Kubernetes Service (AKS)", "category": "compute",
-         "status": "approved", "risk_tier": "high",
-         "approved_skus": ["Standard_D2s_v3", "Standard_D4s_v3", "Standard_D8s_v3"],
-         "approved_regions": ["eastus2", "westus2"],
-         "policies": ["Must use Azure CNI networking",
-                      "Azure AD integration required",
-                      "Azure Policy add-on must be enabled",
-                      "Defender for Containers must be enabled",
-                      "Private cluster required for production",
-                      "Node pools must use managed disks with encryption"],
-         "documentation": "https://wiki.contoso.com/azure/aks",
-         "approved_date": "2025-04-20",
-         "reviewed_by": "Platform Engineering + Security"},
-
+         "status": "not_approved", "risk_tier": "high"},
         {"id": "Microsoft.Compute/virtualMachines", "name": "Virtual Machines",
-         "category": "compute", "status": "conditional", "risk_tier": "high",
-         "conditions": ["PaaS alternatives must be evaluated first",
-                        "Requires justification for why PaaS won't work",
-                        "Security team review required"],
-         "approved_skus": ["Standard_B1s", "Standard_B2s",
-                           "Standard_D2s_v3", "Standard_D4s_v3"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Must use managed disks with encryption",
-                      "Azure Defender must be enabled",
-                      "Auto-shutdown required for non-production",
-                      "No public IP — use Azure Bastion for access",
-                      "OS patching must be automated"],
-         "documentation": "https://wiki.contoso.com/azure/virtual-machines",
-         "approved_date": "2025-02-01",
-         "reviewed_by": "Platform Engineering + Security"},
+         "category": "compute", "status": "not_approved", "risk_tier": "high"},
 
         # ── Databases ──
         {"id": "Microsoft.Sql/servers", "name": "Azure SQL Server",
-         "category": "database", "status": "approved", "risk_tier": "medium",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["TLS 1.2 minimum",
-                      "Azure AD authentication required",
-                      "Transparent Data Encryption (TDE) must be enabled",
-                      "Auditing must be enabled",
-                      "No public network access in production"],
-         "documentation": "https://wiki.contoso.com/azure/sql",
-         "approved_date": "2025-03-15",
-         "reviewed_by": "Platform Engineering + Data"},
-
+         "category": "database", "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.Sql/servers/databases", "name": "Azure SQL Database",
-         "category": "database", "status": "approved", "risk_tier": "medium",
-         "approved_skus": ["Basic", "S0", "S1", "S2", "P1", "P2"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Long-term backup retention must be configured for production",
-                      "Geo-replication required for production critical databases"],
-         "documentation": "https://wiki.contoso.com/azure/sql",
-         "approved_date": "2025-03-15",
-         "reviewed_by": "Platform Engineering + Data"},
-
+         "category": "database", "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.DBforPostgreSQL/flexibleServers",
          "name": "Azure Database for PostgreSQL (Flexible Server)",
-         "category": "database", "status": "approved", "risk_tier": "medium",
-         "approved_skus": ["Burstable_B1ms", "GeneralPurpose_D2s_v3",
-                           "GeneralPurpose_D4s_v3"],
-         "approved_regions": ["eastus2", "westus2"],
-         "policies": ["SSL enforcement must be enabled",
-                      "Private access (VNet integration) required for production",
-                      "Backup retention minimum 14 days"],
-         "documentation": "https://wiki.contoso.com/azure/postgresql",
-         "approved_date": "2025-07-10",
-         "reviewed_by": "Platform Engineering + Data"},
-
+         "category": "database", "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.DocumentDB/databaseAccounts",
          "name": "Azure Cosmos DB", "category": "database",
-         "status": "conditional", "risk_tier": "high",
-         "conditions": [
-             "Must justify why SQL/PostgreSQL won't meet requirements",
-             "Cost estimate required — Cosmos DB costs can escalate quickly",
-             "Architecture review with data team required"],
-         "approved_regions": ["eastus2", "westus2"],
-         "policies": ["Serverless tier for dev/test, provisioned throughput for prod",
-                      "Private endpoints required",
-                      "Automatic failover must be enabled"],
-         "documentation": "https://wiki.contoso.com/azure/cosmos-db",
-         "approved_date": "2025-08-01",
-         "reviewed_by": "Platform Engineering + Data + Cost Management"},
-
+         "status": "not_approved", "risk_tier": "high"},
         {"id": "Microsoft.Cache/Redis", "name": "Azure Cache for Redis",
-         "category": "database", "status": "approved", "risk_tier": "low",
-         "approved_skus": ["C0", "C1", "P1"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Non-SSL port must be disabled",
-                      "Minimum TLS 1.2",
-                      "Private endpoint required for production"],
-         "documentation": "https://wiki.contoso.com/azure/redis",
-         "approved_date": "2025-05-01", "reviewed_by": "Platform Engineering"},
+         "category": "database", "status": "not_approved", "risk_tier": "low"},
 
         # ── Security & Identity ──
         {"id": "Microsoft.KeyVault/vaults", "name": "Azure Key Vault",
-         "category": "security", "status": "approved", "risk_tier": "critical",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["RBAC authorization model (not access policies)",
-                      "Soft delete and purge protection must be enabled",
-                      "Private endpoint required for production",
-                      "Diagnostic logging must be enabled",
-                      "No direct user access — service principals/managed identities only"],
-         "documentation": "https://wiki.contoso.com/azure/key-vault",
-         "approved_date": "2025-01-15",
-         "reviewed_by": "Security + Platform Engineering"},
-
+         "category": "security", "status": "not_approved", "risk_tier": "critical"},
         {"id": "Microsoft.ManagedIdentity/userAssignedIdentities",
          "name": "User-Assigned Managed Identity", "category": "security",
-         "status": "approved", "risk_tier": "low",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Preferred over system-assigned when shared across resources",
-                      "Follow least-privilege RBAC assignments"],
-         "documentation": "https://wiki.contoso.com/azure/managed-identity",
-         "approved_date": "2025-01-15", "reviewed_by": "Security"},
+         "status": "not_approved", "risk_tier": "low"},
 
         # ── Storage ──
         {"id": "Microsoft.Storage/storageAccounts",
          "name": "Azure Storage Account", "category": "storage",
-         "status": "approved", "risk_tier": "medium",
-         "approved_skus": ["Standard_LRS", "Standard_GRS", "Standard_ZRS"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["HTTPS only — insecure transfer must be disabled",
-                      "Minimum TLS 1.2",
-                      "Blob public access must be disabled",
-                      "Soft delete enabled for blobs and containers",
-                      "Private endpoint required for production"],
-         "documentation": "https://wiki.contoso.com/azure/storage",
-         "approved_date": "2025-02-01",
-         "reviewed_by": "Platform Engineering + Security"},
+         "status": "not_approved", "risk_tier": "medium"},
 
         # ── Monitoring ──
         {"id": "Microsoft.OperationalInsights/workspaces",
          "name": "Log Analytics Workspace", "category": "monitoring",
-         "status": "approved", "risk_tier": "low",
-         "approved_skus": ["PerGB2018"],
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Use shared workspace per environment where possible",
-                      "Retention minimum 30 days, recommended 90 days"],
-         "documentation": "https://wiki.contoso.com/azure/log-analytics",
-         "approved_date": "2025-01-15", "reviewed_by": "Platform Engineering"},
-
+         "status": "not_approved", "risk_tier": "low"},
         {"id": "Microsoft.Insights/components",
          "name": "Application Insights", "category": "monitoring",
-         "status": "approved", "risk_tier": "low",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Must be connected to Log Analytics workspace",
-                      "Sampling rate must be configured to control costs"],
-         "documentation": "https://wiki.contoso.com/azure/app-insights",
-         "approved_date": "2025-01-15", "reviewed_by": "Platform Engineering"},
+         "status": "not_approved", "risk_tier": "low"},
 
         # ── Networking ──
         {"id": "Microsoft.Network/virtualNetworks",
          "name": "Virtual Network", "category": "networking",
-         "status": "approved", "risk_tier": "medium",
-         "approved_regions": ["eastus2", "westus2", "westeurope"],
-         "policies": ["Address space must not overlap with existing VNets",
-                      "NSG required on all subnets",
-                      "DDoS protection standard for production",
-                      "Must follow org IP addressing scheme"],
-         "documentation": "https://wiki.contoso.com/azure/networking",
-         "approved_date": "2025-01-15", "reviewed_by": "Network + Security"},
-
+         "status": "not_approved", "risk_tier": "medium"},
         {"id": "Microsoft.Network/applicationGateways",
          "name": "Application Gateway", "category": "networking",
-         "status": "approved", "risk_tier": "high",
-         "approved_skus": ["Standard_v2", "WAF_v2"],
-         "approved_regions": ["eastus2", "westus2"],
-         "policies": ["WAF_v2 required for internet-facing applications",
-                      "OWASP 3.2 ruleset minimum",
-                      "SSL/TLS termination with managed certificates"],
-         "documentation": "https://wiki.contoso.com/azure/app-gateway",
-         "approved_date": "2025-04-01",
-         "reviewed_by": "Network + Security"},
+         "status": "not_approved", "risk_tier": "high"},
 
-        # ── Not Yet Approved ──
+        # ── AI ──
         {"id": "Microsoft.MachineLearningServices/workspaces",
          "name": "Azure Machine Learning", "category": "ai",
-         "status": "under_review", "risk_tier": "high",
-         "review_notes": "Currently being evaluated by Platform Engineering and Security. Expected approval Q1 2026.",
-         "contact": "platform-team@contoso.com"},
-
+         "status": "not_approved", "risk_tier": "high"},
         {"id": "Microsoft.CognitiveServices/accounts",
          "name": "Azure AI Services (Cognitive Services)", "category": "ai",
-         "status": "under_review", "risk_tier": "high",
-         "review_notes": "Data residency and privacy review in progress. OpenAI integration requires separate DPA.",
-         "contact": "platform-team@contoso.com"},
+         "status": "not_approved", "risk_tier": "high"},
 
+        # ── Other ──
         {"id": "Microsoft.Blockchain/blockchainMembers",
          "name": "Azure Blockchain Service", "category": "other",
-         "status": "not_approved", "risk_tier": "high",
-         "rejection_reason": "Service is deprecated by Microsoft. Use partner solutions instead.",
-         "contact": "platform-team@contoso.com"},
+         "status": "not_approved", "risk_tier": "high"},
     ]
 
     for svc in services_data:
@@ -2079,213 +2318,11 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
 
 
 async def _seed_templates(summary: dict) -> None:
-    """Seed the template catalog from built-in definitions + source files."""
-    # ══════════════════════════════════════════════════════════
-    # 5. TEMPLATE CATALOG
-    # ══════════════════════════════════════════════════════════
-    import os as _os
+    """Skip template seeding — templates require approved services first.
 
-    catalog_dir = _os.path.join(
-        _os.path.dirname(_os.path.dirname(__file__)), "catalog"
-    )
-
-    def _read_template_file(rel_path: str) -> str:
-        """Try to read a template source file relative to catalog/."""
-        full = _os.path.join(catalog_dir, rel_path)
-        if _os.path.isfile(full):
-            with open(full, "r", encoding="utf-8") as f:
-                return f.read()
-        return ""
-
-    templates_data = [
-        {
-            "id": "bicep-appservice-linux",
-            "name": "App Service (Linux)",
-            "description": "Production-ready Azure App Service on Linux with managed identity, diagnostic logging, and HTTPS enforcement.",
-            "format": "bicep", "category": "compute",
-            "source_path": "bicep/app-service-linux.bicep",
-            "tags": ["app-service", "web-app", "linux", "compute", "paas"],
-            "resources": ["Microsoft.Web/serverfarms", "Microsoft.Web/sites", "Microsoft.Insights/diagnosticSettings"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True, "description": "Project name for resource naming"},
-                {"name": "environment", "type": "string", "required": True, "description": "Target environment (dev, staging, prod)"},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2", "description": "Azure region"},
-            ],
-            "outputs": ["appServiceUrl", "principalId"],
-        },
-        {
-            "id": "bicep-sql-database",
-            "name": "Azure SQL Database",
-            "description": "Azure SQL Server and Database with TLS 1.2, environment-based SKU sizing, and optional private endpoint.",
-            "format": "bicep", "category": "database",
-            "source_path": "bicep/sql-database.bicep",
-            "tags": ["sql", "database", "relational", "paas"],
-            "resources": ["Microsoft.Sql/servers", "Microsoft.Sql/servers/databases"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "sqlAdminPassword", "type": "secureString", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["sqlServerFqdn", "databaseName"],
-        },
-        {
-            "id": "bicep-keyvault",
-            "name": "Azure Key Vault",
-            "description": "Key Vault with RBAC authorization, soft delete, and environment-based network rules.",
-            "format": "bicep", "category": "security",
-            "source_path": "bicep/key-vault.bicep",
-            "tags": ["key-vault", "secrets", "security", "identity"],
-            "resources": ["Microsoft.KeyVault/vaults"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["keyVaultUri", "keyVaultName"],
-        },
-        {
-            "id": "bicep-log-analytics",
-            "name": "Log Analytics Workspace",
-            "description": "Log Analytics workspace for centralized monitoring with environment-based retention.",
-            "format": "bicep", "category": "monitoring",
-            "source_path": "bicep/log-analytics.bicep",
-            "tags": ["monitoring", "logging", "log-analytics", "observability"],
-            "resources": ["Microsoft.OperationalInsights/workspaces"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["workspaceId", "workspaceName"],
-        },
-        {
-            "id": "bicep-storage-account",
-            "name": "Storage Account",
-            "description": "Azure Storage Account with HTTPS enforcement, TLS 1.2, and environment-based redundancy (LRS for dev, GRS for prod).",
-            "format": "bicep", "category": "storage",
-            "source_path": "bicep/storage-account.bicep",
-            "tags": ["storage", "blob", "files", "data"],
-            "resources": ["Microsoft.Storage/storageAccounts"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["storageAccountName", "primaryBlobEndpoint"],
-        },
-        {
-            "id": "bicep-vnet",
-            "name": "Virtual Network",
-            "description": "Virtual Network with configurable subnets, NSGs, and environment-based address space.",
-            "format": "bicep", "category": "networking",
-            "source_path": "bicep/vnet.bicep",
-            "tags": ["vnet", "networking", "subnets", "nsg"],
-            "resources": ["Microsoft.Network/virtualNetworks", "Microsoft.Network/networkSecurityGroups"],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "addressPrefix", "type": "string", "required": False, "default": "10.0.0.0/16"},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["vnetId", "subnetIds"],
-        },
-        {
-            "id": "tf-appservice-linux",
-            "name": "App Service (Linux) — Terraform",
-            "description": "Terraform module for Azure App Service on Linux with managed identity and diagnostics.",
-            "format": "terraform", "category": "compute",
-            "source_path": "terraform/app-service-linux/",
-            "tags": ["app-service", "web-app", "linux", "compute", "terraform"],
-            "resources": ["azurerm_service_plan", "azurerm_linux_web_app"],
-            "parameters": [
-                {"name": "project_name", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["app_service_url", "principal_id"],
-        },
-        {
-            "id": "tf-resource-group",
-            "name": "Resource Group — Terraform",
-            "description": "Terraform resource group with standard tagging.",
-            "format": "terraform", "category": "foundation",
-            "source_path": "terraform/resource-group/",
-            "tags": ["resource-group", "foundation", "terraform"],
-            "resources": ["azurerm_resource_group"],
-            "parameters": [
-                {"name": "project_name", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["resource_group_name", "resource_group_id"],
-        },
-        {
-            "id": "pipeline-gha-python",
-            "name": "GitHub Actions — Python CI/CD",
-            "description": "GitHub Actions workflow for Python apps with build, test, security scan, and multi-environment Azure deployment.",
-            "format": "github-actions", "category": "cicd",
-            "source_path": "pipelines/github-actions-python.yml",
-            "tags": ["pipeline", "ci-cd", "github-actions", "python", "deployment"],
-            "parameters": [
-                {"name": "app_name", "type": "string", "required": True},
-                {"name": "environments", "type": "list", "required": False, "default": ["dev", "staging", "prod"]},
-            ],
-            "outputs": [],
-        },
-        {
-            "id": "pipeline-gha-dotnet",
-            "name": "GitHub Actions — .NET CI/CD",
-            "description": "GitHub Actions workflow for .NET apps with build, test, security scan, and multi-environment Azure deployment.",
-            "format": "github-actions", "category": "cicd",
-            "source_path": "pipelines/github-actions-dotnet.yml",
-            "tags": ["pipeline", "ci-cd", "github-actions", "dotnet", "deployment"],
-            "parameters": [
-                {"name": "app_name", "type": "string", "required": True},
-                {"name": "environments", "type": "list", "required": False, "default": ["dev", "staging", "prod"]},
-            ],
-            "outputs": [],
-        },
-        {
-            "id": "pipeline-ado-dotnet",
-            "name": "Azure DevOps — .NET CI/CD",
-            "description": "Azure DevOps multi-stage pipeline for .NET apps with build, test, and environment-gated deployments.",
-            "format": "azure-devops", "category": "cicd",
-            "source_path": "pipelines/azure-devops-dotnet.yml",
-            "tags": ["pipeline", "ci-cd", "azure-devops", "dotnet", "deployment"],
-            "parameters": [
-                {"name": "app_name", "type": "string", "required": True},
-                {"name": "environments", "type": "list", "required": False, "default": ["dev", "staging", "prod"]},
-            ],
-            "outputs": [],
-        },
-        {
-            "id": "blueprint-3tier-web",
-            "name": "3-Tier Web Application",
-            "description": "Complete 3-tier web app: App Service + SQL Database + Key Vault + Log Analytics. Wired together with managed identity and diagnostic logging.",
-            "format": "bicep", "category": "blueprint",
-            "source_path": "bicep/blueprints/three-tier-web.bicep",
-            "tags": ["blueprint", "3-tier", "web-app", "sql", "key-vault", "full-stack"],
-            "is_blueprint": True,
-            "service_ids": ["bicep-appservice-linux", "bicep-sql-database", "bicep-keyvault", "bicep-log-analytics"],
-            "resources": [
-                "Microsoft.Web/serverfarms", "Microsoft.Web/sites",
-                "Microsoft.Sql/servers", "Microsoft.Sql/servers/databases",
-                "Microsoft.KeyVault/vaults", "Microsoft.OperationalInsights/workspaces",
-            ],
-            "parameters": [
-                {"name": "projectName", "type": "string", "required": True},
-                {"name": "environment", "type": "string", "required": True},
-                {"name": "sqlAdminPassword", "type": "secureString", "required": True},
-                {"name": "location", "type": "string", "required": False, "default": "eastus2"},
-            ],
-            "outputs": ["appServiceUrl", "sqlServerFqdn", "keyVaultUri"],
-        },
-    ]
-
-    # Populate content from source files where they exist
-    for tmpl in templates_data:
-        if tmpl.get("source_path"):
-            tmpl["content"] = _read_template_file(tmpl["source_path"])
-        await upsert_template(tmpl)
-    summary["templates"] = len(templates_data)
+    The 3-gate workflow means services must be individually approved
+    (policy + template + pipeline) before catalog templates can be built
+    from them. Templates will be created by IT Staff after services are approved.
+    """
+    summary["templates"] = 0
+    logger.info("Template seeding skipped — no approved services yet")

@@ -12,7 +12,7 @@ This enables:
 - Approval routing to the right manager
 - Usage analytics by team / department
 
-Sessions are persisted in Fabric SQL Database so users survive server restarts.
+Sessions are persisted in the database so users survive server restarts.
 """
 
 import os

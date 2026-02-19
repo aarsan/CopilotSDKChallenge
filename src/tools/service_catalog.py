@@ -6,7 +6,7 @@ within the organization, and to submit approval requests for services that
 are not yet approved. This is a core governance feature that ensures teams
 only use vetted, policy-compliant Azure services.
 
-All data is read from the InfraForge Fabric SQL Database.
+All data is read from the InfraForge database.
 No YAML files are read at runtime.
 """
 

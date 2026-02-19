@@ -2,7 +2,7 @@
 Policy compliance checker tool.
 
 Validates infrastructure configurations against organizational governance policies
-and security standards stored in the InfraForge Fabric SQL Database.
+and security standards stored in the InfraForge database.
 No hardcoded rules — all policies come from the governance_policies and
 security_standards tables, making them auditable and version-controlled.
 """

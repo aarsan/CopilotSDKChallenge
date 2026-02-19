@@ -27,6 +27,11 @@ from src.tools.governance_tools import (
     list_compliance_frameworks,
     list_governance_policies,
 )
+from src.tools.deploy_engine import (
+    validate_deployment,
+    deploy_infrastructure,
+    get_deployment_status,
+)
 
 
 def get_all_tools() -> list:
@@ -67,6 +72,10 @@ def get_all_tools() -> list:
         # Validation
         estimate_azure_cost,
         check_policy_compliance,
+        # Deployment (ARM SDK — machine-native, no CLI deps)
+        validate_deployment,
+        deploy_infrastructure,
+        get_deployment_status,
         # Output
         save_output_to_file,
         # Publishing

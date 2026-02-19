@@ -218,7 +218,7 @@ function updatePageActions(page) {
     const actions = document.getElementById('page-actions');
     switch (page) {
         case 'services':
-            actions.innerHTML = '<button class="btn btn-sm btn-secondary" onclick="syncAzureServices()" id="btn-sync-azure">🔄 Sync from Azure</button>';
+            actions.innerHTML = '';  // Sync is now in the stats panel
             break;
         case 'templates':
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openTemplateOnboarding()">＋ Onboard Template</button>';
@@ -568,6 +568,9 @@ async function loadAllData() {
         document.getElementById('stat-review').textContent = stats.under_review || 0;
         document.getElementById('stat-templates').textContent = tmplData.total || 0;
 
+        // Load service stats panel (Total Azure / Cached / Approved / Sync)
+        loadServiceStats();
+
         // Build service category filters
         const categories = svcData.categories || [];
         const filterContainer = document.getElementById('catalog-filters');
@@ -617,27 +620,100 @@ async function loadAllData() {
 
 let _syncAbortController = null; // tracks the active SSE fetch
 
+/** Load and render the service stats panel (Total Azure / Cached / Approved / Sync Status). */
+async function loadServiceStats() {
+    try {
+        const res = await fetch('/api/catalog/services/sync/stats');
+        const data = await res.json();
+        _renderStatsPanel(data);
+    } catch (err) {
+        console.warn('Failed to load service stats:', err);
+    }
+}
+
+function _renderStatsPanel(data) {
+    // Total Azure resource types (from last sync)
+    const azureEl = document.getElementById('svc-stat-azure');
+    if (azureEl) {
+        azureEl.textContent = data.total_azure != null ? data.total_azure.toLocaleString() : '—';
+    }
+
+    // Total cached in our system
+    const cachedEl = document.getElementById('svc-stat-cached');
+    if (cachedEl) {
+        cachedEl.textContent = data.total_cached != null ? data.total_cached.toLocaleString() : '—';
+    }
+
+    // Total approved
+    const approvedEl = document.getElementById('svc-stat-approved');
+    if (approvedEl) {
+        approvedEl.textContent = data.total_approved != null ? data.total_approved.toLocaleString() : '—';
+    }
+
+    // Sync status
+    const statusEl = document.getElementById('svc-sync-status');
+    const detailEl = document.getElementById('svc-sync-detail');
+    const iconEl = document.getElementById('svc-sync-icon');
+
+    if (statusEl) {
+        if (data.sync_running) {
+            statusEl.textContent = 'Syncing…';
+            statusEl.className = 'svc-stat-status syncing';
+            if (iconEl) iconEl.textContent = '🔄';
+            if (detailEl) detailEl.textContent = 'In progress';
+        } else if (data.last_synced_at) {
+            statusEl.textContent = 'Synced';
+            statusEl.className = 'svc-stat-status synced';
+            if (iconEl) iconEl.textContent = '✅';
+            if (detailEl) detailEl.textContent = _formatAgo(data.last_synced_ago_sec);
+        } else {
+            statusEl.textContent = 'Never synced';
+            statusEl.className = 'svc-stat-status never';
+            if (iconEl) iconEl.textContent = '⏳';
+            if (detailEl) detailEl.textContent = 'Click Sync to pull from Azure';
+        }
+    }
+}
+
+/** Format seconds-ago into a human-readable string. */
+function _formatAgo(sec) {
+    if (sec == null) return '';
+    if (sec < 60) return 'Just now';
+    if (sec < 3600) return `${Math.round(sec / 60)} min ago`;
+    if (sec < 86400) return `${Math.round(sec / 3600)} hr ago`;
+    return `${Math.round(sec / 86400)} day(s) ago`;
+}
+
 async function syncAzureServices() {
-    const btn = document.getElementById('btn-sync-azure');
+    const btn = document.getElementById('btn-sync-panel');
     if (btn) {
         btn.disabled = true;
-        btn.textContent = '🔄 Syncing...';
+        btn.classList.add('syncing');
+        btn.innerHTML = '<span class="sync-btn-icon">⟳</span> Syncing…';
     }
+
+    // Update stats panel to show "Syncing…"
+    const statusEl = document.getElementById('svc-sync-status');
+    const detailEl = document.getElementById('svc-sync-detail');
+    const iconEl = document.getElementById('svc-sync-icon');
+    if (statusEl) { statusEl.textContent = 'Syncing…'; statusEl.className = 'svc-stat-status syncing'; }
+    if (iconEl) iconEl.textContent = '🔄';
+    if (detailEl) detailEl.textContent = 'Connecting to Azure…';
+
     _showSyncPanel();
     _connectSyncSSE();
 }
 
-/** Show (or re-show) the progress panel above the services table. */
+/** Show (or re-show) the progress panel below the stats panel. */
 function _showSyncPanel() {
     let panel = document.getElementById('sync-progress-panel');
     if (!panel) {
         panel = document.createElement('div');
         panel.id = 'sync-progress-panel';
         panel.className = 'sync-progress-panel';
-        const tableContainer = document.querySelector('.catalog-table-container')
-            || document.getElementById('catalog-tbody')?.closest('.catalog-table-container');
-        if (tableContainer) {
-            tableContainer.parentNode.insertBefore(panel, tableContainer);
+        const statsPanel = document.getElementById('service-stats-panel');
+        if (statsPanel) {
+            statsPanel.parentNode.insertBefore(panel, statsPanel.nextSibling);
         } else {
             document.getElementById('page-services')?.appendChild(panel);
         }
@@ -741,11 +817,14 @@ async function _refreshServicesOnly() {
 /** Clean up after sync finishes (success or error). */
 function _syncDone() {
     _syncAbortController = null;
-    const btn = document.getElementById('btn-sync-azure');
+    const btn = document.getElementById('btn-sync-panel');
     if (btn) {
         btn.disabled = false;
-        btn.textContent = '🔄 Sync from Azure';
+        btn.classList.remove('syncing');
+        btn.innerHTML = '<span class="sync-btn-icon">⟳</span> Sync';
     }
+    // Refresh the stats panel with updated numbers
+    loadServiceStats();
     setTimeout(() => {
         const p = document.getElementById('sync-progress-panel');
         if (p) p.classList.add('hidden');
@@ -761,11 +840,15 @@ async function checkSyncStatus() {
         const res = await fetch('/api/catalog/services/sync/status');
         const status = await res.json();
         if (status.running) {
-            const btn = document.getElementById('btn-sync-azure');
+            const btn = document.getElementById('btn-sync-panel');
             if (btn) {
                 btn.disabled = true;
-                btn.textContent = '🔄 Syncing...';
+                btn.classList.add('syncing');
+                btn.innerHTML = '<span class="sync-btn-icon">⟳</span> Syncing…';
             }
+            // Update stats panel
+            const statusEl = document.getElementById('svc-sync-status');
+            if (statusEl) { statusEl.textContent = 'Syncing…'; statusEl.className = 'svc-stat-status syncing'; }
             _showSyncPanel();
             // Update panel with latest progress from the server
             if (status.progress) updateSyncProgress(status.progress);
@@ -809,6 +892,20 @@ const statusLabels = {
     conditional: '⚠️ Conditional',
     under_review: '🔄 Under Review',
     not_approved: '❌ Not Approved',
+    validating: '🔄 Validating…',
+    validation_failed: '⛔ Validation Failed',
+};
+
+const gateStatusIcons = {
+    not_started: '○',
+    draft: '◐',
+    approved: '●',
+};
+
+const gateStatusLabels = {
+    not_started: 'Not Started',
+    draft: 'Draft',
+    approved: 'Approved',
 };
 
 function renderServiceTable(services) {
@@ -821,30 +918,21 @@ function renderServiceTable(services) {
     }
 
     if (!services.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="catalog-loading">No services match your filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="catalog-loading">No services match your filters</td></tr>';
         return;
     }
 
     tbody.innerHTML = services.map(svc => {
         const status = svc.status || 'not_approved';
-        const policyCount = (svc.policies || []).length;
-        const conditionCount = (svc.conditions || []).length;
+        const gates = svc.gates || { policy: 'not_started', template: 'not_started' };
+        const gatesApproved = svc.gates_approved || 0;
 
-        // Policy summary for the table cell
-        let policySummary = '';
-        if (policyCount > 0) {
-            const firstPolicy = svc.policies[0].length > 30
-                ? svc.policies[0].substring(0, 30) + '…' : svc.policies[0];
-            policySummary = `<span class="policy-tag">${escapeHtml(firstPolicy)}</span>`;
-            if (policyCount > 1) policySummary += `<span class="policy-tag">+${policyCount - 1} more</span>`;
-        } else {
-            policySummary = '<span class="policy-tag none">No policies</span>';
-        }
-
-        // Determine the inline action button
-        const actionBtn = status === 'not_approved'
-            ? `<button class="btn btn-xs btn-accent" onclick="event.stopPropagation(); openGovernanceEditor('${escapeHtml(svc.id)}')">\u2705 Approve</button>`
-            : `<button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); openGovernanceEditor('${escapeHtml(svc.id)}')">\u270f\ufe0f Edit</button>`;
+        // Gate indicators
+        const gateHtml = `<div class="gate-indicators">
+            <span class="gate-dot gate-${gates.policy}" title="Policy: ${gateStatusLabels[gates.policy]}">${gateStatusIcons[gates.policy]}</span>
+            <span class="gate-dot gate-${gates.template}" title="ARM Template: ${gateStatusLabels[gates.template]}">${gateStatusIcons[gates.template]}</span>
+            <span class="gate-count">${gatesApproved}/2</span>
+        </div>`;
 
         return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
             <td>
@@ -852,9 +940,8 @@ function renderServiceTable(services) {
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
             </td>
             <td><span class="category-badge">${escapeHtml(svc.category)}</span></td>
+            <td>${gateHtml}</td>
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
-            <td>${policySummary}</td>
-            <td class="action-cell">${actionBtn}</td>
         </tr>`;
     }).join('');
 }
@@ -915,61 +1002,568 @@ function applyServiceFilters() {
     renderServiceTable(filtered);
 }
 
-// ── Service Detail Drawer ───────────────────────────────────
+// ── Service Detail Drawer (3-Gate Approval Workflow) ────────
 
-function showServiceDetail(serviceId) {
+let _currentArtifacts = null;  // cache loaded artifacts
+
+async function showServiceDetail(serviceId) {
     const svc = allServices.find(s => s.id === serviceId);
     if (!svc) return;
 
     const status = svc.status || 'not_approved';
+    const drawer = document.getElementById('service-detail-drawer');
+    const body = document.getElementById('detail-service-body');
 
     document.getElementById('detail-service-name').textContent = svc.name;
-    document.getElementById('detail-service-body').innerHTML = `
+
+    // Show loading state
+    body.innerHTML = `
         <div class="detail-meta">
             <span class="svc-id">${escapeHtml(svc.id)}</span>
             <span class="status-badge ${status}">${statusLabels[status] || status}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
         </div>
-
-        ${(svc.policies && svc.policies.length) ? `
-        <div class="detail-section">
-            <h4>Policies</h4>
-            <ul class="detail-list">${svc.policies.map(p => `<li>${escapeHtml(p)}</li>`).join('')}</ul>
-        </div>` : `
-        <div class="detail-section">
-            <h4>Policies</h4>
-            <p class="detail-empty">No policies defined yet</p>
-        </div>`}
-
-        ${(svc.conditions && svc.conditions.length) ? `
-        <div class="detail-section">
-            <h4>Conditions</h4>
-            <ul class="detail-list">${svc.conditions.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>
-        </div>` : ''}
-
-        ${svc.documentation ? `
-        <div class="detail-section">
-            <h4>Documentation</h4>
-            <p><a href="${escapeHtml(svc.documentation)}" target="_blank" rel="noopener">${escapeHtml(svc.documentation)}</a></p>
-        </div>` : ''}
-
-        ${svc.review_notes ? `
-        <div class="detail-section">
-            <h4>Review Notes</h4>
-            <p class="detail-notes">${escapeHtml(svc.review_notes)}</p>
-        </div>` : ''}
-
-        <div class="detail-actions">
-            <button class="btn btn-sm btn-accent" onclick="closeServiceDetail(); openGovernanceEditor('${escapeHtml(svc.id)}')">
-                ${status === 'not_approved' ? '✅ Approve This Service' : '✏️ Edit Policies'}
-            </button>
-            <button class="btn btn-sm btn-primary" onclick="navigateToChat('Check the approval status for ${escapeHtml(svc.name)} and tell me the policies and restrictions')">
-                💬 Ask the Designer about this service
-            </button>
-        </div>
+        <div class="gate-loading">Loading approval gates…</div>
     `;
+    drawer.classList.remove('hidden');
 
-    document.getElementById('service-detail-drawer').classList.remove('hidden');
+    // Fetch artifacts from API
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts`);
+        const data = await res.json();
+        _currentArtifacts = data;
+        _renderGateWorkflow(svc, data);
+    } catch (err) {
+        body.innerHTML += `<p style="color: var(--accent-red);">Failed to load artifacts: ${err.message}</p>`;
+    }
+}
+
+function _renderGateWorkflow(svc, artifacts) {
+    const body = document.getElementById('detail-service-body');
+    const status = svc.status || 'not_approved';
+    const summary = artifacts._summary || { approved_count: 0, total_gates: 2, all_approved: false };
+
+    const gateConfigs = [
+        {
+            type: 'policy',
+            title: 'Azure Policy',
+            icon: '🛡️',
+            description: 'Azure Policy definition that governs how this service can be deployed.',
+            promptPlaceholder: 'e.g. "Deny deployments without encryption enabled" or "Only allow deployment in East US and West US regions"',
+            lang: 'json',
+        },
+        {
+            type: 'template',
+            title: 'ARM Template',
+            icon: '📄',
+            description: 'ARM template for deploying this service. Deployed directly via the Azure ARM SDK — no pipelines needed.',
+            promptPlaceholder: 'e.g. "Deploy with managed identity, diagnostic logging, and private endpoint" or "Standard SKU with zone redundancy"',
+            lang: 'json',
+        },
+    ];
+
+    body.innerHTML = `
+        <div class="detail-meta">
+            <span class="svc-id">${escapeHtml(svc.id)}</span>
+            <span class="status-badge ${status}">${statusLabels[status] || status}</span>
+            <span class="category-badge">${escapeHtml(svc.category)}</span>
+            ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
+        </div>
+
+        <div class="gate-progress-bar">
+            <div class="gate-progress-label">${summary.approved_count}/2 gates approved</div>
+            <div class="gate-progress-track">
+                <div class="gate-progress-fill" style="width: ${(summary.approved_count / 2) * 100}%"></div>
+            </div>
+        </div>
+
+        <div class="gate-cards" id="gate-cards">
+            ${gateConfigs.map((g, i) => {
+                const artifact = artifacts[g.type] || { status: 'not_started', content: '' };
+                const gateStatus = artifact.status || 'not_started';
+                const hasContent = artifact.content && artifact.content.trim().length > 0;
+                const isApproved = gateStatus === 'approved';
+
+                return `
+                <div class="gate-card gate-${gateStatus}" id="gate-card-${g.type}">
+                    <div class="gate-card-header" onclick="toggleGateCard('${g.type}')">
+                        <div class="gate-card-title">
+                            <span class="gate-num">${i + 1}</span>
+                            <span class="gate-icon">${g.icon}</span>
+                            <span>${g.title}</span>
+                        </div>
+                        <div class="gate-card-status">
+                            <span class="gate-status-badge gate-status-${gateStatus}">
+                                ${gateStatusIcons[gateStatus]} ${gateStatusLabels[gateStatus]}
+                            </span>
+                            <span class="gate-chevron" id="gate-chevron-${g.type}">▸</span>
+                        </div>
+                    </div>
+                    <div class="gate-card-body hidden" id="gate-body-${g.type}">
+                        <p class="gate-desc">${g.description}</p>
+                        ${isApproved ? `
+                            <div class="gate-approved-info">
+                                <span>✅ Approved by ${escapeHtml(artifact.approved_by || 'IT Staff')}</span>
+                                ${artifact.approved_at ? `<span class="gate-date">${artifact.approved_at.substring(0, 10)}</span>` : ''}
+                            </div>
+                            <div class="gate-content-preview">
+                                <pre><code>${escapeHtml(artifact.content || '(no content)')}</code></pre>
+                            </div>
+                            <div class="gate-actions">
+                                <button class="btn btn-xs btn-ghost" onclick="editGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">✏️ Edit</button>
+                                <button class="btn btn-xs btn-ghost" onclick="unapproveGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">↩️ Revoke</button>
+                            </div>
+                        ` : hasContent ? `
+                            <div class="gate-generated-content">
+                                <div class="gate-generated-label">Generated ${g.title}</div>
+                                <div class="gate-content-preview">
+                                    <pre><code id="gate-preview-${g.type}">${escapeHtml(artifact.content)}</code></pre>
+                                </div>
+                                <div class="gate-actions">
+                                    <button class="btn btn-sm btn-accent" onclick="approveGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
+                                        ✅ Approve
+                                    </button>
+                                    <button class="btn btn-sm btn-secondary" onclick="regenerateGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
+                                        🔄 Regenerate
+                                    </button>
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="gate-prompt-section" id="gate-prompt-section-${g.type}">
+                                <label class="gate-prompt-label">Describe what you need in plain English:</label>
+                                <textarea class="gate-prompt-input" id="gate-prompt-${g.type}"
+                                    placeholder="${escapeHtml(g.promptPlaceholder)}"
+                                    rows="3"></textarea>
+                                <div class="gate-actions">
+                                    <button class="btn btn-sm btn-primary" id="gate-generate-btn-${g.type}"
+                                        onclick="generateGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
+                                        ✨ Generate with AI
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="gate-generation-output hidden" id="gate-output-${g.type}">
+                                <div class="gate-generated-label">
+                                    <span class="gate-generating-spinner" id="gate-spinner-${g.type}">⏳</span>
+                                    <span id="gate-output-label-${g.type}">Generating…</span>
+                                </div>
+                                <div class="gate-content-preview">
+                                    <pre><code id="gate-preview-${g.type}"></code></pre>
+                                </div>
+                            </div>
+                        `}
+                    </div>
+                </div>
+                `;
+            }).join('')}
+        </div>
+
+        ${_renderValidationSection(svc, summary)}
+    `;
+}
+
+function _renderValidationSection(svc, summary) {
+    const status = svc.status || 'not_approved';
+    const showValidation = summary.all_approved || status === 'validating' || status === 'validation_failed' || status === 'approved';
+    if (!showValidation) return '';
+
+    if (status === 'approved') {
+        return `
+        <div class="validation-card validation-succeeded">
+            <div class="validation-header">
+                <span class="validation-icon">✅</span>
+                <span class="validation-title">Deployment Validation Passed</span>
+            </div>
+            <div class="validation-detail">This service has been validated and approved for production use.</div>
+        </div>`;
+    }
+
+    if (status === 'validation_failed') {
+        return `
+        <div class="validation-card validation-failed" id="validation-card">
+            <div class="validation-header">
+                <span class="validation-icon">⛔</span>
+                <span class="validation-title">Deployment Validation Failed</span>
+            </div>
+            <div class="validation-detail">The ARM template failed What-If validation after auto-healing attempts. You can retry to trigger another round of AI-powered fixes.</div>
+            <div class="validation-actions">
+                <button class="btn btn-sm btn-primary" onclick="triggerDeploymentValidation('${escapeHtml(svc.id)}')">🤖 Retry with Auto-Heal</button>
+            </div>
+        </div>`;
+    }
+
+    if (status === 'validating') {
+        return `
+        <div class="validation-card validation-running" id="validation-card">
+            <div class="validation-header">
+                <span class="validation-icon validation-spinner">⏳</span>
+                <span class="validation-title">Deployment Validation In Progress…</span>
+            </div>
+            <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+            <div class="validation-progress">
+                <div class="validation-progress-track">
+                    <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="validation-detail" id="validation-detail">Starting validation…</div>
+            <div class="validation-log" id="validation-log"></div>
+        </div>`;
+    }
+
+    // Both gates approved but service hasn't started validating yet
+    return `
+    <div class="validation-card validation-ready" id="validation-card">
+        <div class="validation-header">
+            <span class="validation-icon">🚀</span>
+            <span class="validation-title">Ready for Deployment Validation</span>
+        </div>
+        <div class="validation-detail">Both gates approved. Run ARM What-If to validate the template deploys correctly against Azure.</div>
+        <div class="validation-actions">
+            <button class="btn btn-sm btn-accent" onclick="triggerDeploymentValidation('${escapeHtml(svc.id)}')">🚀 Validate Deployment</button>
+        </div>
+    </div>`;
+}
+
+async function triggerDeploymentValidation(serviceId) {
+    const card = document.getElementById('validation-card');
+    const progressFill = document.getElementById('validation-progress-fill');
+    const detailEl = document.getElementById('validation-detail');
+    const logEl = document.getElementById('validation-log');
+
+    // Replace card content with running state
+    if (card) {
+        card.className = 'validation-card validation-running';
+        card.innerHTML = `
+            <div class="validation-header">
+                <span class="validation-icon validation-spinner">⏳</span>
+                <span class="validation-title">Deployment Validation In Progress…</span>
+            </div>
+            <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+            <div class="validation-progress">
+                <div class="validation-progress-track">
+                    <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="validation-detail" id="validation-detail">Starting validation…</div>
+            <div class="validation-log" id="validation-log"></div>
+        `;
+    }
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/validate-deployment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Validation request failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    _handleValidationEvent(event);
+                } catch (e) {
+                    // skip non-JSON
+                }
+            }
+        }
+
+        // Process remaining buffer
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                _handleValidationEvent(event);
+            } catch (e) {}
+        }
+
+        // Refresh data after validation completes
+        await loadAllData();
+        await showServiceDetail(serviceId);
+
+    } catch (err) {
+        showToast(`Validation failed: ${err.message}`, 'error');
+        const detail = document.getElementById('validation-detail');
+        if (detail) detail.textContent = `Error: ${err.message}`;
+        const cardEl = document.getElementById('validation-card');
+        if (cardEl) cardEl.className = 'validation-card validation-failed';
+    }
+}
+
+function _handleValidationEvent(event) {
+    const progressFill = document.getElementById('validation-progress-fill');
+    const detailEl = document.getElementById('validation-detail');
+    const logEl = document.getElementById('validation-log');
+    const badge = document.getElementById('validation-attempt-badge');
+    const card = document.getElementById('validation-card');
+
+    // Update progress bar
+    if (event.progress && progressFill) {
+        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
+    }
+
+    // Update detail text
+    if (event.detail && detailEl) {
+        detailEl.textContent = event.detail;
+    }
+
+    // Update attempt badge
+    if (event.attempt && badge) {
+        badge.textContent = `Attempt ${event.attempt}${event.max_attempts ? ' / ' + event.max_attempts : ''}`;
+        badge.classList.add('visible');
+    }
+
+    // Pick icon and CSS class per event type
+    let icon = '▸';
+    let logClass = event.type || 'progress';
+    if (event.type === 'error') icon = '❌';
+    else if (event.type === 'done') icon = '✅';
+    else if (event.type === 'iteration_start') icon = '🔄';
+    else if (event.type === 'healing') icon = '🤖';
+    else if (event.type === 'healing_done') icon = '🔧';
+
+    // Add log line
+    if (logEl && event.detail) {
+        const logLine = document.createElement('div');
+        logLine.className = `validation-log-line validation-log-${logClass}`;
+        logLine.textContent = `${icon} ${event.detail}`;
+        logEl.appendChild(logLine);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Update header during healing phases
+    const header = card?.querySelector('.validation-title');
+    const iconEl = card?.querySelector('.validation-icon');
+
+    if (event.type === 'healing' && header) {
+        header.textContent = 'Auto-Healing — AI Fixing Template…';
+        if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.type === 'healing_done' && header) {
+        header.textContent = 'Retrying Deployment Validation…';
+        if (iconEl) { iconEl.textContent = '⏳'; }
+    } else if (event.type === 'iteration_start' && header) {
+        header.textContent = `Deployment Validation — Attempt ${event.attempt}`;
+        if (iconEl) { iconEl.textContent = '⏳'; iconEl.classList.add('validation-spinner'); }
+    }
+
+    // Final states
+    if (event.type === 'done' && card) {
+        card.className = 'validation-card validation-succeeded';
+        if (header) header.textContent = 'Deployment Validation Passed!';
+        if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
+        if (badge && event.total_attempts > 1) {
+            badge.textContent = `Passed on attempt ${event.total_attempts} (${event.total_attempts - 1} auto-fix${event.total_attempts > 2 ? 'es' : ''})`;
+            badge.classList.add('badge-success');
+        }
+    } else if (event.type === 'error' && card) {
+        card.className = 'validation-card validation-failed';
+        if (header) header.textContent = 'Deployment Validation Failed';
+        if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
+        if (badge && event.attempt) {
+            badge.textContent = `Failed after ${event.attempt} attempt${event.attempt > 1 ? 's' : ''}`;
+            badge.classList.add('badge-error');
+        }
+    }
+}
+
+function toggleGateCard(type) {
+    const body = document.getElementById(`gate-body-${type}`);
+    const chevron = document.getElementById(`gate-chevron-${type}`);
+    if (body) {
+        body.classList.toggle('hidden');
+        if (chevron) chevron.textContent = body.classList.contains('hidden') ? '▸' : '▾';
+    }
+}
+
+async function generateGateArtifact(serviceId, artifactType) {
+    const promptInput = document.getElementById(`gate-prompt-${artifactType}`);
+    const prompt = promptInput ? promptInput.value.trim() : '';
+
+    if (!prompt) {
+        showToast('Please describe what you need before generating', 'error');
+        promptInput?.focus();
+        return;
+    }
+
+    // Show generation output area, hide prompt section
+    const promptSection = document.getElementById(`gate-prompt-section-${artifactType}`);
+    const outputSection = document.getElementById(`gate-output-${artifactType}`);
+    const previewEl = document.getElementById(`gate-preview-${artifactType}`);
+    const spinnerEl = document.getElementById(`gate-spinner-${artifactType}`);
+    const labelEl = document.getElementById(`gate-output-label-${artifactType}`);
+
+    if (promptSection) promptSection.classList.add('hidden');
+    if (outputSection) outputSection.classList.remove('hidden');
+    if (previewEl) previewEl.textContent = '';
+    if (labelEl) labelEl.textContent = 'Generating…';
+
+    try {
+        const res = await fetch(
+            `/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/generate`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt }),
+            }
+        );
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Generation failed');
+        }
+
+        // Read NDJSON stream
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let generatedContent = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // Process complete lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const chunk = JSON.parse(line);
+                    if (chunk.type === 'done') {
+                        generatedContent = chunk.content;
+                        if (previewEl) previewEl.textContent = generatedContent;
+                    } else if (chunk.type === 'error') {
+                        throw new Error(chunk.message);
+                    }
+                } catch (parseErr) {
+                    if (parseErr.message !== chunk?.message) {
+                        // ignore JSON parse errors from partial chunks
+                    }
+                }
+            }
+        }
+
+        if (!generatedContent) {
+            throw new Error('No content was generated');
+        }
+
+        // Save as draft
+        await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: generatedContent, notes: `AI-generated: ${prompt}`, status: 'draft' }),
+        });
+
+        if (spinnerEl) spinnerEl.textContent = '✅';
+        if (labelEl) labelEl.textContent = 'Generated — review and approve';
+
+        // Refresh to show the generated content with approve/regenerate buttons
+        await _refreshServicesOnly();
+        await showServiceDetail(serviceId);
+        // Re-expand this gate card
+        const gateBody = document.getElementById(`gate-body-${artifactType}`);
+        if (gateBody && gateBody.classList.contains('hidden')) {
+            toggleGateCard(artifactType);
+        }
+
+    } catch (err) {
+        showToast(`Generation failed: ${err.message}`, 'error');
+        // Show prompt section again so they can retry
+        if (promptSection) promptSection.classList.remove('hidden');
+        if (outputSection) outputSection.classList.add('hidden');
+    }
+}
+
+async function regenerateGateArtifact(serviceId, artifactType) {
+    // Clear the existing draft and show the prompt input again
+    try {
+        await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: '', notes: '', status: 'not_started' }),
+        });
+
+        await _refreshServicesOnly();
+        await showServiceDetail(serviceId);
+        // Re-expand this gate card
+        const gateBody = document.getElementById(`gate-body-${artifactType}`);
+        if (gateBody && gateBody.classList.contains('hidden')) {
+            toggleGateCard(artifactType);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function approveGateArtifact(serviceId, artifactType) {
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approved_by: currentUser?.displayName || 'IT Staff' }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Failed to approve');
+        }
+
+        const data = await res.json();
+        showToast(data.message || `${artifactType} approved!`);
+
+        // Refresh both views
+        await loadAllData();
+        await showServiceDetail(serviceId);
+
+        // Auto-trigger deployment validation when both gates are approved
+        if (data.validation_required) {
+            setTimeout(() => triggerDeploymentValidation(serviceId), 500);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function unapproveGateArtifact(serviceId, artifactType) {
+    if (!confirm(`Revoke approval for ${artifactType}? This will set the service back to Not Approved.`)) return;
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/unapprove`, {
+            method: 'POST',
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Failed to unapprove');
+        }
+
+        showToast(`${artifactType} approval revoked`);
+        await loadAllData();
+        await showServiceDetail(serviceId);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function editGateArtifact(serviceId, artifactType) {
+    // Revoke and re-edit
+    unapproveGateArtifact(serviceId, artifactType);
 }
 
 function closeServiceDetail() {

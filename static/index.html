@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=8">
+    <link rel="stylesheet" href="/static/styles.css?v=14">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -295,6 +295,47 @@
             <!-- ═══ PAGE: Service Catalog ═════════════════════ -->
             <div class="page page-scroll hidden" id="page-services">
                 <div class="page-inner">
+                    <!-- Azure Services Stats Panel -->
+                    <div class="service-stats-panel" id="service-stats-panel">
+                        <div class="service-stats-cards">
+                            <div class="svc-stat-card">
+                                <div class="svc-stat-icon">🌐</div>
+                                <div class="svc-stat-body">
+                                    <div class="svc-stat-number" id="svc-stat-azure">—</div>
+                                    <div class="svc-stat-label">Azure Services</div>
+                                    <div class="svc-stat-sublabel">Available in ARM</div>
+                                </div>
+                            </div>
+                            <div class="svc-stat-card">
+                                <div class="svc-stat-icon">💾</div>
+                                <div class="svc-stat-body">
+                                    <div class="svc-stat-number" id="svc-stat-cached">—</div>
+                                    <div class="svc-stat-label">Cached in System</div>
+                                    <div class="svc-stat-sublabel">In InfraForge catalog</div>
+                                </div>
+                            </div>
+                            <div class="svc-stat-card">
+                                <div class="svc-stat-icon">✅</div>
+                                <div class="svc-stat-body">
+                                    <div class="svc-stat-number" id="svc-stat-approved">—</div>
+                                    <div class="svc-stat-label">Approved</div>
+                                    <div class="svc-stat-sublabel">Ready to provision</div>
+                                </div>
+                            </div>
+                            <div class="svc-stat-card svc-stat-sync-card">
+                                <div class="svc-stat-icon" id="svc-sync-icon">🔄</div>
+                                <div class="svc-stat-body">
+                                    <div class="svc-stat-status" id="svc-sync-status">Never synced</div>
+                                    <div class="svc-stat-label">Sync Status</div>
+                                    <div class="svc-stat-sublabel" id="svc-sync-detail">Pull services from Azure</div>
+                                </div>
+                                <button class="btn btn-sm btn-sync" id="btn-sync-panel" onclick="syncAzureServices()" title="Sync from Azure">
+                                    <span class="sync-btn-icon">⟳</span> Sync
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Search -->
                     <div class="page-toolbar">
                         <div class="page-search">
@@ -332,13 +373,12 @@
                                 <tr>
                                     <th>Service</th>
                                     <th>Category</th>
+                                    <th>Approval Gates</th>
                                     <th>Status</th>
-                                    <th>Policies</th>
-                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="catalog-tbody">
-                                <tr><td colspan="5" class="catalog-loading">Loading services...</td></tr>
+                                <tr><td colspan="4" class="catalog-loading">Loading services...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -438,13 +478,15 @@
         </main>
     </div>
 
-    <!-- ── Service Detail Drawer ─────────────────────────── -->
+    <!-- ── Service Approval Drawer (3-Gate Workflow) ────── -->
     <div id="service-detail-drawer" class="detail-drawer hidden">
         <div class="detail-drawer-header">
             <h3 id="detail-service-name">Service Name</h3>
             <button class="modal-close" onclick="closeServiceDetail()">×</button>
         </div>
-        <div class="detail-drawer-body" id="detail-service-body"></div>
+        <div class="detail-drawer-body" id="detail-service-body">
+            <!-- Populated dynamically by showServiceDetail() -->
+        </div>
     </div>
 
     <!-- ── Template Detail Drawer ────────────────────────── -->
@@ -592,6 +634,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=8"></script>
+    <script src="/static/app.js?v=13"></script>
 </body>
 </html>

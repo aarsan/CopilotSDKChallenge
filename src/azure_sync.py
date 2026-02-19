@@ -96,9 +96,17 @@ class SyncManager:
             "running": self.running,
             "progress": self.history[-1] if self.history else None,
             "last_completed": self.last_completed,
+            "last_completed_at_iso": (
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.last_completed_at))
+                if self.last_completed_at else None
+            ),
             "last_completed_ago_sec": (
                 round(time.time() - self.last_completed_at)
                 if self.last_completed_at else None
+            ),
+            "total_azure_resource_types": (
+                self.last_completed.get("resource_types_discovered")
+                if self.last_completed else None
             ),
         }
 
