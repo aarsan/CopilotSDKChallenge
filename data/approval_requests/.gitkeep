@@ -1,0 +1,3 @@
+# This directory stores service approval requests as JSON files.
+# Each request is created when a user asks to use a non-approved Azure service.
+# Files are named by request ID: SAR-YYYYMMDDHHMMSS.json
