@@ -1162,13 +1162,28 @@ function _renderOnboardButton(svc, status, latestVersion) {
     }
 
     if (status === 'validation_failed') {
+        // Parse real error from review_notes or latest version's validation_result
+        let errorDetail = '';
+        const reviewNotes = svc.review_notes || '';
+        if (reviewNotes) {
+            const parsed = _parseValidationError(reviewNotes);
+            errorDetail = _renderStructuredError(parsed, { compact: false, showRaw: true });
+        }
+        if (!errorDetail && latestVersion && latestVersion.validation_result) {
+            const parsed = _parseValidationError(latestVersion.validation_result);
+            errorDetail = _renderStructuredError(parsed, { compact: false, showRaw: true });
+        }
+        if (!errorDetail) {
+            errorDetail = '<div class="validation-detail">The previous onboarding attempt failed. No error details available.</div>';
+        }
+
         return `
         <div class="validation-card validation-failed" id="validation-card">
             <div class="validation-header">
                 <span class="validation-icon">⛔</span>
                 <span class="validation-title">Validation Failed</span>
             </div>
-            <div class="validation-detail">The previous onboarding attempt failed. Click below to retry with a fresh template and auto-healing.</div>
+            ${errorDetail}
             <div class="validation-actions">
                 <button class="btn btn-sm btn-primary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
                     🤖 Retry Onboarding
@@ -1212,6 +1227,16 @@ function _renderVersionHistory(versions, activeVersion) {
                 const statusIcon = v.status === 'approved' ? '✅' :
                                    v.status === 'failed' ? '❌' :
                                    v.status === 'validating' ? '🔄' : '📝';
+
+                // Build error detail for failed versions
+                let versionErrorHtml = '';
+                if (v.status === 'failed' && v.validation_result) {
+                    const parsed = _parseValidationError(v.validation_result);
+                    if (parsed) {
+                        versionErrorHtml = _renderStructuredError(parsed, { compact: true, showRaw: false });
+                    }
+                }
+
                 return `
                 <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
                     <div class="version-item-header">
@@ -1234,6 +1259,7 @@ function _renderVersionHistory(versions, activeVersion) {
                         <div class="version-detail-row">
                             <strong>Template:</strong> ${Math.round(v.arm_template.length / 1024 * 10) / 10} KB
                         </div>` : ''}
+                        ${versionErrorHtml}
                     </div>
                 </div>`;
             }).join('')}
@@ -2755,6 +2781,224 @@ function renderActivityFeed(data) {
     }
 }
 
+/**
+ * Parse a raw validation error (string or JSON) into a structured object
+ * for clear, actionable error display.
+ */
+function _parseValidationError(raw) {
+    if (!raw) return null;
+
+    let errorStr = '';
+    let phase = '';
+    let timestamp = '';
+
+    // If it's a JSON string (e.g. review_notes), parse it
+    if (typeof raw === 'string') {
+        try {
+            const parsed = JSON.parse(raw);
+            errorStr = parsed.error || parsed.detail || JSON.stringify(parsed);
+            phase = parsed.phase || '';
+            timestamp = parsed.validated_at || '';
+        } catch {
+            errorStr = raw;
+        }
+    } else if (typeof raw === 'object') {
+        errorStr = raw.error || raw.detail || JSON.stringify(raw);
+        phase = raw.phase || '';
+        timestamp = raw.validated_at || '';
+    }
+
+    // Extract operation errors after the " | Operation errors: " delimiter
+    const opSplit = errorStr.split(' | Operation errors: ');
+    const mainMessage = opSplit[0] || errorStr;
+    const opErrorsRaw = opSplit.length > 1 ? opSplit[1] : '';
+
+    // Parse individual operation errors: "Microsoft.X/y/name: [Code] message"
+    const operationErrors = [];
+    if (opErrorsRaw) {
+        // Split on patterns like "Microsoft." that start a new error (but not the first one)
+        const opParts = opErrorsRaw.split(/(?=Microsoft\.)/);
+        for (const part of opParts) {
+            const trimmed = part.trim().replace(/[;,]\s*$/, '');
+            if (!trimmed) continue;
+
+            // Pattern: "Microsoft.Network/virtualNetworks/myName: [InvalidRequestFormat] Cannot parse the request."
+            const match = trimmed.match(/^(Microsoft\.\w+\/[\w/]+)(?:\/([^:]+))?:\s*\[(\w+)\]\s*(.*)/);
+            if (match) {
+                operationErrors.push({
+                    resourceType: match[1],
+                    resourceName: match[2] || '',
+                    errorCode: match[3],
+                    message: match[4].trim(),
+                });
+            } else {
+                // Fallback: just capture whatever we can
+                const codeMatch = trimmed.match(/\[(\w+)\]\s*(.*)/);
+                operationErrors.push({
+                    resourceType: '',
+                    resourceName: '',
+                    errorCode: codeMatch ? codeMatch[1] : '',
+                    message: codeMatch ? codeMatch[2].trim() : trimmed,
+                });
+            }
+        }
+    }
+
+    // Extract error code from main message if no operation errors found
+    let mainErrorCode = '';
+    const mainCodeMatch = mainMessage.match(/\[(\w+)\]/);
+    if (mainCodeMatch) mainErrorCode = mainCodeMatch[1];
+
+    // Determine a clean summary message (strip generic ARM boilerplate)
+    let summary = mainMessage;
+    const boilerplate = [
+        'At least one resource deployment operation failed. Please list deployment operations for details.',
+        'Please see https://aka.ms/arm-deployment-operations for usage details.',
+        'Please see https://aka.ms/DeployOperations for usage details.',
+    ];
+    for (const bp of boilerplate) {
+        summary = summary.replace(bp, '').trim();
+    }
+    summary = summary.replace(/^Deploy failed:\s*/i, '').trim();
+    if (!summary && operationErrors.length > 0) {
+        summary = `${operationErrors.length} resource error(s) during deployment`;
+    }
+    if (!summary) summary = mainMessage;
+
+    // Phase label
+    const phaseLabels = {
+        deploy: 'Deployment',
+        what_if: 'What-If Preview',
+        policy_compliance: 'Policy Compliance',
+        static_check: 'Static Validation',
+        resource_check: 'Resource Verification',
+        unknown: 'Validation',
+    };
+    const phaseLabel = phaseLabels[phase] || phase || 'Validation';
+
+    // Troubleshooting hints based on error codes
+    const hints = [];
+    const allCodes = [mainErrorCode, ...operationErrors.map(e => e.errorCode)].filter(Boolean);
+    for (const code of allCodes) {
+        const lc = code.toLowerCase();
+        if (lc.includes('invalidrequestformat') || lc.includes('invalidtemplate'))
+            hints.push('The ARM template has a syntax or schema issue. Check resource API versions and property names.');
+        else if (lc.includes('invalidresourcereference') || lc.includes('resourcenotfound'))
+            hints.push('A resource reference is invalid. Ensure dependent resources are defined in the correct order.');
+        else if (lc.includes('skuNotAvailable') || lc.includes('skupnotavailable'))
+            hints.push('The requested SKU is not available in the target region. Try a different SKU or region.');
+        else if (lc.includes('quotaexceeded'))
+            hints.push('Subscription quota exceeded. Request a quota increase or use a different subscription.');
+        else if (lc.includes('authorization') || lc.includes('forbidden'))
+            hints.push('Insufficient permissions. The service principal may need additional role assignments.');
+        else if (lc.includes('conflict') || lc.includes('beingdeleted'))
+            hints.push('Resource conflict — it may already exist or be in a transitional state. Wait and retry.');
+        else if (lc.includes('badrequest'))
+            hints.push('Invalid request. Review the template parameters and resource properties.');
+        else if (lc.includes('linkedinvalidpropertypolicyviolation') || lc.includes('policyviolation'))
+            hints.push('Azure Policy denied the deployment. Check org-level Azure Policies for restrictions.');
+        else if (lc.includes('invalidparameter'))
+            hints.push('A parameter value is invalid. Check parameter types and allowed values.');
+    }
+    // Deduplicate
+    const uniqueHints = [...new Set(hints)];
+
+    return {
+        phase,
+        phaseLabel,
+        summary,
+        mainMessage,
+        mainErrorCode,
+        operationErrors,
+        hints: uniqueHints,
+        timestamp,
+        raw: errorStr,
+    };
+}
+
+/**
+ * Render a structured error display from a parsed validation error.
+ */
+function _renderStructuredError(parsed, options = {}) {
+    if (!parsed) return '';
+    const { compact = false, showRaw = true } = options;
+
+    // Phase badge
+    const phaseBadge = parsed.phase
+        ? `<span class="error-phase-badge error-phase-${escapeHtml(parsed.phase)}">${escapeHtml(parsed.phaseLabel)}</span>`
+        : '';
+
+    // Timestamp
+    const timeStr = parsed.timestamp
+        ? `<span class="error-timestamp">${new Date(parsed.timestamp).toLocaleString()}</span>`
+        : '';
+
+    // Summary
+    const summaryHtml = `<div class="error-summary-text">${escapeHtml(parsed.summary)}</div>`;
+
+    // Operation errors (per-resource)
+    let opsHtml = '';
+    if (parsed.operationErrors.length > 0) {
+        const opsItems = parsed.operationErrors.map(op => {
+            const resDisplay = op.resourceType
+                ? `<span class="error-resource-type">${escapeHtml(op.resourceType)}</span>`
+                  + (op.resourceName ? `<span class="error-resource-sep">/</span><span class="error-resource-name">${escapeHtml(op.resourceName)}</span>` : '')
+                : '';
+            const codeBadge = op.errorCode
+                ? `<span class="error-code-badge">${escapeHtml(op.errorCode)}</span>`
+                : '';
+            return `
+                <div class="error-op-item">
+                    <div class="error-op-resource">${resDisplay}</div>
+                    <div class="error-op-detail">
+                        ${codeBadge}
+                        <span class="error-op-message">${escapeHtml(op.message)}</span>
+                    </div>
+                </div>`;
+        }).join('');
+        opsHtml = `
+            <div class="error-ops-section">
+                <div class="error-ops-label">Resource Errors</div>
+                ${opsItems}
+            </div>`;
+    }
+
+    // Troubleshooting hints
+    let hintsHtml = '';
+    if (parsed.hints.length > 0 && !compact) {
+        hintsHtml = `
+            <div class="error-hints-section">
+                <div class="error-hints-label">💡 Troubleshooting</div>
+                <ul class="error-hints-list">
+                    ${parsed.hints.map(h => `<li>${escapeHtml(h)}</li>`).join('')}
+                </ul>
+            </div>`;
+    }
+
+    // Raw error (collapsible)
+    let rawHtml = '';
+    if (showRaw && !compact) {
+        rawHtml = `
+            <details class="error-raw-section">
+                <summary class="error-raw-toggle">View raw error</summary>
+                <pre class="error-raw-content">${escapeHtml(parsed.raw)}</pre>
+            </details>`;
+    }
+
+    return `
+        <div class="structured-error ${compact ? 'structured-error-compact' : ''}">
+            <div class="error-header-row">
+                <span class="error-icon">⛔</span>
+                ${phaseBadge}
+                ${timeStr}
+            </div>
+            ${summaryHtml}
+            ${opsHtml}
+            ${hintsHtml}
+            ${rawHtml}
+        </div>`;
+}
+
 function _renderActivityCard(job) {
     const isRunning = job.is_running;
     const status = job.status;
@@ -2886,10 +3130,10 @@ function _renderActivityCard(job) {
             </div>`;
     }
 
-    // ── Event log (expanded by default for running, collapsed for completed) ──
+    // ── Event log (expanded for running and failed, collapsed for approved) ──
     let eventsHtml = '';
     if (job.events && job.events.length > 0) {
-        const collapsed = !isRunning;
+        const collapsed = !isRunning && status !== 'validation_failed';
         const eventLines = job.events.map(e => {
             let icon = '▸';
             if (e.type === 'error') icon = '❌';
@@ -2924,8 +3168,8 @@ function _renderActivityCard(job) {
     // ── Error display ────────────────────────────────────────
     let errorHtml = '';
     if (status === 'validation_failed' && job.error) {
-        const errorText = typeof job.error === 'string' ? job.error : JSON.stringify(job.error);
-        errorHtml = `<div class="activity-error"><strong>Validation Failed:</strong> ${escapeHtml(errorText.substring(0, 500))}</div>`;
+        const parsed = _parseValidationError(job.error);
+        errorHtml = _renderStructuredError(parsed, { compact: false, showRaw: true });
     }
 
     // ── Time display ─────────────────────────────────────────

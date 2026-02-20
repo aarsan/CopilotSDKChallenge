@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _STANDARD_PARAMETERS = {
     "resourceName": {
         "type": "string",
+        "defaultValue": "infraforge-resource",
         "metadata": {"description": "Name of the resource"},
     },
     "location": {
@@ -372,55 +373,98 @@ def _aks():
 @_register("Microsoft.Compute/virtualMachines")
 def _vm():
     return _make_template(
-        resources=[{
-            "type": "Microsoft.Compute/virtualMachines",
-            "apiVersion": "2024-03-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "identity": {
-                "type": "SystemAssigned"
+        resources=[
+            # ── VNet ──
+            {
+                "type": "Microsoft.Network/virtualNetworks",
+                "apiVersion": "2023-09-01",
+                "name": "[concat(parameters('resourceName'), '-vnet')]",
+                "location": "[parameters('location')]",
+                "tags": _STANDARD_TAGS,
+                "properties": {
+                    "addressSpace": {"addressPrefixes": ["10.0.0.0/16"]},
+                    "subnets": [{
+                        "name": "default",
+                        "properties": {"addressPrefix": "10.0.1.0/24"},
+                    }],
+                },
             },
-            "properties": {
-                "hardwareProfile": {
-                    "vmSize": "Standard_DS2_v2"
+            # ── NIC (no public IP) ──
+            {
+                "type": "Microsoft.Network/networkInterfaces",
+                "apiVersion": "2023-09-01",
+                "name": "[concat(parameters('resourceName'), '-nic')]",
+                "location": "[parameters('location')]",
+                "tags": _STANDARD_TAGS,
+                "dependsOn": [
+                    "[resourceId('Microsoft.Network/virtualNetworks', concat(parameters('resourceName'), '-vnet'))]",
+                ],
+                "properties": {
+                    "ipConfigurations": [{
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', concat(parameters('resourceName'), '-vnet'), 'default')]",
+                            },
+                        },
+                    }],
                 },
-                "osProfile": {
-                    "computerName": "[parameters('resourceName')]",
-                    "adminUsername": "azureuser",
-                    "linuxConfiguration": {
-                        "disablePasswordAuthentication": True,
-                        "patchSettings": {
-                            "patchMode": "AutomaticByPlatform"
-                        }
-                    }
-                },
-                "storageProfile": {
-                    "imageReference": {
-                        "publisher": "Canonical",
-                        "offer": "ubuntu-24_04-lts",
-                        "sku": "server",
-                        "version": "latest"
+            },
+            # ── VM ──
+            {
+                "type": "Microsoft.Compute/virtualMachines",
+                "apiVersion": "2024-03-01",
+                "name": "[parameters('resourceName')]",
+                "location": "[parameters('location')]",
+                "tags": _STANDARD_TAGS,
+                "identity": {"type": "SystemAssigned"},
+                "dependsOn": [
+                    "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
+                ],
+                "properties": {
+                    "hardwareProfile": {"vmSize": "[parameters('vmSize')]"},
+                    "osProfile": {
+                        "computerName": "[parameters('resourceName')]",
+                        "adminUsername": "azureuser",
+                        "adminPassword": "[parameters('adminPassword')]",
+                        "linuxConfiguration": {
+                            "disablePasswordAuthentication": False,
+                            "patchSettings": {"patchMode": "AutomaticByPlatform"},
+                        },
                     },
-                    "osDisk": {
-                        "createOption": "FromImage",
-                        "managedDisk": {
-                            "storageAccountType": "Premium_LRS"
-                        }
-                    }
+                    "storageProfile": {
+                        "imageReference": {
+                            "publisher": "Canonical",
+                            "offer": "ubuntu-24_04-lts",
+                            "sku": "server",
+                            "version": "latest",
+                        },
+                        "osDisk": {
+                            "createOption": "FromImage",
+                            "managedDisk": {"storageAccountType": "Premium_LRS"},
+                        },
+                    },
+                    "networkProfile": {
+                        "networkInterfaces": [{
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
+                        }],
+                    },
                 },
-                "networkProfile": {
-                    "networkInterfaces": []
-                }
-            }
-        }],
+            },
+        ],
         extra_params={
             "vmSize": {
                 "type": "string",
                 "defaultValue": "Standard_DS2_v2",
                 "metadata": {"description": "VM size"},
             },
-        }
+            "adminPassword": {
+                "type": "secureString",
+                "defaultValue": "InfraForge-Val1!",
+                "metadata": {"description": "VM admin password (validation only — VM is deleted after test)"},
+            },
+        },
     )
 
 
@@ -869,13 +913,23 @@ async def generate_arm_template_with_copilot(
             "--- END PLAN ---\n\n"
             "Follow the architecture plan above. It specifies the resources, security "
             "configurations, parameters, and properties to include.\n\n"
+            "CRITICAL: EVERY parameter in the template MUST have a \"defaultValue\". "
+            "This template is deployed with parameters={} for validation, so any "
+            "parameter without a default will cause a deployment failure. "
+            "Use sensible defaults (e.g. resourceName → \"infraforge-resource\", "
+            "location → \"[resourceGroup().location]\").\n\n"
         )
     else:
         prompt += (
             "Requirements:\n"
-            "- Include standard parameters: resourceName (string), location (string, default "
-            "\"[resourceGroup().location]\"), environment (string, default \"dev\"), "
-            "projectName (string, default \"infraforge\"), ownerEmail (string), costCenter (string)\n"
+            "- Include standard parameters — EVERY parameter MUST have a defaultValue "
+            "(this template is deployed with parameters={} for validation):\n"
+            "  resourceName (string, default \"infraforge-resource\"), "
+            "location (string, default \"[resourceGroup().location]\"), "
+            "environment (string, default \"dev\"), "
+            "projectName (string, default \"infraforge\"), "
+            "ownerEmail (string, default \"platform-team@company.com\"), "
+            "costCenter (string, default \"IT-0001\")\n"
             "- Include tags: environment, owner, costCenter, project, managedBy=InfraForge\n"
             "- Use a recent stable API version\n"
             "- Include minimal required properties only\n"

@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InfraForge — Onboarding Pipeline Documentation</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2128;
+            --bg-elevated: #21262d;
+            --bg-hover: #292e36;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-orange: #d29922;
+            --accent-red: #f85149;
+            --accent-purple: #bc8cff;
+            --accent-cyan: #39d2c0;
+            --border-default: #30363d;
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            overflow-y: auto;
+        }
+
+        /* ── Top Bar ── */
+        .top-bar {
+            position: sticky; top: 0; z-index: 100;
+            display: flex; align-items: center; gap: 1rem;
+            padding: 0.75rem 2rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-default);
+            backdrop-filter: blur(12px);
+        }
+        .top-bar a {
+            color: var(--accent-blue);
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+        .top-bar a:hover { text-decoration: underline; }
+        .top-bar .logo { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
+        .top-bar .sep { color: var(--text-muted); }
+        .top-bar .title { color: var(--text-secondary); font-size: 0.95rem; }
+
+        /* ── Layout ── */
+        .page { display: flex; min-height: calc(100vh - 49px); }
+
+        /* ── Sidebar TOC ── */
+        .toc {
+            position: sticky; top: 49px; align-self: flex-start;
+            width: 260px; min-width: 260px;
+            height: calc(100vh - 49px);
+            overflow-y: auto;
+            padding: 1.5rem 1rem;
+            border-right: 1px solid var(--border-default);
+            background: var(--bg-secondary);
+        }
+        .toc h3 {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+        }
+        .toc a {
+            display: block;
+            padding: 0.3rem 0.5rem;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 4px;
+            transition: all 0.15s;
+        }
+        .toc a:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .toc a.indent { padding-left: 1.25rem; font-size: 0.78rem; }
+        .toc .section-gap { margin-top: 0.75rem; }
+
+        /* ── Main Content ── */
+        .content {
+            flex: 1;
+            max-width: 960px;
+            padding: 2.5rem 3rem 5rem;
+        }
+        .content h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .content .subtitle {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            margin-bottom: 2rem;
+        }
+        .content h2 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            margin-top: 3rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border-default);
+            color: var(--accent-blue);
+        }
+        .content h3 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            margin-top: 1.75rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+        .content p { margin-bottom: 0.75rem; color: var(--text-secondary); }
+        .content ul, .content ol {
+            margin: 0.5rem 0 1rem 1.5rem;
+            color: var(--text-secondary);
+        }
+        .content li { margin-bottom: 0.3rem; }
+        .content code {
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            background: var(--bg-elevated);
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            color: var(--accent-cyan);
+        }
+
+        /* ── Phase Cards ── */
+        .phase-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .phase-card .phase-header {
+            display: flex; align-items: center; gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .phase-card .phase-num {
+            display: flex; align-items: center; justify-content: center;
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            font-size: 0.8rem; font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+        .phase-card .phase-num.blue   { background: var(--accent-blue); }
+        .phase-card .phase-num.green  { background: var(--accent-green); }
+        .phase-card .phase-num.orange { background: var(--accent-orange); }
+        .phase-card .phase-num.purple { background: var(--accent-purple); }
+        .phase-card .phase-num.cyan   { background: var(--accent-cyan); }
+        .phase-card .phase-num.red    { background: var(--accent-red); }
+        .phase-card .phase-title { font-weight: 600; font-size: 1rem; }
+        .phase-card .phase-model {
+            margin-left: auto;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 10px;
+            background: var(--bg-elevated);
+            color: var(--accent-purple);
+            border: 1px solid var(--border-default);
+        }
+        .phase-card p { font-size: 0.88rem; }
+
+        /* ── Tag pills ── */
+        .tag { display: inline-block; font-size: 0.72rem; font-weight: 500; padding: 0.15rem 0.5rem; border-radius: 10px; margin-right: 0.35rem; }
+        .tag-success { background: rgba(63,185,80,0.15); color: var(--accent-green); border: 1px solid rgba(63,185,80,0.3); }
+        .tag-warning { background: rgba(210,153,34,0.15); color: var(--accent-orange); border: 1px solid rgba(210,153,34,0.3); }
+        .tag-error   { background: rgba(248,81,73,0.15); color: var(--accent-red); border: 1px solid rgba(248,81,73,0.3); }
+        .tag-info    { background: rgba(88,166,255,0.15); color: var(--accent-blue); border: 1px solid rgba(88,166,255,0.3); }
+        .tag-purple  { background: rgba(188,140,255,0.15); color: var(--accent-purple); border: 1px solid rgba(188,140,255,0.3); }
+
+        /* ── Healing callout ── */
+        .callout {
+            border-left: 3px solid var(--accent-orange);
+            background: rgba(210,153,34,0.08);
+            padding: 0.75rem 1rem;
+            border-radius: 0 var(--radius-md) var(--radius-md) 0;
+            margin: 0.75rem 0;
+            font-size: 0.88rem;
+        }
+        .callout.info  { border-left-color: var(--accent-blue); background: rgba(88,166,255,0.08); }
+        .callout.error { border-left-color: var(--accent-red); background: rgba(248,81,73,0.08); }
+        .callout.success { border-left-color: var(--accent-green); background: rgba(63,185,80,0.08); }
+
+        /* ── Model routing table ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.85rem;
+        }
+        th { text-align: left; padding: 0.6rem 0.75rem; background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; border-bottom: 2px solid var(--border-default); }
+        td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border-default); color: var(--text-secondary); }
+        tr:hover td { background: var(--bg-hover); }
+
+        /* ── Mermaid Diagram ── */
+        .diagram-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-default);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+            margin: 1.5rem 0;
+            overflow-x: auto;
+            text-align: center;
+        }
+        .diagram-container svg { max-width: 100%; }
+
+        /* ── Progress bar visual ── */
+        .pipeline-bar {
+            display: flex;
+            gap: 2px;
+            margin: 1.5rem 0;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            border: 1px solid var(--border-default);
+        }
+        .pipeline-step {
+            flex: 1;
+            text-align: center;
+            padding: 0.5rem 0.25rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            background: var(--bg-elevated);
+            color: var(--text-muted);
+            position: relative;
+        }
+        .pipeline-step.active { background: var(--accent-blue); color: #fff; }
+        .pipeline-step.done   { background: var(--accent-green); color: #fff; }
+        .pipeline-step.error  { background: var(--accent-red); color: #fff; }
+        .pipeline-step .step-icon { display: block; font-size: 1rem; margin-bottom: 0.15rem; }
+
+        /* ── Responsive ── */
+        @media (max-width: 900px) {
+            .toc { display: none; }
+            .content { padding: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <!-- ── Top Navigation Bar ── -->
+    <div class="top-bar">
+        <span class="logo">⚒️ InfraForge</span>
+        <span class="sep">›</span>
+        <span class="title">Onboarding Pipeline Documentation</span>
+        <span style="flex:1"></span>
+        <a href="/">← Back to App</a>
+        <a href="/docs">API Docs</a>
+    </div>
+
+    <div class="page">
+        <!-- ── Table of Contents ── -->
+        <nav class="toc">
+            <h3>On This Page</h3>
+            <a href="#overview">Overview</a>
+            <a href="#visual-pipeline">Visual Pipeline</a>
+            <a href="#flowchart">Flowchart</a>
+            <a href="#model-routing">Model Routing</a>
+
+            <div class="section-gap"></div>
+            <h3>Pre-Loop Phases</h3>
+            <a class="indent" href="#phase-0">Phase 0 — Model Init</a>
+            <a class="indent" href="#phase-1">Phase 1 — Standards</a>
+            <a class="indent" href="#phase-2">Phase 2 — Planning</a>
+            <a class="indent" href="#phase-3">Phase 3 — Generation</a>
+            <a class="indent" href="#phase-3-5">Phase 3.5 — Policy Gen</a>
+
+            <div class="section-gap"></div>
+            <h3>Healing Loop (×5)</h3>
+            <a class="indent" href="#step-4-1">4.1 — Parse JSON</a>
+            <a class="indent" href="#step-4-2">4.2 — Static Policy</a>
+            <a class="indent" href="#step-4-3">4.3 — ARM What-If</a>
+            <a class="indent" href="#step-4-4">4.4 — Deploy</a>
+            <a class="indent" href="#step-4-5">4.5 — Resource Verify</a>
+            <a class="indent" href="#step-4-6">4.6 — Policy Test</a>
+
+            <div class="section-gap"></div>
+            <h3>Post-Loop</h3>
+            <a class="indent" href="#phase-5">Phase 5 — Cleanup</a>
+            <a class="indent" href="#phase-6">Phase 6 — Approve</a>
+
+            <div class="section-gap"></div>
+            <h3>Deep Dives</h3>
+            <a href="#healing-loop">Healing Loop Mechanics</a>
+            <a href="#transient-errors">Transient Error Handling</a>
+            <a href="#parameter-injection">Parameter Injection</a>
+        </nav>
+
+        <!-- ── Main Content ── -->
+        <main class="content">
+            <h1 id="overview">Service Onboarding Pipeline</h1>
+            <p class="subtitle">
+                A complete guide to how InfraForge generates, validates, deploys, and approves
+                Azure infrastructure — with AI-powered auto-healing across up to 5 attempts.
+            </p>
+
+            <p>
+                When you click <strong>"Start Onboarding"</strong> on a service, InfraForge runs a
+                multi-phase pipeline that takes a service type (e.g. <code>Microsoft.Network/virtualNetworks</code>)
+                and produces a fully validated, deployed-and-cleaned-up ARM template ready for production use.
+                Every phase is streamed to the UI in real time as NDJSON events.
+            </p>
+
+            <!-- ── Visual Pipeline Bar ── -->
+            <h2 id="visual-pipeline">Pipeline Progress Bar</h2>
+            <p>This is the same progress bar you see in the UI during onboarding. Each step must pass before the next one runs.</p>
+
+            <div class="pipeline-bar">
+                <div class="pipeline-step done">
+                    <span class="step-icon">🧠</span> PLAN
+                </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">⚙️</span> GENERATE
+                </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">📝</span> PARSE
+                </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">🛡️</span> POLICY
+                </div>
+                <div class="pipeline-step active">
+                    <span class="step-icon">🔮</span> WHAT-IF
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">🚀</span> DEPLOY
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">✅</span> VERIFY
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">🧪</span> TEST
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">🧹</span> CLEANUP
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">🎉</span> APPROVE
+                </div>
+            </div>
+
+            <div class="callout info">
+                <strong>Auto-Healing:</strong> If any step from PARSE through TEST fails, the template is
+                automatically sent to <code>gpt-4.1</code> for repair. The loop retries up to 5 times
+                with escalating fix strategies. Steps before the healing loop (PLAN, GENERATE) only run once.
+            </div>
+
+            <!-- ── Flowchart ── -->
+            <h2 id="flowchart">End-to-End Flowchart</h2>
+            <p>The complete decision tree, including healing branches and transient error retries:</p>
+
+            <div class="diagram-container">
+                <pre class="mermaid">
+flowchart TD
+    START(["🚀 Onboard Service Request"]) --> P0["Phase 0: Model Routing Init"]
+    P0 --> P1["Phase 1: Load Org Standards"]
+    P1 --> P2["Phase 2: Architecture Planning\n🧠 o3-mini (reasoning)"]
+    P2 --> P3{"Built-in\nSkeleton?"}
+    P3 -- Yes --> SKEL["Use Pre-tested Skeleton"]
+    P3 -- No --> GEN["Phase 3: Generate ARM Template\n✨ claude-sonnet-4"]
+    SKEL --> GUARD["Inject Parameter Defaults\n_ensure_parameter_defaults()"]
+    GEN --> GUARD
+    GUARD --> P35["Phase 3.5: Generate Azure Policy\n✨ claude-sonnet-4"]
+    P35 --> LOOP_START(["Healing Loop — Attempt 1/5"])
+
+    LOOP_START --> S1["4.1 Parse JSON"]
+    S1 -- "❌ Parse Error" --> HEAL1{"Last\nattempt?"}
+    HEAL1 -- No --> FIX1["🔧 gpt-4.1 Auto-Heal\n+ inject defaults"] --> LOOP_START
+    HEAL1 -- Yes --> FAIL(["❌ Pipeline Failed"])
+
+    S1 -- "✅ Valid JSON" --> S2["4.2 Static Policy Check\nvs. Org Governance Rules"]
+    S2 -- "❌ Blockers" --> HEAL2{"Last\nattempt?"}
+    HEAL2 -- No --> FIX2["🔧 gpt-4.1 Auto-Heal"] --> LOOP_START
+    HEAL2 -- Yes --> FAIL
+
+    S2 -- "✅ Passed" --> S3["4.3 ARM What-If\n(terraform plan equivalent)"]
+    S3 -- "⚡ Transient Error" --> WAIT1["⏳ Wait 10s"] --> LOOP_START
+    S3 -- "❌ Template Error" --> HEAL3{"Last\nattempt?"}
+    HEAL3 -- No --> FIX3["🔧 gpt-4.1 Auto-Heal"] --> LOOP_START
+    HEAL3 -- Yes --> FAIL
+
+    S3 -- "✅ Passed" --> S4["4.4 ARM Deployment\n(incremental mode)"]
+    S4 -- "⚡ Transient Error" --> WAIT2["⏳ Wait 10s"] --> LOOP_START
+    S4 -- "❌ Deploy Error" --> HEAL4{"Last\nattempt?"}
+    HEAL4 -- No --> FIX4["🔧 gpt-4.1 Auto-Heal"] --> LOOP_START
+    HEAL4 -- Yes --> CLEANUP_FAIL["🧹 Cleanup RG"] --> FAIL
+
+    S4 -- "✅ Succeeded" --> S5["4.5 Resource Verification\n(list + fetch properties)"]
+    S5 --> S6["4.6 Runtime Policy Test\nvs. Generated Policy"]
+    S6 -- "❌ Violation" --> HEAL6{"Last\nattempt?"}
+    HEAL6 -- No --> FIX6["🔧 gpt-4.1 Auto-Heal"] --> LOOP_START
+    HEAL6 -- Yes --> CLEANUP_FAIL2["🧹 Cleanup RG"] --> FAIL
+
+    S6 -- "✅ Compliant" --> P5["Phase 5: Cleanup Validation RG\n(fire-and-forget)"]
+    P5 --> P6(["🎉 Phase 6: Approved!"])
+
+    style START fill:#58a6ff,stroke:#1f6feb,color:#fff
+    style FAIL fill:#f85149,stroke:#da3633,color:#fff
+    style P6 fill:#3fb950,stroke:#238636,color:#fff
+    style LOOP_START fill:#d29922,stroke:#9e6a03,color:#fff
+    style FIX1 fill:#bc8cff,stroke:#8957e5,color:#fff
+    style FIX2 fill:#bc8cff,stroke:#8957e5,color:#fff
+    style FIX3 fill:#bc8cff,stroke:#8957e5,color:#fff
+    style FIX4 fill:#bc8cff,stroke:#8957e5,color:#fff
+    style FIX6 fill:#bc8cff,stroke:#8957e5,color:#fff
+    style GUARD fill:#39d2c0,stroke:#1b7c6e,color:#fff
+                </pre>
+            </div>
+
+            <!-- ── Model Routing ── -->
+            <h2 id="model-routing">Model Routing Table</h2>
+            <p>
+                InfraForge uses <strong>task-based model routing</strong> — each phase is handled by the
+                LLM best suited for that specific type of work.
+            </p>
+            <table>
+                <thead>
+                    <tr><th>Task</th><th>Model</th><th>Why This Model</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="tag tag-info">PLANNING</span></td>
+                        <td><code>o3-mini</code></td>
+                        <td>Deep chain-of-thought reasoning for architecture decisions</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-success">CODE_GENERATION</span></td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>Precise, structured ARM/Bicep code generation</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-purple">CODE_FIXING</span></td>
+                        <td><code>gpt-4.1</code></td>
+                        <td>Error comprehension + surgical repair of broken templates</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-success">POLICY_GENERATION</span></td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>Policy JSON structure + logical condition reasoning</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-info">VALIDATION_ANALYSIS</span></td>
+                        <td><code>o3-mini</code></td>
+                        <td>Analyzing deployment errors &amp; compliance violations</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-warning">DESIGN_DOCUMENT</span></td>
+                        <td><code>gpt-4.1</code></td>
+                        <td>Long-form technical writing with structured output</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- ── Pre-Loop Phases ── -->
+            <h2>Pre-Loop Phases <span style="font-size:0.8rem;color:var(--text-muted)">(Run Once)</span></h2>
+
+            <div class="phase-card" id="phase-0">
+                <div class="phase-header">
+                    <span class="phase-num blue">0</span>
+                    <span class="phase-title">Model Routing Initialization</span>
+                </div>
+                <p>
+                    Builds the per-task model routing table and emits each assignment to the UI.
+                    The user sees which LLM handles each phase — full transparency.
+                </p>
+                <p><span class="tag tag-info">No LLM call</span> <span class="tag tag-success">Cannot fail</span></p>
+            </div>
+
+            <div class="phase-card" id="phase-1">
+                <div class="phase-header">
+                    <span class="phase-num blue">1</span>
+                    <span class="phase-title">Organization Standards Analysis</span>
+                </div>
+                <p>
+                    Fetches all applicable organization standards (security, tagging, networking, compliance)
+                    from the governance database. Standards constrain template generation and policy validation
+                    in all subsequent phases.
+                </p>
+                <p>
+                    Each standard is displayed with severity: <span class="tag tag-error">🔴 Critical</span>
+                    <span class="tag tag-warning">🟠 High</span> <span class="tag tag-info">🟡 Medium</span>
+                    <span class="tag tag-success">🟢 Low</span>
+                </p>
+                <p><span class="tag tag-info">No LLM call</span></p>
+            </div>
+
+            <div class="phase-card" id="phase-2">
+                <div class="phase-header">
+                    <span class="phase-num purple">2</span>
+                    <span class="phase-title">Architecture Planning (PLAN Phase)</span>
+                    <span class="phase-model">o3-mini</span>
+                </div>
+                <p>
+                    The reasoning model analyzes the service type, org standards, and security requirements
+                    to produce an architecture plan. This plan specifies:
+                </p>
+                <ul>
+                    <li>Resources to create (type, API version, purpose)</li>
+                    <li>Security configs (TLS, encryption, managed identity)</li>
+                    <li>Parameters to expose with default values</li>
+                    <li>Critical properties for production readiness</li>
+                    <li>Standards compliance mapping</li>
+                </ul>
+                <div class="callout info">
+                    The plan is fed into all subsequent LLM calls — the code generation model follows
+                    the plan precisely rather than reasoning about architecture itself.
+                </div>
+            </div>
+
+            <div class="phase-card" id="phase-3">
+                <div class="phase-header">
+                    <span class="phase-num green">3</span>
+                    <span class="phase-title">ARM Template Generation (EXECUTE Phase)</span>
+                    <span class="phase-model">claude-sonnet-4</span>
+                </div>
+                <p>
+                    Two paths:
+                </p>
+                <ul>
+                    <li><strong>Built-in skeleton exists</strong> — Uses a pre-tested, hand-crafted template. No LLM call needed.</li>
+                    <li><strong>No skeleton</strong> — The code generation model produces an ARM template guided by the architecture plan + org standards.</li>
+                </ul>
+                <p>After generation, a safety guard (<code>_ensure_parameter_defaults</code>) injects missing
+                   <code>defaultValue</code> on every parameter. Parameters are then extracted and passed explicitly
+                   to ARM deploy calls to prevent "parameter not provided" errors.</p>
+                <div class="callout error">
+                    <strong>Fatal if:</strong> Generation returns empty content or invalid JSON. Pipeline aborts — no healing possible at this stage.
+                </div>
+            </div>
+
+            <div class="phase-card" id="phase-3-5">
+                <div class="phase-header">
+                    <span class="phase-num green">3.5</span>
+                    <span class="phase-title">Azure Policy Generation</span>
+                    <span class="phase-model">claude-sonnet-4</span>
+                </div>
+                <p>
+                    Generates an Azure Policy definition that enforces organizational standards on the
+                    deployed resources. Used in Step 4.6 (Runtime Policy Test) to verify the actual
+                    deployed resources comply with org requirements.
+                </p>
+                <p><span class="tag tag-warning">Non-fatal</span> If generation fails, the runtime policy test is skipped.</p>
+            </div>
+
+            <!-- ── Healing Loop ── -->
+            <h2>Healing Loop <span style="font-size:0.8rem;color:var(--text-muted)">(Up to 5 Attempts)</span></h2>
+
+            <div class="callout">
+                <strong>How it works:</strong> Each attempt runs steps 4.1→4.6 sequentially. If any step fails and it's
+                not the last attempt, the template is sent to <code>gpt-4.1</code> for repair. The fixed template is
+                re-validated from the beginning. A <strong>heal history</strong> tracks every fix attempt so the LLM
+                never repeats the same failed approach.
+            </div>
+
+            <div class="phase-card" id="step-4-1">
+                <div class="phase-header">
+                    <span class="phase-num cyan">4.1</span>
+                    <span class="phase-title">Parse JSON</span>
+                </div>
+                <p>
+                    Validates the ARM template is syntactically valid JSON via <code>json.loads()</code>.
+                    Reports line number and column on failure.
+                </p>
+                <p>
+                    <span class="tag tag-error">On failure →</span> Auto-heal with error context, then restart loop.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-4-2">
+                <div class="phase-header">
+                    <span class="phase-num cyan">4.2</span>
+                    <span class="phase-title">Static Policy Check</span>
+                </div>
+                <p>
+                    Evaluates the template against all organization governance policies <em>before</em>
+                    touching Azure. Checks include required tags, allowed regions, security settings,
+                    and custom org rules. Each check emits a pass/warn/fail result.
+                </p>
+                <p>
+                    <span class="tag tag-error">On blockers →</span> Builds a targeted fix prompt listing each failed
+                    check. Auto-heals and restarts loop.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-4-3">
+                <div class="phase-header">
+                    <span class="phase-num cyan">4.3</span>
+                    <span class="phase-title">ARM What-If</span>
+                    <span class="phase-model">Azure RM API</span>
+                </div>
+                <p>
+                    Submits the template to Azure Resource Manager's What-If endpoint — like
+                    <code>terraform plan</code> but native. Previews what resources would be created,
+                    modified, or deleted without actually provisioning anything.
+                </p>
+                <div class="callout info">
+                    <strong>Transient errors</strong> (throttled, resource group being deleted, service unavailable)
+                    do <strong>not</strong> burn a heal attempt — the pipeline waits 10 seconds and retries.
+                </div>
+                <p>
+                    <span class="tag tag-error">On template error →</span> Auto-heal with ARM error message, restart loop.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-4-4">
+                <div class="phase-header">
+                    <span class="phase-num orange">4.4</span>
+                    <span class="phase-title">ARM Deployment</span>
+                    <span class="phase-model">Azure RM API</span>
+                </div>
+                <p>
+                    Actually provisions resources into a temporary validation resource group. Deployment
+                    mode is <strong>incremental</strong> (doesn't delete existing resources). If the error message
+                    is generic, InfraForge fetches operation-level errors for better diagnostics.
+                </p>
+                <p>
+                    <span class="tag tag-error">On deploy error →</span> Auto-heal. On last attempt, cleans up
+                    the resource group then fails the pipeline.
+                </p>
+                <p>
+                    <span class="tag tag-success">On success →</span> Resource group is marked for cleanup in Phase 5.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-4-5">
+                <div class="phase-header">
+                    <span class="phase-num green">4.5</span>
+                    <span class="phase-title">Resource Verification</span>
+                    <span class="phase-model">Azure RM API</span>
+                </div>
+                <p>
+                    Lists all resources deployed into the validation resource group and fetches their
+                    full properties (tags, network config, security settings). These properties are
+                    needed for the runtime policy evaluation in the next step.
+                </p>
+                <p><span class="tag tag-warning">Non-fatal</span> If enumeration fails, the policy test proceeds with an empty resource list.</p>
+            </div>
+
+            <div class="phase-card" id="step-4-6">
+                <div class="phase-header">
+                    <span class="phase-num purple">4.6</span>
+                    <span class="phase-title">Runtime Policy Compliance Test</span>
+                </div>
+                <p>
+                    Evaluates each deployed resource against the generated Azure Policy using a
+                    <strong>local policy engine</strong>. This engine interprets the policy's
+                    <code>if</code> condition tree (allOf / anyOf / not) with operators like
+                    equals, notEquals, in, contains, exists, greater, less.
+                </p>
+                <p>
+                    <span class="tag tag-error">On violation →</span> Auto-heal with violation details + policy content.
+                    On last attempt, cleans up RG then fails.
+                </p>
+                <p>
+                    <span class="tag tag-info">Skipped</span> if no policy was generated or no resources exist.
+                </p>
+            </div>
+
+            <!-- ── Post-Loop ── -->
+            <h2>Post-Loop Phases <span style="font-size:0.8rem;color:var(--text-muted)">(On Success)</span></h2>
+
+            <div class="phase-card" id="phase-5">
+                <div class="phase-header">
+                    <span class="phase-num red">5</span>
+                    <span class="phase-title">Cleanup Validation Resource Group</span>
+                </div>
+                <p>
+                    Deletes the temporary validation resource group. This is <strong>fire-and-forget</strong>
+                    — the pipeline doesn't wait for full deletion (which can take minutes). A safety-net
+                    <code>finally</code> block ensures cleanup even if an unhandled error occurs.
+                </p>
+            </div>
+
+            <div class="phase-card" id="phase-6">
+                <div class="phase-header">
+                    <span class="phase-num green">6</span>
+                    <span class="phase-title">Promote to Approved ✅</span>
+                </div>
+                <p>
+                    Builds a comprehensive validation result capturing What-If results, deployed resources,
+                    static policy check, runtime policy compliance, and attempt count. Updates the service
+                    version status to <code>"approved"</code> and sets it as the active version.
+                </p>
+                <div class="callout success">
+                    <strong>🎉 Service onboarded!</strong> The ARM template is now marked as production-ready
+                    and available in the service catalog.
+                </div>
+            </div>
+
+            <!-- ── Healing Deep Dive ── -->
+            <h2 id="healing-loop">Healing Loop Mechanics</h2>
+
+            <h3>How Auto-Healing Works</h3>
+            <p>
+                When a step fails, the current template + error message + full heal history is sent to
+                <code>gpt-4.1</code> (the CODE_FIXING model). The healer produces a corrected template,
+                which then goes through the full validation loop again from step 4.1.
+            </p>
+
+            <h3>Escalation Strategy</h3>
+            <table>
+                <thead>
+                    <tr><th>Attempt</th><th>Strategy</th><th>Prompt Additions</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="tag tag-info">1</span></td>
+                        <td>Standard fix</td>
+                        <td>Error message + critical rules (keep location expressions, keep resource intent)</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-warning">2–3</span></td>
+                        <td>Fundamentally different approach</td>
+                        <td>"Try a different API version, restructure dependencies, remove problematic sub-resources"</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-error">4–5</span></td>
+                        <td>Drastic simplification</td>
+                        <td>"Strip to primary resource only, remove diagnosticSettings/locks/autoscale, use simplest config"</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Heal History Tracking</h3>
+            <p>
+                Each heal attempt is recorded as <code>{attempt, phase, error, fix_summary}</code>.
+                The <code>_summarize_fix()</code> function produces a structural diff (resource count changes,
+                API version changes, added/removed resources, parameter changes). The full history is included
+                in subsequent fix prompts with: <em>"DO NOT repeat these fixes — they already failed."</em>
+            </p>
+
+            <h3>Post-Heal Safety Guards</h3>
+            <ol>
+                <li><strong>Empty response</strong> → Keep original template</li>
+                <li><strong>Non-JSON response</strong> → Try to extract JSON object, else keep original</li>
+                <li><strong>Invalid JSON</strong> → Keep original template</li>
+                <li><strong>Location corruption</strong> → Restore <code>[resourceGroup().location]</code></li>
+                <li><strong>Missing defaults</strong> → Inject via <code>_ensure_parameter_defaults()</code></li>
+                <li><strong>Markdown fences</strong> → Strip automatically</li>
+            </ol>
+
+            <!-- ── Transient Errors ── -->
+            <h2 id="transient-errors">Transient Error Handling</h2>
+            <p>
+                Certain Azure errors are <em>not</em> template problems — they're infrastructure timing issues.
+                These are detected by keyword matching and handled specially:
+            </p>
+            <table>
+                <thead>
+                    <tr><th>Keyword Pattern</th><th>Meaning</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>beingdeleted</code> / <code>being deleted</code></td><td>RG from previous run still deleting</td><td>Wait 10s, retry</td></tr>
+                    <tr><td><code>deprovisioning</code></td><td>Resources still deprovisioning</td><td>Wait 10s, retry</td></tr>
+                    <tr><td><code>throttled</code> / <code>toomanyrequests</code></td><td>ARM rate limiting</td><td>Wait 10s, retry</td></tr>
+                    <tr><td><code>serviceunavailable</code></td><td>Azure service outage</td><td>Wait 10s, retry</td></tr>
+                    <tr><td><code>internalservererror</code></td><td>Azure server error</td><td>Wait 10s, retry</td></tr>
+                </tbody>
+            </table>
+            <div class="callout success">
+                <strong>Key detail:</strong> Transient retries do <strong>not</strong> burn a heal attempt.
+                The pipeline can retry indefinitely for transient issues while preserving all 5 heal attempts
+                for actual template problems.
+            </div>
+
+            <!-- ── Parameter Injection ── -->
+            <h2 id="parameter-injection">Parameter Injection</h2>
+            <p>
+                ARM templates are deployed with explicit parameter values extracted from the template's
+                <code>defaultValue</code> fields. This prevents the common failure:
+            </p>
+            <div class="callout error">
+                <code>The value for the template parameter 'resourceName' at line 1 and column 184 is not provided.</code>
+            </div>
+            <p>Two layers of protection:</p>
+            <ol>
+                <li><strong><code>_ensure_parameter_defaults()</code></strong> — Runs after generation AND after every heal.
+                    Injects <code>defaultValue</code> into any parameter missing one.</li>
+                <li><strong><code>_extract_param_values()</code></strong> — Before each deploy/what-if call, extracts
+                    default values from the template and passes them as explicit <code>parameters={...}</code>.
+                    Skips ARM expressions like <code>[resourceGroup().location]</code>.</li>
+            </ol>
+
+            <h3>Well-Known Defaults</h3>
+            <table>
+                <thead>
+                    <tr><th>Parameter</th><th>Default Value</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>resourceName</code></td><td><code>"infraforge-resource"</code></td></tr>
+                    <tr><td><code>location</code></td><td><code>[resourceGroup().location]</code> <em>(expression, not passed explicitly)</em></td></tr>
+                    <tr><td><code>environment</code></td><td><code>"dev"</code></td></tr>
+                    <tr><td><code>projectName</code></td><td><code>"infraforge"</code></td></tr>
+                    <tr><td><code>ownerEmail</code></td><td><code>"platform-team@company.com"</code></td></tr>
+                    <tr><td><code>costCenter</code></td><td><code>"IT-0001"</code></td></tr>
+                </tbody>
+            </table>
+        </main>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                primaryColor: '#21262d',
+                primaryTextColor: '#e6edf3',
+                primaryBorderColor: '#30363d',
+                lineColor: '#8b949e',
+                secondaryColor: '#161b22',
+                tertiaryColor: '#1c2128',
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
+            },
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis',
+            },
+        });
+    </script>
+</body>
+</html>

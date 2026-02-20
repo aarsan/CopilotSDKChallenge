@@ -126,6 +126,84 @@ def _summarize_fix(before: str, after: str) -> str:
 
     return "; ".join(changes[:5])
 
+
+_PARAM_DEFAULTS: dict[str, object] = {
+    "resourceName": "infraforge-resource",
+    "location": "[resourceGroup().location]",
+    "environment": "dev",
+    "projectName": "infraforge",
+    "ownerEmail": "platform-team@company.com",
+    "costCenter": "IT-0001",
+}
+
+
+def _ensure_parameter_defaults(template_json: str) -> str:
+    """Ensure every parameter in an ARM template has a defaultValue.
+
+    Deployed templates are sent with ``parameters={}``, so any parameter
+    without a ``defaultValue`` causes:
+        "The value for the template parameter 'X' is not provided."
+
+    This function injects sensible defaults for well-known params and a
+    generic placeholder for anything else.  Returns the (possibly
+    modified) JSON string.
+    """
+    try:
+        tmpl = json.loads(template_json)
+    except (json.JSONDecodeError, TypeError):
+        return template_json  # can't fix what we can't parse
+
+    params = tmpl.get("parameters")
+    if not params or not isinstance(params, dict):
+        return template_json
+
+    patched = False
+    for pname, pdef in params.items():
+        if not isinstance(pdef, dict):
+            continue
+        if "defaultValue" not in pdef:
+            pdef["defaultValue"] = _PARAM_DEFAULTS.get(pname, f"infraforge-{pname}")
+            patched = True
+
+    if patched:
+        patched_names = [p for p in params if "defaultValue" in params[p]]
+        logger.info("Injected missing defaultValues for params: %s", patched_names)
+        return json.dumps(tmpl, indent=2)
+    return template_json
+
+
+def _extract_param_values(template: dict) -> dict:
+    """Extract explicit parameter values from a template's defaultValues.
+
+    ARM *should* use ``defaultValue`` when ``parameters={}`` is passed, but
+    in practice the validate/deploy endpoints sometimes reject templates
+    with required parameters even when defaults are defined.  By extracting
+    the defaults and passing them as explicit values, we guarantee ARM never
+    complains about missing parameters.
+
+    Skips ``location`` because ARM expressions like
+    ``[resourceGroup().location]`` cannot be provided as a literal value —
+    they only work as defaultValues inside the template.
+    """
+    params = template.get("parameters", {})
+    values: dict[str, object] = {}
+    for pname, pdef in params.items():
+        if not isinstance(pdef, dict):
+            continue
+        dv = pdef.get("defaultValue")
+        if dv is None:
+            # No default — provide one from our well-known list
+            dv = _PARAM_DEFAULTS.get(pname)
+        if dv is None:
+            dv = f"infraforge-{pname}"
+        # Skip ARM expressions — they only work inside the template, not as
+        # explicit parameter values.
+        if isinstance(dv, str) and dv.startswith("["):
+            continue
+        values[pname] = dv
+    return values
+
+
 # ── Global state ─────────────────────────────────────────────
 copilot_client: Optional[CopilotClient] = None
 
@@ -215,6 +293,14 @@ async def root():
     """Serve the main page."""
     index_path = os.path.join(static_dir, "index.html")
     with open(index_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
+
+
+@app.get("/onboarding-docs")
+async def onboarding_docs():
+    """Serve the onboarding pipeline documentation page."""
+    docs_path = os.path.join(static_dir, "onboarding-docs.html")
+    with open(docs_path, "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
 
@@ -1368,8 +1454,10 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 "- If a resource like diagnosticSettings requires an external dependency "
                 "(Log Analytics workspace, storage account), REMOVE it rather than adding "
                 "a fake dependency.\n"
-                "- Do NOT change parameter default values unless they are directly causing "
-                "the error."
+                "- Ensure EVERY parameter has a \"defaultValue\". This template is deployed "
+                "with parameters={}, so any parameter without a default will cause: "
+                "'The value for the template parameter ... is not provided'. If a parameter "
+                "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
             )
 
             # Escalation strategies for later attempts
@@ -1462,6 +1550,10 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 except (json.JSONDecodeError, AttributeError):
                     pass  # if it's not valid JSON yet, the parse step will catch it
 
+            # ── Guard: ensure every param has a defaultValue ──
+            if artifact_type == "template":
+                fixed = _ensure_parameter_defaults(fixed)
+
             return fixed
         finally:
             if session:
@@ -1535,7 +1627,11 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             return fnmatch.fnmatch(str(resource_val).lower(), str(condition["like"]).lower())
         if "exists" in condition:
             exists = resource_val is not None and resource_val != ""
-            return exists if condition["exists"] else not exists
+            # Normalize string booleans: LLMs often return "false"/"true" strings
+            want_exists = condition["exists"]
+            if isinstance(want_exists, str):
+                want_exists = want_exists.lower() not in ("false", "0", "no")
+            return exists if want_exists else not exists
 
         return False
 
@@ -1667,6 +1763,9 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
         deployed_rg = None  # track if we need cleanup
         heal_history: list[dict] = []  # tracks each heal attempt to avoid repeating the same fix
 
+        # ── Safety guard: ensure every parameter has a defaultValue ──
+        current_template = _ensure_parameter_defaults(current_template)
+
         # ── Extract template metadata for verbose display ─────
         def _extract_template_meta(tmpl_str: str) -> dict:
             """Extract human-readable metadata from an ARM template string."""
@@ -1787,7 +1886,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
 
                 try:
                     from src.tools.deploy_engine import run_what_if
-                    wif = await run_what_if(resource_group=rg_name, template=template_json, parameters={}, region=region)
+                    wif = await run_what_if(resource_group=rg_name, template=template_json, parameters=_extract_param_values(template_json), region=region)
                     logger.info(f"What-If attempt {attempt}: status={wif.get('status')}, changes={wif.get('total_changes')}")
                 except Exception as e:
                     logger.error(f"What-If attempt {attempt} exception: {e}", exc_info=True)
@@ -1856,7 +1955,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                     deploy_result = await execute_deployment(
                         resource_group=rg_name,
                         template=template_json,
-                        parameters={},
+                        parameters=_extract_param_values(template_json),
                         region=region,
                         deployment_name=f"validate-{attempt}",
                         initiated_by="InfraForge Validator",
@@ -2462,9 +2561,18 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             "- If a resource like diagnosticSettings requires an external dependency "
             "(Log Analytics workspace, storage account), REMOVE it rather than adding "
             "a fake dependency.\n"
-            "- Do NOT change parameter default values unless they are directly causing "
-            "the error.\n"
+            "- Ensure EVERY parameter has a \"defaultValue\". This template is deployed "
+            "with parameters={}, so any parameter without a default will cause: "
+            "'The value for the template parameter ... is not provided'. If a parameter "
+            "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
             "- Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
+            "- NEVER add properties that require subscription-level feature registration. "
+            "These will fail with 'feature is not enabled for this subscription':\n"
+            "  • securityProfile.encryptionAtHost (requires Microsoft.Compute/EncryptionAtHost)\n"
+            "  • properties.diskControllerType (requires Microsoft.Compute/DiskControllerTypes)\n"
+            "  • securityProfile.securityType 'ConfidentialVM' (requires Microsoft.Compute/ConfidentialVMPreview)\n"
+            "  • properties.ultraSSDEnabled (requires Microsoft.Compute/UltraSSDWithVMSS)\n"
+            "  If the error mentions 'feature is not enabled', REMOVE the property entirely.\n"
         )
 
         # ── Escalation strategies for later attempts ──
@@ -2564,6 +2672,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             except (json.JSONDecodeError, AttributeError):
                 pass
 
+            # ── Guard: ensure every param has a defaultValue ──
+            fixed = _ensure_parameter_defaults(fixed)
+
             return fixed
         finally:
             if session:
@@ -2650,43 +2761,68 @@ async def onboard_service_endpoint(service_id: str, request: Request):
     def _evaluate_condition(condition: dict, resource: dict) -> bool:
         """Recursively evaluate an Azure Policy condition against a resource."""
         if "allOf" in condition:
-            return all(_evaluate_condition(c, resource) for c in condition["allOf"])
+            results = [_evaluate_condition(c, resource) for c in condition["allOf"]]
+            result = all(results)
+            logger.debug(f"  allOf({len(condition['allOf'])} conditions) = {result} (individual: {results})")
+            return result
         if "anyOf" in condition:
-            return any(_evaluate_condition(c, resource) for c in condition["anyOf"])
+            results = [_evaluate_condition(c, resource) for c in condition["anyOf"]]
+            result = any(results)
+            logger.debug(f"  anyOf({len(condition['anyOf'])} conditions) = {result} (individual: {results})")
+            return result
         if "not" in condition:
-            return not _evaluate_condition(condition["not"], resource)
+            inner = _evaluate_condition(condition["not"], resource)
+            logger.debug(f"  not({inner}) = {not inner}")
+            return not inner
 
         field = condition.get("field", "")
         resource_val = _resolve_field(field, resource)
 
+        # Determine which operator is used and evaluate
+        result = False
+        op = "unknown"
         if "equals" in condition:
-            return str(resource_val).lower() == str(condition["equals"]).lower()
-        if "notEquals" in condition:
-            return str(resource_val).lower() != str(condition["notEquals"]).lower()
-        if "in" in condition:
-            return str(resource_val).lower() in [str(v).lower() for v in condition["in"]]
-        if "notIn" in condition:
-            return str(resource_val).lower() not in [str(v).lower() for v in condition["notIn"]]
-        if "contains" in condition:
-            return str(condition["contains"]).lower() in str(resource_val).lower()
-        if "like" in condition:
+            op = "equals"
+            result = str(resource_val).lower() == str(condition["equals"]).lower()
+        elif "notEquals" in condition:
+            op = "notEquals"
+            result = str(resource_val).lower() != str(condition["notEquals"]).lower()
+        elif "in" in condition:
+            op = "in"
+            result = str(resource_val).lower() in [str(v).lower() for v in condition["in"]]
+        elif "notIn" in condition:
+            op = "notIn"
+            result = str(resource_val).lower() not in [str(v).lower() for v in condition["notIn"]]
+        elif "contains" in condition:
+            op = "contains"
+            result = str(condition["contains"]).lower() in str(resource_val).lower()
+        elif "like" in condition:
+            op = "like"
             import fnmatch
-            return fnmatch.fnmatch(str(resource_val).lower(), str(condition["like"]).lower())
-        if "exists" in condition:
+            result = fnmatch.fnmatch(str(resource_val).lower(), str(condition["like"]).lower())
+        elif "exists" in condition:
+            op = "exists"
             exists = resource_val is not None and resource_val != ""
-            return exists if condition["exists"] else not exists
-        if "greater" in condition:
+            # Normalize string booleans: LLMs often return "false"/"true" strings
+            want_exists = condition["exists"]
+            if isinstance(want_exists, str):
+                want_exists = want_exists.lower() not in ("false", "0", "no")
+            result = exists if want_exists else not exists
+        elif "greater" in condition:
+            op = "greater"
             try:
-                return float(resource_val or 0) > float(condition["greater"])
+                result = float(resource_val or 0) > float(condition["greater"])
             except (ValueError, TypeError):
-                return False
-        if "less" in condition:
+                result = False
+        elif "less" in condition:
+            op = "less"
             try:
-                return float(resource_val or 0) < float(condition["less"])
+                result = float(resource_val or 0) < float(condition["less"])
             except (ValueError, TypeError):
-                return False
+                result = False
 
-        return False
+        logger.info(f"  Policy eval: field='{field}' op={op} expected={condition.get(op, '?')} actual='{resource_val}' → {result}")
+        return result
 
     def _resolve_field(field: str, resource: dict):
         """Resolve an Azure Policy field reference against a resource dict."""
@@ -3022,6 +3158,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 await fail_service_validation(service_id, f"Generated ARM template is not valid JSON: {e}")
                 return
 
+            # ── Safety guard: ensure every parameter has a defaultValue ──
+            current_template = _ensure_parameter_defaults(current_template)
+
             tmpl_meta = _extract_meta(current_template)
 
             # Create version record
@@ -3076,25 +3215,26 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
             generated_policy = None
             policy_gen_prompt = (
-                f"Generate an Azure Policy definition (JSON) for the Azure service '{svc['name']}' "
-                f"(resource type: {service_id}).\n\n"
+                f"Generate an Azure Policy definition JSON for '{svc['name']}' "
+                f"(type: {service_id}).\n\n"
             )
             if policy_standards_ctx:
                 policy_gen_prompt += (
-                    f"The organization has these governance standards that MUST be enforced:\n"
-                    f"{policy_standards_ctx}\n\n"
+                    f"Organization standards to enforce:\n{policy_standards_ctx}\n\n"
                 )
             policy_gen_prompt += (
-                "Return ONLY the raw Azure Policy JSON definition — no markdown fences, no explanation, "
-                "no surrounding text. The JSON should be a complete, deployable Azure Policy definition "
-                "with proper policyRule (if/then), effect (deny or audit), and field conditions.\n\n"
-                "The policy should enforce:\n"
-                "1. Required tags (environment, owner, costCenter, project)\n"
-                "2. Approved regions/locations\n"
-                "3. Security best practices for this resource type (TLS, encryption, public access)\n"
-                "4. Any organization standards provided above\n\n"
-                "Use 'deny' effect for critical rules and 'audit' for advisory rules.\n"
-                "Structure with allOf/anyOf conditions as needed."
+                "IMPORTANT — Azure Policy semantics for 'deny' effect:\n"
+                "The 'if' condition must describe the VIOLATION (non-compliant state).\n"
+                "If the 'if' MATCHES, the resource is DENIED. So use 'exists': false for missing tags,\n"
+                "'notIn' for wrong regions, etc.\n\n"
+                "DO NOT generate policy conditions for subscription-gated features like:\n"
+                "- securityProfile.encryptionAtHost\n"
+                "- diskControllerType\n"
+                "- securityProfile.securityType (ConfidentialVM)\n"
+                "- ultraSSDEnabled\n"
+                "These require explicit subscription feature registration and will cause false violations.\n\n"
+                "Structure: top-level allOf with [type-check, anyOf-of-violations].\n"
+                "Return ONLY raw JSON — NO markdown, NO explanation. Start with {"
             )
 
             try:
@@ -3103,15 +3243,35 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "You are an Azure Policy expert. Return ONLY raw JSON — no markdown, no code fences.",
                     task=Task.POLICY_GENERATION,
                 )
-                # Strip markdown fences if the LLM added them
-                if policy_raw.startswith("```"):
-                    lines = policy_raw.split("\n")[1:]
-                    if lines and lines[-1].strip() == "```":
-                        lines = lines[:-1]
-                    policy_raw = "\n".join(lines).strip()
+                logger.info(f"Raw policy LLM response ({len(policy_raw)} chars): {policy_raw[:500]}")
 
-                generated_policy = json.loads(policy_raw)
-                _policy_size = round(len(policy_raw) / 1024, 1)
+                # Robust JSON extraction: handle markdown fences, explanation text, etc.
+                _cleaned = policy_raw.strip()
+
+                # Strip markdown code fences (```json ... ``` or ``` ... ```)
+                import re as _re
+                _fence_match = _re.search(r'```(?:json)?\s*\n(.*?)```', _cleaned, _re.DOTALL)
+                if _fence_match:
+                    _cleaned = _fence_match.group(1).strip()
+
+                # If still not starting with {, try to find the first { ... } block
+                if not _cleaned.startswith('{'):
+                    _brace_start = _cleaned.find('{')
+                    if _brace_start >= 0:
+                        # Find the matching closing brace
+                        depth = 0
+                        for i in range(_brace_start, len(_cleaned)):
+                            if _cleaned[i] == '{':
+                                depth += 1
+                            elif _cleaned[i] == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    _cleaned = _cleaned[_brace_start:i+1]
+                                    break
+
+                generated_policy = json.loads(_cleaned)
+                _policy_size = round(len(_cleaned) / 1024, 1)
+                logger.info(f"Generated Azure Policy for {service_id}:\n{json.dumps(generated_policy, indent=2)[:2000]}")
 
                 # Describe the generated policy structure
                 _rule = generated_policy.get("properties", generated_policy).get("policyRule", {})
@@ -3137,13 +3297,48 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "progress": 0.15,
                 }) + "\n"
             except (json.JSONDecodeError, Exception) as e:
-                logger.warning(f"Policy generation failed: {e}")
+                logger.warning(f"Policy generation via LLM failed: {e} — using deterministic fallback")
+
+                # ── Deterministic fallback: build policy from org standards ──
+                _violations = []
+                # Always check required tags
+                for tag in ["environment", "owner", "costCenter", "project"]:
+                    _violations.append({"field": f"tags['{tag}']", "exists": False})
+                # Check approved regions
+                _violations.append({
+                    "field": "location",
+                    "notIn": ["eastus2", "westus2", "westeurope"],
+                })
+
+                generated_policy = {
+                    "properties": {
+                        "displayName": f"Governance policy for {svc['name']}",
+                        "policyType": "Custom",
+                        "mode": "All",
+                        "policyRule": {
+                            "if": {
+                                "allOf": [
+                                    {"field": "type", "equals": service_id},
+                                    {"anyOf": _violations},
+                                ]
+                            },
+                            "then": {"effect": "deny"},
+                        },
+                    }
+                }
+                _policy_size = round(len(json.dumps(generated_policy)) / 1024, 1)
+                logger.info(f"Fallback policy for {service_id}: {json.dumps(generated_policy, indent=2)[:1000]}")
+
                 yield json.dumps({
-                    "type": "progress", "phase": "policy_generation_warning",
-                    "detail": f"⚠️ Could not generate valid Azure Policy JSON (non-fatal): {str(e)[:200]} — will skip runtime policy test",
+                    "type": "llm_reasoning", "phase": "policy_generation",
+                    "detail": f"📋 LLM policy generation failed — using deterministic fallback policy: {len(_violations)} condition(s), effect: deny, size: {_policy_size} KB",
+                    "progress": 0.14,
+                }) + "\n"
+                yield json.dumps({
+                    "type": "progress", "phase": "policy_generation_complete",
+                    "detail": f"✓ Fallback Azure Policy generated — will test against deployed resources after deployment",
                     "progress": 0.15,
                 }) + "\n"
-                generated_policy = None
 
             # ═══════════════════════════════════════════════════
             # PHASE 4: HEALING LOOP (validation + auto-healing)
@@ -3257,7 +3452,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 try:
                     from src.tools.deploy_engine import run_what_if
                     wif = await run_what_if(resource_group=rg_name, template=template_json,
-                                           parameters={}, region=region)
+                                           parameters=_extract_param_values(template_json), region=region)
                 except Exception as e:
                     logger.error(f"What-If attempt {attempt} exception: {e}", exc_info=True)
                     wif = {"status": "error", "errors": [str(e)]}
@@ -3314,7 +3509,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     from src.tools.deploy_engine import execute_deployment
                     deploy_result = await execute_deployment(
                         resource_group=rg_name, template=template_json,
-                        parameters={}, region=region,
+                        parameters=_extract_param_values(template_json), region=region,
                         deployment_name=f"validate-{attempt}",
                         initiated_by="InfraForge Validator",
                     )
@@ -3445,9 +3640,15 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         "progress": att_base + 0.27,
                     }) + "\n"
 
+                    logger.info(f"Policy evaluation — {len(resource_details)} resource(s), policy if-condition: {json.dumps(_policy_rule.get('if', {}), indent=2)[:1000]}")
+                    for rd in resource_details:
+                        logger.info(f"Resource to evaluate: name={rd.get('name')} type={rd.get('type')} tags={rd.get('tags')} location={rd.get('location')}")
+
                     policy_results = _test_policy_compliance(generated_policy, resource_details)
                     all_policy_compliant = all(r["compliant"] for r in policy_results)
                     compliant_count = sum(1 for r in policy_results if r["compliant"])
+                    for pr in policy_results:
+                        logger.info(f"Policy result: {pr['resource_name']} compliant={pr['compliant']} reason={pr['reason']}")
 
                     for pr in policy_results:
                         icon = "✅" if pr["compliant"] else "❌"
