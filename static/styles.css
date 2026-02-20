@@ -2685,6 +2685,102 @@ body {
 .version-detail-row strong {
     color: var(--text-primary);
 }
+.version-detail-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+.version-item-deprecated-label {
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--text-muted);
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* ── Template Viewer Modal ──────────────────────────────── */
+
+.modal-template-viewer-dialog {
+    max-width: 900px;
+    max-height: 90vh;
+    width: 95%;
+}
+.modal-template-viewer-dialog .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.template-viewer-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+.template-viewer-body {
+    padding: 0.75rem 1rem !important;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.template-viewer-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.template-meta-badge {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 500;
+    padding: 0.15rem 0.5rem;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+.template-meta-loading {
+    color: var(--accent-blue);
+    font-size: 0.68rem;
+    font-style: italic;
+}
+.template-viewer-code {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow: auto;
+    max-height: 65vh;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    tab-size: 2;
+    margin: 0;
+    white-space: pre;
+    color: var(--text-primary);
+}
+.template-viewer-code code {
+    font-family: inherit;
+    font-size: inherit;
+}
+/* JSON syntax highlighting */
+.json-key {
+    color: #93c5fd;
+    font-weight: 500;
+}
+.json-string {
+    color: #86efac;
+}
+.json-number {
+    color: #fbbf24;
+}
+.json-bool {
+    color: #f472b6;
+    font-weight: 600;
+}
 
 /* ── Template Compose UI ──────────────────────────────────── */
 

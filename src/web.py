@@ -2394,8 +2394,35 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
 # ── Service Versions & Onboarding ─────────────────────────────
 
 @app.get("/api/services/{service_id:path}/versions")
-async def get_service_versions_endpoint(service_id: str):
-    """Get all versions of a service's ARM template."""
+async def get_service_versions_endpoint(service_id: str, status: str | None = None):
+    """Get all versions of a service's ARM template.
+
+    Query params:
+        status: filter by version status (e.g. 'approved', 'failed', 'draft')
+    """
+    from src.database import get_service, get_service_versions
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    versions = await get_service_versions(service_id, status=status)
+    # Strip arm_template from listing to keep payload small; use single-version endpoint to fetch it
+    versions_summary = []
+    for v in versions:
+        vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
+        vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+        versions_summary.append(vs)
+    return JSONResponse({
+        "service_id": service_id,
+        "active_version": svc.get("active_version"),
+        "versions": versions_summary,
+    })
+
+
+@app.get("/api/services/{service_id:path}/versions/{version:int}")
+async def get_service_version_detail(service_id: str, version: int):
+    """Get a single version including the full ARM template content."""
     from src.database import get_service, get_service_versions
 
     svc = await get_service(service_id)
@@ -2403,11 +2430,11 @@ async def get_service_versions_endpoint(service_id: str):
         raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
 
     versions = await get_service_versions(service_id)
-    return JSONResponse({
-        "service_id": service_id,
-        "active_version": svc.get("active_version"),
-        "versions": versions,
-    })
+    match = next((v for v in versions if v.get("version") == version), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
+
+    return JSONResponse(match)
 
 
 @app.post("/api/services/{service_id:path}/onboard")

@@ -793,6 +793,24 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=26"></script>
+    <script src="/static/app.js?v=27"></script>
+
+    <!-- ── Template Viewer Modal ─────────────────────────── -->
+    <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
+        <div class="modal-dialog modal-template-viewer-dialog" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3>📄 <span id="template-viewer-title">ARM Template</span></h3>
+                <div class="template-viewer-actions">
+                    <button class="btn btn-sm btn-secondary" onclick="copyTemplateToClipboard()" title="Copy to clipboard">📋 Copy</button>
+                    <button class="btn btn-sm btn-secondary" onclick="downloadTemplate()" title="Download as JSON">⬇ Download</button>
+                    <button class="modal-close" onclick="closeModal('modal-template-viewer')">×</button>
+                </div>
+            </div>
+            <div class="modal-body template-viewer-body">
+                <div id="template-viewer-meta" class="template-viewer-meta"></div>
+                <pre id="template-viewer-code" class="template-viewer-code"><code>Loading…</code></pre>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

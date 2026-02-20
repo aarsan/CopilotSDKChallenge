@@ -125,7 +125,7 @@ NAMESPACE_CATEGORY_MAP: dict[str, str] = {
     "microsoft.containerregistry": "compute",
     "microsoft.batch": "compute",
     "microsoft.servicefabric": "compute",
-    "microsoft.classiccompute": "compute",
+    # microsoft.classiccompute — deprecated ASM, excluded via SKIP_NAMESPACES
     "microsoft.sql": "database",
     "microsoft.dbformysql": "database",
     "microsoft.dbforpostgresql": "database",
@@ -137,7 +137,7 @@ NAMESPACE_CATEGORY_MAP: dict[str, str] = {
     "microsoft.datafactory": "database",
     "microsoft.storage": "storage",
     "microsoft.storagesync": "storage",
-    "microsoft.classicstorage": "storage",
+    # microsoft.classicstorage — deprecated ASM, excluded via SKIP_NAMESPACES
     "microsoft.netapp": "storage",
     "microsoft.elasticsan": "storage",
     "microsoft.network": "networking",
@@ -203,6 +203,10 @@ SKIP_NAMESPACES = {
     "microsoft.advisor",
     "microsoft.billing",
     "microsoft.capacity",
+    "microsoft.classiccompute",     # Deprecated ASM — use microsoft.compute
+    "microsoft.classicinfrastructuremigrate",
+    "microsoft.classicnetwork",      # Deprecated ASM — use microsoft.network
+    "microsoft.classicstorage",       # Deprecated ASM — use microsoft.storage
     "microsoft.changeanalysis",
     "microsoft.commerce",
     "microsoft.consumption",

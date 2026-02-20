@@ -1215,56 +1215,184 @@ function _renderOnboardButton(svc, status, latestVersion) {
 }
 
 function _renderVersionHistory(versions, activeVersion) {
+    // Only show approved (working) versions — failed/draft/validating are internal
+    const approvedVersions = versions.filter(v => v.status === 'approved');
+    const totalCount = versions.length;
+    const approvedCount = approvedVersions.length;
+
+    if (approvedCount === 0) {
+        return `
+        <div class="version-history">
+            <div class="version-history-header">
+                <span>📦 Published Versions</span>
+                <span class="version-count">No approved versions yet (${totalCount} total attempt${totalCount === 1 ? '' : 's'})</span>
+            </div>
+        </div>`;
+    }
+
     return `
     <div class="version-history">
         <div class="version-history-header">
-            <span>Version History</span>
-            <span class="version-count">${versions.length} version(s)</span>
+            <span>📦 Published Versions</span>
+            <span class="version-count">${approvedCount} approved version${approvedCount === 1 ? '' : 's'}</span>
         </div>
         <div class="version-list">
-            ${versions.map(v => {
+            ${approvedVersions.map(v => {
                 const isActive = v.version === activeVersion;
-                const statusIcon = v.status === 'approved' ? '✅' :
-                                   v.status === 'failed' ? '❌' :
-                                   v.status === 'validating' ? '🔄' : '📝';
-
-                // Build error detail for failed versions
-                let versionErrorHtml = '';
-                if (v.status === 'failed' && v.validation_result) {
-                    const parsed = _parseValidationError(v.validation_result);
-                    if (parsed) {
-                        versionErrorHtml = _renderStructuredError(parsed, { compact: true, showRaw: false });
-                    }
-                }
+                const sizeKB = v.template_size_bytes
+                    ? (v.template_size_bytes / 1024).toFixed(1)
+                    : v.arm_template
+                        ? (v.arm_template.length / 1024).toFixed(1)
+                        : '?';
 
                 return `
                 <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
                     <div class="version-item-header">
                         <span class="version-item-badge">v${v.version}</span>
-                        <span class="version-item-status">${statusIcon} ${v.status}</span>
-                        ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : ''}
+                        <span class="version-item-status">✅ approved</span>
+                        ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>'}
                         <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                         <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
                     </div>
                     <div class="version-item-detail hidden">
                         <div class="version-detail-row">
-                            <strong>Changelog:</strong> ${escapeHtml(v.changelog || '—')}
+                            <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Initial onboarding')}
                         </div>
                         ${v.policy_check && v.policy_check.total_checks ? `
                         <div class="version-detail-row">
                             <strong>Policy:</strong> ${v.policy_check.passed_checks}/${v.policy_check.total_checks} passed,
                             ${v.policy_check.blockers || 0} blocker(s)
                         </div>` : ''}
-                        ${v.arm_template ? `
                         <div class="version-detail-row">
-                            <strong>Template:</strong> ${Math.round(v.arm_template.length / 1024 * 10) / 10} KB
-                        </div>` : ''}
-                        ${versionErrorHtml}
+                            <strong>Template:</strong> ${sizeKB} KB
+                        </div>
+                        <div class="version-detail-actions">
+                            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
+                                👁 View Template
+                            </button>
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
+                                ⬇ Download
+                            </button>
+                        </div>
                     </div>
                 </div>`;
             }).join('')}
         </div>
     </div>`;
+}
+
+// ── Template Viewer ─────────────────────────────────────────
+
+let _currentTemplateContent = '';
+let _currentTemplateFilename = '';
+
+async function viewTemplate(serviceId, version) {
+    const modal = document.getElementById('modal-template-viewer');
+    const title = document.getElementById('template-viewer-title');
+    const meta = document.getElementById('template-viewer-meta');
+    const code = document.getElementById('template-viewer-code');
+
+    title.textContent = `ARM Template — v${version}`;
+    meta.innerHTML = `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span><span class="template-meta-badge">v${version}</span><span class="template-meta-loading">Loading…</span>`;
+    code.querySelector('code').textContent = 'Loading template…';
+    _currentTemplateContent = '';
+    _currentTemplateFilename = `${serviceId.replace(/\//g, '_')}_v${version}.json`;
+
+    modal.classList.remove('hidden');
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        const template = data.arm_template || '';
+
+        // Pretty-print the JSON
+        let formatted;
+        try {
+            formatted = JSON.stringify(JSON.parse(template), null, 2);
+        } catch {
+            formatted = template;
+        }
+
+        _currentTemplateContent = formatted;
+
+        // Render with basic syntax highlighting
+        code.querySelector('code').innerHTML = _highlightJSON(formatted);
+
+        // Update meta
+        const sizeKB = (formatted.length / 1024).toFixed(1);
+        const resourceCount = (formatted.match(/"type"\s*:/g) || []).length;
+        const validatedAt = data.validated_at ? data.validated_at.substring(0, 10) : '—';
+        meta.innerHTML = `
+            <span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span>
+            <span class="template-meta-badge">v${version}</span>
+            <span class="template-meta-badge">${sizeKB} KB</span>
+            <span class="template-meta-badge">~${resourceCount} resource type ref${resourceCount === 1 ? '' : 's'}</span>
+            <span class="template-meta-badge">Validated: ${validatedAt}</span>
+        `;
+    } catch (err) {
+        code.querySelector('code').textContent = `Error loading template: ${err.message}`;
+        meta.querySelector('.template-meta-loading')?.remove();
+    }
+}
+
+function _highlightJSON(json) {
+    // Lightweight JSON syntax highlighting
+    return json
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        // Strings (keys and values)
+        .replace(/"([^"\\]*(\\.[^"\\]*)*)"\s*:/g, '<span class="json-key">"$1"</span>:')
+        .replace(/:\s*"([^"\\]*(\\.[^"\\]*)*)"/g, ': <span class="json-string">"$1"</span>')
+        // Standalone strings (in arrays, etc.)
+        .replace(/(?<=[\[,\n]\s*)"([^"\\]*(\\.[^"\\]*)*)"/g, '<span class="json-string">"$1"</span>')
+        // Numbers
+        .replace(/:\s*(\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
+        // Booleans & null
+        .replace(/:\s*(true|false|null)\b/g, ': <span class="json-bool">$1</span>');
+}
+
+function copyTemplateToClipboard() {
+    if (!_currentTemplateContent) return;
+    navigator.clipboard.writeText(_currentTemplateContent).then(() => {
+        showToast('Template copied to clipboard', 'success');
+    }).catch(() => {
+        showToast('Failed to copy', 'error');
+    });
+}
+
+function downloadTemplate() {
+    downloadTemplateBlob(_currentTemplateContent, _currentTemplateFilename);
+}
+
+async function downloadTemplateVersion(serviceId, version) {
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        const template = data.arm_template || '';
+        let formatted;
+        try { formatted = JSON.stringify(JSON.parse(template), null, 2); } catch { formatted = template; }
+        const filename = `${serviceId.replace(/\//g, '_')}_v${version}.json`;
+        downloadTemplateBlob(formatted, filename);
+    } catch (err) {
+        showToast(`Failed to download: ${err.message}`, 'error');
+    }
+}
+
+function downloadTemplateBlob(content, filename) {
+    if (!content) return;
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'template.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('Template downloaded', 'success');
 }
 
 function toggleVersionDetail(el) {
