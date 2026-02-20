@@ -20,6 +20,39 @@ APP_DESCRIPTION = (
 COPILOT_MODEL = os.getenv("COPILOT_MODEL", "gpt-4.1")
 COPILOT_LOG_LEVEL = os.getenv("COPILOT_LOG_LEVEL", "warning")
 
+# Available LLM models — users can switch at runtime via the API/UI.
+# The first model is the default. Models are exposed through the Copilot SDK
+# proxy so the user doesn't need their own API keys.
+AVAILABLE_MODELS = [
+    {"id": "gpt-4.1",           "name": "GPT-4.1",             "provider": "OpenAI",    "tier": "flagship",  "description": "Best overall quality and instruction following"},
+    {"id": "gpt-4.1-mini",      "name": "GPT-4.1 Mini",        "provider": "OpenAI",    "tier": "fast",      "description": "Fast and cost-efficient, good for simple tasks"},
+    {"id": "gpt-4.1-nano",      "name": "GPT-4.1 Nano",        "provider": "OpenAI",    "tier": "fastest",   "description": "Ultra-fast, best for trivial tasks"},
+    {"id": "gpt-4o",            "name": "GPT-4o",              "provider": "OpenAI",    "tier": "flagship",  "description": "Multimodal flagship model"},
+    {"id": "gpt-4o-mini",       "name": "GPT-4o Mini",         "provider": "OpenAI",    "tier": "fast",      "description": "Smaller, faster GPT-4o variant"},
+    {"id": "o3-mini",           "name": "o3-mini",             "provider": "OpenAI",    "tier": "reasoning", "description": "Optimized for reasoning and complex logic"},
+    {"id": "claude-sonnet-4",   "name": "Claude Sonnet 4",     "provider": "Anthropic", "tier": "flagship",  "description": "Strong reasoning and code generation"},
+    {"id": "claude-3.5-sonnet", "name": "Claude 3.5 Sonnet",   "provider": "Anthropic", "tier": "flagship",  "description": "Previous-gen Anthropic flagship"},
+    {"id": "gemini-2.0-flash",  "name": "Gemini 2.0 Flash",    "provider": "Google",    "tier": "fast",      "description": "Google's fast multimodal model"},
+]
+
+# Mutable active model — can be changed at runtime via PUT /api/settings/model
+_active_model: str = COPILOT_MODEL
+
+
+def get_active_model() -> str:
+    """Return the currently active LLM model ID."""
+    return _active_model
+
+
+def set_active_model(model_id: str) -> bool:
+    """Set the active model. Returns True if valid, False if not in AVAILABLE_MODELS."""
+    global _active_model
+    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    if model_id not in valid_ids:
+        return False
+    _active_model = model_id
+    return True
+
 # ── Output Settings ──────────────────────────────────────────
 OUTPUT_DIR = os.getenv("INFRAFORGE_OUTPUT_DIR", "./output")
 

@@ -836,31 +836,63 @@ async def generate_arm_template_with_copilot(
     resource_type: str,
     service_name: str,
     copilot_client,
-    model: str = "claude-sonnet-4",
+    model: str = "gpt-4.1",
+    standards_context: str = "",
+    planning_context: str = "",
 ) -> str:
     """Use the Copilot SDK to generate an ARM template for an unknown resource type.
 
-    This is the fallback when no built-in skeleton exists.
-    Returns the ARM template as a JSON string.
+    This is the EXECUTE phase — the model receives the architecture plan from the
+    PLAN phase and produces the ARM template. It doesn't need to reason about what
+    to build — it just follows the plan.
+
+    Args:
+        resource_type: Azure resource type (e.g. Microsoft.Sql/servers)
+        service_name: Human-readable service name
+        copilot_client: Initialized CopilotClient instance
+        model: LLM model ID to use for generation
+        standards_context: Optional organization standards context to inject
+        planning_context: Architecture plan from the reasoning model (PLAN phase)
     """
     import asyncio
 
     prompt = (
         f"Generate a minimal ARM template (JSON) for deploying the Azure resource type "
         f"'{resource_type}' (service: {service_name}).\n\n"
-        "Requirements:\n"
-        "- Include standard parameters: resourceName (string), location (string, default "
-        "\"[resourceGroup().location]\"), environment (string, default \"dev\"), "
-        "projectName (string, default \"infraforge\"), ownerEmail (string), costCenter (string)\n"
-        "- Include tags: environment, owner, costCenter, project, managedBy=InfraForge\n"
-        "- Use a recent stable API version\n"
-        "- Include minimal required properties only\n"
-        "- Enable managed identity (SystemAssigned) if the resource supports it\n"
-        "- Set httpsOnly/minTlsVersion where applicable\n"
-        "- Disable public network access where applicable\n"
-        "- Do NOT include diagnostic settings or Log Analytics dependencies\n"
-        "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
     )
+
+    # Inject the architecture plan from the PLAN phase
+    if planning_context:
+        prompt += (
+            "--- ARCHITECTURE PLAN (follow this plan precisely) ---\n"
+            f"{planning_context}\n"
+            "--- END PLAN ---\n\n"
+            "Follow the architecture plan above. It specifies the resources, security "
+            "configurations, parameters, and properties to include.\n\n"
+        )
+    else:
+        prompt += (
+            "Requirements:\n"
+            "- Include standard parameters: resourceName (string), location (string, default "
+            "\"[resourceGroup().location]\"), environment (string, default \"dev\"), "
+            "projectName (string, default \"infraforge\"), ownerEmail (string), costCenter (string)\n"
+            "- Include tags: environment, owner, costCenter, project, managedBy=InfraForge\n"
+            "- Use a recent stable API version\n"
+            "- Include minimal required properties only\n"
+            "- Enable managed identity (SystemAssigned) if the resource supports it\n"
+            "- Set httpsOnly/minTlsVersion where applicable\n"
+            "- Disable public network access where applicable\n"
+            "- Do NOT include diagnostic settings or Log Analytics dependencies\n"
+        )
+
+    prompt += "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
+
+    if standards_context:
+        prompt += (
+            f"\n--- ORGANIZATION STANDARDS (MANDATORY — the template MUST satisfy ALL of these) ---\n"
+            f"{standards_context}\n"
+            f"--- END STANDARDS ---\n"
+        )
 
     session = None
     try:

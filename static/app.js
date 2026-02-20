@@ -22,6 +22,7 @@ let allTemplates = [];
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
+let currentTemplateTypeFilter = 'all';
 let serviceSearchQuery = '';
 let templateSearchQuery = '';
 
@@ -1048,14 +1049,24 @@ async function showServiceDetail(serviceId) {
     `;
     drawer.classList.remove('hidden');
 
-    // Fetch versions
+    // Fetch versions and model settings in parallel
     try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions`);
-        const data = await res.json();
+        const [versionsRes] = await Promise.all([
+            fetch(`/api/services/${encodeURIComponent(serviceId)}/versions`),
+            loadModelSettings(),
+        ]);
+        if (!versionsRes.ok) {
+            const errText = await versionsRes.text();
+            throw new Error(`Server returned ${versionsRes.status}: ${errText.slice(0, 200)}`);
+        }
+        const data = await versionsRes.json();
         _currentVersions = data.versions || [];
         _renderVersionedWorkflow(svc, _currentVersions, data.active_version);
+        // Populate model selector AFTER the DOM element exists
+        _populateModelSelector();
     } catch (err) {
-        body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>`;
+        body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
+            <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="showServiceDetail('${escapeHtml(serviceId)}')">🔄 Retry</button>`;
     }
 }
 
@@ -1067,10 +1078,13 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
 
     // Pipeline description
     const pipelineSteps = [
-        { icon: '⚡', label: 'Auto-Gen', desc: 'ARM template generated from resource type' },
-        { icon: '📋', label: 'Policy Check', desc: 'Static validation against org governance policies' },
+        { icon: '📋', label: 'Standards', desc: 'Analyze organization standards for this resource type' },
+        { icon: '🧠', label: 'Plan', desc: 'AI plans the architecture based on standards and best practices' },
+        { icon: '⚡', label: 'Generate', desc: 'ARM template & Azure Policy generated with standards' },
+        { icon: '📋', label: 'Static Check', desc: 'Static validation against org governance policies' },
         { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
         { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
+        { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
         { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
     ];
 
@@ -1093,7 +1107,15 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
                     </div>
                 `).join('<span class="pipeline-arrow">→</span>')}
             </div>
-            <p class="pipeline-desc">All steps run automatically with Copilot SDK auto-healing (up to 5 attempts). Validated against organization governance policies — no per-service policy needed.</p>
+            <p class="pipeline-desc">All steps run automatically with AI-powered auto-healing (up to 5 attempts). Validated against organization governance standards &amp; policies.</p>
+        </div>
+
+        <div class="onboard-model-selector" id="model-selector-container">
+            <label class="model-selector-label">🤖 LLM Model</label>
+            <select id="onboard-model-select" class="model-select">
+                <option value="">Loading models…</option>
+            </select>
+            <span class="model-selector-hint" id="model-selector-hint"></span>
         </div>
 
         ${_renderOnboardButton(svc, status, latestVersion)}
@@ -1224,8 +1246,78 @@ function toggleVersionDetail(el) {
     if (detail) detail.classList.toggle('hidden');
 }
 
+// ── Model Selector ──────────────────────────────────────────
+
+let availableModels = [];
+let activeModel = '';
+
+async function loadModelSettings() {
+    try {
+        const res = await fetch('/api/settings/model');
+        if (!res.ok) return;
+        const data = await res.json();
+        availableModels = data.available_models || [];
+        activeModel = data.active_model || '';
+        _populateModelSelector();
+    } catch (e) {
+        console.warn('Could not load model settings:', e);
+    }
+}
+
+function _populateModelSelector() {
+    const select = document.getElementById('onboard-model-select');
+    const hint = document.getElementById('model-selector-hint');
+    if (!select) return;
+
+    const providerGroups = {};
+    for (const m of availableModels) {
+        if (!providerGroups[m.provider]) providerGroups[m.provider] = [];
+        providerGroups[m.provider].push(m);
+    }
+
+    let html = '';
+    for (const [provider, models] of Object.entries(providerGroups)) {
+        html += `<optgroup label="${provider}">`;
+        for (const m of models) {
+            const selected = m.id === activeModel ? 'selected' : '';
+            const tier = m.tier ? ` [${m.tier}]` : '';
+            html += `<option value="${m.id}" ${selected}>${m.name}${tier}</option>`;
+        }
+        html += '</optgroup>';
+    }
+    select.innerHTML = html;
+
+    const activeMeta = availableModels.find(m => m.id === activeModel);
+    if (hint && activeMeta) {
+        hint.textContent = activeMeta.description || '';
+    }
+
+    select.addEventListener('change', () => {
+        const selected = availableModels.find(m => m.id === select.value);
+        if (hint && selected) hint.textContent = selected.description || '';
+    });
+}
+
+async function changeGlobalModel(modelId) {
+    try {
+        const res = await fetch('/api/settings/model', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId }),
+        });
+        if (res.ok) {
+            activeModel = modelId;
+            showToast(`Model changed to ${modelId}`, 'success');
+        }
+    } catch (e) {
+        showToast(`Failed to change model: ${e.message}`, 'error');
+    }
+}
+
 async function triggerOnboarding(serviceId) {
     const card = document.getElementById('validation-card');
+    const modelSelect = document.getElementById('onboard-model-select');
+    const selectedModel = modelSelect ? modelSelect.value : '';
 
     if (card) {
         card.className = 'validation-card validation-running';
@@ -1234,24 +1326,31 @@ async function triggerOnboarding(serviceId) {
                 <span class="validation-icon validation-spinner">⏳</span>
                 <span class="validation-title">Onboarding In Progress…</span>
             </div>
+            <div class="validation-model-badge" id="validation-model-badge"></div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
             <div class="validation-progress">
                 <div class="validation-progress-track">
                     <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
                 </div>
             </div>
-            <div class="validation-detail" id="validation-detail">Auto-generating ARM template…</div>
+            <div class="validation-detail" id="validation-detail">Initializing onboarding pipeline…</div>
             <div class="validation-log" id="validation-log">
-                <div class="validation-log-header">Onboarding Log</div>
+                <div class="validation-log-header">
+                    <span>Onboarding Log</span>
+                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
+                </div>
             </div>
         `;
     }
 
     try {
+        const body = {};
+        if (selectedModel) body.model = selectedModel;
+
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify(body),
         });
 
         if (!res.ok) {
@@ -1303,6 +1402,7 @@ function _handleValidationEvent(event) {
     const detailEl = document.getElementById('validation-detail');
     const logEl = document.getElementById('validation-log');
     const badge = document.getElementById('validation-attempt-badge');
+    const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
 
     if (event.progress && progressFill) {
@@ -1316,9 +1416,16 @@ function _handleValidationEvent(event) {
         badge.classList.add('visible');
     }
 
+    // Show model badge on init_model event
+    if (event.phase === 'init_model' && event.model && modelBadge) {
+        modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
+        modelBadge.classList.add('visible');
+    }
+
     // Pick icon per event type
     let icon = '▸';
     let logClass = event.type || 'progress';
+    let isReasoning = false;
 
     switch (event.type) {
         case 'error':           icon = '❌'; break;
@@ -1326,10 +1433,20 @@ function _handleValidationEvent(event) {
         case 'iteration_start': icon = '🔄'; break;
         case 'healing':         icon = '🤖'; break;
         case 'healing_done':    icon = '🔧'; break;
-        case 'policy_result':   icon = event.passed ? '✅' : (event.severity === 'high' || event.severity === 'critical' ? '❌' : '⚠️'); break;
+        case 'standard_check':  icon = '📏'; logClass = 'standard'; break;
+        case 'llm_reasoning':   icon = '🧠'; logClass = 'reasoning'; isReasoning = true; break;
+        case 'policy_result':   icon = event.compliant !== undefined ? (event.compliant ? '✅' : '❌') : (event.passed ? '✅' : (event.severity === 'high' || event.severity === 'critical' ? '❌' : '⚠️')); break;
         default:
-            if (event.phase === 'generating')                   icon = '⚡';
+            if (event.phase === 'init_model')                   icon = '🤖';
+            else if (event.phase === 'standards_analysis')      icon = '📋';
+            else if (event.phase === 'standards_complete')       icon = '✓';
+            else if (event.phase === 'planning')                icon = '🧠';
+            else if (event.phase === 'planning_complete')       icon = '✓';
+            else if (event.phase === 'generating')              icon = '⚡';
             else if (event.phase === 'generated')               icon = '📄';
+            else if (event.phase === 'policy_generation')       icon = '🛡️';
+            else if (event.phase === 'policy_generation_complete') icon = '✓';
+            else if (event.phase === 'policy_generation_warning') icon = '⚠️';
             else if (event.phase === 'static_policy_check')     icon = '📋';
             else if (event.phase === 'static_policy_complete')  icon = '✓';
             else if (event.phase === 'static_policy_failed')    icon = '⚠️';
@@ -1339,6 +1456,10 @@ function _handleValidationEvent(event) {
             else if (event.phase === 'deploy_complete')         icon = '📦';
             else if (event.phase === 'deploy_failed')           icon = '💥';
             else if (event.phase === 'resource_check' || event.phase === 'resource_check_complete') icon = '🔎';
+            else if (event.phase === 'policy_testing')          icon = '🛡️';
+            else if (event.phase === 'policy_testing_complete')  icon = '✓';
+            else if (event.phase === 'policy_failed')           icon = '❌';
+            else if (event.phase === 'policy_skip')             icon = 'ℹ️';
             else if (event.phase === 'cleanup' || event.phase === 'cleanup_complete') icon = '🧹';
             else if (event.phase === 'promoting')               icon = '🏆';
             break;
@@ -1348,7 +1469,8 @@ function _handleValidationEvent(event) {
         const logLine = document.createElement('div');
         logLine.className = `validation-log-line validation-log-${logClass}`;
         if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
-        logLine.textContent = `${icon} ${event.detail}`;
+        if (isReasoning) logLine.classList.add('reasoning-line');
+        logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
         logEl.appendChild(logLine);
         logEl.scrollTop = logEl.scrollHeight;
     }
@@ -1357,12 +1479,27 @@ function _handleValidationEvent(event) {
     const header = card?.querySelector('.validation-title');
     const iconEl = card?.querySelector('.validation-icon');
 
-    if (event.phase === 'generating' && header) {
+    if (event.phase === 'init_model' && header) {
+        header.textContent = 'Analyzing Organization Standards…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'standards_analysis' && header) {
+        header.textContent = 'Analyzing Organization Standards…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'planning' && header) {
+        header.textContent = 'AI Planning Architecture…';
+        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'generating' && header) {
         header.textContent = 'Generating ARM Template…';
         if (iconEl) { iconEl.textContent = '⚡'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'policy_generation' && header) {
+        header.textContent = 'Generating Azure Policy…';
+        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
     } else if (event.phase === 'static_policy_check' && header) {
         header.textContent = 'Checking Governance Policies…';
         if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'policy_testing' && header) {
+        header.textContent = 'Testing Runtime Policy Compliance…';
+        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
     } else if (event.type === 'healing' && header) {
         header.textContent = 'Auto-Healing — AI Fixing Template…';
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
@@ -1393,6 +1530,19 @@ function _handleValidationEvent(event) {
     }
 }
 
+let reasoningVisible = true;
+function toggleReasoningVisibility() {
+    reasoningVisible = !reasoningVisible;
+    const btn = document.getElementById('toggle-reasoning-btn');
+    if (btn) {
+        btn.classList.toggle('active', reasoningVisible);
+        btn.textContent = reasoningVisible ? '🧠 AI Thinking' : '🧠 Hidden';
+    }
+    document.querySelectorAll('.reasoning-line').forEach(el => {
+        el.style.display = reasoningVisible ? '' : 'none';
+    });
+}
+
 function closeServiceDetail() {
     document.getElementById('service-detail-drawer').classList.add('hidden');
 }
@@ -1400,54 +1550,103 @@ function closeServiceDetail() {
 // ── Template Catalog ────────────────────────────────────────
 
 function renderTemplateTable(templates) {
-    const tbody = document.getElementById('template-tbody');
-    if (!tbody) return;
+    const grid = document.getElementById('template-cards-grid');
+    if (!grid) return;
 
     // Update results summary
     const summary = document.getElementById('template-results-summary');
     if (summary) {
-        summary.textContent = `Showing ${templates.length} of ${allTemplates.length} templates`;
+        const typeCount = { foundation: 0, workload: 0, composite: 0 };
+        templates.forEach(t => { typeCount[t.template_type || 'workload']++; });
+        summary.textContent = `Showing ${templates.length} of ${allTemplates.length} templates` +
+            ` — 🏗️ ${typeCount.foundation} foundation, ⚙️ ${typeCount.workload} workload, 📦 ${typeCount.composite} composite`;
     }
 
     if (!templates.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="catalog-loading">No templates match your filters</td></tr>';
+        grid.innerHTML = `
+            <div class="tmpl-empty-state">
+                <h3>No templates yet</h3>
+                <p>Compose your first deployment template from approved services.</p>
+                <button class="btn btn-primary" onclick="openTemplateOnboarding()">+ Create Template</button>
+            </div>`;
         return;
     }
 
-    const tmplStatusLabels = {
-        approved: '✅ Approved',
-        draft: '📝 Draft',
-        deprecated: '⚠️ Deprecated',
-    };
+    const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
+    const typeLabels = { foundation: 'Foundation', workload: 'Workload', composite: 'Composite' };
+    const statusLabelsMap = { approved: '✅ Approved', draft: '📝 Draft', deprecated: '⚠️ Deprecated' };
 
-    const formatIcons = {
-        bicep: '🔷',
-        terraform: '🟣',
-        'github-actions': '🔄',
-        'azure-devops': '🔵',
-    };
-
-    tbody.innerHTML = templates.map(tmpl => {
+    grid.innerHTML = templates.map(tmpl => {
+        const ttype = tmpl.template_type || 'workload';
+        const icon = typeIcons[ttype] || '📋';
+        const requires = tmpl.requires || [];
+        const provides = tmpl.provides || [];
+        const optionalRefs = tmpl.optional_refs || [];
         const status = tmpl.status || 'approved';
-        const fmt = tmpl.format || 'bicep';
-        const tags = (tmpl.tags || []).slice(0, 4);
-        const isBlueprint = tmpl.is_blueprint || tmpl.category === 'blueprint';
+        const serviceIds = tmpl.service_ids || [];
+        const isStandalone = ttype === 'foundation' || ttype === 'composite';
 
-        return `<tr onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
-            <td>
-                <div class="svc-name">${isBlueprint ? '🏗️ ' : ''}${escapeHtml(tmpl.name)}</div>
-                <div class="svc-id">${escapeHtml(tmpl.id)}</div>
-            </td>
-            <td><span class="category-badge">${formatIcons[fmt] || '📄'} ${escapeHtml(fmt)}</span></td>
-            <td><span class="category-badge">${escapeHtml(tmpl.category || '')}</span></td>
-            <td>
-                <div class="region-tags">
-                    ${tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}
+        return `
+        <div class="tmpl-card tmpl-card-${ttype}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
+            <div class="tmpl-card-header">
+                <div class="tmpl-card-title">
+                    <span class="tmpl-type-icon">${icon}</span>
+                    <div>
+                        <strong>${escapeHtml(tmpl.name)}</strong>
+                        <div class="tmpl-card-id">${escapeHtml(tmpl.id)}</div>
+                    </div>
                 </div>
-            </td>
-            <td><span class="status-badge ${status}">${tmplStatusLabels[status] || status}</span></td>
-        </tr>`;
+                <div class="tmpl-card-badges">
+                    <span class="tmpl-type-badge tmpl-type-${ttype}">${typeLabels[ttype]}</span>
+                    <span class="status-badge ${status}">${statusLabelsMap[status] || status}</span>
+                </div>
+            </div>
+            ${tmpl.description ? `<p class="tmpl-card-desc">${escapeHtml(tmpl.description)}</p>` : ''}
+            <div class="tmpl-card-body">
+                <div class="tmpl-provides">
+                    <span class="tmpl-section-label">Creates:</span>
+                    ${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`).join('')}
+                </div>
+                ${requires.length ? `
+                <div class="tmpl-requires">
+                    <span class="tmpl-section-label">⚠️ Requires:</span>
+                    ${requires.map(r => `<span class="tmpl-chip tmpl-chip-requires" title="${escapeHtml(r.reason || '')}">${_shortType(r.type || r)}</span>`).join('')}
+                </div>` : ''}
+                ${optionalRefs.length ? `
+                <div class="tmpl-optional">
+                    <span class="tmpl-section-label">Optional:</span>
+                    ${optionalRefs.map(o => `<span class="tmpl-chip tmpl-chip-optional" title="${escapeHtml(o.reason || '')}">${_shortType(o.type || o)}</span>`).join('')}
+                </div>` : ''}
+            </div>
+            <div class="tmpl-card-footer">
+                <div class="tmpl-card-meta">
+                    <span class="tmpl-format-badge">${escapeHtml(tmpl.format || 'arm')}</span>
+                    <span class="tmpl-cat-badge">${escapeHtml(tmpl.category || '')}</span>
+                    ${serviceIds.length ? `<span class="tmpl-svc-count">${serviceIds.length} service${serviceIds.length !== 1 ? 's' : ''}</span>` : ''}
+                </div>
+                <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
+                    ${isStandalone ? '✅ Standalone' : '⚙️ Needs infra'}
+                </span>
+            </div>
+        </div>`;
     }).join('');
+}
+
+/** Short display name from a resource type, e.g. "Microsoft.Network/virtualNetworks" → "virtualNetworks" */
+function _shortType(resourceType) {
+    if (!resourceType) return '?';
+    const parts = resourceType.split('/');
+    return parts[parts.length - 1];
+}
+
+function filterTemplateType(typeFilter) {
+    currentTemplateTypeFilter = typeFilter;
+    const container = document.getElementById('template-type-filters');
+    if (container) {
+        container.querySelectorAll('.filter-pill').forEach(pill => pill.classList.remove('active'));
+        event.target.classList.add('active');
+    }
+    applyTemplateFilters();
 }
 
 function filterTemplates(filter) {
@@ -1470,6 +1669,11 @@ function searchTemplates(query) {
 function applyTemplateFilters() {
     let filtered = allTemplates;
 
+    // Template type filter (foundation / workload / composite)
+    if (currentTemplateTypeFilter !== 'all') {
+        filtered = filtered.filter(t => (t.template_type || 'workload') === currentTemplateTypeFilter);
+    }
+
     // Format/category filter
     if (currentTemplateFilter !== 'all') {
         filtered = filtered.filter(t => t.format === currentTemplateFilter || t.category === currentTemplateFilter);
@@ -1482,7 +1686,9 @@ function applyTemplateFilters() {
             (t.id || '').toLowerCase().includes(templateSearchQuery) ||
             (t.description || '').toLowerCase().includes(templateSearchQuery) ||
             (t.tags || []).some(tag => tag.toLowerCase().includes(templateSearchQuery)) ||
-            (t.resources || []).some(r => r.toLowerCase().includes(templateSearchQuery))
+            (t.resources || []).some(r => r.toLowerCase().includes(templateSearchQuery)) ||
+            (t.provides || []).some(p => p.toLowerCase().includes(templateSearchQuery)) ||
+            (t.template_type || '').toLowerCase().includes(templateSearchQuery)
         );
     }
 
@@ -1496,14 +1702,23 @@ function showTemplateDetail(templateId) {
     if (!tmpl) return;
 
     const status = tmpl.status || 'approved';
-    const isBlueprint = tmpl.is_blueprint || tmpl.category === 'blueprint';
+    const ttype = tmpl.template_type || 'workload';
+    const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
+    const typeLabels = { foundation: 'Foundation', workload: 'Workload', composite: 'Composite' };
+    const isStandalone = ttype === 'foundation' || ttype === 'composite';
+    const requires = tmpl.requires || [];
+    const provides = tmpl.provides || [];
+    const optionalRefs = tmpl.optional_refs || [];
 
     document.getElementById('detail-template-name').textContent = tmpl.name;
     document.getElementById('detail-template-body').innerHTML = `
         <div class="detail-meta">
             <span class="svc-id">${escapeHtml(tmpl.id)}</span>
+            <span class="tmpl-type-badge tmpl-type-${ttype}">${typeIcons[ttype] || '📋'} ${typeLabels[ttype] || ttype}</span>
             <span class="status-badge ${status}">${statusLabels[status] || status}</span>
-            ${isBlueprint ? '<span class="category-badge">🏗️ Blueprint</span>' : ''}
+            <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
+                ${isStandalone ? '✅ Standalone' : '⚙️ Needs existing infra'}
+            </span>
         </div>
 
         <div class="detail-section">
@@ -1511,13 +1726,43 @@ function showTemplateDetail(templateId) {
             <p>${escapeHtml(tmpl.description || 'No description')}</p>
         </div>
 
+        ${provides.length ? `
         <div class="detail-section">
-            <h4>Format</h4>
-            <span class="category-badge">${escapeHtml(tmpl.format || 'bicep')}</span>
-        </div>
+            <h4>Creates (Provides)</h4>
+            <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${escapeHtml(p)}</span>`).join('')}</div>
+        </div>` : ''}
+
+        ${requires.length ? `
+        <div class="detail-section">
+            <h4>⚠️ Requires Existing Infrastructure</h4>
+            <div class="tmpl-dep-list">
+                ${requires.map(r => `
+                    <div class="tmpl-dep-item tmpl-dep-required">
+                        <strong>${_shortType(r.type || r)}</strong>
+                        <span>${escapeHtml(r.reason || '')}</span>
+                        <code>${escapeHtml(r.parameter || '')}</code>
+                    </div>
+                `).join('')}
+            </div>
+            <p class="tmpl-dep-note">At deploy time, InfraForge will show a resource picker for each required dependency.</p>
+        </div>` : ''}
+
+        ${optionalRefs.length ? `
+        <div class="detail-section">
+            <h4>📎 Optional References</h4>
+            <div class="tmpl-dep-list">
+                ${optionalRefs.map(o => `
+                    <div class="tmpl-dep-item tmpl-dep-optional">
+                        <strong>${_shortType(o.type || o)}</strong>
+                        <span>${escapeHtml(o.reason || '')}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>` : ''}
 
         <div class="detail-section">
-            <h4>Category</h4>
+            <h4>Format & Category</h4>
+            <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
             <span class="category-badge">${escapeHtml(tmpl.category || '')}</span>
         </div>
 
@@ -1527,10 +1772,10 @@ function showTemplateDetail(templateId) {
             <div class="detail-tags">${tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}</div>
         </div>` : ''}
 
-        ${(tmpl.resources && tmpl.resources.length) ? `
+        ${(tmpl.service_ids && tmpl.service_ids.length) ? `
         <div class="detail-section">
-            <h4>Resource Types</h4>
-            <div class="detail-tags">${tmpl.resources.map(r => `<span class="region-tag">${escapeHtml(r)}</span>`).join('')}</div>
+            <h4>Composed From Services</h4>
+            <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
         </div>` : ''}
 
         ${(tmpl.parameters && tmpl.parameters.length) ? `
@@ -1545,12 +1790,6 @@ function showTemplateDetail(templateId) {
                     </div>
                 `).join('')}
             </div>
-        </div>` : ''}
-
-        ${(tmpl.outputs && tmpl.outputs.length) ? `
-        <div class="detail-section">
-            <h4>Outputs</h4>
-            <div class="detail-tags">${tmpl.outputs.map(o => `<span class="region-tag">${escapeHtml(o)}</span>`).join('')}</div>
         </div>` : ''}
 
         ${tmpl.content ? `
@@ -1802,6 +2041,7 @@ function toggleComposeService(serviceId) {
     );
     _renderComposeSelections();
     _updateComposeSubmitButton();
+    _runComposeDependencyAnalysis();
 }
 
 function _renderComposeSelections() {
@@ -1884,6 +2124,84 @@ function _updateComposeSubmitButton() {
         btn.textContent = count > 0
             ? `Create Template (${count} service${count !== 1 ? 's' : ''})`
             : 'Create Template';
+    }
+}
+
+/** Live dependency analysis — called whenever compose selections change */
+async function _runComposeDependencyAnalysis() {
+    const section = document.getElementById('compose-dep-analysis-section');
+    const container = document.getElementById('compose-dep-analysis');
+    if (!section || !container) return;
+
+    if (_composeSelections.size === 0) {
+        section.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+
+    section.style.display = 'block';
+    container.innerHTML = '<div class="compose-loading">Analyzing dependencies…</div>';
+
+    const serviceIds = Array.from(_composeSelections.keys());
+
+    try {
+        const res = await fetch('/api/templates/analyze-dependencies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service_ids: serviceIds }),
+        });
+        const analysis = await res.json();
+        const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
+        const typeLabels = { foundation: 'Foundation — deploys standalone', workload: 'Workload — requires existing infrastructure', composite: 'Composite — self-contained bundle' };
+
+        let html = `
+            <div class="dep-type-banner dep-type-${analysis.template_type}">
+                ${typeIcons[analysis.template_type] || '📋'}
+                Template Type: <strong>${analysis.template_type}</strong>
+                — ${typeLabels[analysis.template_type] || ''}
+            </div>
+        `;
+
+        if (analysis.provides?.length) {
+            html += '<div class="dep-block"><h5>✅ Creates (Provides)</h5><div class="dep-chips">';
+            analysis.provides.forEach(p => { html += `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`; });
+            html += '</div></div>';
+        }
+
+        if (analysis.auto_created?.length) {
+            html += '<div class="dep-block"><h5>🔧 Auto-Created Supporting Resources</h5>';
+            analysis.auto_created.forEach(a => {
+                html += `<div class="dep-detail-item dep-auto"><code>${_shortType(a.type)}</code> — ${escapeHtml(a.reason)}</div>`;
+            });
+            html += '</div>';
+        }
+
+        if (analysis.requires?.length) {
+            html += '<div class="dep-block"><h5>⚠️ Requires Existing Infrastructure</h5>';
+            html += '<p class="dep-note">These resources must already exist. InfraForge will show a resource picker at deploy time.</p>';
+            analysis.requires.forEach(r => {
+                html += `<div class="dep-detail-item dep-required"><code>${escapeHtml(r.type)}</code> — ${escapeHtml(r.reason)}</div>`;
+            });
+            html += '</div>';
+        }
+
+        if (analysis.optional_refs?.length) {
+            html += '<div class="dep-block"><h5>📎 Optional References</h5>';
+            analysis.optional_refs.forEach(o => {
+                html += `<div class="dep-detail-item dep-optional"><code>${_shortType(o.type)}</code> — ${escapeHtml(o.reason)}</div>`;
+            });
+            html += '</div>';
+        }
+
+        if (analysis.deployable_standalone) {
+            html += '<div class="dep-standalone-ok">✅ This template can be deployed standalone — no existing infrastructure required.</div>';
+        } else {
+            html += '<div class="dep-standalone-no">⚠️ This template requires existing infrastructure. Users will need to select resources at deploy time.</div>';
+        }
+
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = `<div class="compose-empty">Dependency analysis unavailable: ${err.message}</div>`;
     }
 }
 

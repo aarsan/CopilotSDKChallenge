@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=21">
+    <link rel="stylesheet" href="/static/styles.css?v=25">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -410,8 +410,17 @@
                         </div>
                     </div>
 
-                    <!-- Filters -->
+                    <!-- Type Filters -->
                     <div class="filter-bar">
+                        <div class="filter-group">
+                            <span class="filter-label">Type</span>
+                            <div class="catalog-filters" id="template-type-filters">
+                                <button class="filter-pill active" onclick="filterTemplateType('all')">All</button>
+                                <button class="filter-pill" onclick="filterTemplateType('foundation')">🏗️ Foundation</button>
+                                <button class="filter-pill" onclick="filterTemplateType('workload')">⚙️ Workload</button>
+                                <button class="filter-pill" onclick="filterTemplateType('composite')">📦 Composite</button>
+                            </div>
+                        </div>
                         <div class="filter-group">
                             <span class="filter-label">Format</span>
                             <div class="catalog-filters" id="template-filters">
@@ -423,22 +432,9 @@
                     <!-- Results Summary -->
                     <div class="results-summary" id="template-results-summary"></div>
 
-                    <!-- Template Table -->
-                    <div class="catalog-table-wrap full-height">
-                        <table class="catalog-table" id="template-table">
-                            <thead>
-                                <tr>
-                                    <th>Template</th>
-                                    <th>Format</th>
-                                    <th>Category</th>
-                                    <th>Tags</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody id="template-tbody">
-                                <tr><td colspan="5" class="catalog-loading">Loading templates...</td></tr>
-                            </tbody>
-                        </table>
+                    <!-- Template Cards (replaces flat table for better dependency visibility) -->
+                    <div class="template-cards-grid" id="template-cards-grid">
+                        <div class="catalog-loading">Loading templates...</div>
                     </div>
                 </div>
             </div>
@@ -690,6 +686,15 @@
                         </div>
                         <div id="compose-selections"></div>
                     </div>
+
+                    <!-- Step 4: Dependency Analysis Preview -->
+                    <div class="compose-section" id="compose-dep-analysis-section" style="display:none">
+                        <div class="compose-section-header">
+                            <span class="compose-section-title">📊 Dependency Analysis</span>
+                            <span class="compose-section-hint">Auto-detected template type and infrastructure requirements</span>
+                        </div>
+                        <div id="compose-dep-analysis"></div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('modal-template-onboard')">Cancel</button>
@@ -780,6 +785,6 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=20"></script>
+    <script src="/static/app.js?v=26"></script>
 </body>
 </html>

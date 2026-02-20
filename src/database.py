@@ -529,6 +529,41 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_templates_format ON catalog_templates(format)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_templates_status')
     CREATE INDEX idx_templates_status ON catalog_templates(status)""",
+    # ── Template Dependency Columns (migration) ──
+    # template_type: foundation / workload / composite
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'template_type'
+    )
+    ALTER TABLE catalog_templates ADD template_type NVARCHAR(30) DEFAULT 'workload'
+    """,
+    # provides_json: resource types this template creates
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'provides_json'
+    )
+    ALTER TABLE catalog_templates ADD provides_json NVARCHAR(MAX) DEFAULT '[]'
+    """,
+    # requires_json: existing resources needed at deploy time
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'requires_json'
+    )
+    ALTER TABLE catalog_templates ADD requires_json NVARCHAR(MAX) DEFAULT '[]'
+    """,
+    # optional_refs_json: optional existing resources that can be referenced
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'optional_refs_json'
+    )
+    ALTER TABLE catalog_templates ADD optional_refs_json NVARCHAR(MAX) DEFAULT '[]'
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_templates_type')
+    CREATE INDEX idx_templates_type ON catalog_templates(template_type)""",
 ]
 
 
@@ -1240,8 +1275,9 @@ async def upsert_template(tmpl: dict) -> None:
             (id, name, description, format, category, source_path, content,
              tags_json, resources_json, parameters_json, outputs_json,
              service_ids_json, is_blueprint, registered_by, status,
+             template_type, provides_json, requires_json, optional_refs_json,
              created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tmpl["id"],
@@ -1259,6 +1295,10 @@ async def upsert_template(tmpl: dict) -> None:
             1 if tmpl.get("is_blueprint", tmpl.get("category") == "blueprint") else 0,
             tmpl.get("registered_by", "platform-team"),
             tmpl.get("status", "approved"),
+            tmpl.get("template_type", "workload"),
+            json.dumps(tmpl.get("provides", [])),
+            json.dumps(tmpl.get("requires", [])),
+            json.dumps(tmpl.get("optional_refs", [])),
             now,
             now,
         ),
@@ -1270,6 +1310,7 @@ async def get_all_templates(
     fmt: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    template_type: Optional[str] = None,
 ) -> list[dict]:
     """Get all catalog templates with optional filters."""
     backend = await get_backend()
@@ -1285,6 +1326,9 @@ async def get_all_templates(
     if status:
         where_clauses.append("status = ?")
         params.append(status.lower())
+    if template_type:
+        where_clauses.append("template_type = ?")
+        params.append(template_type.lower())
     if search:
         where_clauses.append(
             "(LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR tags_json LIKE ?)"
@@ -1307,10 +1351,32 @@ async def get_all_templates(
         t["outputs"] = json.loads(t.pop("outputs_json", "[]"))
         t["service_ids"] = json.loads(t.pop("service_ids_json", "[]"))
         t["is_blueprint"] = bool(t.get("is_blueprint"))
+        # Dependency metadata
+        t["provides"] = json.loads(t.pop("provides_json", "[]"))
+        t["requires"] = json.loads(t.pop("requires_json", "[]"))
+        t["optional_refs"] = json.loads(t.pop("optional_refs_json", "[]"))
+        t.setdefault("template_type", "workload")
         # Rename source_path back to 'source' for compatibility
         t["source"] = t.pop("source_path", "")
         result.append(t)
     return result
+
+
+def _parse_template_row(row: dict) -> dict:
+    """Parse a raw catalog_templates DB row into a hydrated dict."""
+    t = dict(row)
+    t["tags"] = json.loads(t.pop("tags_json", "[]") or "[]")
+    t["resources"] = json.loads(t.pop("resources_json", "[]") or "[]")
+    t["parameters"] = json.loads(t.pop("parameters_json", "[]") or "[]")
+    t["outputs"] = json.loads(t.pop("outputs_json", "[]") or "[]")
+    t["service_ids"] = json.loads(t.pop("service_ids_json", "[]") or "[]")
+    t["is_blueprint"] = bool(t.get("is_blueprint"))
+    t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
+    t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
+    t["optional_refs"] = json.loads(t.pop("optional_refs_json", None) or "[]")
+    t.setdefault("template_type", "workload")
+    t["source"] = t.pop("source_path", "")
+    return t
 
 
 async def get_template_by_id(template_id: str) -> Optional[dict]:
@@ -1321,15 +1387,7 @@ async def get_template_by_id(template_id: str) -> Optional[dict]:
     )
     if not rows:
         return None
-    t = dict(rows[0])
-    t["tags"] = json.loads(t.pop("tags_json", "[]"))
-    t["resources"] = json.loads(t.pop("resources_json", "[]"))
-    t["parameters"] = json.loads(t.pop("parameters_json", "[]"))
-    t["outputs"] = json.loads(t.pop("outputs_json", "[]"))
-    t["service_ids"] = json.loads(t.pop("service_ids_json", "[]"))
-    t["is_blueprint"] = bool(t.get("is_blueprint"))
-    t["source"] = t.pop("source_path", "")
-    return t
+    return _parse_template_row(rows[0])
 
 
 async def delete_template(template_id: str) -> bool:
