@@ -61,6 +61,8 @@ from src.database import (
     update_approval_request,
 )
 from src.utils import ensure_output_dir
+from src.standards import init_standards
+from src.standards_api import router as standards_router
 
 logger = logging.getLogger("infraforge.web")
 
@@ -70,6 +72,11 @@ copilot_client: Optional[CopilotClient] = None
 # Track active Copilot sessions: session_token → { copilot_session, user_context }
 # (Chat history and usage analytics are persisted in the database)
 active_sessions: dict[str, dict] = {}
+
+# ── Active validation job tracker (in-memory) ────────────────
+# service_id → { status, service_name, started_at, updated_at, phase, attempt,
+#                max_attempts, progress, events: [dict], error?, rg_name? }
+_active_validations: dict[str, dict] = {}
 
 
 def _user_context_to_dict(user: UserContext) -> dict:
@@ -99,6 +106,8 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     await cleanup_expired_sessions()
+    logger.info("Initializing organization standards...")
+    await init_standards()
     logger.info("Starting Copilot SDK client...")
     copilot_client = CopilotClient({"log_level": COPILOT_LOG_LEVEL})
     await copilot_client.start()
@@ -130,6 +139,9 @@ app = FastAPI(
 )
 
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
+
+# Mount API routers
+app.include_router(standards_router)
 
 # Serve static files (HTML, CSS, JS)
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
@@ -305,6 +317,77 @@ async def get_usage_analytics(request: Request):
     return JSONResponse(stats)
 
 
+# ── Activity Monitor API ─────────────────────────────────────
+
+@app.get("/api/activity")
+async def get_activity():
+    """Return all validation activity: running jobs + recent completed/failed.
+
+    Powers the Activity Monitor page for at-a-glance observability.
+    """
+    from src.database import get_all_services
+
+    services = await get_all_services()
+
+    # Build activity items from services with validation-related statuses
+    jobs = []
+
+    for svc in services:
+        status = svc.get("status", "not_approved")
+        svc_id = svc.get("id", "")
+
+        # Include services that are validating, validation_failed, or recently approved
+        if status in ("validating", "validation_failed", "approved"):
+            # Check if there's a live tracker entry
+            live = _active_validations.get(svc_id)
+
+            job = {
+                "service_id": svc_id,
+                "service_name": svc.get("name", svc_id),
+                "category": svc.get("category", ""),
+                "status": status,
+                "is_running": live is not None and live.get("status") == "running",
+                "phase": live.get("phase", "") if live else "",
+                "detail": live.get("detail", "") if live else "",
+                "attempt": live.get("attempt", 0) if live else 0,
+                "max_attempts": live.get("max_attempts", 5) if live else 5,
+                "progress": live.get("progress", 0) if live else (1.0 if status == "approved" else 0),
+                "started_at": live.get("started_at", "") if live else "",
+                "updated_at": live.get("updated_at", "") if live else "",
+                "rg_name": live.get("rg_name", "") if live else "",
+                "region": live.get("region", "") if live else "",
+                "subscription": live.get("subscription", "") if live else "",
+                "template_meta": live.get("template_meta", {}) if live else {},
+                "steps_completed": live.get("steps_completed", []) if live else [],
+                "events": live.get("events", [])[-50:] if live else [],  # last 50 events
+                "error": live.get("error", "") if live else (svc.get("review_notes", "") if status == "validation_failed" else ""),
+            }
+            jobs.append(job)
+
+    # Sort: running first, then by updated_at descending
+    jobs.sort(key=lambda j: (
+        0 if j["is_running"] else 1,
+        0 if j["status"] == "validating" else 1,
+        -(j.get("updated_at") or "0").__hash__(),
+    ))
+
+    running_count = sum(1 for j in jobs if j["is_running"])
+    validating_count = sum(1 for j in jobs if j["status"] == "validating")
+    failed_count = sum(1 for j in jobs if j["status"] == "validation_failed")
+    approved_count = sum(1 for j in jobs if j["status"] == "approved")
+
+    return JSONResponse({
+        "jobs": jobs,
+        "summary": {
+            "running": running_count,
+            "validating": validating_count,
+            "failed": failed_count,
+            "approved": approved_count,
+            "total": len(jobs),
+        },
+    })
+
+
 # ── Service Catalog API ──────────────────────────────────────
 
 @app.get("/api/catalog/services")
@@ -459,6 +542,305 @@ async def onboard_template(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/catalog/services/approved-for-templates")
+async def get_approved_services_for_templates():
+    """Return approved services with their ARM template parameters.
+
+    Only services with status='approved' and an active version (with an ARM
+    template) are returned.  Each service includes the list of *extra*
+    parameters the skeleton exposes beyond the standard set (resourceName,
+    location, environment, projectName, ownerEmail, costCenter) so the
+    template-builder UI can show parameter checkboxes.
+    """
+    from src.database import get_all_services, get_active_service_version
+    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
+
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    services = await get_all_services()
+    result = []
+
+    for svc in services:
+        if svc.get("status") != "approved":
+            continue
+
+        service_id = svc["id"]
+
+        # Try to get ARM template parameters from the active version first,
+        # then fall back to the built-in skeleton.
+        all_params: dict = {}
+        active = await get_active_service_version(service_id)
+        if active and active.get("arm_template"):
+            try:
+                import json as _json
+                tpl = _json.loads(active["arm_template"])
+                all_params = tpl.get("parameters", {})
+            except Exception:
+                pass
+
+        if not all_params and has_builtin_skeleton(service_id):
+            tpl = generate_arm_template(service_id)
+            if tpl:
+                all_params = tpl.get("parameters", {})
+
+        # Split into standard vs extra
+        extra_params = []
+        for pname, pdef in all_params.items():
+            meta = pdef.get("metadata", {})
+            extra_params.append({
+                "name": pname,
+                "type": pdef.get("type", "string"),
+                "description": meta.get("description", ""),
+                "defaultValue": pdef.get("defaultValue"),
+                "allowedValues": pdef.get("allowedValues"),
+                "is_standard": pname in STANDARD_PARAMS,
+            })
+
+        result.append({
+            "id": service_id,
+            "name": svc.get("name", service_id),
+            "category": svc.get("category", "other"),
+            "risk_tier": svc.get("risk_tier"),
+            "active_version": svc.get("active_version"),
+            "parameters": extra_params,
+        })
+
+    return JSONResponse({
+        "services": result,
+        "total": len(result),
+    })
+
+
+@app.post("/api/catalog/templates/compose")
+async def compose_template_from_services(request: Request):
+    """Compose a new ARM template from approved services.
+
+    Body:
+    {
+        "name": "My Web App Stack",
+        "description": "App Service + SQL + KeyVault",
+        "category": "blueprint",
+        "selections": [
+            {
+                "service_id": "Microsoft.Web/sites",
+                "quantity": 1,
+                "parameters": ["skuName"]   // which extra params to expose
+            },
+            {
+                "service_id": "Microsoft.Sql/servers",
+                "quantity": 1,
+                "parameters": ["adminLogin", "adminPassword"]
+            }
+        ]
+    }
+
+    Each selected service must be approved with an active version.
+    The endpoint composes a single ARM template containing all resources,
+    deduplicating shared standard parameters and prefixing resource-specific
+    names with an index when quantity > 1.
+    """
+    from src.database import (
+        get_service, get_active_service_version, upsert_template,
+    )
+    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
+    import json as _json
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    category = body.get("category", "blueprint")
+    selections = body.get("selections", [])
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+    if not selections:
+        raise HTTPException(status_code=400, detail="Select at least one service")
+
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    # ── Validate selections & gather ARM templates ────────────
+    service_templates: list[dict] = []   # (svc, template_dict, selection)
+
+    for sel in selections:
+        sid = sel.get("service_id", "")
+        qty = max(1, int(sel.get("quantity", 1)))
+        chosen_params = set(sel.get("parameters", []))
+
+        svc = await get_service(sid)
+        if not svc:
+            raise HTTPException(status_code=404, detail=f"Service '{sid}' not found")
+        if svc.get("status") != "approved":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Service '{sid}' is not approved — only approved services can be used in templates",
+            )
+
+        # Get the ARM template
+        tpl_dict = None
+        active = await get_active_service_version(sid)
+        if active and active.get("arm_template"):
+            try:
+                tpl_dict = _json.loads(active["arm_template"])
+            except Exception:
+                pass
+        if not tpl_dict and has_builtin_skeleton(sid):
+            tpl_dict = generate_arm_template(sid)
+        if not tpl_dict:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No ARM template available for '{sid}'",
+            )
+
+        service_templates.append({
+            "svc": svc,
+            "template": tpl_dict,
+            "quantity": qty,
+            "chosen_params": chosen_params,
+        })
+
+    # ── Compose the combined ARM template ─────────────────────
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, _STANDARD_TAGS
+
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources = []
+    combined_outputs = {}
+    service_ids = []
+    resource_types = []
+    tags_list = []
+
+    for entry in service_templates:
+        svc = entry["svc"]
+        tpl = entry["template"]
+        qty = entry["quantity"]
+        chosen = entry["chosen_params"]
+        sid = svc["id"]
+
+        service_ids.append(sid)
+        short_name = sid.split("/")[-1].lower()
+        resource_types.append(sid)
+        tags_list.append(svc.get("category", ""))
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        for idx in range(1, qty + 1):
+            suffix = f"_{short_name}" if qty == 1 else f"_{short_name}{idx}"
+
+            # Add a resourceName parameter for this instance
+            instance_name_param = f"resourceName{suffix}"
+            combined_params[instance_name_param] = {
+                "type": "string",
+                "metadata": {
+                    "description": f"Name for {svc.get('name', sid)}"
+                    + (f" (instance {idx})" if qty > 1 else ""),
+                },
+            }
+
+            # Add chosen extra parameters (with suffix to avoid collisions)
+            for pname in chosen:
+                if pname in STANDARD_PARAMS:
+                    continue
+                pdef = src_params.get(pname)
+                if not pdef:
+                    continue
+                suffixed = f"{pname}{suffix}"
+                combined_params[suffixed] = dict(pdef)
+                meta = combined_params[suffixed].setdefault("metadata", {})
+                if qty > 1:
+                    meta["description"] = meta.get("description", pname) + f" (instance {idx})"
+
+            # Clone resources, replacing parameter references
+            for res in src_resources:
+                cloned = _json.loads(_json.dumps(res))
+                # Replace [parameters('resourceName')] with instance param
+                res_str = _json.dumps(cloned)
+                res_str = res_str.replace(
+                    "[parameters('resourceName')]",
+                    f"[parameters('{instance_name_param}')]",
+                )
+                # Replace chosen extra param references
+                for pname in chosen:
+                    if pname in STANDARD_PARAMS:
+                        continue
+                    suffixed = f"{pname}{suffix}"
+                    res_str = res_str.replace(
+                        f"[parameters('{pname}')]",
+                        f"[parameters('{suffixed}')]",
+                    )
+                combined_resources.append(_json.loads(res_str))
+
+            # Clone outputs with suffixed names
+            for oname, odef in src_outputs.items():
+                out_name = f"{oname}{suffix}"
+                out_val = _json.dumps(odef)
+                out_val = out_val.replace(
+                    "[parameters('resourceName')]",
+                    f"[parameters('{instance_name_param}')]",
+                )
+                combined_outputs[out_name] = _json.loads(out_val)
+
+    # Build the final composed template
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    content_str = _json.dumps(composed, indent=2)
+
+    # Build a template ID from the name
+    template_id = "composed-" + name.lower().replace(" ", "-")[:50]
+
+    # Build parameter list for catalog storage
+    param_list = [
+        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+        for k, v in combined_params.items()
+    ]
+
+    # Save to catalog
+    catalog_entry = {
+        "id": template_id,
+        "name": name,
+        "description": description,
+        "format": "arm",
+        "category": category,
+        "content": content_str,
+        "tags": list(set(tags_list)),
+        "resources": list(set(resource_types)),
+        "parameters": param_list,
+        "outputs": list(combined_outputs.keys()),
+        "is_blueprint": len(service_templates) > 1,
+        "service_ids": service_ids,
+        "status": "approved",
+        "registered_by": "template-composer",
+    }
+
+    try:
+        await upsert_template(catalog_entry)
+    except Exception as e:
+        logger.error(f"Failed to save composed template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse({
+        "status": "ok",
+        "template_id": template_id,
+        "template": catalog_entry,
+        "resource_count": len(combined_resources),
+        "parameter_count": len(combined_params),
+    })
+
+
 @app.delete("/api/catalog/services/{service_id}")
 async def delete_service_endpoint(service_id: str):
     """Remove a service from the catalog."""
@@ -569,7 +951,11 @@ async def delete_template_endpoint(template_id: str):
     return JSONResponse({"status": "ok", "deleted": template_id})
 
 
-# ── Service Approval Artifacts (3-Gate Workflow) ──────────────
+# ══════════════════════════════════════════════════════════════
+# SERVICE ONBOARDING & VERSIONED VALIDATION
+# ══════════════════════════════════════════════════════════════
+
+# ── Legacy artifact endpoints (kept for backward compat) ─────
 
 @app.get("/api/services/{service_id:path}/artifacts")
 async def get_artifacts_endpoint(service_id: str):
@@ -700,13 +1086,17 @@ async def unapprove_artifact_endpoint(service_id: str, artifact_type: str):
 
 @app.post("/api/services/{service_id:path}/validate-deployment")
 async def validate_deployment_endpoint(service_id: str, request: Request):
-    """Run deployment validation with auto-healing.
+    """Full deployment validation: What-If → Deploy → Policy Test → Cleanup.
 
-    On What-If failure the Copilot SDK automatically rewrites the ARM template
-    (and/or policy) using the error output, saves the updated artifact, and
-    retries — up to MAX_HEAL_ATTEMPTS times.
+    The auto-healing loop wraps steps 1-2.  On What-If or deploy failure the
+    Copilot SDK rewrites the ARM template and retries (up to MAX_HEAL_ATTEMPTS).
 
-    Streams NDJSON progress events including per-iteration status.
+    Phases streamed as NDJSON:
+      iteration_start → what_if → deploying → deploy_complete →
+      resource_check → policy_testing → policy_result → cleanup → done
+
+    On success the service is promoted to 'approved'.
+    On failure it is set to 'validation_failed'.
     """
     from src.database import (
         get_service, get_service_artifacts, save_service_artifact,
@@ -719,102 +1109,121 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
     if not svc:
         raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
 
-    # Verify both gates are approved
     artifacts = await get_service_artifacts(service_id)
     if not artifacts["_summary"]["all_approved"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Both gates must be approved before running deployment validation",
-        )
+        raise HTTPException(status_code=400, detail="Both gates must be approved before validation")
 
-    # Get the ARM template content
     template_artifact = artifacts.get("template", {})
     template_content = template_artifact.get("content", "").strip()
     if not template_content:
         raise HTTPException(status_code=400, detail="ARM template artifact has no content")
 
-    # Parse optional config from request body
     try:
         body = await request.json()
     except Exception:
         body = {}
 
     region = body.get("region", "eastus2")
-    rg_name = f"infraforge-validation-{service_id.replace('/', '-').replace('.', '-').lower()}"[:90]
+    import uuid as _uuid
+    _run_id = _uuid.uuid4().hex[:8]
+    rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
 
-    # ── helpers ───────────────────────────────────────────────
+    # ── Copilot fix helper ────────────────────────────────────
 
-    async def _copilot_fix_artifact(
-        artifact_type: str,
-        current_content: str,
-        error_message: str,
-    ) -> str:
-        """Ask the Copilot SDK to fix an artifact based on an error message."""
+    async def _copilot_fix(artifact_type: str, content: str, error: str) -> str:
+        """Ask the Copilot SDK to fix an artifact."""
         if artifact_type == "template":
-            fix_prompt = (
-                "The following ARM template was rejected by Azure ARM What-If validation.\n\n"
-                f"--- ERROR ---\n{error_message}\n--- END ERROR ---\n\n"
-                f"--- CURRENT TEMPLATE ---\n{current_content}\n--- END TEMPLATE ---\n\n"
-                "Fix the template so it passes What-If validation. "
-                "Return ONLY the corrected raw JSON — no markdown fences, no explanation. "
-                "Keep the same resource intent. Fix schema issues, missing required "
-                "properties, invalid API versions, and structural problems."
+            prompt = (
+                "The following ARM template failed Azure deployment validation.\n\n"
+                f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
+                f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+                "Fix the template so it deploys successfully. Return ONLY the "
+                "corrected raw JSON — no markdown fences, no explanation.\n\n"
+                "CRITICAL RULES:\n"
+                "- Keep ALL location parameters as \"[resourceGroup().location]\" or "
+                "\"[parameters('location')]\" — NEVER hardcode a region like 'centralus', "
+                "'eastus2', etc.\n"
+                "- Keep the same resource intent and resource names.\n"
+                "- Fix schema issues, missing required properties, invalid API versions, "
+                "and structural problems.\n"
+                "- If a resource like diagnosticSettings requires an external dependency "
+                "(Log Analytics workspace, storage account), REMOVE it rather than adding "
+                "a fake dependency.\n"
+                "- Do NOT change parameter default values unless they are directly causing "
+                "the error."
             )
         else:
-            fix_prompt = (
-                "The following Azure Policy JSON definition has a syntax or structural error.\n\n"
-                f"--- ERROR ---\n{error_message}\n--- END ERROR ---\n\n"
-                f"--- CURRENT POLICY ---\n{current_content}\n--- END POLICY ---\n\n"
-                "Fix the policy so it is valid, deployable Azure Policy JSON. "
-                "Return ONLY the corrected raw JSON — no markdown fences, no explanation."
+            prompt = (
+                "The following Azure Policy JSON has an error.\n\n"
+                f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
+                f"--- CURRENT POLICY ---\n{content}\n--- END POLICY ---\n\n"
+                "Fix the policy. Return ONLY the corrected raw JSON."
             )
 
         session = None
         try:
             session = await copilot_client.create_session({
-                "model": COPILOT_MODEL,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure expert specializing in "
-                        "debugging and fixing ARM templates and Azure Policy definitions. "
-                        "Return ONLY raw JSON — no markdown, no code fences, no explanation."
-                    )
-                },
+                "model": COPILOT_MODEL, "streaming": True, "tools": [],
+                "system_message": {"content": (
+                    "You are an Azure infrastructure expert. "
+                    "Return ONLY raw JSON — no markdown, no code fences."
+                )},
             })
-
             chunks: list[str] = []
-            done_event = asyncio.Event()
+            done_ev = asyncio.Event()
 
-            def on_event(event):
+            def on_event(ev):
                 try:
-                    if event.type.value == "assistant.message_delta":
-                        chunks.append(event.data.delta_content or "")
-                    elif event.type.value in ("assistant.message", "session.idle"):
-                        done_event.set()
+                    if ev.type.value == "assistant.message_delta":
+                        chunks.append(ev.data.delta_content or "")
+                    elif ev.type.value in ("assistant.message", "session.idle"):
+                        done_ev.set()
                 except Exception:
-                    done_event.set()
+                    done_ev.set()
 
-            unsubscribe = session.on(on_event)
+            unsub = session.on(on_event)
             try:
-                await session.send({"prompt": fix_prompt})
-                await asyncio.wait_for(done_event.wait(), timeout=90)
+                await session.send({"prompt": prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=90)
             finally:
-                unsubscribe()
+                unsub()
 
             fixed = "".join(chunks).strip()
-
-            # Strip markdown fences if the model wrapped them
             if fixed.startswith("```"):
-                lines = fixed.split("\n")
-                lines = lines[1:]
+                lines = fixed.split("\n")[1:]
                 if lines and lines[-1].strip() == "```":
                     lines = lines[:-1]
                 fixed = "\n".join(lines).strip()
 
-            return fixed
+            # ── Guard: ensure healer didn't corrupt the location parameter ──
+            if artifact_type == "template":
+                try:
+                    _ft = json.loads(fixed)
+                    _params = _ft.get("parameters", {})
+                    _loc = _params.get("location", {})
+                    _dv = _loc.get("defaultValue", "")
+                    # If the healer hardcoded a region, restore the ARM expression
+                    if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+                        _loc["defaultValue"] = "[resourceGroup().location]"
+                        logger.warning(
+                            f"Copilot healer corrupted location default to '{_dv}' — "
+                            "restored to [resourceGroup().location]"
+                        )
+                        fixed = json.dumps(_ft, indent=2)
+                    # Also check each resource's location property
+                    for _res in _ft.get("resources", []):
+                        _rloc = _res.get("location", "")
+                        if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                            _res["location"] = "[parameters('location')]"
+                            logger.warning(
+                                f"Copilot healer hardcoded resource location to '{_rloc}' — "
+                                "restored to [parameters('location')]"
+                            )
+                            fixed = json.dumps(_ft, indent=2)
+                except (json.JSONDecodeError, AttributeError):
+                    pass  # if it's not valid JSON yet, the parse step will catch it
 
+            return fixed
         finally:
             if session:
                 try:
@@ -822,243 +1231,682 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 except Exception:
                     pass
 
-    # ── main streaming generator ──────────────────────────────
+    # ── Policy compliance tester ──────────────────────────────
+
+    def _test_policy_compliance(policy_json: dict, resources: list[dict]) -> list[dict]:
+        """Evaluate deployed resources against the policy rule.
+
+        This is a local evaluation engine that interprets the policy's
+        'if' condition against each resource's actual Azure properties.
+        Returns a list of per-resource compliance results.
+        """
+        results = []
+        rule = policy_json.get("properties", policy_json).get("policyRule", {})
+        if_condition = rule.get("if", {})
+        effect = rule.get("then", {}).get("effect", "deny")
+
+        for resource in resources:
+            match = _evaluate_condition(if_condition, resource)
+            # If the condition matches → the policy's effect applies (deny/audit)
+            # A "deny" match means the resource VIOLATES the policy
+            compliant = not match if effect.lower() in ("deny", "audit") else match
+            results.append({
+                "resource_id": resource.get("id", ""),
+                "resource_type": resource.get("type", ""),
+                "resource_name": resource.get("name", ""),
+                "location": resource.get("location", ""),
+                "compliant": compliant,
+                "effect": effect,
+                "reason": (
+                    "Resource matches policy conditions — compliant"
+                    if compliant else
+                    f"Resource violates policy — {effect} would apply"
+                ),
+            })
+        return results
+
+    def _evaluate_condition(condition: dict, resource: dict) -> bool:
+        """Recursively evaluate Azure Policy condition against a resource."""
+        # allOf — all sub-conditions must be true
+        if "allOf" in condition:
+            return all(_evaluate_condition(c, resource) for c in condition["allOf"])
+        # anyOf — any sub-condition must be true
+        if "anyOf" in condition:
+            return any(_evaluate_condition(c, resource) for c in condition["anyOf"])
+        # not — negate
+        if "not" in condition:
+            return not _evaluate_condition(condition["not"], resource)
+
+        # Leaf condition: field + operator
+        field = condition.get("field", "")
+        resource_val = _resolve_field(field, resource)
+
+        if "equals" in condition:
+            return str(resource_val).lower() == str(condition["equals"]).lower()
+        if "notEquals" in condition:
+            return str(resource_val).lower() != str(condition["notEquals"]).lower()
+        if "in" in condition:
+            return str(resource_val).lower() in [str(v).lower() for v in condition["in"]]
+        if "notIn" in condition:
+            return str(resource_val).lower() not in [str(v).lower() for v in condition["notIn"]]
+        if "contains" in condition:
+            return str(condition["contains"]).lower() in str(resource_val).lower()
+        if "like" in condition:
+            import fnmatch
+            return fnmatch.fnmatch(str(resource_val).lower(), str(condition["like"]).lower())
+        if "exists" in condition:
+            exists = resource_val is not None and resource_val != ""
+            return exists if condition["exists"] else not exists
+
+        return False
+
+    def _resolve_field(field: str, resource: dict):
+        """Resolve a policy field reference against a resource dict."""
+        field_lower = field.lower()
+        if field_lower == "type":
+            return resource.get("type", "")
+        if field_lower == "location":
+            return resource.get("location", "")
+        if field_lower == "name":
+            return resource.get("name", "")
+        if field_lower.startswith("tags["):
+            # tags['environment'] or tags.environment
+            tag_name = field.split("'")[1] if "'" in field else field.split("[")[1].rstrip("]")
+            return (resource.get("tags") or {}).get(tag_name, "")
+        if field_lower.startswith("tags."):
+            tag_name = field.split(".", 1)[1]
+            return (resource.get("tags") or {}).get(tag_name, "")
+        # properties.X.Y.Z → nested lookup
+        parts = field.split(".")
+        val = resource
+        for part in parts:
+            if isinstance(val, dict):
+                # Case-insensitive key lookup
+                matched = None
+                for k in val:
+                    if k.lower() == part.lower():
+                        matched = k
+                        break
+                val = val.get(matched) if matched else None
+            else:
+                return None
+        return val
+
+    # ── Cleanup helper ────────────────────────────────────────
+
+    async def _cleanup_rg(rg: str):
+        """Delete the validation resource group."""
+        from src.tools.deploy_engine import _get_resource_client
+        client = _get_resource_client()
+        loop = asyncio.get_event_loop()
+        try:
+            poller = await loop.run_in_executor(
+                None, lambda: client.resource_groups.begin_delete(rg)
+            )
+            # Don't wait for full deletion — it can take minutes
+            # Just fire-and-forget, the RG will be cleaned up async
+            logger.info(f"Cleanup: deletion started for resource group '{rg}'")
+        except Exception as e:
+            logger.warning(f"Cleanup: failed to delete resource group '{rg}': {e}")
+
+    # ── Main streaming generator ──────────────────────────────
+
+    def _track(event_json: str):
+        """Record streamed event in the activity tracker."""
+        try:
+            evt = json.loads(event_json)
+        except Exception:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        tracker = _active_validations.get(service_id)
+        if not tracker:
+            tracker = {
+                "status": "running",
+                "service_name": svc.get("name", service_id),
+                "started_at": now,
+                "updated_at": now,
+                "phase": "",
+                "attempt": 0,
+                "max_attempts": MAX_HEAL_ATTEMPTS,
+                "progress": 0,
+                "rg_name": rg_name,
+                "events": [],
+                "error": "",
+            }
+            _active_validations[service_id] = tracker
+        tracker["updated_at"] = now
+        if evt.get("phase"):
+            tracker["phase"] = evt["phase"]
+        if evt.get("attempt"):
+            tracker["attempt"] = evt["attempt"]
+        if evt.get("progress"):
+            tracker["progress"] = evt["progress"]
+        if evt.get("detail"):
+            tracker["detail"] = evt["detail"]
+            tracker["events"].append({
+                "type": evt.get("type", ""),
+                "phase": evt.get("phase", ""),
+                "detail": evt["detail"],
+                "time": now,
+            })
+            # Keep only last 80 events for richer history
+            if len(tracker["events"]) > 80:
+                tracker["events"] = tracker["events"][-80:]
+        # Capture init metadata
+        if evt.get("type") == "init" and evt.get("meta"):
+            tracker["template_meta"] = {
+                "resource_count": evt["meta"].get("resource_count", 0),
+                "resource_types": evt["meta"].get("resource_types", []),
+                "size_kb": evt["meta"].get("template_size_kb", 0),
+                "schema": evt["meta"].get("schema", ""),
+                "parameters": evt["meta"].get("parameters", []),
+                "outputs": evt["meta"].get("outputs", []),
+                "resource_names": evt["meta"].get("resource_names", []),
+                "api_versions": evt["meta"].get("api_versions", []),
+                "has_policy": evt["meta"].get("has_policy", False),
+            }
+            tracker["region"] = evt["meta"].get("region", "")
+            tracker["subscription"] = evt["meta"].get("subscription", "")
+        # Track completed steps
+        if evt.get("type") == "progress" and evt.get("phase", "").endswith("_complete"):
+            completed = tracker.get("steps_completed", [])
+            step = evt["phase"].replace("_complete", "")
+            if step not in completed:
+                completed.append(step)
+            tracker["steps_completed"] = completed
+        # Terminal states
+        if evt.get("type") == "done":
+            tracker["status"] = "succeeded"
+            tracker["progress"] = 1.0
+        elif evt.get("type") == "error":
+            tracker["status"] = "failed"
+            tracker["error"] = evt.get("detail", "")
 
     async def stream_validation():
-        """Run What-If with auto-healing loop."""
         nonlocal template_content
         current_template = template_content
+        deployed_rg = None  # track if we need cleanup
+
+        # ── Extract template metadata for verbose display ─────
+        def _extract_template_meta(tmpl_str: str) -> dict:
+            """Extract human-readable metadata from an ARM template string."""
+            try:
+                t = json.loads(tmpl_str)
+            except Exception:
+                return {"resource_count": 0, "resource_types": [], "schema": "unknown", "size_kb": round(len(tmpl_str) / 1024, 1)}
+            resources = t.get("resources", [])
+            rtypes = list({r.get("type", "?") for r in resources if isinstance(r, dict)})
+            rnames = [r.get("name", "?") for r in resources if isinstance(r, dict)]
+            schema = t.get("$schema", "unknown")
+            if "deploymentTemplate" in schema:
+                schema = "ARM Deployment Template"
+            api_versions = list({r.get("apiVersion", "?") for r in resources if isinstance(r, dict)})
+            params = list(t.get("parameters", {}).keys())
+            outputs = list(t.get("outputs", {}).keys())
+            return {
+                "resource_count": len(resources),
+                "resource_types": rtypes,
+                "resource_names": rnames,
+                "api_versions": api_versions,
+                "schema": schema,
+                "parameters": params[:10],
+                "outputs": outputs[:10],
+                "size_kb": round(len(tmpl_str) / 1024, 1),
+            }
+
+        tmpl_meta = _extract_template_meta(current_template)
+        import os as _os
+        _sub_id = _os.environ.get("AZURE_SUBSCRIPTION_ID", "unknown")[:12] + "…"
+
+        # Register job start with metadata
+        _active_validations[service_id] = {
+            "status": "running",
+            "service_name": svc.get("name", service_id),
+            "category": svc.get("category", ""),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "phase": "starting",
+            "detail": "Initializing validation pipeline…",
+            "attempt": 0,
+            "max_attempts": MAX_HEAL_ATTEMPTS,
+            "progress": 0,
+            "rg_name": rg_name,
+            "region": region,
+            "subscription": _sub_id,
+            "template_meta": tmpl_meta,
+            "steps_completed": [],
+            "events": [],
+            "error": "",
+        }
+
+        # Emit a rich initialization event
+        yield json.dumps({
+            "type": "init",
+            "phase": "starting",
+            "detail": f"Starting deployment validation for {svc.get('name', service_id)} ({service_id})",
+            "progress": 0.005,
+            "meta": {
+                "service_name": svc.get("name", service_id),
+                "service_id": service_id,
+                "category": svc.get("category", ""),
+                "region": region,
+                "subscription": _sub_id,
+                "resource_group": rg_name,
+                "template_size_kb": tmpl_meta["size_kb"],
+                "resource_count": tmpl_meta["resource_count"],
+                "resource_types": tmpl_meta["resource_types"],
+                "resource_names": tmpl_meta.get("resource_names", []),
+                "api_versions": tmpl_meta.get("api_versions", []),
+                "schema": tmpl_meta["schema"],
+                "parameters": tmpl_meta.get("parameters", []),
+                "outputs": tmpl_meta.get("outputs", []),
+                "max_attempts": MAX_HEAL_ATTEMPTS,
+                "has_policy": bool((artifacts.get("policy", {}).get("content") or "").strip()),
+            },
+        }) + "\n"
 
         try:
             for attempt in range(1, MAX_HEAL_ATTEMPTS + 1):
                 is_last = attempt == MAX_HEAL_ATTEMPTS
-                base_progress = (attempt - 1) / MAX_HEAL_ATTEMPTS
+                att_base = (attempt - 1) / MAX_HEAL_ATTEMPTS
 
                 yield json.dumps({
                     "type": "iteration_start",
                     "attempt": attempt,
                     "max_attempts": MAX_HEAL_ATTEMPTS,
-                    "detail": f"Attempt {attempt}/{MAX_HEAL_ATTEMPTS} — parsing ARM template…",
-                    "progress": base_progress + 0.02,
+                    "detail": f"Attempt {attempt}/{MAX_HEAL_ATTEMPTS} — Parsing and validating ARM template JSON ({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s): {', '.join(tmpl_meta['resource_types'][:3]) or 'unknown'})…",
+                    "progress": att_base + 0.01,
                 }) + "\n"
 
-                # ── Parse JSON ────────────────────────────────
+                # ── 1. Parse JSON ─────────────────────────────
                 try:
                     template_json = json.loads(current_template)
-                except json.JSONDecodeError as parse_err:
-                    error_msg = f"ARM template is not valid JSON: {parse_err}"
-
+                except json.JSONDecodeError as e:
+                    error_msg = f"ARM template is not valid JSON — parse error at line {e.lineno}, col {e.colno}: {e.msg}"
                     if is_last:
                         await fail_service_validation(service_id, error_msg)
-                        yield json.dumps({
-                            "type": "error",
-                            "phase": "parsing",
-                            "attempt": attempt,
-                            "detail": f"Attempt {attempt} — {error_msg}",
-                        }) + "\n"
+                        yield json.dumps({"type": "error", "phase": "parsing", "attempt": attempt, "detail": error_msg}) + "\n"
                         return
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt, "detail": f"JSON parse error at line {e.lineno}, col {e.colno}: {e.msg} — invoking Copilot SDK to auto-heal the ARM template ({tmpl_meta['size_kb']} KB)…", "error": error_msg, "progress": att_base + 0.02}) + "\n"
+                    current_template = await _copilot_fix("template", current_template, error_msg)
+                    tmpl_meta = _extract_template_meta(current_template)
+                    await save_service_artifact(service_id, "template", content=current_template, status="approved", notes=f"Auto-healed (attempt {attempt}): JSON parse error")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt, "detail": f"Copilot SDK rewrote template (now {tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s)) — retrying validation…", "progress": att_base + 0.03}) + "\n"
+                    continue
 
-                    yield json.dumps({
-                        "type": "healing",
-                        "phase": "fixing_template",
-                        "attempt": attempt,
-                        "detail": f"Attempt {attempt} — JSON parse error, asking AI to fix template…",
-                        "error": error_msg,
-                        "progress": base_progress + 0.05,
-                    }) + "\n"
-
-                    current_template = await _copilot_fix_artifact("template", current_template, error_msg)
-                    await save_service_artifact(
-                        service_id, "template",
-                        content=current_template,
-                        status="approved",
-                        notes=f"Auto-healed (attempt {attempt}): fixed JSON parse error",
-                    )
-
-                    yield json.dumps({
-                        "type": "healing_done",
-                        "phase": "template_fixed",
-                        "attempt": attempt,
-                        "detail": f"Attempt {attempt} — AI rewrote template, retrying…",
-                        "progress": base_progress + 0.08,
-                    }) + "\n"
-                    continue  # next attempt
-
-                # ── What-If ───────────────────────────────────
+                # ── 2. What-If ────────────────────────────────
+                res_types_str = ", ".join(tmpl_meta["resource_types"][:5]) or "unknown"
                 yield json.dumps({
-                    "type": "progress",
-                    "phase": "what_if",
-                    "attempt": attempt,
-                    "detail": f"Attempt {attempt} — running What-If against Azure ({region})…",
-                    "progress": base_progress + 0.04,
+                    "type": "progress", "phase": "what_if", "attempt": attempt,
+                    "detail": f"Submitting ARM What-If analysis to Azure Resource Manager — previewing changes for {tmpl_meta['resource_count']} resource(s) [{res_types_str}] in resource group '{rg_name}' ({region})",
+                    "progress": att_base + 0.03,
+                    "step_info": {"rg": rg_name, "region": region, "resource_types": tmpl_meta["resource_types"], "resource_count": tmpl_meta["resource_count"]},
                 }) + "\n"
 
                 try:
                     from src.tools.deploy_engine import run_what_if
+                    wif = await run_what_if(resource_group=rg_name, template=template_json, parameters={}, region=region)
+                    logger.info(f"What-If attempt {attempt}: status={wif.get('status')}, changes={wif.get('total_changes')}")
+                except Exception as e:
+                    logger.error(f"What-If attempt {attempt} exception: {e}", exc_info=True)
+                    wif = {"status": "error", "errors": [str(e)]}
 
-                    what_if_result = await run_what_if(
+                if wif.get("status") != "success":
+                    errors = "; ".join(str(e) for e in wif.get("errors", [])) or "Unknown What-If error"
+
+                    # Detect infrastructure errors that are NOT template problems
+                    _infra_keywords = ("beingdeleted", "being deleted", "deprovisioning",
+                                       "throttled", "toomanyrequests", "retryable",
+                                       "serviceunavailable", "internalservererror",
+                                       "still being deleted")
+                    _is_infra_error = any(kw in errors.lower() for kw in _infra_keywords)
+
+                    if _is_infra_error:
+                        # Don't burn a heal attempt — just wait and retry (no cleanup!)
+                        yield json.dumps({"type": "progress", "phase": "infra_retry", "attempt": attempt,
+                            "detail": f"Transient Azure infrastructure error (not a template problem, won't count as a heal attempt) — waiting 10s before retry. Error: {errors[:200]}",
+                            "progress": att_base + 0.05}) + "\n"
+                        await asyncio.sleep(10)
+                        continue
+
+                    if is_last:
+                        await fail_service_validation(service_id, f"What-If failed after {MAX_HEAL_ATTEMPTS} attempts: {errors}")
+                        yield json.dumps({"type": "error", "phase": "what_if", "attempt": attempt, "detail": f"What-If analysis rejected by Azure Resource Manager after {MAX_HEAL_ATTEMPTS} auto-heal attempts. Error: {errors}"}) + "\n"
+                        return
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt, "detail": f"What-If analysis rejected by ARM — invoking Copilot SDK to diagnose and auto-heal the template. Error: {errors[:300]}", "error": errors, "progress": att_base + 0.05}) + "\n"
+                    current_template = await _copilot_fix("template", current_template, errors)
+                    tmpl_meta = _extract_template_meta(current_template)
+                    await save_service_artifact(service_id, "template", content=current_template, status="approved", notes=f"Auto-healed (attempt {attempt}): {errors[:200]}")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt, "detail": f"Copilot SDK rewrote template (now {tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s): {', '.join(tmpl_meta['resource_types'][:3])}) — restarting validation pipeline…", "progress": att_base + 0.07}) + "\n"
+                    continue
+
+                change_summary = ", ".join(f"{v} {k}" for k, v in wif.get("change_counts", {}).items())
+                # Build per-resource details for verbose display
+                change_details = []
+                for ch in wif.get("changes", [])[:10]:
+                    change_details.append(f"{ch.get('change_type','?')}: {ch.get('resource_type','?')}/{ch.get('resource_name','?')}")
+                change_detail_str = "; ".join(change_details) if change_details else "no resource-level changes"
+                yield json.dumps({
+                    "type": "progress", "phase": "what_if_complete", "attempt": attempt,
+                    "detail": f"✓ What-If analysis passed — ARM accepted the template. Changes: {change_summary or 'no changes detected'}. Resources: {change_detail_str}",
+                    "progress": att_base + 0.06,
+                    "result": wif,
+                }) + "\n"
+
+                # ── 3. Actual Deploy ──────────────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "deploying", "attempt": attempt,
+                    "detail": f"Submitting ARM deployment to Azure — provisioning {tmpl_meta['resource_count']} resource(s) [{', '.join(tmpl_meta['resource_types'][:5])}] into resource group '{rg_name}' in {region}. Deployment mode: incremental. Deployment name: validate-{attempt}",
+                    "progress": att_base + 0.08,
+                    "step_info": {"deployment_name": f"validate-{attempt}", "mode": "incremental", "rg": rg_name, "region": region},
+                }) + "\n"
+
+                try:
+                    from src.tools.deploy_engine import execute_deployment
+
+                    deploy_events: list[dict] = []
+
+                    async def _on_deploy_progress(evt):
+                        deploy_events.append(evt)
+
+                    deploy_result = await execute_deployment(
                         resource_group=rg_name,
                         template=template_json,
                         parameters={},
                         region=region,
+                        deployment_name=f"validate-{attempt}",
+                        initiated_by="InfraForge Validator",
+                        on_progress=_on_deploy_progress,
                     )
-                except Exception as wif_exc:
-                    what_if_result = {"status": "error", "errors": [str(wif_exc)]}
+                    deploy_status = deploy_result.get("status", "unknown")
+                    logger.info(f"Deploy attempt {attempt}: status={deploy_status}")
+                except Exception as e:
+                    logger.error(f"Deploy attempt {attempt} exception: {e}", exc_info=True)
+                    deploy_result = {"status": "failed", "error": str(e)}
+                    deploy_status = "failed"
 
-                if what_if_result.get("status") == "success":
-                    # ── What-If passed ────────────────────────
-                    yield json.dumps({
-                        "type": "progress",
-                        "phase": "what_if_complete",
-                        "attempt": attempt,
-                        "detail": f"Attempt {attempt} — What-If passed: {what_if_result.get('total_changes', 0)} resource(s)",
-                        "progress": base_progress + 0.07,
-                        "result": what_if_result,
-                    }) + "\n"
+                deployed_rg = rg_name  # mark for cleanup
 
-                    # Validate policy JSON
-                    yield json.dumps({
-                        "type": "progress",
-                        "phase": "policy_check",
-                        "attempt": attempt,
-                        "detail": "Validating policy definition format…",
-                        "progress": base_progress + 0.08,
-                    }) + "\n"
+                if deploy_status != "succeeded":
+                    deploy_error = deploy_result.get("error", "Unknown deployment error")
 
-                    policy_content = (artifacts.get("policy", {}).get("content") or "").strip()
-                    if policy_content:
+                    # If the error is the generic ARM message, try to fetch operation-level details
+                    if "Please list deployment operations" in deploy_error or "At least one resource" in deploy_error:
                         try:
-                            json.loads(policy_content)
-                        except json.JSONDecodeError as pe:
-                            policy_err = f"Policy definition is not valid JSON: {pe}"
-                            # Try to auto-heal the policy too
-                            if not is_last:
-                                yield json.dumps({
-                                    "type": "healing",
-                                    "phase": "fixing_policy",
-                                    "attempt": attempt,
-                                    "detail": f"Policy JSON error — asking AI to fix…",
-                                    "error": policy_err,
-                                    "progress": base_progress + 0.085,
-                                }) + "\n"
+                            from src.tools.deploy_engine import _get_resource_client, _get_deployment_operation_errors
+                            _rc = _get_resource_client()
+                            _lp = asyncio.get_event_loop()
+                            op_errors = await _get_deployment_operation_errors(
+                                _rc, _lp, rg_name, f"validate-{attempt}"
+                            )
+                            if op_errors:
+                                deploy_error = f"{deploy_error} | Operation errors: {op_errors}"
+                                logger.info(f"Deploy attempt {attempt} operation errors: {op_errors}")
+                        except Exception as oe:
+                            logger.debug(f"Could not fetch operation errors: {oe}")
 
-                                fixed_policy = await _copilot_fix_artifact("policy", policy_content, policy_err)
-                                await save_service_artifact(
-                                    service_id, "policy",
-                                    content=fixed_policy,
-                                    status="approved",
-                                    notes=f"Auto-healed (attempt {attempt}): fixed policy JSON",
-                                )
-                                # Re-fetch artifacts so the next iteration uses the fixed version
-                                artifacts["policy"]["content"] = fixed_policy
-
-                                yield json.dumps({
-                                    "type": "healing_done",
-                                    "phase": "policy_fixed",
-                                    "attempt": attempt,
-                                    "detail": "AI rewrote policy, continuing…",
-                                    "progress": base_progress + 0.09,
-                                }) + "\n"
-
-                                # Policy fixed, re-validate inline
-                                try:
-                                    json.loads(fixed_policy)
-                                except json.JSONDecodeError:
-                                    continue  # will try again next iteration
-
-                            else:
-                                await fail_service_validation(service_id, policy_err)
-                                yield json.dumps({
-                                    "type": "error",
-                                    "phase": "policy_check",
-                                    "attempt": attempt,
-                                    "detail": policy_err,
-                                }) + "\n"
-                                return
-
-                    # ── All validation passed ─────────────────
-                    yield json.dumps({
-                        "type": "progress",
-                        "phase": "promoting",
-                        "attempt": attempt,
-                        "detail": "All validation passed — approving service…",
-                        "progress": 0.95,
-                    }) + "\n"
-
-                    await promote_service_after_validation(service_id, what_if_result)
+                    # Detect infrastructure errors that are NOT template problems
+                    _is_infra_deploy = any(kw in deploy_error.lower() for kw in
+                        ("beingdeleted", "being deleted", "deprovisioning",
+                         "throttled", "toomanyrequests", "retryable",
+                         "serviceunavailable", "internalservererror",
+                         "still being deleted"))
 
                     yield json.dumps({
-                        "type": "done",
-                        "phase": "approved",
-                        "attempt": attempt,
-                        "total_attempts": attempt,
-                        "detail": f"🎉 {svc['name']} approved! Passed on attempt {attempt}{'.' if attempt == 1 else f' after {attempt - 1} auto-fix(es).'}",
-                        "progress": 1.0,
-                        "what_if_summary": what_if_result.get("change_counts", {}),
-                        "total_changes": what_if_result.get("total_changes", 0),
+                        "type": "progress", "phase": "deploy_failed", "attempt": attempt,
+                        "detail": f"ARM deployment 'validate-{attempt}' failed in resource group '{rg_name}' ({region}). Error from Azure: {deploy_error[:400]}",
+                        "progress": att_base + 0.12,
                     }) + "\n"
-                    return  # success — exit the loop
 
-                # ── What-If FAILED ────────────────────────────
-                errors = what_if_result.get("errors", [])
-                error_msg = "; ".join(str(e) for e in errors) if errors else "Unknown What-If error"
+                    if _is_infra_deploy:
+                        yield json.dumps({"type": "progress", "phase": "infra_retry", "attempt": attempt,
+                            "detail": f"Transient Azure infrastructure error (not a template problem, won't count as a heal attempt) — waiting 10s before retrying into the same RG. Error: {deploy_error[:200]}",
+                            "progress": att_base + 0.13}) + "\n"
+                        await asyncio.sleep(10)
+                        continue
 
-                if is_last:
-                    full_error = f"What-If failed after {MAX_HEAL_ATTEMPTS} attempts: {error_msg}"
-                    await fail_service_validation(service_id, full_error)
-                    yield json.dumps({
-                        "type": "error",
-                        "phase": "what_if",
-                        "attempt": attempt,
-                        "detail": full_error,
-                        "result": what_if_result,
-                    }) + "\n"
-                    return
+                    if is_last:
+                        await _cleanup_rg(rg_name)
+                        await fail_service_validation(service_id, f"Deploy failed after {MAX_HEAL_ATTEMPTS} attempts: {deploy_error}")
+                        yield json.dumps({"type": "error", "phase": "deploy", "attempt": attempt, "detail": f"Deployment failed after {MAX_HEAL_ATTEMPTS} auto-heal attempts. Final error from Azure: {deploy_error}"}) + "\n"
+                        return
 
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt, "detail": f"Deployment rejected by Azure — invoking Copilot SDK to diagnose deployment error and auto-heal template. Error: {deploy_error[:300]}", "error": deploy_error, "progress": att_base + 0.13}) + "\n"
+                    current_template = await _copilot_fix("template", current_template, deploy_error)
+                    tmpl_meta = _extract_template_meta(current_template)
+                    await save_service_artifact(service_id, "template", content=current_template, status="approved", notes=f"Auto-healed (attempt {attempt}): deploy error — {deploy_error[:200]}")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt, "detail": f"Copilot SDK rewrote template (now {tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s): {', '.join(tmpl_meta['resource_types'][:3])}) — redeploying into same RG (incremental mode)…", "progress": att_base + 0.15}) + "\n"
+                    # Don't cleanup — redeploy into the same RG (incremental mode)
+                    continue
+
+                # Deployment succeeded!
+                provisioned = deploy_result.get("provisioned_resources", [])
+                resource_summaries = [f"{r.get('type','?')}/{r.get('name','?')} ({r.get('location', region)})" for r in provisioned]
                 yield json.dumps({
-                    "type": "healing",
-                    "phase": "fixing_template",
-                    "attempt": attempt,
-                    "detail": f"Attempt {attempt} — What-If failed, asking AI to fix template…",
-                    "error": error_msg,
-                    "progress": base_progress + 0.06,
+                    "type": "progress", "phase": "deploy_complete", "attempt": attempt,
+                    "detail": f"✓ ARM deployment 'validate-{attempt}' succeeded — {len(provisioned)} resource(s) provisioned in '{rg_name}': {'; '.join(resource_summaries[:5]) or 'none'}",
+                    "progress": att_base + 0.12,
+                    "resources": provisioned,
                 }) + "\n"
 
-                # Ask Copilot SDK to fix the template
-                current_template = await _copilot_fix_artifact("template", current_template, error_msg)
-
-                # Persist the fixed template
-                await save_service_artifact(
-                    service_id, "template",
-                    content=current_template,
-                    status="approved",
-                    notes=f"Auto-healed (attempt {attempt}): {error_msg[:200]}",
-                )
-
+                # ── 4. Verify resources exist ─────────────────
                 yield json.dumps({
-                    "type": "healing_done",
-                    "phase": "template_fixed",
-                    "attempt": attempt,
-                    "detail": f"Attempt {attempt} — AI rewrote template, retrying…",
-                    "progress": base_progress + 0.08,
+                    "type": "progress", "phase": "resource_check", "attempt": attempt,
+                    "detail": f"Querying Azure Resource Manager to verify {len(provisioned)} resource(s) exist in resource group '{rg_name}' — fetching resource properties for policy evaluation…",
+                    "progress": att_base + 0.13,
                 }) + "\n"
 
-                # Loop continues to next attempt
+                from src.tools.deploy_engine import _get_resource_client
+                rc = _get_resource_client()
+                loop = asyncio.get_event_loop()
+                try:
+                    live_resources = await loop.run_in_executor(
+                        None,
+                        lambda: list(rc.resources.list_by_resource_group(rg_name))
+                    )
+                    resource_details = []
+                    for r in live_resources:
+                        detail = {
+                            "id": r.id,
+                            "name": r.name,
+                            "type": r.type,
+                            "location": r.location,
+                            "tags": dict(r.tags) if r.tags else {},
+                        }
+                        # Fetch full resource properties for policy evaluation
+                        try:
+                            full = await loop.run_in_executor(
+                                None,
+                                lambda r=r: rc.resources.get_by_id(r.id, api_version="2023-07-01")
+                            )
+                            if full.properties:
+                                detail["properties"] = full.properties
+                        except Exception:
+                            pass
+                        resource_details.append(detail)
+
+                    res_detail_strs = [f"{r['type']}/{r['name']} @ {r['location']}" for r in resource_details[:8]]
+                    yield json.dumps({
+                        "type": "progress", "phase": "resource_check_complete", "attempt": attempt,
+                        "detail": f"✓ Verified {len(resource_details)} live resource(s) in Azure: {'; '.join(res_detail_strs)}",
+                        "progress": att_base + 0.14,
+                        "resources": [{"name": r["name"], "type": r["type"], "location": r["location"]} for r in resource_details],
+                    }) + "\n"
+
+                except Exception as e:
+                    logger.warning(f"Resource check failed: {e}")
+                    resource_details = []
+                    yield json.dumps({
+                        "type": "progress", "phase": "resource_check_warning", "attempt": attempt,
+                        "detail": f"Could not enumerate resources (non-fatal): {e}",
+                        "progress": att_base + 0.14,
+                    }) + "\n"
+
+                # ── 5. Policy compliance test ─────────────────
+                policy_content = (artifacts.get("policy", {}).get("content") or "").strip()
+                policy_results = []
+
+                if policy_content and resource_details:
+                    _policy_size = round(len(policy_content) / 1024, 1)
+                    try:
+                        _pj = json.loads(policy_content)
+                        _rule_count = len(_pj.get("rules", []))
+                    except Exception:
+                        _rule_count = 0
+                    yield json.dumps({
+                        "type": "progress", "phase": "policy_testing", "attempt": attempt,
+                        "detail": f"Evaluating {len(resource_details)} deployed resource(s) against organization policy ({_policy_size} KB, {_rule_count} rule(s)). Checking tags, SKUs, locations, networking, and security configurations…",
+                        "progress": att_base + 0.15,
+                    }) + "\n"
+
+                    try:
+                        policy_json = json.loads(policy_content)
+                    except json.JSONDecodeError as pe:
+                        # Auto-heal policy if invalid
+                        if not is_last:
+                            yield json.dumps({"type": "healing", "phase": "fixing_policy", "attempt": attempt, "detail": f"Policy JSON error — asking AI to fix…", "error": str(pe), "progress": att_base + 0.155}) + "\n"
+                            fixed_policy = await _copilot_fix("policy", policy_content, str(pe))
+                            await save_service_artifact(service_id, "policy", content=fixed_policy, status="approved", notes=f"Auto-healed (attempt {attempt}): policy JSON error")
+                            artifacts["policy"]["content"] = fixed_policy
+                            try:
+                                policy_json = json.loads(fixed_policy)
+                                policy_content = fixed_policy
+                            except json.JSONDecodeError:
+                                await _cleanup_rg(rg_name)
+                                deployed_rg = None
+                                continue
+                        else:
+                            await _cleanup_rg(rg_name)
+                            await fail_service_validation(service_id, f"Policy JSON invalid: {pe}")
+                            yield json.dumps({"type": "error", "phase": "policy", "attempt": attempt, "detail": f"Policy JSON invalid: {pe}"}) + "\n"
+                            return
+
+                    policy_results = _test_policy_compliance(policy_json, resource_details)
+                    all_compliant = all(r["compliant"] for r in policy_results)
+                    compliant_count = sum(1 for r in policy_results if r["compliant"])
+
+                    for pr in policy_results:
+                        icon = "✅" if pr["compliant"] else "❌"
+                        yield json.dumps({
+                            "type": "policy_result", "phase": "policy_testing", "attempt": attempt,
+                            "detail": f"{icon} {pr['resource_type']}/{pr['resource_name']} — {pr['reason']}",
+                            "compliant": pr["compliant"],
+                            "resource": pr,
+                            "progress": att_base + 0.16,
+                        }) + "\n"
+
+                    if not all_compliant:
+                        violations = [pr for pr in policy_results if not pr["compliant"]]
+                        violation_desc = "; ".join(f"{v['resource_name']}: {v['reason']}" for v in violations)
+                        fail_msg = f"{compliant_count}/{len(policy_results)} resources compliant — {len(violations)} policy violation(s): {violation_desc[:300]}"
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_failed", "attempt": attempt,
+                            "detail": fail_msg,
+                            "progress": att_base + 0.17,
+                        }) + "\n"
+
+                        if is_last:
+                            await _cleanup_rg(rg_name)
+                            await fail_service_validation(service_id, fail_msg)
+                            yield json.dumps({"type": "error", "phase": "policy", "attempt": attempt, "detail": f"Policy compliance failed after {MAX_HEAL_ATTEMPTS} auto-heal attempts. Violations: {violation_desc}"}) + "\n"
+                            return
+
+                        fix_error = f"Policy violation: {violation_desc}. The policy requires: {policy_content[:500]}"
+                        yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt, "detail": f"Policy violations detected on {len(violations)} resource(s) — invoking Copilot SDK to auto-heal template for compliance. Violations: {violation_desc[:300]}", "error": fix_error, "progress": att_base + 0.175}) + "\n"
+                        current_template = await _copilot_fix("template", current_template, fix_error)
+                        tmpl_meta = _extract_template_meta(current_template)
+                        await save_service_artifact(service_id, "template", content=current_template, status="approved", notes=f"Auto-healed (attempt {attempt}): policy violation")
+                        yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt, "detail": f"Copilot SDK rewrote template for policy compliance (now {tmpl_meta['size_kb']} KB) — redeploying into same RG and re-testing…", "progress": att_base + 0.18}) + "\n"
+                        # Don't cleanup — redeploy into the same RG (incremental mode)
+                        continue
+                else:
+                    yield json.dumps({
+                        "type": "progress", "phase": "policy_skip", "attempt": attempt,
+                        "detail": "No policy content or no resources to test — skipping policy check",
+                        "progress": att_base + 0.16,
+                    }) + "\n"
+
+                # ── 6. Cleanup validation RG ──────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup", "attempt": attempt,
+                    "detail": f"All checks passed — initiating deletion of validation resource group '{rg_name}' and all {len(resource_details)} resource(s) within it. This is fire-and-forget; Azure will complete deletion asynchronously.",
+                    "progress": 0.90,
+                }) + "\n"
+
+                await _cleanup_rg(rg_name)
+                deployed_rg = None
+
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup_complete", "attempt": attempt,
+                    "detail": f"✓ Resource group '{rg_name}' deletion initiated — Azure will remove all validation resources in the background",
+                    "progress": 0.93,
+                }) + "\n"
+
+                # ── 7. Promote ────────────────────────────────
+                validation_summary = {
+                    "what_if": wif,
+                    "deployed_resources": [{"name": r["name"], "type": r["type"], "location": r["location"]} for r in resource_details],
+                    "policy_compliance": policy_results,
+                    "all_compliant": all(r["compliant"] for r in policy_results) if policy_results else True,
+                    "attempts": attempt,
+                }
+
+                yield json.dumps({
+                    "type": "progress", "phase": "promoting", "attempt": attempt,
+                    "detail": f"All validation gates passed — promoting {svc['name']} ({service_id}) from 'validating' → 'approved' in the service catalog…",
+                    "progress": 0.97,
+                }) + "\n"
+
+                await promote_service_after_validation(service_id, validation_summary)
+
+                compliant_str = f", all {len(policy_results)} policy check(s) passed" if policy_results else ""
+                res_types_done = ", ".join(tmpl_meta["resource_types"][:5]) or "N/A"
+                yield json.dumps({
+                    "type": "done", "phase": "approved", "attempt": attempt,
+                    "total_attempts": attempt,
+                    "detail": f"🎉 {svc['name']} approved! Successfully deployed {len(resource_details)} resource(s) [{res_types_done}] to Azure{compliant_str}. Validation resource group cleaned up.{'' if attempt == 1 else f' Required {attempt} attempt(s) with Copilot SDK auto-healing.'}",
+                    "progress": 1.0,
+                    "summary": validation_summary,
+                }) + "\n"
+                return  # ✅ success
 
         except Exception as e:
-            logger.error(f"Deployment validation failed for {service_id}: {e}")
+            logger.error(f"Deployment validation error for {service_id}: {e}", exc_info=True)
             try:
                 await fail_service_validation(service_id, str(e))
             except Exception:
                 pass
-            yield json.dumps({
-                "type": "error",
-                "phase": "unknown",
-                "detail": str(e),
-            }) + "\n"
+            yield json.dumps({"type": "error", "phase": "unknown", "detail": str(e)}) + "\n"
+        except (GeneratorExit, asyncio.CancelledError):
+            # Client disconnected — clean up and mark failed so user can retry
+            logger.warning(f"Validation stream cancelled (client disconnect) for {service_id}")
+            try:
+                await fail_service_validation(service_id, "Validation interrupted — client disconnected. Please retry.")
+            except Exception:
+                pass
+        finally:
+            # Safety net: always clean up if an RG was created
+            if deployed_rg:
+                try:
+                    await _cleanup_rg(deployed_rg)
+                except Exception:
+                    pass
+
+    async def _tracked_stream():
+        """Wrap stream_validation to record every event in the activity tracker."""
+        try:
+            async for line in stream_validation():
+                _track(line)
+                yield line
+        finally:
+            # Clean up tracker after a delay so activity page can still show final state
+            async def _cleanup_tracker():
+                await asyncio.sleep(300)  # keep for 5 min after completion
+                _active_validations.pop(service_id, None)
+            asyncio.create_task(_cleanup_tracker())
 
     return StreamingResponse(
-        stream_validation(),
+        _tracked_stream(),
         media_type="application/x-ndjson",
     )
 
@@ -1187,6 +2035,713 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
 
     return StreamingResponse(
         stream_generation(),
+        media_type="application/x-ndjson",
+    )
+
+
+# ── Service Versions & Onboarding ─────────────────────────────
+
+@app.get("/api/services/{service_id:path}/versions")
+async def get_service_versions_endpoint(service_id: str):
+    """Get all versions of a service's ARM template."""
+    from src.database import get_service, get_service_versions
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    versions = await get_service_versions(service_id)
+    return JSONResponse({
+        "service_id": service_id,
+        "active_version": svc.get("active_version"),
+        "versions": versions,
+    })
+
+
+@app.post("/api/services/{service_id:path}/onboard")
+async def onboard_service_endpoint(service_id: str, request: Request):
+    """One-click service onboarding: auto-generate ARM template and run full validation.
+
+    New pipeline:
+    1. Auto-generate ARM template from resource type (built-in skeleton or Copilot)
+    2. Static policy check against org-wide governance policies + security standards
+    3. ARM What-If deployment preview
+    4. ARM deployment to validation resource group
+    5. Runtime resource compliance check
+    6. Cleanup validation RG
+    7. Promote: version → approved, service → approved
+
+    Streams NDJSON events for real-time progress tracking.
+    Auto-healing via Copilot SDK (up to 5 attempts).
+    """
+    from src.database import (
+        get_service, create_service_version, update_service_version_status,
+        update_service_version_template, set_active_service_version,
+        fail_service_validation, get_governance_policies_as_dict,
+    )
+    from src.tools.arm_generator import (
+        generate_arm_template, has_builtin_skeleton,
+        generate_arm_template_with_copilot,
+    )
+    from src.tools.static_policy_validator import (
+        validate_template, build_remediation_prompt,
+    )
+
+    MAX_HEAL_ATTEMPTS = 5
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    region = body.get("region", "eastus2")
+    import uuid as _uuid
+    _run_id = _uuid.uuid4().hex[:8]
+    rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
+
+    # ── Copilot fix helper ────────────────────────────────────
+
+    async def _copilot_fix(content: str, error: str) -> str:
+        """Ask the Copilot SDK to fix an ARM template."""
+        prompt = (
+            "The following ARM template failed Azure deployment validation.\n\n"
+            f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
+            f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+            "Fix the template so it deploys successfully. Return ONLY the "
+            "corrected raw JSON — no markdown fences, no explanation.\n\n"
+            "CRITICAL RULES:\n"
+            "- Keep ALL location parameters as \"[resourceGroup().location]\" or "
+            "\"[parameters('location')]\" — NEVER hardcode a region like 'centralus', "
+            "'eastus2', etc.\n"
+            "- Keep the same resource intent and resource names.\n"
+            "- Fix schema issues, missing required properties, invalid API versions, "
+            "and structural problems.\n"
+            "- If a resource like diagnosticSettings requires an external dependency "
+            "(Log Analytics workspace, storage account), REMOVE it rather than adding "
+            "a fake dependency.\n"
+            "- Do NOT change parameter default values unless they are directly causing "
+            "the error.\n"
+            "- Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
+        )
+
+        session = None
+        try:
+            session = await copilot_client.create_session({
+                "model": COPILOT_MODEL, "streaming": True, "tools": [],
+                "system_message": {"content": (
+                    "You are an Azure infrastructure expert. "
+                    "Return ONLY raw JSON — no markdown, no code fences."
+                )},
+            })
+            chunks: list[str] = []
+            done_ev = asyncio.Event()
+
+            def on_event(ev):
+                try:
+                    if ev.type.value == "assistant.message_delta":
+                        chunks.append(ev.data.delta_content or "")
+                    elif ev.type.value in ("assistant.message", "session.idle"):
+                        done_ev.set()
+                except Exception:
+                    done_ev.set()
+
+            unsub = session.on(on_event)
+            try:
+                await session.send({"prompt": prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=90)
+            finally:
+                unsub()
+
+            fixed = "".join(chunks).strip()
+            if fixed.startswith("```"):
+                lines = fixed.split("\n")[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                fixed = "\n".join(lines).strip()
+
+            # Guard: ensure healer didn't corrupt the location parameter
+            try:
+                _ft = json.loads(fixed)
+                _params = _ft.get("parameters", {})
+                _loc = _params.get("location", {})
+                _dv = _loc.get("defaultValue", "")
+                if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+                    _loc["defaultValue"] = "[resourceGroup().location]"
+                    logger.warning(f"Copilot healer corrupted location to '{_dv}' — restored")
+                    fixed = json.dumps(_ft, indent=2)
+                for _res in _ft.get("resources", []):
+                    _rloc = _res.get("location", "")
+                    if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                        _res["location"] = "[parameters('location')]"
+                        logger.warning(f"Copilot healer hardcoded resource location to '{_rloc}' — restored")
+                        fixed = json.dumps(_ft, indent=2)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+            return fixed
+        finally:
+            if session:
+                try:
+                    await session.destroy()
+                except Exception:
+                    pass
+
+    # ── Cleanup helper ────────────────────────────────────────
+
+    async def _cleanup_rg(rg: str):
+        from src.tools.deploy_engine import _get_resource_client
+        client = _get_resource_client()
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None, lambda: client.resource_groups.begin_delete(rg)
+            )
+            logger.info(f"Cleanup: deletion started for resource group '{rg}'")
+        except Exception as e:
+            logger.warning(f"Cleanup: failed to delete resource group '{rg}': {e}")
+
+    # ── Template metadata helper ──────────────────────────────
+
+    def _extract_meta(tmpl_str: str) -> dict:
+        try:
+            t = json.loads(tmpl_str)
+        except Exception:
+            return {"resource_count": 0, "resource_types": [], "schema": "unknown",
+                    "size_kb": round(len(tmpl_str) / 1024, 1)}
+        resources = t.get("resources", [])
+        rtypes = list({r.get("type", "?") for r in resources if isinstance(r, dict)})
+        rnames = [r.get("name", "?") for r in resources if isinstance(r, dict)]
+        schema = t.get("$schema", "unknown")
+        if "deploymentTemplate" in schema:
+            schema = "ARM Deployment Template"
+        api_versions = list({r.get("apiVersion", "?") for r in resources if isinstance(r, dict)})
+        params = list(t.get("parameters", {}).keys())
+        outputs = list(t.get("outputs", {}).keys())
+        return {
+            "resource_count": len(resources),
+            "resource_types": rtypes,
+            "resource_names": rnames,
+            "api_versions": api_versions,
+            "schema": schema,
+            "parameters": params[:10],
+            "outputs": outputs[:10],
+            "size_kb": round(len(tmpl_str) / 1024, 1),
+        }
+
+    # ── Activity tracker ──────────────────────────────────────
+
+    def _track(event_json: str):
+        try:
+            evt = json.loads(event_json)
+        except Exception:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        tracker = _active_validations.get(service_id)
+        if not tracker:
+            tracker = {
+                "status": "running",
+                "service_name": svc.get("name", service_id),
+                "started_at": now,
+                "updated_at": now,
+                "phase": "",
+                "attempt": 0,
+                "max_attempts": MAX_HEAL_ATTEMPTS,
+                "progress": 0,
+                "rg_name": rg_name,
+                "events": [],
+                "error": "",
+            }
+            _active_validations[service_id] = tracker
+        tracker["updated_at"] = now
+        if evt.get("phase"):
+            tracker["phase"] = evt["phase"]
+        if evt.get("attempt"):
+            tracker["attempt"] = evt["attempt"]
+        if evt.get("progress"):
+            tracker["progress"] = evt["progress"]
+        if evt.get("detail"):
+            tracker["detail"] = evt["detail"]
+            tracker["events"].append({
+                "type": evt.get("type", ""),
+                "phase": evt.get("phase", ""),
+                "detail": evt["detail"],
+                "time": now,
+            })
+            if len(tracker["events"]) > 80:
+                tracker["events"] = tracker["events"][-80:]
+        if evt.get("type") == "init" and evt.get("meta"):
+            tracker["template_meta"] = evt["meta"]
+            tracker["region"] = evt["meta"].get("region", "")
+            tracker["subscription"] = evt["meta"].get("subscription", "")
+        if evt.get("type") == "progress" and evt.get("phase", "").endswith("_complete"):
+            completed = tracker.get("steps_completed", [])
+            step = evt["phase"].replace("_complete", "")
+            if step not in completed:
+                completed.append(step)
+            tracker["steps_completed"] = completed
+        if evt.get("type") == "done":
+            tracker["status"] = "succeeded"
+            tracker["progress"] = 1.0
+        elif evt.get("type") == "error":
+            tracker["status"] = "failed"
+            tracker["error"] = evt.get("detail", "")
+
+    # ── Main streaming generator ──────────────────────────────
+
+    async def stream_onboarding():
+        deployed_rg = None
+        version_num = None
+        current_template = ""
+
+        import os as _os
+        _sub_id = _os.environ.get("AZURE_SUBSCRIPTION_ID", "unknown")[:12] + "…"
+
+        # Register job start
+        _active_validations[service_id] = {
+            "status": "running",
+            "service_name": svc.get("name", service_id),
+            "category": svc.get("category", ""),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "phase": "starting",
+            "detail": "Initializing onboarding pipeline…",
+            "attempt": 0,
+            "max_attempts": MAX_HEAL_ATTEMPTS,
+            "progress": 0,
+            "rg_name": rg_name,
+            "region": region,
+            "subscription": _sub_id,
+            "steps_completed": [],
+            "events": [],
+            "error": "",
+        }
+
+        try:
+            # ═══════════════════════════════════════════════════
+            # STEP 1: AUTO-GENERATE ARM TEMPLATE
+            # ═══════════════════════════════════════════════════
+
+            yield json.dumps({
+                "type": "progress", "phase": "generating",
+                "detail": f"Auto-generating ARM template for {svc['name']} ({service_id})…",
+                "progress": 0.02,
+            }) + "\n"
+
+            if has_builtin_skeleton(service_id):
+                template_dict = generate_arm_template(service_id)
+                current_template = json.dumps(template_dict, indent=2)
+                gen_source = "built-in skeleton"
+            else:
+                yield json.dumps({
+                    "type": "progress", "phase": "generating",
+                    "detail": f"No built-in skeleton for {service_id} — using Copilot SDK to generate…",
+                    "progress": 0.03,
+                }) + "\n"
+                current_template = await generate_arm_template_with_copilot(
+                    service_id, svc["name"], copilot_client, COPILOT_MODEL
+                )
+                gen_source = "Copilot SDK"
+
+            tmpl_meta = _extract_meta(current_template)
+
+            # Create version record
+            ver = await create_service_version(
+                service_id=service_id,
+                arm_template=current_template,
+                status="validating",
+                changelog=f"Auto-generated via {gen_source}",
+                created_by=gen_source,
+            )
+            version_num = ver["version"]
+
+            yield json.dumps({
+                "type": "init", "phase": "generated",
+                "detail": f"✓ ARM template v{version_num} generated via {gen_source} — "
+                          f"{tmpl_meta['resource_count']} resource(s), {tmpl_meta['size_kb']} KB",
+                "progress": 0.06,
+                "version": version_num,
+                "meta": {
+                    "service_name": svc.get("name", service_id),
+                    "service_id": service_id,
+                    "category": svc.get("category", ""),
+                    "region": region,
+                    "subscription": _sub_id,
+                    "resource_group": rg_name,
+                    "template_size_kb": tmpl_meta["size_kb"],
+                    "resource_count": tmpl_meta["resource_count"],
+                    "resource_types": tmpl_meta["resource_types"],
+                    "resource_names": tmpl_meta.get("resource_names", []),
+                    "api_versions": tmpl_meta.get("api_versions", []),
+                    "schema": tmpl_meta["schema"],
+                    "parameters": tmpl_meta.get("parameters", []),
+                    "outputs": tmpl_meta.get("outputs", []),
+                    "max_attempts": MAX_HEAL_ATTEMPTS,
+                    "version": version_num,
+                    "gen_source": gen_source,
+                },
+            }) + "\n"
+
+            # ═══════════════════════════════════════════════════
+            # HEALING LOOP (steps 2-5, with auto-healing)
+            # ═══════════════════════════════════════════════════
+
+            gov_policies = await get_governance_policies_as_dict()
+
+            for attempt in range(1, MAX_HEAL_ATTEMPTS + 1):
+                is_last = attempt == MAX_HEAL_ATTEMPTS
+                att_base = (attempt - 1) / MAX_HEAL_ATTEMPTS
+
+                yield json.dumps({
+                    "type": "iteration_start", "attempt": attempt,
+                    "max_attempts": MAX_HEAL_ATTEMPTS,
+                    "detail": f"Attempt {attempt}/{MAX_HEAL_ATTEMPTS} — validating ARM template v{version_num} "
+                              f"({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s))",
+                    "progress": att_base + 0.01,
+                }) + "\n"
+
+                # ── 2. Parse JSON ─────────────────────────────
+                try:
+                    template_json = json.loads(current_template)
+                except json.JSONDecodeError as e:
+                    error_msg = f"ARM template is not valid JSON — line {e.lineno}, col {e.colno}: {e.msg}"
+                    if is_last:
+                        await update_service_version_status(service_id, version_num, "failed",
+                            validation_result={"error": error_msg})
+                        await fail_service_validation(service_id, error_msg)
+                        yield json.dumps({"type": "error", "phase": "parsing", "attempt": attempt, "detail": error_msg}) + "\n"
+                        return
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt,
+                        "detail": f"JSON parse error — invoking Copilot SDK auto-heal…", "progress": att_base + 0.02}) + "\n"
+                    current_template = await _copilot_fix(current_template, error_msg)
+                    tmpl_meta = _extract_meta(current_template)
+                    await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt,
+                        "detail": f"Copilot SDK rewrote template — retrying…", "progress": att_base + 0.03}) + "\n"
+                    continue
+
+                # ── 3. Static Policy Check ────────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "static_policy_check", "attempt": attempt,
+                    "detail": f"Running static policy validation against {len(gov_policies)} organization governance rules…",
+                    "progress": att_base + 0.04,
+                }) + "\n"
+
+                report = validate_template(template_json, gov_policies)
+
+                # Emit individual check results
+                for check in report.results:
+                    icon = "✅" if check.passed else ("⚠️" if check.enforcement == "warn" else "❌")
+                    yield json.dumps({
+                        "type": "policy_result", "phase": "static_policy_check", "attempt": attempt,
+                        "detail": f"{icon} [{check.rule_id}] {check.rule_name}: {check.message}",
+                        "passed": check.passed,
+                        "severity": check.severity,
+                        "progress": att_base + 0.05,
+                    }) + "\n"
+
+                if not report.passed:
+                    fail_msg = f"Static policy check: {report.passed_checks}/{report.total_checks} passed, {report.blockers} blocker(s)"
+                    yield json.dumps({
+                        "type": "progress", "phase": "static_policy_failed", "attempt": attempt,
+                        "detail": fail_msg, "progress": att_base + 0.06,
+                    }) + "\n"
+
+                    if is_last:
+                        await update_service_version_status(service_id, version_num, "failed",
+                            policy_check=report.to_dict())
+                        await fail_service_validation(service_id, fail_msg)
+                        yield json.dumps({"type": "error", "phase": "static_policy", "attempt": attempt,
+                            "detail": f"Static policy validation failed after {MAX_HEAL_ATTEMPTS} attempts"}) + "\n"
+                        return
+
+                    # Build targeted remediation prompt from failed checks
+                    failed_checks = [c for c in report.results if not c.passed and c.enforcement == "block"]
+                    fix_prompt = build_remediation_prompt(current_template, failed_checks)
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt,
+                        "detail": f"Policy violations detected — Copilot SDK auto-healing template for {len(failed_checks)} blocker(s)…",
+                        "progress": att_base + 0.07}) + "\n"
+                    current_template = await _copilot_fix(current_template, fix_prompt)
+                    tmpl_meta = _extract_meta(current_template)
+                    await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt,
+                        "detail": f"Copilot SDK remediated template — retrying…", "progress": att_base + 0.08}) + "\n"
+                    continue
+
+                yield json.dumps({
+                    "type": "progress", "phase": "static_policy_complete", "attempt": attempt,
+                    "detail": f"✓ Static policy check passed — {report.passed_checks}/{report.total_checks} checks, 0 blockers",
+                    "progress": att_base + 0.08,
+                }) + "\n"
+
+                # Save policy check results
+                await update_service_version_status(service_id, version_num, "validating",
+                    policy_check=report.to_dict())
+
+                # ── 4. What-If ────────────────────────────────
+                res_types_str = ", ".join(tmpl_meta["resource_types"][:5]) or "unknown"
+                yield json.dumps({
+                    "type": "progress", "phase": "what_if", "attempt": attempt,
+                    "detail": f"Submitting ARM What-If to Azure — previewing {tmpl_meta['resource_count']} resource(s) "
+                              f"[{res_types_str}] in '{rg_name}' ({region})",
+                    "progress": att_base + 0.10,
+                }) + "\n"
+
+                try:
+                    from src.tools.deploy_engine import run_what_if
+                    wif = await run_what_if(resource_group=rg_name, template=template_json,
+                                           parameters={}, region=region)
+                except Exception as e:
+                    logger.error(f"What-If attempt {attempt} exception: {e}", exc_info=True)
+                    wif = {"status": "error", "errors": [str(e)]}
+
+                if wif.get("status") != "success":
+                    errors = "; ".join(str(e) for e in wif.get("errors", [])) or "Unknown What-If error"
+
+                    # Detect transient infra errors
+                    _infra_keywords = ("beingdeleted", "being deleted", "deprovisioning",
+                                       "throttled", "toomanyrequests", "retryable",
+                                       "serviceunavailable", "internalservererror")
+                    if any(kw in errors.lower() for kw in _infra_keywords):
+                        yield json.dumps({"type": "progress", "phase": "infra_retry", "attempt": attempt,
+                            "detail": f"Transient Azure error — waiting 10s…", "progress": att_base + 0.11}) + "\n"
+                        await asyncio.sleep(10)
+                        continue
+
+                    if is_last:
+                        await update_service_version_status(service_id, version_num, "failed",
+                            validation_result={"error": errors, "phase": "what_if"})
+                        await fail_service_validation(service_id, f"What-If failed: {errors}")
+                        yield json.dumps({"type": "error", "phase": "what_if", "attempt": attempt,
+                            "detail": f"What-If failed after {MAX_HEAL_ATTEMPTS} attempts: {errors}"}) + "\n"
+                        return
+
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt,
+                        "detail": f"What-If rejected by ARM — auto-healing… Error: {errors[:300]}",
+                        "progress": att_base + 0.12}) + "\n"
+                    current_template = await _copilot_fix(current_template, errors)
+                    tmpl_meta = _extract_meta(current_template)
+                    await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt,
+                        "detail": f"Copilot SDK rewrote template — retrying…", "progress": att_base + 0.13}) + "\n"
+                    continue
+
+                change_summary = ", ".join(f"{v} {k}" for k, v in wif.get("change_counts", {}).items())
+                yield json.dumps({
+                    "type": "progress", "phase": "what_if_complete", "attempt": attempt,
+                    "detail": f"✓ What-If passed — changes: {change_summary or 'none'}",
+                    "progress": att_base + 0.14,
+                    "result": wif,
+                }) + "\n"
+
+                # ── 5. Deploy ─────────────────────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "deploying", "attempt": attempt,
+                    "detail": f"Deploying {tmpl_meta['resource_count']} resource(s) into '{rg_name}' ({region})…",
+                    "progress": att_base + 0.16,
+                }) + "\n"
+
+                try:
+                    from src.tools.deploy_engine import execute_deployment
+                    deploy_result = await execute_deployment(
+                        resource_group=rg_name, template=template_json,
+                        parameters={}, region=region,
+                        deployment_name=f"validate-{attempt}",
+                        initiated_by="InfraForge Validator",
+                    )
+                    deploy_status = deploy_result.get("status", "unknown")
+                except Exception as e:
+                    logger.error(f"Deploy attempt {attempt} exception: {e}", exc_info=True)
+                    deploy_result = {"status": "failed", "error": str(e)}
+                    deploy_status = "failed"
+
+                deployed_rg = rg_name
+
+                if deploy_status != "succeeded":
+                    deploy_error = deploy_result.get("error", "Unknown deployment error")
+
+                    # Fetch operation-level errors if generic
+                    if "Please list deployment operations" in deploy_error or "At least one resource" in deploy_error:
+                        try:
+                            from src.tools.deploy_engine import _get_resource_client, _get_deployment_operation_errors
+                            _rc = _get_resource_client()
+                            _lp = asyncio.get_event_loop()
+                            op_errors = await _get_deployment_operation_errors(_rc, _lp, rg_name, f"validate-{attempt}")
+                            if op_errors:
+                                deploy_error = f"{deploy_error} | Operation errors: {op_errors}"
+                        except Exception:
+                            pass
+
+                    _is_infra = any(kw in deploy_error.lower() for kw in
+                        ("beingdeleted", "being deleted", "throttled", "toomanyrequests",
+                         "serviceunavailable", "internalservererror"))
+
+                    yield json.dumps({"type": "progress", "phase": "deploy_failed", "attempt": attempt,
+                        "detail": f"Deployment failed: {deploy_error[:400]}", "progress": att_base + 0.20}) + "\n"
+
+                    if _is_infra:
+                        yield json.dumps({"type": "progress", "phase": "infra_retry", "attempt": attempt,
+                            "detail": "Transient infra error — waiting 10s…", "progress": att_base + 0.21}) + "\n"
+                        await asyncio.sleep(10)
+                        continue
+
+                    if is_last:
+                        await _cleanup_rg(rg_name)
+                        await update_service_version_status(service_id, version_num, "failed",
+                            validation_result={"error": deploy_error, "phase": "deploy"})
+                        await fail_service_validation(service_id, f"Deploy failed: {deploy_error}")
+                        yield json.dumps({"type": "error", "phase": "deploy", "attempt": attempt,
+                            "detail": f"Deploy failed after {MAX_HEAL_ATTEMPTS} attempts"}) + "\n"
+                        return
+
+                    yield json.dumps({"type": "healing", "phase": "fixing_template", "attempt": attempt,
+                        "detail": f"Deployment failed — auto-healing… Error: {deploy_error[:300]}",
+                        "progress": att_base + 0.21}) + "\n"
+                    current_template = await _copilot_fix(current_template, deploy_error)
+                    tmpl_meta = _extract_meta(current_template)
+                    await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
+                    yield json.dumps({"type": "healing_done", "phase": "template_fixed", "attempt": attempt,
+                        "detail": "Copilot SDK rewrote template — redeploying…", "progress": att_base + 0.22}) + "\n"
+                    continue
+
+                # Deploy succeeded!
+                provisioned = deploy_result.get("provisioned_resources", [])
+                resource_summaries = [f"{r.get('type','?')}/{r.get('name','?')}" for r in provisioned]
+                yield json.dumps({
+                    "type": "progress", "phase": "deploy_complete", "attempt": attempt,
+                    "detail": f"✓ Deployment succeeded — {len(provisioned)} resource(s): {'; '.join(resource_summaries[:5])}",
+                    "progress": att_base + 0.22,
+                    "resources": provisioned,
+                }) + "\n"
+
+                # ── 6. Resource verification ──────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "resource_check", "attempt": attempt,
+                    "detail": f"Verifying {len(provisioned)} resource(s) in Azure…",
+                    "progress": att_base + 0.24,
+                }) + "\n"
+
+                from src.tools.deploy_engine import _get_resource_client
+                rc = _get_resource_client()
+                loop = asyncio.get_event_loop()
+                try:
+                    live_resources = await loop.run_in_executor(
+                        None, lambda: list(rc.resources.list_by_resource_group(rg_name))
+                    )
+                    resource_details = []
+                    for r in live_resources:
+                        detail = {
+                            "id": r.id, "name": r.name, "type": r.type,
+                            "location": r.location, "tags": dict(r.tags) if r.tags else {},
+                        }
+                        resource_details.append(detail)
+
+                    yield json.dumps({
+                        "type": "progress", "phase": "resource_check_complete", "attempt": attempt,
+                        "detail": f"✓ Verified {len(resource_details)} live resource(s) in Azure",
+                        "progress": att_base + 0.26,
+                    }) + "\n"
+                except Exception as e:
+                    resource_details = []
+                    yield json.dumps({
+                        "type": "progress", "phase": "resource_check_warning", "attempt": attempt,
+                        "detail": f"Could not enumerate resources (non-fatal): {e}",
+                        "progress": att_base + 0.26,
+                    }) + "\n"
+
+                # ── 7. Cleanup ────────────────────────────────
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup", "attempt": attempt,
+                    "detail": f"All checks passed — deleting validation RG '{rg_name}'…",
+                    "progress": 0.90,
+                }) + "\n"
+
+                await _cleanup_rg(rg_name)
+                deployed_rg = None
+
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup_complete", "attempt": attempt,
+                    "detail": f"✓ Validation RG '{rg_name}' deletion initiated",
+                    "progress": 0.93,
+                }) + "\n"
+
+                # ── 8. Promote ────────────────────────────────
+                validation_summary = {
+                    "what_if": wif,
+                    "deployed_resources": [{"name": r["name"], "type": r["type"], "location": r["location"]}
+                                           for r in resource_details],
+                    "policy_check": report.to_dict(),
+                    "attempts": attempt,
+                }
+
+                yield json.dumps({
+                    "type": "progress", "phase": "promoting", "attempt": attempt,
+                    "detail": f"Promoting {svc['name']} v{version_num} → approved…",
+                    "progress": 0.97,
+                }) + "\n"
+
+                await update_service_version_status(
+                    service_id, version_num, "approved",
+                    validation_result=validation_summary,
+                    policy_check=report.to_dict(),
+                )
+                await set_active_service_version(service_id, version_num)
+
+                yield json.dumps({
+                    "type": "done", "phase": "approved", "attempt": attempt,
+                    "total_attempts": attempt,
+                    "version": version_num,
+                    "detail": f"🎉 {svc['name']} v{version_num} approved! "
+                              f"{len(resource_details)} resource(s) validated, "
+                              f"{report.passed_checks}/{report.total_checks} policy checks passed."
+                              f"{'' if attempt == 1 else f' Required {attempt} auto-heal attempt(s).'}",
+                    "progress": 1.0,
+                    "summary": validation_summary,
+                }) + "\n"
+                return  # ✅ success
+
+        except Exception as e:
+            logger.error(f"Onboarding error for {service_id}: {e}", exc_info=True)
+            if version_num:
+                try:
+                    await update_service_version_status(service_id, version_num, "failed",
+                        validation_result={"error": str(e)})
+                except Exception:
+                    pass
+            try:
+                await fail_service_validation(service_id, str(e))
+            except Exception:
+                pass
+            yield json.dumps({"type": "error", "phase": "unknown", "detail": str(e)}) + "\n"
+        except (GeneratorExit, asyncio.CancelledError):
+            logger.warning(f"Onboarding cancelled for {service_id}")
+            try:
+                await fail_service_validation(service_id, "Cancelled — please retry.")
+            except Exception:
+                pass
+        finally:
+            if deployed_rg:
+                try:
+                    await _cleanup_rg(deployed_rg)
+                except Exception:
+                    pass
+
+    async def _tracked_stream():
+        try:
+            async for line in stream_onboarding():
+                _track(line)
+                yield line
+        finally:
+            async def _cleanup_tracker():
+                await asyncio.sleep(300)
+                _active_validations.pop(service_id, None)
+            asyncio.create_task(_cleanup_tracker())
+
+    return StreamingResponse(
+        _tracked_stream(),
         media_type="application/x-ndjson",
     )
 

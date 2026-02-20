@@ -15,11 +15,12 @@ Tables:
   security_standards       — Machine-readable security rules (HTTPS, TLS, managed identity...)
   compliance_frameworks    — Compliance framework definitions (SOC2, HIPAA, CIS...)
   compliance_controls      — Individual controls within frameworks
-  services                 — Approved Azure services catalog
-  service_policies         — Per-service policy requirements
+  services                 — Approved Azure services catalog (with active_version)
+  service_versions         — Versioned ARM templates per service (v1, v2, v3...)
+  service_policies         — Per-service policy requirements (legacy)
   service_approved_skus    — Approved SKUs per service
   service_approved_regions — Approved regions per service
-  governance_policies      — Organization-wide governance rules
+  governance_policies      — Organization-wide governance rules (source of truth for validation)
   compliance_assessments   — Results of compliance checks against approval requests
 """
 
@@ -469,6 +470,36 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_artifacts_service ON service_artifacts(service_id)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_artifacts_type')
     CREATE INDEX idx_artifacts_type ON service_artifacts(artifact_type)""",
+    # ── Service Versions (versioned ARM templates) ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_versions')
+    CREATE TABLE service_versions (
+        id                      INT IDENTITY(1,1) PRIMARY KEY,
+        service_id              NVARCHAR(200) NOT NULL,
+        version                 INT NOT NULL DEFAULT 1,
+        arm_template            NVARCHAR(MAX) NOT NULL,
+        status                  NVARCHAR(50) DEFAULT 'draft',
+        validation_result_json  NVARCHAR(MAX) DEFAULT '{}',
+        policy_check_json       NVARCHAR(MAX) DEFAULT '{}',
+        changelog               NVARCHAR(MAX) DEFAULT '',
+        created_by              NVARCHAR(200) DEFAULT 'auto-generated',
+        created_at              NVARCHAR(50) NOT NULL,
+        validated_at            NVARCHAR(50),
+        UNIQUE (service_id, version)
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_svc_versions_service')
+    CREATE INDEX idx_svc_versions_service ON service_versions(service_id)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_svc_versions_status')
+    CREATE INDEX idx_svc_versions_status ON service_versions(status)""",
+    # Add active_version column to services if it doesn't exist
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('services') AND name = 'active_version'
+    )
+    ALTER TABLE services ADD active_version INT DEFAULT NULL
+    """,
     # ── Template Catalog ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')
@@ -1658,6 +1689,185 @@ async def fail_service_validation(
     )
     logger.info(f"Service {service_id} failed deployment validation: {error}")
     return True
+
+
+# ══════════════════════════════════════════════════════════════
+# SERVICE VERSIONS (Versioned ARM Templates)
+# ══════════════════════════════════════════════════════════════
+
+
+async def create_service_version(
+    service_id: str,
+    arm_template: str,
+    version: int | None = None,
+    status: str = "draft",
+    changelog: str = "",
+    created_by: str = "auto-generated",
+) -> dict:
+    """Create a new version of a service's ARM template.
+
+    If version is None, automatically increments from the latest version.
+    Returns the created version record.
+    """
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if version is None:
+        rows = await backend.execute(
+            "SELECT MAX(version) as max_ver FROM service_versions WHERE service_id = ?",
+            (service_id,),
+        )
+        current_max = rows[0]["max_ver"] if rows and rows[0]["max_ver"] else 0
+        version = current_max + 1
+
+    await backend.execute_write(
+        """INSERT INTO service_versions
+           (service_id, version, arm_template, status, changelog,
+            created_by, created_at, validation_result_json, policy_check_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, '{}', '{}')""",
+        (service_id, version, arm_template, status, changelog, created_by, now),
+    )
+
+    logger.info(f"Created service version {service_id} v{version} ({status})")
+    return await get_service_version(service_id, version)
+
+
+async def get_service_version(service_id: str, version: int) -> dict | None:
+    """Get a specific version of a service's ARM template."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM service_versions WHERE service_id = ? AND version = ?",
+        (service_id, version),
+    )
+    if not rows:
+        return None
+    row = dict(rows[0])
+    row["validation_result"] = json.loads(row.pop("validation_result_json", "{}"))
+    row["policy_check"] = json.loads(row.pop("policy_check_json", "{}"))
+    return row
+
+
+async def get_service_versions(
+    service_id: str,
+    status: str | None = None,
+) -> list[dict]:
+    """Get all versions of a service, ordered by version descending."""
+    backend = await get_backend()
+    if status:
+        rows = await backend.execute(
+            "SELECT * FROM service_versions WHERE service_id = ? AND status = ? ORDER BY version DESC",
+            (service_id, status),
+        )
+    else:
+        rows = await backend.execute(
+            "SELECT * FROM service_versions WHERE service_id = ? ORDER BY version DESC",
+            (service_id,),
+        )
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["validation_result"] = json.loads(d.pop("validation_result_json", "{}"))
+        d["policy_check"] = json.loads(d.pop("policy_check_json", "{}"))
+        result.append(d)
+    return result
+
+
+async def get_latest_service_version(service_id: str) -> dict | None:
+    """Get the latest version (by version number) for a service."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT TOP 1 * FROM service_versions WHERE service_id = ? ORDER BY version DESC",
+        (service_id,),
+    )
+    if not rows:
+        return None
+    row = dict(rows[0])
+    row["validation_result"] = json.loads(row.pop("validation_result_json", "{}"))
+    row["policy_check"] = json.loads(row.pop("policy_check_json", "{}"))
+    return row
+
+
+async def update_service_version_status(
+    service_id: str,
+    version: int,
+    status: str,
+    validation_result: dict | None = None,
+    policy_check: dict | None = None,
+) -> bool:
+    """Update the status and validation results of a service version."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    set_clauses = ["status = ?"]
+    params: list = [status]
+
+    if validation_result is not None:
+        set_clauses.append("validation_result_json = ?")
+        params.append(json.dumps(validation_result))
+
+    if policy_check is not None:
+        set_clauses.append("policy_check_json = ?")
+        params.append(json.dumps(policy_check))
+
+    if status in ("approved", "failed"):
+        set_clauses.append("validated_at = ?")
+        params.append(now)
+
+    params.extend([service_id, version])
+
+    count = await backend.execute_write(
+        f"UPDATE service_versions SET {', '.join(set_clauses)} "
+        f"WHERE service_id = ? AND version = ?",
+        tuple(params),
+    )
+    return count > 0
+
+
+async def update_service_version_template(
+    service_id: str,
+    version: int,
+    arm_template: str,
+    created_by: str = "copilot-healed",
+) -> bool:
+    """Update the ARM template content for a version (used by auto-healing)."""
+    backend = await get_backend()
+    count = await backend.execute_write(
+        "UPDATE service_versions SET arm_template = ?, created_by = ? "
+        "WHERE service_id = ? AND version = ?",
+        (arm_template, created_by, service_id, version),
+    )
+    return count > 0
+
+
+async def set_active_service_version(service_id: str, version: int) -> bool:
+    """Set the active (deployed) version for a service.
+
+    Also promotes the service to 'approved' status.
+    """
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    count = await backend.execute_write(
+        """UPDATE services
+           SET active_version = ?, status = 'approved',
+               approved_date = ?, reviewed_by = 'Deployment Validated'
+           WHERE id = ?""",
+        (version, now, service_id),
+    )
+    logger.info(f"Service {service_id} active_version set to v{version}")
+    return count > 0
+
+
+async def get_active_service_version(service_id: str) -> dict | None:
+    """Get the currently active version for a service."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT active_version FROM services WHERE id = ?",
+        (service_id,),
+    )
+    if not rows or not rows[0].get("active_version"):
+        return None
+    return await get_service_version(service_id, rows[0]["active_version"])
 
 
 # ══════════════════════════════════════════════════════════════

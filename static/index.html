@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <link rel="stylesheet" href="/static/styles.css?v=21">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -86,6 +86,13 @@
                 <button class="nav-btn" id="nav-templates" onclick="navigateTo('templates')">
                     <span class="nav-icon">📦</span> Templates
                 </button>
+                <button class="nav-btn" id="nav-governance" onclick="navigateTo('governance')">
+                    <span class="nav-icon">📜</span> Governance
+                </button>
+                <button class="nav-btn" id="nav-activity" onclick="navigateTo('activity')">
+                    <span class="nav-icon">📡</span> Activity Monitor
+                    <span class="nav-badge" id="nav-activity-badge" style="display:none"></span>
+                </button>
                 <button class="nav-btn" id="nav-chat" onclick="navigateTo('chat')">
                     <span class="nav-icon">💬</span> Infrastructure Designer
                 </button>
@@ -153,6 +160,10 @@
                         <div class="stat-card">
                             <div class="stat-number" id="stat-review">—</div>
                             <div class="stat-label">Under Review</div>
+                        </div>
+                        <div class="stat-card clickable" onclick="navigateTo('activity')" title="View Activity Monitor">
+                            <div class="stat-number stat-validating" id="stat-validating">—</div>
+                            <div class="stat-label">Validating</div>
                         </div>
                     </div>
 
@@ -359,6 +370,9 @@
                                 <button class="filter-pill" onclick="filterServicesByStatus('approved')">✅ Approved</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('conditional')">⚠️ Conditional</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('under_review')">🔄 Under Review</button>
+                                <button class="filter-pill" onclick="filterServicesByStatus('validating')">⏳ Validating</button>
+                                <button class="filter-pill" onclick="filterServicesByStatus('validation_failed')">⛔ Failed</button>
+                                <button class="filter-pill" onclick="filterServicesByStatus('not_approved')">❌ Not Approved</button>
                             </div>
                         </div>
                     </div>
@@ -373,7 +387,7 @@
                                 <tr>
                                     <th>Service</th>
                                     <th>Category</th>
-                                    <th>Approval Gates</th>
+                                    <th>Version</th>
                                     <th>Status</th>
                                 </tr>
                             </thead>
@@ -425,6 +439,80 @@
                                 <tr><td colspan="5" class="catalog-loading">Loading templates...</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ PAGE: Governance Standards ═══════════════ -->
+            <div class="page page-scroll hidden" id="page-governance">
+                <div class="page-inner">
+                    <!-- Search -->
+                    <div class="page-toolbar">
+                        <div class="page-search">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="standards-search" placeholder="Search standards by name, category, or ID..." oninput="searchStandards(this.value)" />
+                        </div>
+                    </div>
+
+                    <!-- Category Filters -->
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <span class="filter-label">Category</span>
+                            <div class="catalog-filters" id="standards-category-filters">
+                                <button class="filter-pill active" onclick="filterStandards('all')">All</button>
+                            </div>
+                        </div>
+                        <div class="filter-group">
+                            <span class="filter-label">Severity</span>
+                            <div class="catalog-filters" id="standards-severity-filters">
+                                <button class="filter-pill active" onclick="filterStandardsBySeverity('all')">All</button>
+                                <button class="filter-pill" onclick="filterStandardsBySeverity('critical')">🔴 Critical</button>
+                                <button class="filter-pill" onclick="filterStandardsBySeverity('high')">🟠 High</button>
+                                <button class="filter-pill" onclick="filterStandardsBySeverity('medium')">🟡 Medium</button>
+                                <button class="filter-pill" onclick="filterStandardsBySeverity('low')">🟢 Low</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Results Summary -->
+                    <div class="results-summary" id="standards-results-summary"></div>
+
+                    <!-- Standards List -->
+                    <div class="standards-list" id="standards-list">
+                        <div class="catalog-loading">Loading standards...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ PAGE: Activity Monitor ═══════════════════ -->
+            <div class="page page-scroll hidden" id="page-activity">
+                <div class="page-inner">
+                    <!-- Activity Summary Bar -->
+                    <div class="activity-summary" id="activity-summary">
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-pulse" id="activity-running">0</span>
+                            <span class="activity-stat-label">Running</span>
+                        </div>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num" id="activity-validating">0</span>
+                            <span class="activity-stat-label">Awaiting</span>
+                        </div>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-stat-ok" id="activity-approved">0</span>
+                            <span class="activity-stat-label">Approved</span>
+                        </div>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-stat-fail" id="activity-failed">0</span>
+                            <span class="activity-stat-label">Failed</span>
+                        </div>
+                    </div>
+
+                    <!-- Activity Feed -->
+                    <div class="activity-feed" id="activity-feed">
+                        <div class="activity-empty">
+                            <span class="activity-empty-icon">📡</span>
+                            <p>No deployment activity yet. Onboard a service to trigger automated validation.</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -550,38 +638,21 @@
     <div id="modal-template-onboard" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-onboard')">
         <div class="modal-dialog modal-wide" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3>📦 Onboard New Template</h3>
+                <h3>📦 Create Template from Approved Services</h3>
                 <button class="modal-close" onclick="closeModal('modal-template-onboard')">×</button>
             </div>
             <form id="form-template-onboard" onsubmit="submitTemplateOnboarding(event)">
                 <div class="modal-body">
+                    <!-- Step 1: Template basics -->
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Template ID <span class="required">*</span></label>
-                            <input type="text" name="id" required placeholder="e.g. bicep-container-app" />
+                            <label>Template Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g. Web App with SQL and Key Vault" />
                         </div>
                         <div class="form-group">
-                            <label>Display Name <span class="required">*</span></label>
-                            <input type="text" name="name" required placeholder="e.g. Container App with Dapr" />
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Description <span class="required">*</span></label>
-                        <textarea name="description" required rows="2" placeholder="What this template deploys and key features..."></textarea>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Format <span class="required">*</span></label>
-                            <select name="format" required>
-                                <option value="bicep">Bicep</option>
-                                <option value="terraform">Terraform</option>
-                                <option value="github-actions">GitHub Actions</option>
-                                <option value="azure-devops">Azure DevOps</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Category <span class="required">*</span></label>
-                            <select name="category" required>
+                            <label>Category</label>
+                            <select name="category">
+                                <option value="blueprint">Blueprint</option>
                                 <option value="compute">Compute</option>
                                 <option value="database">Database</option>
                                 <option value="storage">Storage</option>
@@ -589,51 +660,126 @@
                                 <option value="security">Security</option>
                                 <option value="monitoring">Monitoring</option>
                                 <option value="foundation">Foundation</option>
-                                <option value="cicd">CI/CD</option>
-                                <option value="blueprint">Blueprint</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>Tags <span class="hint">(comma-separated)</span></label>
-                        <input type="text" name="tags" placeholder="e.g. container, serverless, dapr" />
+                        <label>Description</label>
+                        <textarea name="description" rows="2" placeholder="What this template deploys and key features..."></textarea>
                     </div>
-                    <div class="form-group">
-                        <label>Azure Resource Types <span class="hint">(comma-separated)</span></label>
-                        <input type="text" name="resources" placeholder="e.g. Microsoft.App/containerApps, Microsoft.ContainerRegistry/registries" />
-                    </div>
-                    <div class="form-group">
-                        <label>Template Content <span class="required">*</span></label>
-                        <textarea name="content" required rows="12" class="code-textarea" placeholder="Paste your Bicep / Terraform / YAML code here..."></textarea>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Parameters <span class="hint">(JSON array)</span></label>
-                            <textarea name="parameters" rows="3" class="code-textarea" placeholder='[{"name":"projectName","type":"string","required":true}]'></textarea>
+
+                    <!-- Step 2: Service picker -->
+                    <div class="compose-section">
+                        <div class="compose-section-header">
+                            <span class="compose-section-title">Select Approved Services</span>
+                            <span class="compose-section-hint">Only approved, onboarded services with validated ARM templates appear here</span>
                         </div>
-                        <div class="form-group">
-                            <label>Outputs <span class="hint">(comma-separated)</span></label>
-                            <input type="text" name="outputs" placeholder="e.g. appUrl, principalId" />
+                        <div class="compose-service-search">
+                            <input type="text" id="compose-service-search" placeholder="🔍 Filter services..." oninput="filterComposeServices()" />
+                        </div>
+                        <div class="compose-service-list" id="compose-service-list">
+                            <div class="compose-loading">Loading approved services…</div>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" name="is_blueprint" /> This is a blueprint (composed of other templates)
-                        </label>
-                    </div>
-                    <div class="form-group" id="blueprint-services-group" style="display:none">
-                        <label>Composed of Template IDs <span class="hint">(comma-separated)</span></label>
-                        <input type="text" name="service_ids" placeholder="e.g. bicep-appservice-linux, bicep-sql-database" />
+
+                    <!-- Step 3: Selected services with params -->
+                    <div class="compose-section" id="compose-selections-section" style="display:none">
+                        <div class="compose-section-header">
+                            <span class="compose-section-title">Configure Selected Services</span>
+                            <span class="compose-section-hint">Set quantity and choose which parameters to expose in the template</span>
+                        </div>
+                        <div id="compose-selections"></div>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('modal-template-onboard')">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="btn-submit-template">Onboard Template</button>
+                    <button type="submit" class="btn btn-primary" id="btn-submit-template" disabled>
+                        Create Template
+                    </button>
                 </div>
             </form>
         </div>
     </div>
 
-    <script src="/static/app.js?v=13"></script>
+    <!-- ── Add / Edit Standard Modal ───────────────────── -->
+    <div id="modal-standard" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-standard')">
+        <div class="modal-dialog" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3>📜 <span id="standard-modal-title">Add Standard</span></h3>
+                <button class="modal-close" onclick="closeModal('modal-standard')">×</button>
+            </div>
+            <form id="form-standard" onsubmit="saveStandard(event)">
+                <input type="hidden" name="id" />
+                <div class="modal-body">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g. Require TLS 1.2 Minimum" />
+                        </div>
+                        <div class="form-group">
+                            <label>Category <span class="required">*</span></label>
+                            <select name="category">
+                                <option value="encryption">Encryption</option>
+                                <option value="identity">Identity</option>
+                                <option value="network">Network</option>
+                                <option value="monitoring">Monitoring</option>
+                                <option value="tagging">Tagging</option>
+                                <option value="geography">Geography</option>
+                                <option value="cost">Cost</option>
+                                <option value="compute">Compute</option>
+                                <option value="data_protection">Data Protection</option>
+                                <option value="operations">Operations</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea name="description" rows="2" placeholder="What this standard enforces and why..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Severity</label>
+                            <select name="severity">
+                                <option value="critical">🔴 Critical</option>
+                                <option value="high" selected>🟠 High</option>
+                                <option value="medium">🟡 Medium</option>
+                                <option value="low">🟢 Low</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Scope <span class="hint">(resource type glob, * = all)</span></label>
+                            <input type="text" name="scope" value="*" placeholder="e.g. Microsoft.Storage/*" />
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Rule (JSON)</label>
+                        <textarea name="rule_json" rows="5" placeholder='{"type": "property", "key": "minTlsVersion", "operator": ">=", "value": "1.2", "remediation": "Set minTlsVersion to 1.2"}'></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Change Reason <span class="hint">(for version history)</span></label>
+                        <input type="text" name="change_reason" placeholder="Why this change is being made..." />
+                    </div>
+                    <div class="form-group form-checkbox">
+                        <label><input type="checkbox" name="enabled" checked /> Enabled</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-standard')">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="btn-save-standard">Save Standard</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ── Standard Detail Drawer ────────────────────────── -->
+    <div id="standard-detail-drawer" class="detail-drawer hidden">
+        <div class="detail-drawer-header">
+            <h3 id="detail-standard-name">Standard Name</h3>
+            <button class="modal-close" onclick="closeStandardDetail()">×</button>
+        </div>
+        <div class="detail-drawer-body" id="detail-standard-body"></div>
+    </div>
+
+    <script src="/static/app.js?v=20"></script>
 </body>
 </html>

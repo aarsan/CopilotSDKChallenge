@@ -25,6 +25,12 @@ let currentTemplateFilter = 'all';
 let serviceSearchQuery = '';
 let templateSearchQuery = '';
 
+// Governance Standards
+let allStandards = [];
+let standardsSearchQuery = '';
+let currentStandardsCategoryFilter = 'all';
+let currentStandardsSeverityFilter = 'all';
+
 // ── Initialization ──────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -194,6 +200,8 @@ function navigateTo(page) {
         dashboard: ['Dashboard', 'Overview'],
         services: ['Service Catalog', `${allServices.length} services available`],
         templates: ['Template Catalog', `${allTemplates.length} templates available`],
+        governance: ['Governance Standards', `${allStandards.length} organization standards`],
+        activity: ['Activity Monitor', 'Deployment validation observability'],
         chat: ['Infrastructure Designer', 'Powered by GitHub Copilot SDK'],
     };
     const [title, subtitle] = titles[page] || ['InfraForge', ''];
@@ -211,6 +219,19 @@ function navigateTo(page) {
         }, 100);
     }
 
+    // Load activity when switching to activity page
+    if (page === 'activity') {
+        loadActivity();
+        _startActivityPolling();
+    } else {
+        _stopActivityPolling();
+    }
+
+    // Load standards when switching to governance page
+    if (page === 'governance') {
+        loadStandards();
+    }
+
     currentPage = page;
 }
 
@@ -222,6 +243,12 @@ function updatePageActions(page) {
             break;
         case 'templates':
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openTemplateOnboarding()">＋ Onboard Template</button>';
+            break;
+        case 'governance':
+            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button>';
+            break;
+        case 'activity':
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadActivity()" title="Refresh">⟳ Refresh</button>';
             break;
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
@@ -568,8 +595,16 @@ async function loadAllData() {
         document.getElementById('stat-review').textContent = stats.under_review || 0;
         document.getElementById('stat-templates').textContent = tmplData.total || 0;
 
+        // Count validating + validation_failed services
+        const validatingCount = allServices.filter(s => s.status === 'validating' || s.status === 'validation_failed').length;
+        const statValidating = document.getElementById('stat-validating');
+        if (statValidating) statValidating.textContent = validatingCount;
+
         // Load service stats panel (Total Azure / Cached / Approved / Sync)
         loadServiceStats();
+
+        // Load activity badge (non-blocking)
+        loadActivity(true);
 
         // Build service category filters
         const categories = svcData.categories || [];
@@ -896,18 +931,6 @@ const statusLabels = {
     validation_failed: '⛔ Validation Failed',
 };
 
-const gateStatusIcons = {
-    not_started: '○',
-    draft: '◐',
-    approved: '●',
-};
-
-const gateStatusLabels = {
-    not_started: 'Not Started',
-    draft: 'Draft',
-    approved: 'Approved',
-};
-
 function renderServiceTable(services) {
     const tbody = document.getElementById('catalog-tbody');
 
@@ -924,15 +947,12 @@ function renderServiceTable(services) {
 
     tbody.innerHTML = services.map(svc => {
         const status = svc.status || 'not_approved';
-        const gates = svc.gates || { policy: 'not_started', template: 'not_started' };
-        const gatesApproved = svc.gates_approved || 0;
+        const activeVer = svc.active_version;
 
-        // Gate indicators
-        const gateHtml = `<div class="gate-indicators">
-            <span class="gate-dot gate-${gates.policy}" title="Policy: ${gateStatusLabels[gates.policy]}">${gateStatusIcons[gates.policy]}</span>
-            <span class="gate-dot gate-${gates.template}" title="ARM Template: ${gateStatusLabels[gates.template]}">${gateStatusIcons[gates.template]}</span>
-            <span class="gate-count">${gatesApproved}/2</span>
-        </div>`;
+        // Version indicator instead of gates
+        const versionHtml = activeVer
+            ? `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`
+            : `<span class="version-badge version-none" title="No approved version">—</span>`;
 
         return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
             <td>
@@ -940,7 +960,7 @@ function renderServiceTable(services) {
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
             </td>
             <td><span class="category-badge">${escapeHtml(svc.category)}</span></td>
-            <td>${gateHtml}</td>
+            <td>${versionHtml}</td>
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
         </tr>`;
     }).join('');
@@ -1002,9 +1022,9 @@ function applyServiceFilters() {
     renderServiceTable(filtered);
 }
 
-// ── Service Detail Drawer (3-Gate Approval Workflow) ────────
+// ── Service Detail Drawer (Versioned Onboarding) ────────────
 
-let _currentArtifacts = null;  // cache loaded artifacts
+let _currentVersions = null;
 
 async function showServiceDetail(serviceId) {
     const svc = allServices.find(s => s.id === serviceId);
@@ -1016,50 +1036,42 @@ async function showServiceDetail(serviceId) {
 
     document.getElementById('detail-service-name').textContent = svc.name;
 
-    // Show loading state
     body.innerHTML = `
         <div class="detail-meta">
             <span class="svc-id">${escapeHtml(svc.id)}</span>
             <span class="status-badge ${status}">${statusLabels[status] || status}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
+            ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
+            ${svc.active_version ? `<span class="version-badge version-active">Active: v${svc.active_version}</span>` : ''}
         </div>
-        <div class="gate-loading">Loading approval gates…</div>
+        <div class="gate-loading">Loading versions…</div>
     `;
     drawer.classList.remove('hidden');
 
-    // Fetch artifacts from API
+    // Fetch versions
     try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts`);
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions`);
         const data = await res.json();
-        _currentArtifacts = data;
-        _renderGateWorkflow(svc, data);
+        _currentVersions = data.versions || [];
+        _renderVersionedWorkflow(svc, _currentVersions, data.active_version);
     } catch (err) {
-        body.innerHTML += `<p style="color: var(--accent-red);">Failed to load artifacts: ${err.message}</p>`;
+        body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>`;
     }
 }
 
-function _renderGateWorkflow(svc, artifacts) {
+function _renderVersionedWorkflow(svc, versions, activeVersion) {
     const body = document.getElementById('detail-service-body');
     const status = svc.status || 'not_approved';
-    const summary = artifacts._summary || { approved_count: 0, total_gates: 2, all_approved: false };
+    const hasVersions = versions.length > 0;
+    const latestVersion = versions.length > 0 ? versions[0] : null;
 
-    const gateConfigs = [
-        {
-            type: 'policy',
-            title: 'Azure Policy',
-            icon: '🛡️',
-            description: 'Azure Policy definition that governs how this service can be deployed.',
-            promptPlaceholder: 'e.g. "Deny deployments without encryption enabled" or "Only allow deployment in East US and West US regions"',
-            lang: 'json',
-        },
-        {
-            type: 'template',
-            title: 'ARM Template',
-            icon: '📄',
-            description: 'ARM template for deploying this service. Deployed directly via the Azure ARM SDK — no pipelines needed.',
-            promptPlaceholder: 'e.g. "Deploy with managed identity, diagnostic logging, and private endpoint" or "Standard SKU with zone redundancy"',
-            lang: 'json',
-        },
+    // Pipeline description
+    const pipelineSteps = [
+        { icon: '⚡', label: 'Auto-Gen', desc: 'ARM template generated from resource type' },
+        { icon: '📋', label: 'Policy Check', desc: 'Static validation against org governance policies' },
+        { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
+        { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
+        { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
     ];
 
     body.innerHTML = `
@@ -1068,112 +1080,62 @@ function _renderGateWorkflow(svc, artifacts) {
             <span class="status-badge ${status}">${statusLabels[status] || status}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
+            ${activeVersion ? `<span class="version-badge version-active">Active: v${activeVersion}</span>` : ''}
         </div>
 
-        <div class="gate-progress-bar">
-            <div class="gate-progress-label">${summary.approved_count}/2 gates approved</div>
-            <div class="gate-progress-track">
-                <div class="gate-progress-fill" style="width: ${(summary.approved_count / 2) * 100}%"></div>
+        <div class="onboard-pipeline">
+            <div class="pipeline-label">Onboarding Pipeline</div>
+            <div class="pipeline-steps">
+                ${pipelineSteps.map(s => `
+                    <div class="pipeline-step" title="${s.desc}">
+                        <span class="pipeline-step-icon">${s.icon}</span>
+                        <span class="pipeline-step-label">${s.label}</span>
+                    </div>
+                `).join('<span class="pipeline-arrow">→</span>')}
             </div>
+            <p class="pipeline-desc">All steps run automatically with Copilot SDK auto-healing (up to 5 attempts). Validated against organization governance policies — no per-service policy needed.</p>
         </div>
 
-        <div class="gate-cards" id="gate-cards">
-            ${gateConfigs.map((g, i) => {
-                const artifact = artifacts[g.type] || { status: 'not_started', content: '' };
-                const gateStatus = artifact.status || 'not_started';
-                const hasContent = artifact.content && artifact.content.trim().length > 0;
-                const isApproved = gateStatus === 'approved';
+        ${_renderOnboardButton(svc, status, latestVersion)}
 
-                return `
-                <div class="gate-card gate-${gateStatus}" id="gate-card-${g.type}">
-                    <div class="gate-card-header" onclick="toggleGateCard('${g.type}')">
-                        <div class="gate-card-title">
-                            <span class="gate-num">${i + 1}</span>
-                            <span class="gate-icon">${g.icon}</span>
-                            <span>${g.title}</span>
-                        </div>
-                        <div class="gate-card-status">
-                            <span class="gate-status-badge gate-status-${gateStatus}">
-                                ${gateStatusIcons[gateStatus]} ${gateStatusLabels[gateStatus]}
-                            </span>
-                            <span class="gate-chevron" id="gate-chevron-${g.type}">▸</span>
-                        </div>
-                    </div>
-                    <div class="gate-card-body hidden" id="gate-body-${g.type}">
-                        <p class="gate-desc">${g.description}</p>
-                        ${isApproved ? `
-                            <div class="gate-approved-info">
-                                <span>✅ Approved by ${escapeHtml(artifact.approved_by || 'IT Staff')}</span>
-                                ${artifact.approved_at ? `<span class="gate-date">${artifact.approved_at.substring(0, 10)}</span>` : ''}
-                            </div>
-                            <div class="gate-content-preview">
-                                <pre><code>${escapeHtml(artifact.content || '(no content)')}</code></pre>
-                            </div>
-                            <div class="gate-actions">
-                                <button class="btn btn-xs btn-ghost" onclick="editGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">✏️ Edit</button>
-                                <button class="btn btn-xs btn-ghost" onclick="unapproveGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">↩️ Revoke</button>
-                            </div>
-                        ` : hasContent ? `
-                            <div class="gate-generated-content">
-                                <div class="gate-generated-label">Generated ${g.title}</div>
-                                <div class="gate-content-preview">
-                                    <pre><code id="gate-preview-${g.type}">${escapeHtml(artifact.content)}</code></pre>
-                                </div>
-                                <div class="gate-actions">
-                                    <button class="btn btn-sm btn-accent" onclick="approveGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
-                                        ✅ Approve
-                                    </button>
-                                    <button class="btn btn-sm btn-secondary" onclick="regenerateGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
-                                        🔄 Regenerate
-                                    </button>
-                                </div>
-                            </div>
-                        ` : `
-                            <div class="gate-prompt-section" id="gate-prompt-section-${g.type}">
-                                <label class="gate-prompt-label">Describe what you need in plain English:</label>
-                                <textarea class="gate-prompt-input" id="gate-prompt-${g.type}"
-                                    placeholder="${escapeHtml(g.promptPlaceholder)}"
-                                    rows="3"></textarea>
-                                <div class="gate-actions">
-                                    <button class="btn btn-sm btn-primary" id="gate-generate-btn-${g.type}"
-                                        onclick="generateGateArtifact('${escapeHtml(svc.id)}', '${g.type}')">
-                                        ✨ Generate with AI
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="gate-generation-output hidden" id="gate-output-${g.type}">
-                                <div class="gate-generated-label">
-                                    <span class="gate-generating-spinner" id="gate-spinner-${g.type}">⏳</span>
-                                    <span id="gate-output-label-${g.type}">Generating…</span>
-                                </div>
-                                <div class="gate-content-preview">
-                                    <pre><code id="gate-preview-${g.type}"></code></pre>
-                                </div>
-                            </div>
-                        `}
-                    </div>
-                </div>
-                `;
-            }).join('')}
-        </div>
-
-        ${_renderValidationSection(svc, summary)}
+        ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
 }
 
-function _renderValidationSection(svc, summary) {
-    const status = svc.status || 'not_approved';
-    const showValidation = summary.all_approved || status === 'validating' || status === 'validation_failed' || status === 'approved';
-    if (!showValidation) return '';
-
-    if (status === 'approved') {
+function _renderOnboardButton(svc, status, latestVersion) {
+    if (status === 'approved' && latestVersion) {
         return `
         <div class="validation-card validation-succeeded">
             <div class="validation-header">
                 <span class="validation-icon">✅</span>
-                <span class="validation-title">Deployment Validation Passed</span>
+                <span class="validation-title">Service Approved — v${latestVersion.version}</span>
             </div>
-            <div class="validation-detail">This service has been validated and approved for production use.</div>
+            <div class="validation-detail">
+                This service has a validated ARM template and is approved for deployment.
+                ${latestVersion.validated_at ? `Validated: ${latestVersion.validated_at.substring(0, 10)}` : ''}
+            </div>
+            <div class="validation-actions">
+                <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                    🔄 Re-validate (New Version)
+                </button>
+            </div>
+        </div>`;
+    }
+
+    if (status === 'validating') {
+        return `
+        <div class="validation-card validation-ready" id="validation-card">
+            <div class="validation-header">
+                <span class="validation-icon">🔄</span>
+                <span class="validation-title">Validation In Progress</span>
+            </div>
+            <div class="validation-detail">Service is being validated…</div>
+            <div class="validation-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                    🚀 Restart Onboarding
+                </button>
+            </div>
+            <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
@@ -1182,60 +1144,95 @@ function _renderValidationSection(svc, summary) {
         <div class="validation-card validation-failed" id="validation-card">
             <div class="validation-header">
                 <span class="validation-icon">⛔</span>
-                <span class="validation-title">Deployment Validation Failed</span>
+                <span class="validation-title">Validation Failed</span>
             </div>
-            <div class="validation-detail">The ARM template failed What-If validation after auto-healing attempts. You can retry to trigger another round of AI-powered fixes.</div>
+            <div class="validation-detail">The previous onboarding attempt failed. Click below to retry with a fresh template and auto-healing.</div>
             <div class="validation-actions">
-                <button class="btn btn-sm btn-primary" onclick="triggerDeploymentValidation('${escapeHtml(svc.id)}')">🤖 Retry with Auto-Heal</button>
+                <button class="btn btn-sm btn-primary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                    🤖 Retry Onboarding
+                </button>
             </div>
-        </div>`;
-    }
-
-    if (status === 'validating') {
-        return `
-        <div class="validation-card validation-running" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon validation-spinner">⏳</span>
-                <span class="validation-title">Deployment Validation In Progress…</span>
-            </div>
-            <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
-            <div class="validation-progress">
-                <div class="validation-progress-track">
-                    <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
-                </div>
-            </div>
-            <div class="validation-detail" id="validation-detail">Starting validation…</div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
-    // Both gates approved but service hasn't started validating yet
+    // not_approved — show the main onboarding button
     return `
     <div class="validation-card validation-ready" id="validation-card">
         <div class="validation-header">
             <span class="validation-icon">🚀</span>
-            <span class="validation-title">Ready for Deployment Validation</span>
+            <span class="validation-title">One-Click Onboarding</span>
         </div>
-        <div class="validation-detail">Both gates approved. Run ARM What-If to validate the template deploys correctly against Azure.</div>
+        <div class="validation-detail">
+            Auto-generates an ARM template for <strong>${escapeHtml(svc.name)}</strong>, validates it against
+            organization governance policies, deploys to a test resource group, then promotes to approved.
+            No manual configuration needed.
+        </div>
         <div class="validation-actions">
-            <button class="btn btn-sm btn-accent" onclick="triggerDeploymentValidation('${escapeHtml(svc.id)}')">🚀 Validate Deployment</button>
+            <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                🚀 Onboard Service
+            </button>
+        </div>
+        <div class="validation-log" id="validation-log"></div>
+    </div>`;
+}
+
+function _renderVersionHistory(versions, activeVersion) {
+    return `
+    <div class="version-history">
+        <div class="version-history-header">
+            <span>Version History</span>
+            <span class="version-count">${versions.length} version(s)</span>
+        </div>
+        <div class="version-list">
+            ${versions.map(v => {
+                const isActive = v.version === activeVersion;
+                const statusIcon = v.status === 'approved' ? '✅' :
+                                   v.status === 'failed' ? '❌' :
+                                   v.status === 'validating' ? '🔄' : '📝';
+                return `
+                <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
+                    <div class="version-item-header">
+                        <span class="version-item-badge">v${v.version}</span>
+                        <span class="version-item-status">${statusIcon} ${v.status}</span>
+                        ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : ''}
+                        <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
+                        <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
+                    </div>
+                    <div class="version-item-detail hidden">
+                        <div class="version-detail-row">
+                            <strong>Changelog:</strong> ${escapeHtml(v.changelog || '—')}
+                        </div>
+                        ${v.policy_check && v.policy_check.total_checks ? `
+                        <div class="version-detail-row">
+                            <strong>Policy:</strong> ${v.policy_check.passed_checks}/${v.policy_check.total_checks} passed,
+                            ${v.policy_check.blockers || 0} blocker(s)
+                        </div>` : ''}
+                        ${v.arm_template ? `
+                        <div class="version-detail-row">
+                            <strong>Template:</strong> ${Math.round(v.arm_template.length / 1024 * 10) / 10} KB
+                        </div>` : ''}
+                    </div>
+                </div>`;
+            }).join('')}
         </div>
     </div>`;
 }
 
-async function triggerDeploymentValidation(serviceId) {
-    const card = document.getElementById('validation-card');
-    const progressFill = document.getElementById('validation-progress-fill');
-    const detailEl = document.getElementById('validation-detail');
-    const logEl = document.getElementById('validation-log');
+function toggleVersionDetail(el) {
+    const detail = el.querySelector('.version-item-detail');
+    if (detail) detail.classList.toggle('hidden');
+}
 
-    // Replace card content with running state
+async function triggerOnboarding(serviceId) {
+    const card = document.getElementById('validation-card');
+
     if (card) {
         card.className = 'validation-card validation-running';
         card.innerHTML = `
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⏳</span>
-                <span class="validation-title">Deployment Validation In Progress…</span>
+                <span class="validation-title">Onboarding In Progress…</span>
             </div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
             <div class="validation-progress">
@@ -1243,13 +1240,15 @@ async function triggerDeploymentValidation(serviceId) {
                     <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
                 </div>
             </div>
-            <div class="validation-detail" id="validation-detail">Starting validation…</div>
-            <div class="validation-log" id="validation-log"></div>
+            <div class="validation-detail" id="validation-detail">Auto-generating ARM template…</div>
+            <div class="validation-log" id="validation-log">
+                <div class="validation-log-header">Onboarding Log</div>
+            </div>
         `;
     }
 
     try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/validate-deployment`, {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({}),
@@ -1257,7 +1256,7 @@ async function triggerDeploymentValidation(serviceId) {
 
         if (!res.ok) {
             const err = await res.json();
-            throw new Error(err.detail || 'Validation request failed');
+            throw new Error(err.detail || 'Onboarding request failed');
         }
 
         const reader = res.body.getReader();
@@ -1277,26 +1276,21 @@ async function triggerDeploymentValidation(serviceId) {
                 try {
                     const event = JSON.parse(line);
                     _handleValidationEvent(event);
-                } catch (e) {
-                    // skip non-JSON
-                }
+                } catch (e) {}
             }
         }
 
-        // Process remaining buffer
         if (buffer.trim()) {
             try {
-                const event = JSON.parse(buffer);
-                _handleValidationEvent(event);
+                _handleValidationEvent(JSON.parse(buffer));
             } catch (e) {}
         }
 
-        // Refresh data after validation completes
         await loadAllData();
         await showServiceDetail(serviceId);
 
     } catch (err) {
-        showToast(`Validation failed: ${err.message}`, 'error');
+        showToast(`Onboarding failed: ${err.message}`, 'error');
         const detail = document.getElementById('validation-detail');
         if (detail) detail.textContent = `Error: ${err.message}`;
         const cardEl = document.getElementById('validation-card');
@@ -1311,259 +1305,92 @@ function _handleValidationEvent(event) {
     const badge = document.getElementById('validation-attempt-badge');
     const card = document.getElementById('validation-card');
 
-    // Update progress bar
     if (event.progress && progressFill) {
         progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
     }
-
-    // Update detail text
     if (event.detail && detailEl) {
         detailEl.textContent = event.detail;
     }
-
-    // Update attempt badge
     if (event.attempt && badge) {
         badge.textContent = `Attempt ${event.attempt}${event.max_attempts ? ' / ' + event.max_attempts : ''}`;
         badge.classList.add('visible');
     }
 
-    // Pick icon and CSS class per event type
+    // Pick icon per event type
     let icon = '▸';
     let logClass = event.type || 'progress';
-    if (event.type === 'error') icon = '❌';
-    else if (event.type === 'done') icon = '✅';
-    else if (event.type === 'iteration_start') icon = '🔄';
-    else if (event.type === 'healing') icon = '🤖';
-    else if (event.type === 'healing_done') icon = '🔧';
 
-    // Add log line
+    switch (event.type) {
+        case 'error':           icon = '❌'; break;
+        case 'done':            icon = '✅'; break;
+        case 'iteration_start': icon = '🔄'; break;
+        case 'healing':         icon = '🤖'; break;
+        case 'healing_done':    icon = '🔧'; break;
+        case 'policy_result':   icon = event.passed ? '✅' : (event.severity === 'high' || event.severity === 'critical' ? '❌' : '⚠️'); break;
+        default:
+            if (event.phase === 'generating')                   icon = '⚡';
+            else if (event.phase === 'generated')               icon = '📄';
+            else if (event.phase === 'static_policy_check')     icon = '📋';
+            else if (event.phase === 'static_policy_complete')  icon = '✓';
+            else if (event.phase === 'static_policy_failed')    icon = '⚠️';
+            else if (event.phase === 'what_if')                 icon = '🔍';
+            else if (event.phase === 'what_if_complete')        icon = '✓';
+            else if (event.phase === 'deploying')               icon = '🚀';
+            else if (event.phase === 'deploy_complete')         icon = '📦';
+            else if (event.phase === 'deploy_failed')           icon = '💥';
+            else if (event.phase === 'resource_check' || event.phase === 'resource_check_complete') icon = '🔎';
+            else if (event.phase === 'cleanup' || event.phase === 'cleanup_complete') icon = '🧹';
+            else if (event.phase === 'promoting')               icon = '🏆';
+            break;
+    }
+
     if (logEl && event.detail) {
         const logLine = document.createElement('div');
         logLine.className = `validation-log-line validation-log-${logClass}`;
+        if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
         logLine.textContent = `${icon} ${event.detail}`;
         logEl.appendChild(logLine);
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // Update header during healing phases
+    // Update header
     const header = card?.querySelector('.validation-title');
     const iconEl = card?.querySelector('.validation-icon');
 
-    if (event.type === 'healing' && header) {
+    if (event.phase === 'generating' && header) {
+        header.textContent = 'Generating ARM Template…';
+        if (iconEl) { iconEl.textContent = '⚡'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'static_policy_check' && header) {
+        header.textContent = 'Checking Governance Policies…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.type === 'healing' && header) {
         header.textContent = 'Auto-Healing — AI Fixing Template…';
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.type === 'healing_done' && header) {
-        header.textContent = 'Retrying Deployment Validation…';
-        if (iconEl) { iconEl.textContent = '⏳'; }
-    } else if (event.type === 'iteration_start' && header) {
-        header.textContent = `Deployment Validation — Attempt ${event.attempt}`;
-        if (iconEl) { iconEl.textContent = '⏳'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'what_if' && header) {
+        header.textContent = 'Running ARM What-If Analysis…';
+        if (iconEl) { iconEl.textContent = '🔍'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'deploying' && header) {
+        header.textContent = 'Deploying to Validation RG…';
+        if (iconEl) { iconEl.textContent = '🚀'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'cleanup' && header) {
+        header.textContent = 'Cleaning Up…';
+        if (iconEl) { iconEl.textContent = '🧹'; }
     }
 
     // Final states
     if (event.type === 'done' && card) {
         card.className = 'validation-card validation-succeeded';
-        if (header) header.textContent = 'Deployment Validation Passed!';
+        if (header) header.textContent = `Service Approved — v${event.version || '?'}`;
         if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
         if (badge && event.total_attempts > 1) {
-            badge.textContent = `Passed on attempt ${event.total_attempts} (${event.total_attempts - 1} auto-fix${event.total_attempts > 2 ? 'es' : ''})`;
+            badge.textContent = `Passed on attempt ${event.total_attempts}`;
             badge.classList.add('badge-success');
         }
     } else if (event.type === 'error' && card) {
         card.className = 'validation-card validation-failed';
-        if (header) header.textContent = 'Deployment Validation Failed';
+        if (header) header.textContent = 'Onboarding Failed';
         if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
-        if (badge && event.attempt) {
-            badge.textContent = `Failed after ${event.attempt} attempt${event.attempt > 1 ? 's' : ''}`;
-            badge.classList.add('badge-error');
-        }
     }
-}
-
-function toggleGateCard(type) {
-    const body = document.getElementById(`gate-body-${type}`);
-    const chevron = document.getElementById(`gate-chevron-${type}`);
-    if (body) {
-        body.classList.toggle('hidden');
-        if (chevron) chevron.textContent = body.classList.contains('hidden') ? '▸' : '▾';
-    }
-}
-
-async function generateGateArtifact(serviceId, artifactType) {
-    const promptInput = document.getElementById(`gate-prompt-${artifactType}`);
-    const prompt = promptInput ? promptInput.value.trim() : '';
-
-    if (!prompt) {
-        showToast('Please describe what you need before generating', 'error');
-        promptInput?.focus();
-        return;
-    }
-
-    // Show generation output area, hide prompt section
-    const promptSection = document.getElementById(`gate-prompt-section-${artifactType}`);
-    const outputSection = document.getElementById(`gate-output-${artifactType}`);
-    const previewEl = document.getElementById(`gate-preview-${artifactType}`);
-    const spinnerEl = document.getElementById(`gate-spinner-${artifactType}`);
-    const labelEl = document.getElementById(`gate-output-label-${artifactType}`);
-
-    if (promptSection) promptSection.classList.add('hidden');
-    if (outputSection) outputSection.classList.remove('hidden');
-    if (previewEl) previewEl.textContent = '';
-    if (labelEl) labelEl.textContent = 'Generating…';
-
-    try {
-        const res = await fetch(
-            `/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/generate`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt }),
-            }
-        );
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || 'Generation failed');
-        }
-
-        // Read NDJSON stream
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let generatedContent = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            // Process complete lines
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete line in buffer
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const chunk = JSON.parse(line);
-                    if (chunk.type === 'done') {
-                        generatedContent = chunk.content;
-                        if (previewEl) previewEl.textContent = generatedContent;
-                    } else if (chunk.type === 'error') {
-                        throw new Error(chunk.message);
-                    }
-                } catch (parseErr) {
-                    if (parseErr.message !== chunk?.message) {
-                        // ignore JSON parse errors from partial chunks
-                    }
-                }
-            }
-        }
-
-        if (!generatedContent) {
-            throw new Error('No content was generated');
-        }
-
-        // Save as draft
-        await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: generatedContent, notes: `AI-generated: ${prompt}`, status: 'draft' }),
-        });
-
-        if (spinnerEl) spinnerEl.textContent = '✅';
-        if (labelEl) labelEl.textContent = 'Generated — review and approve';
-
-        // Refresh to show the generated content with approve/regenerate buttons
-        await _refreshServicesOnly();
-        await showServiceDetail(serviceId);
-        // Re-expand this gate card
-        const gateBody = document.getElementById(`gate-body-${artifactType}`);
-        if (gateBody && gateBody.classList.contains('hidden')) {
-            toggleGateCard(artifactType);
-        }
-
-    } catch (err) {
-        showToast(`Generation failed: ${err.message}`, 'error');
-        // Show prompt section again so they can retry
-        if (promptSection) promptSection.classList.remove('hidden');
-        if (outputSection) outputSection.classList.add('hidden');
-    }
-}
-
-async function regenerateGateArtifact(serviceId, artifactType) {
-    // Clear the existing draft and show the prompt input again
-    try {
-        await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: '', notes: '', status: 'not_started' }),
-        });
-
-        await _refreshServicesOnly();
-        await showServiceDetail(serviceId);
-        // Re-expand this gate card
-        const gateBody = document.getElementById(`gate-body-${artifactType}`);
-        if (gateBody && gateBody.classList.contains('hidden')) {
-            toggleGateCard(artifactType);
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-}
-
-async function approveGateArtifact(serviceId, artifactType) {
-    try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/approve`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ approved_by: currentUser?.displayName || 'IT Staff' }),
-        });
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || 'Failed to approve');
-        }
-
-        const data = await res.json();
-        showToast(data.message || `${artifactType} approved!`);
-
-        // Refresh both views
-        await loadAllData();
-        await showServiceDetail(serviceId);
-
-        // Auto-trigger deployment validation when both gates are approved
-        if (data.validation_required) {
-            setTimeout(() => triggerDeploymentValidation(serviceId), 500);
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-}
-
-async function unapproveGateArtifact(serviceId, artifactType) {
-    if (!confirm(`Revoke approval for ${artifactType}? This will set the service back to Not Approved.`)) return;
-
-    try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/artifacts/${artifactType}/unapprove`, {
-            method: 'POST',
-        });
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || 'Failed to unapprove');
-        }
-
-        showToast(`${artifactType} approval revoked`);
-        await loadAllData();
-        await showServiceDetail(serviceId);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-}
-
-function editGateArtifact(serviceId, artifactType) {
-    // Revoke and re-edit
-    unapproveGateArtifact(serviceId, artifactType);
 }
 
 function closeServiceDetail() {
@@ -1900,14 +1727,163 @@ function openGovernanceEditor(serviceId) {
     document.getElementById('modal-service-onboard').classList.remove('hidden');
 }
 
-function openTemplateOnboarding() {
+// ── Template Composition from Approved Services ─────────────
+
+let _approvedServicesForCompose = [];
+let _composeSelections = new Map(); // service_id -> { quantity, parameters: Set }
+
+async function openTemplateOnboarding() {
     document.getElementById('modal-template-onboard').classList.remove('hidden');
-    const cb = document.querySelector('#form-template-onboard input[name="is_blueprint"]');
-    const group = document.getElementById('blueprint-services-group');
-    if (cb && group) {
-        cb.addEventListener('change', () => {
-            group.style.display = cb.checked ? 'block' : 'none';
-        });
+    _composeSelections.clear();
+    _updateComposeSubmitButton();
+
+    const list = document.getElementById('compose-service-list');
+    list.innerHTML = '<div class="compose-loading">Loading approved services…</div>';
+
+    try {
+        const res = await fetch('/api/catalog/services/approved-for-templates');
+        const data = await res.json();
+        _approvedServicesForCompose = data.services || [];
+        _renderComposeServiceList(_approvedServicesForCompose);
+    } catch (err) {
+        list.innerHTML = `<div class="compose-empty">Failed to load: ${err.message}</div>`;
+    }
+}
+
+function filterComposeServices() {
+    const q = (document.getElementById('compose-service-search')?.value || '').toLowerCase();
+    const filtered = _approvedServicesForCompose.filter(s =>
+        s.name.toLowerCase().includes(q) ||
+        s.id.toLowerCase().includes(q) ||
+        (s.category || '').toLowerCase().includes(q)
+    );
+    _renderComposeServiceList(filtered);
+}
+
+function _renderComposeServiceList(services) {
+    const list = document.getElementById('compose-service-list');
+    if (!services.length) {
+        list.innerHTML = '<div class="compose-empty">No approved services found. Onboard services first in the Service Catalog.</div>';
+        return;
+    }
+
+    list.innerHTML = services.map(svc => {
+        const selected = _composeSelections.has(svc.id);
+        const extraParams = svc.parameters.filter(p => !p.is_standard);
+        return `
+        <div class="compose-svc-card ${selected ? 'compose-svc-selected' : ''}"
+             onclick="toggleComposeService('${escapeHtml(svc.id)}')"
+             data-service-id="${escapeHtml(svc.id)}">
+            <div class="compose-svc-card-main">
+                <div class="compose-svc-check">${selected ? '☑' : '☐'}</div>
+                <div class="compose-svc-info">
+                    <div class="compose-svc-name">${escapeHtml(svc.name)}</div>
+                    <div class="compose-svc-id">${escapeHtml(svc.id)}</div>
+                </div>
+                <span class="category-badge">${escapeHtml(svc.category)}</span>
+                <span class="version-badge version-active">v${svc.active_version || '?'}</span>
+                ${extraParams.length ? `<span class="compose-param-count">${extraParams.length} param${extraParams.length !== 1 ? 's' : ''}</span>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function toggleComposeService(serviceId) {
+    if (_composeSelections.has(serviceId)) {
+        _composeSelections.delete(serviceId);
+    } else {
+        _composeSelections.set(serviceId, { quantity: 1, parameters: new Set() });
+    }
+    _renderComposeServiceList(
+        _approvedServicesForCompose.filter(s => {
+            const q = (document.getElementById('compose-service-search')?.value || '').toLowerCase();
+            return s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || (s.category || '').toLowerCase().includes(q);
+        })
+    );
+    _renderComposeSelections();
+    _updateComposeSubmitButton();
+}
+
+function _renderComposeSelections() {
+    const section = document.getElementById('compose-selections-section');
+    const container = document.getElementById('compose-selections');
+
+    if (_composeSelections.size === 0) {
+        section.style.display = 'none';
+        container.innerHTML = '';
+        return;
+    }
+
+    section.style.display = 'block';
+
+    container.innerHTML = Array.from(_composeSelections.entries()).map(([sid, sel]) => {
+        const svc = _approvedServicesForCompose.find(s => s.id === sid);
+        if (!svc) return '';
+        const extraParams = svc.parameters.filter(p => !p.is_standard);
+
+        return `
+        <div class="compose-selection-card">
+            <div class="compose-selection-header">
+                <div class="compose-selection-title">
+                    <span class="compose-svc-name">${escapeHtml(svc.name)}</span>
+                    <button type="button" class="btn btn-xs btn-ghost" onclick="toggleComposeService('${escapeHtml(sid)}')" title="Remove">✕</button>
+                </div>
+                <div class="compose-qty-row">
+                    <label>Quantity:</label>
+                    <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', -1)">−</button>
+                    <span class="compose-qty-val" id="compose-qty-${sid.replace(/[/.]/g, '-')}">${sel.quantity}</span>
+                    <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', 1)">+</button>
+                </div>
+            </div>
+            ${extraParams.length ? `
+            <div class="compose-params">
+                <div class="compose-params-label">Parameters to expose in template:</div>
+                <div class="compose-params-grid">
+                    ${extraParams.map(p => {
+                        const checked = sel.parameters.has(p.name);
+                        return `
+                        <label class="compose-param-item ${checked ? 'compose-param-checked' : ''}"
+                               title="${escapeHtml(p.description || '')}">
+                            <input type="checkbox" ${checked ? 'checked' : ''}
+                                   onchange="toggleComposeParam('${escapeHtml(sid)}', '${escapeHtml(p.name)}', this.checked)" />
+                            <span class="compose-param-name">${escapeHtml(p.name)}</span>
+                            <span class="compose-param-type">${escapeHtml(p.type)}</span>
+                            ${p.defaultValue !== undefined ? `<span class="compose-param-default">= ${escapeHtml(String(p.defaultValue))}</span>` : ''}
+                        </label>`;
+                    }).join('')}
+                </div>
+            </div>` : '<div class="compose-no-params">No additional parameters — uses standard parameters only</div>'}
+        </div>`;
+    }).join('');
+}
+
+function adjustComposeQty(serviceId, delta) {
+    const sel = _composeSelections.get(serviceId);
+    if (!sel) return;
+    sel.quantity = Math.max(1, Math.min(10, sel.quantity + delta));
+    const el = document.getElementById(`compose-qty-${serviceId.replace(/[/.]/g, '-')}`);
+    if (el) el.textContent = sel.quantity;
+}
+
+function toggleComposeParam(serviceId, paramName, checked) {
+    const sel = _composeSelections.get(serviceId);
+    if (!sel) return;
+    if (checked) {
+        sel.parameters.add(paramName);
+    } else {
+        sel.parameters.delete(paramName);
+    }
+    _renderComposeSelections();
+}
+
+function _updateComposeSubmitButton() {
+    const btn = document.getElementById('btn-submit-template');
+    if (btn) {
+        btn.disabled = _composeSelections.size === 0;
+        const count = _composeSelections.size;
+        btn.textContent = count > 0
+            ? `Create Template (${count} service${count !== 1 ? 's' : ''})`
+            : 'Create Template';
     }
 }
 
@@ -1986,41 +1962,40 @@ async function submitTemplateOnboarding(event) {
     const form = document.getElementById('form-template-onboard');
     const fd = new FormData(form);
     const btn = document.getElementById('btn-submit-template');
+    const origText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'Submitting...';
+    btn.textContent = 'Composing…';
 
-    let parameters = [];
-    try {
-        const paramRaw = fd.get('parameters');
-        if (paramRaw && paramRaw.trim()) {
-            parameters = JSON.parse(paramRaw);
-        }
-    } catch {
-        showToast('Parameters must be valid JSON', 'error');
+    const name = (fd.get('name') || '').trim();
+    if (!name) {
+        showToast('Template name is required', 'error');
         btn.disabled = false;
-        btn.textContent = 'Onboard Template';
+        btn.textContent = origText;
         return;
     }
 
+    if (_composeSelections.size === 0) {
+        showToast('Select at least one approved service', 'error');
+        btn.disabled = false;
+        btn.textContent = origText;
+        return;
+    }
+
+    const selections = Array.from(_composeSelections.entries()).map(([sid, sel]) => ({
+        service_id: sid,
+        quantity: sel.quantity,
+        parameters: Array.from(sel.parameters),
+    }));
+
     const body = {
-        id: fd.get('id').trim(),
-        name: fd.get('name').trim(),
-        description: fd.get('description').trim(),
-        format: fd.get('format'),
-        category: fd.get('category'),
-        content: fd.get('content') || '',
-        tags: (fd.get('tags') || '').split(',').map(s => s.trim()).filter(Boolean),
-        resources: (fd.get('resources') || '').split(',').map(s => s.trim()).filter(Boolean),
-        parameters: parameters,
-        outputs: (fd.get('outputs') || '').split(',').map(s => s.trim()).filter(Boolean),
-        is_blueprint: fd.get('is_blueprint') === 'on',
-        service_ids: (fd.get('service_ids') || '').split(',').map(s => s.trim()).filter(Boolean),
-        status: 'approved',
-        registered_by: 'web-portal',
+        name: name,
+        description: (fd.get('description') || '').trim(),
+        category: fd.get('category') || 'blueprint',
+        selections: selections,
     };
 
     try {
-        const res = await fetch('/api/catalog/templates', {
+        const res = await fetch('/api/catalog/templates/compose', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -2028,17 +2003,677 @@ async function submitTemplateOnboarding(event) {
 
         if (!res.ok) {
             const err = await res.json();
-            throw new Error(err.detail || 'Failed to onboard template');
+            throw new Error(err.detail || 'Failed to compose template');
         }
 
-        showToast(`Template "${body.name}" onboarded successfully!`);
+        const data = await res.json();
+        showToast(`Template "${name}" created — ${data.resource_count} resource(s), ${data.parameter_count} parameter(s)`);
         closeModal('modal-template-onboard');
         form.reset();
+        _composeSelections.clear();
         await loadAllData();
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
         btn.disabled = false;
-        btn.textContent = 'Onboard Template';
+        btn.textContent = origText;
+        _updateComposeSubmitButton();
     }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// GOVERNANCE STANDARDS
+// ══════════════════════════════════════════════════════════════
+
+async function loadStandards() {
+    try {
+        const res = await fetch('/api/standards');
+        if (!res.ok) throw new Error('Failed to load standards');
+        const data = await res.json();
+        allStandards = data.standards || [];
+        _buildStandardsCategoryFilters();
+        _renderStandardsList();
+    } catch (err) {
+        console.error('Failed to load standards:', err);
+        document.getElementById('standards-list').innerHTML =
+            `<div class="compose-empty">Failed to load standards: ${err.message}</div>`;
+    }
+}
+
+function _buildStandardsCategoryFilters() {
+    const categories = [...new Set(allStandards.map(s => s.category))].sort();
+    const container = document.getElementById('standards-category-filters');
+    if (!container) return;
+    container.innerHTML = `<button class="filter-pill ${currentStandardsCategoryFilter === 'all' ? 'active' : ''}" onclick="filterStandards('all')">All</button>` +
+        categories.map(c =>
+            `<button class="filter-pill ${currentStandardsCategoryFilter === c ? 'active' : ''}" onclick="filterStandards('${escapeHtml(c)}')">${escapeHtml(c)}</button>`
+        ).join('');
+}
+
+function filterStandards(category) {
+    currentStandardsCategoryFilter = category;
+    _buildStandardsCategoryFilters();
+    _renderStandardsList();
+}
+
+function filterStandardsBySeverity(severity) {
+    currentStandardsSeverityFilter = severity;
+    // Update active state on severity filter pills
+    const container = document.getElementById('standards-severity-filters');
+    if (container) {
+        container.querySelectorAll('.filter-pill').forEach(btn => {
+            const btnSeverity = btn.textContent.includes('Critical') ? 'critical' :
+                btn.textContent.includes('High') ? 'high' :
+                btn.textContent.includes('Medium') ? 'medium' :
+                btn.textContent.includes('Low') ? 'low' : 'all';
+            btn.classList.toggle('active', btnSeverity === severity);
+        });
+    }
+    _renderStandardsList();
+}
+
+function searchStandards(query) {
+    standardsSearchQuery = query.toLowerCase();
+    _renderStandardsList();
+}
+
+function _renderStandardsList() {
+    const container = document.getElementById('standards-list');
+    const summaryEl = document.getElementById('standards-results-summary');
+    if (!container) return;
+
+    let filtered = allStandards;
+
+    // Category filter
+    if (currentStandardsCategoryFilter !== 'all') {
+        filtered = filtered.filter(s => s.category === currentStandardsCategoryFilter);
+    }
+
+    // Severity filter
+    if (currentStandardsSeverityFilter !== 'all') {
+        filtered = filtered.filter(s => s.severity === currentStandardsSeverityFilter);
+    }
+
+    // Search filter
+    if (standardsSearchQuery) {
+        filtered = filtered.filter(s =>
+            s.name.toLowerCase().includes(standardsSearchQuery) ||
+            s.id.toLowerCase().includes(standardsSearchQuery) ||
+            (s.description || '').toLowerCase().includes(standardsSearchQuery) ||
+            s.category.toLowerCase().includes(standardsSearchQuery)
+        );
+    }
+
+    if (summaryEl) {
+        summaryEl.textContent = `Showing ${filtered.length} of ${allStandards.length} standards`;
+    }
+
+    if (!filtered.length) {
+        container.innerHTML = '<div class="compose-empty">No standards match your filters.</div>';
+        return;
+    }
+
+    container.innerHTML = filtered.map(std => {
+        const severityIcon = std.severity === 'critical' ? '🔴' :
+            std.severity === 'high' ? '🟠' :
+            std.severity === 'medium' ? '🟡' : '🟢';
+        const enabledClass = std.enabled ? '' : 'std-disabled';
+        const rule = std.rule || {};
+        const ruleType = rule.type || 'property';
+
+        let rulePreview = '';
+        if (ruleType === 'property') {
+            rulePreview = `${rule.key || '?'} ${rule.operator || '=='} ${JSON.stringify(rule.value)}`;
+        } else if (ruleType === 'tags') {
+            rulePreview = `Required tags: ${(rule.required_tags || []).join(', ')}`;
+        } else if (ruleType === 'allowed_values') {
+            rulePreview = `${rule.key || '?'} ∈ {${(rule.values || []).join(', ')}}`;
+        } else if (ruleType === 'cost_threshold') {
+            rulePreview = `Max $${rule.max_monthly_usd || 0}/month`;
+        }
+
+        return `
+        <div class="std-card ${enabledClass}" onclick="showStandardDetail('${escapeHtml(std.id)}')">
+            <div class="std-card-header">
+                <div class="std-card-title">
+                    <span class="std-severity-icon">${severityIcon}</span>
+                    <div class="std-name-block">
+                        <span class="std-name">${escapeHtml(std.name)}</span>
+                        <span class="std-id">${escapeHtml(std.id)}</span>
+                    </div>
+                </div>
+                <div class="std-card-badges">
+                    <span class="category-badge">${escapeHtml(std.category)}</span>
+                    <span class="std-scope-badge" title="Scope: ${escapeHtml(std.scope)}">${escapeHtml(std.scope === '*' ? 'All Services' : std.scope)}</span>
+                    ${!std.enabled ? '<span class="std-disabled-badge">Disabled</span>' : ''}
+                </div>
+            </div>
+            <div class="std-card-desc">${escapeHtml(std.description || '')}</div>
+            <div class="std-card-rule"><code>${escapeHtml(rulePreview)}</code></div>
+        </div>`;
+    }).join('');
+}
+
+async function showStandardDetail(standardId) {
+    const std = allStandards.find(s => s.id === standardId);
+    if (!std) return;
+
+    document.getElementById('detail-standard-name').textContent = std.name;
+    const body = document.getElementById('detail-standard-body');
+
+    const rule = std.rule || {};
+    const ruleJson = JSON.stringify(rule, null, 2);
+
+    // Load version history
+    let historyHtml = '<div class="std-history-loading">Loading history...</div>';
+    body.innerHTML = _buildStandardDetailHtml(std, ruleJson, historyHtml);
+    document.getElementById('standard-detail-drawer').classList.remove('hidden');
+
+    try {
+        const res = await fetch(`/api/standards/${encodeURIComponent(standardId)}/history`);
+        if (res.ok) {
+            const data = await res.json();
+            const versions = data.versions || [];
+            historyHtml = versions.length ? versions.map(v =>
+                `<div class="std-history-item">
+                    <div class="std-history-ver">v${v.version}</div>
+                    <div class="std-history-detail">
+                        <div class="std-history-by">${escapeHtml(v.changed_by || 'unknown')}</div>
+                        <div class="std-history-date">${v.changed_at ? new Date(v.changed_at).toLocaleDateString() : '—'}</div>
+                        ${v.change_reason ? `<div class="std-history-reason">${escapeHtml(v.change_reason)}</div>` : ''}
+                    </div>
+                </div>`
+            ).join('') : '<div class="std-history-empty">No version history</div>';
+        }
+    } catch (e) {
+        historyHtml = '<div class="std-history-empty">Failed to load history</div>';
+    }
+
+    body.innerHTML = _buildStandardDetailHtml(std, ruleJson, historyHtml);
+}
+
+function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
+    const severityIcon = std.severity === 'critical' ? '🔴' :
+        std.severity === 'high' ? '🟠' :
+        std.severity === 'medium' ? '🟡' : '🟢';
+
+    return `
+    <div class="std-detail-section">
+        <div class="std-detail-meta">
+            <span class="category-badge">${escapeHtml(std.category)}</span>
+            <span class="std-severity-badge">${severityIcon} ${escapeHtml(std.severity)}</span>
+            <span class="std-scope-badge">${escapeHtml(std.scope)}</span>
+            ${std.enabled ? '<span class="std-enabled-badge">✅ Enabled</span>' : '<span class="std-disabled-badge">❌ Disabled</span>'}
+        </div>
+        <p class="std-detail-desc">${escapeHtml(std.description || '')}</p>
+    </div>
+
+    <div class="std-detail-section">
+        <h4>Rule Definition</h4>
+        <pre class="std-rule-json"><code>${escapeHtml(ruleJson)}</code></pre>
+    </div>
+
+    <div class="std-detail-section">
+        <h4>Version History</h4>
+        <div class="std-history-list">${historyHtml}</div>
+    </div>
+
+    <div class="std-detail-actions">
+        <button class="btn btn-sm btn-primary" onclick="openEditStandardModal('${escapeHtml(std.id)}')">✏️ Edit</button>
+        <button class="btn btn-sm btn-ghost btn-danger" onclick="deleteStandard('${escapeHtml(std.id)}')">🗑️ Delete</button>
+    </div>`;
+}
+
+function closeStandardDetail() {
+    document.getElementById('standard-detail-drawer').classList.add('hidden');
+}
+
+function openAddStandardModal() {
+    document.getElementById('standard-modal-title').textContent = 'Add Standard';
+    const form = document.getElementById('form-standard');
+    form.reset();
+    form.querySelector('input[name="id"]').value = '';
+    form.querySelector('input[name="enabled"]').checked = true;
+    document.getElementById('btn-save-standard').textContent = 'Create Standard';
+    document.getElementById('modal-standard').classList.remove('hidden');
+}
+
+function openEditStandardModal(standardId) {
+    const std = allStandards.find(s => s.id === standardId);
+    if (!std) return;
+
+    closeStandardDetail();
+    document.getElementById('standard-modal-title').textContent = 'Edit Standard';
+    const form = document.getElementById('form-standard');
+    form.querySelector('input[name="id"]').value = std.id;
+    form.querySelector('input[name="name"]').value = std.name;
+    form.querySelector('textarea[name="description"]').value = std.description || '';
+    form.querySelector('select[name="category"]').value = std.category;
+    form.querySelector('select[name="severity"]').value = std.severity;
+    form.querySelector('input[name="scope"]').value = std.scope || '*';
+    form.querySelector('textarea[name="rule_json"]').value = JSON.stringify(std.rule || {}, null, 2);
+    form.querySelector('input[name="enabled"]').checked = std.enabled;
+    form.querySelector('input[name="change_reason"]').value = '';
+    document.getElementById('btn-save-standard').textContent = 'Update Standard';
+    document.getElementById('modal-standard').classList.remove('hidden');
+}
+
+async function saveStandard(event) {
+    event.preventDefault();
+    const form = document.getElementById('form-standard');
+    const fd = new FormData(form);
+    const btn = document.getElementById('btn-save-standard');
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const existingId = fd.get('id');
+    const isEdit = !!existingId;
+
+    let rule;
+    try {
+        const ruleText = fd.get('rule_json') || '{}';
+        rule = JSON.parse(ruleText);
+    } catch (e) {
+        showToast('Invalid JSON in Rule field', 'error');
+        btn.disabled = false;
+        btn.textContent = origText;
+        return;
+    }
+
+    const body = {
+        name: fd.get('name'),
+        description: fd.get('description') || '',
+        category: fd.get('category'),
+        severity: fd.get('severity') || 'high',
+        scope: fd.get('scope') || '*',
+        rule: rule,
+        enabled: !!form.querySelector('input[name="enabled"]').checked,
+        change_reason: fd.get('change_reason') || '',
+    };
+
+    try {
+        let res;
+        if (isEdit) {
+            res = await fetch(`/api/standards/${encodeURIComponent(existingId)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        } else {
+            res = await fetch('/api/standards', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Failed to save standard');
+        }
+
+        showToast(isEdit ? `Standard "${body.name}" updated` : `Standard "${body.name}" created`);
+        closeModal('modal-standard');
+        await loadStandards();
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+}
+
+async function deleteStandard(standardId) {
+    if (!confirm(`Delete standard ${standardId}? This cannot be undone.`)) return;
+
+    try {
+        const res = await fetch(`/api/standards/${encodeURIComponent(standardId)}`, {
+            method: 'DELETE',
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Failed to delete');
+        }
+        showToast(`Standard ${standardId} deleted`);
+        closeStandardDetail();
+        await loadStandards();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// ACTIVITY MONITOR
+// ══════════════════════════════════════════════════════════════
+
+let _activityPollTimer = null;
+
+function _startActivityPolling() {
+    _stopActivityPolling();
+    _activityPollTimer = setInterval(() => loadActivity(true), 3000);
+}
+
+function _stopActivityPolling() {
+    if (_activityPollTimer) {
+        clearInterval(_activityPollTimer);
+        _activityPollTimer = null;
+    }
+}
+
+async function loadActivity(silent = false) {
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) throw new Error('Failed to load activity');
+        const data = await res.json();
+        renderActivityFeed(data);
+        updateActivityBadge(data.summary);
+    } catch (err) {
+        if (!silent) console.warn('Activity load failed:', err);
+    }
+}
+
+function updateActivityBadge(summary) {
+    const badge = document.getElementById('nav-activity-badge');
+    if (!badge) return;
+    const running = summary.running || 0;
+    if (running > 0) {
+        badge.textContent = running;
+        badge.style.display = '';
+        badge.className = 'nav-badge nav-badge-active';
+    } else {
+        badge.style.display = 'none';
+    }
+
+    // Also update dashboard stats if present
+    const statValidating = document.getElementById('stat-review');
+    if (statValidating && summary.validating > 0) {
+        // keep existing value
+    }
+}
+
+function renderActivityFeed(data) {
+    const feed = document.getElementById('activity-feed');
+    const summary = data.summary || {};
+    const jobs = data.jobs || [];
+
+    // Update summary counters
+    const runEl = document.getElementById('activity-running');
+    const valEl = document.getElementById('activity-validating');
+    const appEl = document.getElementById('activity-approved');
+    const failEl = document.getElementById('activity-failed');
+    if (runEl) runEl.textContent = summary.running || 0;
+    if (valEl) valEl.textContent = summary.validating || 0;
+    if (appEl) appEl.textContent = summary.approved || 0;
+    if (failEl) failEl.textContent = summary.failed || 0;
+
+    // Pulse animation for running count
+    if (runEl) {
+        if (summary.running > 0) runEl.classList.add('activity-pulse');
+        else runEl.classList.remove('activity-pulse');
+    }
+
+    if (!feed) return;
+
+    if (jobs.length === 0) {
+        feed.innerHTML = `
+            <div class="activity-empty">
+                <span class="activity-empty-icon">📡</span>
+                <p>No deployment activity yet. Approve both gates on a service to trigger validation.</p>
+            </div>`;
+        return;
+    }
+
+    feed.innerHTML = jobs.map(job => _renderActivityCard(job)).join('');
+
+    // Auto-scroll event logs to bottom for running jobs
+    for (const job of jobs) {
+        if (job.is_running && job.events && job.events.length > 0) {
+            const eventsEl = document.getElementById(`activity-events-${job.service_id}`);
+            if (eventsEl) eventsEl.scrollTop = eventsEl.scrollHeight;
+        }
+    }
+}
+
+function _renderActivityCard(job) {
+    const isRunning = job.is_running;
+    const status = job.status;
+
+    // Status display
+    let statusClass, statusIcon, statusText;
+    if (isRunning) {
+        statusClass = 'activity-status-running';
+        statusIcon = '⏳';
+        statusText = `Attempt ${job.attempt}/${job.max_attempts}`;
+    } else if (status === 'approved') {
+        statusClass = 'activity-status-approved';
+        statusIcon = '✅';
+        statusText = 'Approved';
+    } else if (status === 'validation_failed') {
+        statusClass = 'activity-status-failed';
+        statusIcon = '⛔';
+        statusText = 'Failed';
+    } else if (status === 'validating') {
+        statusClass = 'activity-status-waiting';
+        statusIcon = '🔄';
+        statusText = 'Awaiting Validation';
+    } else {
+        statusClass = 'activity-status-unknown';
+        statusIcon = '❓';
+        statusText = status;
+    }
+
+    // ── Step pipeline indicator ──────────────────────────────
+    const pipelineSteps = [
+        { key: 'parsing', label: 'Parse', icon: '📝' },
+        { key: 'what_if', label: 'What-If', icon: '🔍' },
+        { key: 'deploying', label: 'Deploy', icon: '🚀' },
+        { key: 'resource_check', label: 'Verify', icon: '🔎' },
+        { key: 'policy_testing', label: 'Policy', icon: '🛡️' },
+        { key: 'cleanup', label: 'Cleanup', icon: '🧹' },
+        { key: 'promoting', label: 'Approve', icon: '🏆' },
+    ];
+    const completedSteps = job.steps_completed || [];
+    const currentPhase = job.phase || '';
+    // Map phases to their pipeline step
+    const phaseToStep = {
+        starting: 'parsing', what_if: 'what_if', what_if_complete: 'what_if',
+        deploying: 'deploying', deploy_complete: 'deploying', deploy_failed: 'deploying',
+        resource_check: 'resource_check', resource_check_complete: 'resource_check',
+        resource_check_warning: 'resource_check',
+        policy_testing: 'policy_testing', policy_failed: 'policy_testing',
+        policy_skip: 'policy_testing',
+        cleanup: 'cleanup', cleanup_complete: 'cleanup',
+        promoting: 'promoting',
+        fixing_template: currentPhase, template_fixed: currentPhase,
+        infra_retry: currentPhase,
+    };
+    const activeStep = phaseToStep[currentPhase] || currentPhase;
+
+    let pipelineHtml = '';
+    if (isRunning || status === 'approved' || status === 'validation_failed') {
+        const stepItems = pipelineSteps.map(s => {
+            let cls = 'activity-step-pending';
+            if (completedSteps.includes(s.key) || status === 'approved') cls = 'activity-step-done';
+            else if (isRunning && activeStep === s.key) cls = 'activity-step-active';
+            else if (status === 'validation_failed' && activeStep === s.key) cls = 'activity-step-failed';
+            return `<div class="activity-step ${cls}" title="${s.label}"><span class="activity-step-icon">${s.icon}</span><span class="activity-step-label">${s.label}</span></div>`;
+        }).join('<div class="activity-step-connector"></div>');
+        pipelineHtml = `<div class="activity-pipeline">${stepItems}</div>`;
+    }
+
+    // ── Current detail text (shown prominently) ──────────────
+    let detailHtml = '';
+    if (isRunning && job.detail) {
+        detailHtml = `<div class="activity-detail-live">${escapeHtml(job.detail)}</div>`;
+    }
+
+    // ── Phase display for running jobs ──────────────────────
+    let phaseHtml = '';
+    if (isRunning && job.phase) {
+        const phaseLabels = {
+            starting: '🔧 Initializing validation pipeline…',
+            what_if: '🔍 Running ARM What-If analysis…',
+            what_if_complete: '✓ What-If analysis passed',
+            deploying: '🚀 Deploying resources to Azure…',
+            deploy_complete: '📦 Deployment succeeded',
+            deploy_failed: '💥 Deployment failed — preparing auto-heal',
+            resource_check: '🔎 Verifying provisioned resources…',
+            resource_check_complete: '✓ Resources verified in Azure',
+            policy_testing: '🛡️ Evaluating policy compliance…',
+            policy_failed: '⚠️ Policy violation detected',
+            policy_skip: 'ℹ️ No policy to evaluate',
+            cleanup: '🧹 Cleaning up validation resources…',
+            cleanup_complete: '✓ Cleanup initiated',
+            promoting: '🏆 Promoting service to approved…',
+            fixing_template: '🤖 Copilot SDK auto-healing template…',
+            template_fixed: '🔧 Template fixed by Copilot SDK',
+            infra_retry: '⏳ Waiting for Azure (transient error)…',
+            fixing_policy: '🤖 Copilot SDK fixing policy JSON…',
+        };
+        phaseHtml = `<div class="activity-phase">${phaseLabels[job.phase] || job.phase}</div>`;
+    }
+
+    // ── Template metadata ────────────────────────────────────
+    let metaHtml = '';
+    const meta = job.template_meta || {};
+    if (meta.resource_count || meta.size_kb || job.region) {
+        const chips = [];
+        if (job.region) chips.push(`<span class="activity-meta-chip" title="Azure Region">📍 ${escapeHtml(job.region)}</span>`);
+        if (meta.size_kb) chips.push(`<span class="activity-meta-chip" title="ARM Template Size">📄 ${meta.size_kb} KB</span>`);
+        if (meta.resource_count) chips.push(`<span class="activity-meta-chip" title="Resource Count">📦 ${meta.resource_count} resource(s)</span>`);
+        if (meta.resource_types && meta.resource_types.length > 0) {
+            meta.resource_types.slice(0, 4).forEach(rt => {
+                const shortType = rt.split('/').pop() || rt;
+                chips.push(`<span class="activity-meta-chip activity-meta-resource" title="${escapeHtml(rt)}">⚙️ ${escapeHtml(shortType)}</span>`);
+            });
+        }
+        if (meta.schema) chips.push(`<span class="activity-meta-chip" title="Template Schema">📋 ${escapeHtml(meta.schema)}</span>`);
+        if (meta.has_policy) chips.push(`<span class="activity-meta-chip" title="Has Policy Gate">🛡️ Policy</span>`);
+        metaHtml = `<div class="activity-meta-chips">${chips.join('')}</div>`;
+    }
+
+    // ── Progress bar for running jobs ────────────────────────
+    let progressHtml = '';
+    if (isRunning) {
+        const pct = Math.min(Math.round(job.progress * 100), 100);
+        progressHtml = `
+            <div class="activity-progress">
+                <div class="activity-progress-track">
+                    <div class="activity-progress-fill ${isRunning ? 'activity-progress-animated' : ''}" style="width: ${pct}%"></div>
+                </div>
+                <span class="activity-progress-pct">${pct}%</span>
+            </div>`;
+    }
+
+    // ── Event log (expanded by default for running, collapsed for completed) ──
+    let eventsHtml = '';
+    if (job.events && job.events.length > 0) {
+        const collapsed = !isRunning;
+        const eventLines = job.events.map(e => {
+            let icon = '▸';
+            if (e.type === 'error') icon = '❌';
+            else if (e.type === 'done') icon = '✅';
+            else if (e.type === 'healing') icon = '🤖';
+            else if (e.type === 'healing_done') icon = '🔧';
+            else if (e.type === 'init') icon = '🚦';
+            else if (e.phase === 'what_if') icon = '🔍';
+            else if (e.phase === 'what_if_complete') icon = '✓';
+            else if (e.phase === 'deploying') icon = '🚀';
+            else if (e.phase === 'deploy_complete') icon = '📦';
+            else if (e.phase === 'deploy_failed') icon = '💥';
+            else if (e.phase === 'resource_check') icon = '🔎';
+            else if (e.phase === 'resource_check_complete') icon = '✓';
+            else if (e.phase === 'policy_testing') icon = '🛡️';
+            else if (e.phase === 'policy_failed') icon = '⚠️';
+            else if (e.phase === 'cleanup') icon = '🧹';
+            else if (e.phase === 'cleanup_complete') icon = '✓';
+            else if (e.phase === 'promoting') icon = '🏆';
+            else if (e.phase === 'infra_retry') icon = '⏳';
+            const timeStr = e.time ? `<span class="activity-event-time">${_timeShort(e.time)}</span>` : '';
+            return `<div class="activity-event-line">${timeStr}${icon} ${escapeHtml(e.detail)}</div>`;
+        }).join('');
+        const chevronChar = collapsed ? '▸' : '▾';
+        eventsHtml = `
+            <div class="activity-events-toggle" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.chevron').textContent = this.nextElementSibling.classList.contains('hidden') ? '▸' : '▾'">
+                <span class="chevron">${chevronChar}</span> ${job.events.length} event${job.events.length !== 1 ? 's' : ''} — full validation log
+            </div>
+            <div class="activity-events ${collapsed ? 'hidden' : ''}" id="activity-events-${escapeHtml(job.service_id)}">${eventLines}</div>`;
+    }
+
+    // ── Error display ────────────────────────────────────────
+    let errorHtml = '';
+    if (status === 'validation_failed' && job.error) {
+        const errorText = typeof job.error === 'string' ? job.error : JSON.stringify(job.error);
+        errorHtml = `<div class="activity-error"><strong>Validation Failed:</strong> ${escapeHtml(errorText.substring(0, 500))}</div>`;
+    }
+
+    // ── Time display ─────────────────────────────────────────
+    let timeHtml = '';
+    if (job.started_at) {
+        timeHtml = `<span class="activity-time" title="${job.started_at}">Started ${_timeAgo(job.started_at)}</span>`;
+    }
+
+    // ── RG & region for running jobs ─────────────────────────
+    let rgHtml = '';
+    if (isRunning && job.rg_name) {
+        rgHtml = `<div class="activity-rg-bar"><span class="activity-rg-label">Resource Group:</span> <span class="activity-rg-name">${escapeHtml(job.rg_name)}</span></div>`;
+    }
+
+    // ── Action buttons ───────────────────────────────────────
+    let actionsHtml = '';
+    if (status === 'validation_failed') {
+        actionsHtml = `<button class="btn btn-xs btn-primary" onclick="navigateTo('services'); setTimeout(() => showServiceDetail('${escapeHtml(job.service_id)}'), 200)">🤖 Retry Validation</button>`;
+    } else if (status === 'validating' && !isRunning) {
+        actionsHtml = `<button class="btn btn-xs btn-accent" onclick="navigateTo('services'); setTimeout(() => showServiceDetail('${escapeHtml(job.service_id)}'), 200)">🚀 Start Validation</button>`;
+    } else if (status === 'approved') {
+        actionsHtml = `<button class="btn btn-xs btn-ghost" onclick="navigateTo('services'); setTimeout(() => showServiceDetail('${escapeHtml(job.service_id)}'), 200)">View Service</button>`;
+    }
+
+    return `
+    <div class="activity-card ${statusClass} ${isRunning ? 'activity-card-running' : ''}">
+        <div class="activity-card-header">
+            <div class="activity-card-title">
+                <span class="activity-card-icon">${statusIcon}</span>
+                <div class="activity-card-name">
+                    <span class="activity-svc-name">${escapeHtml(job.service_name)}</span>
+                    <span class="activity-svc-id">${escapeHtml(job.service_id)}</span>
+                </div>
+            </div>
+            <div class="activity-card-meta">
+                <span class="activity-badge ${statusClass}">${statusText}</span>
+                ${timeHtml}
+            </div>
+        </div>
+        ${metaHtml}
+        ${pipelineHtml}
+        ${phaseHtml}
+        ${detailHtml}
+        ${progressHtml}
+        ${rgHtml}
+        ${errorHtml}
+        ${eventsHtml}
+        <div class="activity-card-actions">${actionsHtml}</div>
+    </div>`;
+}
+
+function _timeAgo(isoStr) {
+    if (!isoStr) return '';
+    const now = Date.now();
+    const then = new Date(isoStr).getTime();
+    const diff = Math.floor((now - then) / 1000);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function _timeShort(isoStr) {
+    if (!isoStr) return '';
+    try {
+        const d = new Date(isoStr);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch { return ''; }
 }

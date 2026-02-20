@@ -191,6 +191,69 @@ def _get_resource_client():
 
 
 # ══════════════════════════════════════════════════════════════
+# RESOURCE GROUP HELPERS (handle deprovisioning races)
+# ══════════════════════════════════════════════════════════════
+
+import time as _time
+
+def _ensure_resource_group_sync(
+    client, resource_group: str, region: str,
+    tags: dict | None = None,
+    max_wait: int = 120,
+    poll_interval: int = 10,
+):
+    """Create-or-update a resource group, waiting if it's being deleted.
+
+    Azure returns ResourceGroupBeingDeleted / 409 when you try to
+    create_or_update an RG that's in deprovisioning state.  This helper
+    retries with back-off until the deletion finishes or max_wait expires.
+    """
+    from azure.core.exceptions import ResourceExistsError, HttpResponseError
+
+    rg_params = {"location": region}
+    if tags:
+        rg_params["tags"] = tags
+
+    deadline = _time.monotonic() + max_wait
+
+    while True:
+        try:
+            return client.resource_groups.create_or_update(resource_group, rg_params)
+        except (ResourceExistsError, HttpResponseError) as exc:
+            msg = str(exc).lower()
+            if "beingdeleted" in msg or "deprovisioning" in msg:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"Resource group '{resource_group}' is still being deleted "
+                        f"after waiting {max_wait}s. Try again later."
+                    ) from exc
+                logger.info(
+                    f"RG '{resource_group}' is deprovisioning — waiting "
+                    f"{poll_interval}s (up to {int(remaining)}s left)…"
+                )
+                _time.sleep(poll_interval)
+                continue
+            raise  # not a deprovisioning error — let it bubble up
+
+
+async def _ensure_resource_group(
+    client, loop, resource_group: str, region: str,
+    tags: dict | None = None,
+    max_wait: int = 120,
+    poll_interval: int = 10,
+):
+    """Async wrapper for _ensure_resource_group_sync."""
+    return await loop.run_in_executor(
+        None,
+        lambda: _ensure_resource_group_sync(
+            client, resource_group, region,
+            tags=tags, max_wait=max_wait, poll_interval=poll_interval,
+        ),
+    )
+
+
+# ══════════════════════════════════════════════════════════════
 # WHAT-IF VALIDATION (like `terraform plan`)
 # ══════════════════════════════════════════════════════════════
 
@@ -216,11 +279,9 @@ async def run_what_if(
     client = _get_resource_client()
     loop = asyncio.get_event_loop()
 
-    # Ensure resource group exists
-    await loop.run_in_executor(None, lambda: client.resource_groups.create_or_update(
-        resource_group,
-        {"location": region, "tags": {"managedBy": "InfraForge"}},
-    ))
+    # Ensure resource group exists (with retry for ResourceGroupBeingDeleted)
+    await _ensure_resource_group(client, loop, resource_group, region,
+                                 tags={"managedBy": "InfraForge"})
 
     # Build What-If request
     what_if_params = DeploymentWhatIf(
@@ -366,15 +427,12 @@ async def execute_deployment(
             "progress": 0.05,
         })
 
-        await loop.run_in_executor(None, lambda: client.resource_groups.create_or_update(
-            resource_group,
-            {
-                "location": region,
-                "tags": {
-                    "managedBy": "InfraForge",
-                    "deployedBy": initiated_by,
-                    "lastDeployment": deployment_name,
-                },
+        await loop.run_in_executor(None, lambda: _ensure_resource_group_sync(
+            client, resource_group, region,
+            tags={
+                "managedBy": "InfraForge",
+                "deployedBy": initiated_by,
+                "lastDeployment": deployment_name,
             },
         ))
 
@@ -521,6 +579,35 @@ async def execute_deployment(
             result = await loop.run_in_executor(None, poller.result)
         except HttpResponseError as e:
             error_msg = _format_http_error(e)
+            # Fetch per-resource operation errors for detailed diagnostics
+            op_errors = await _get_deployment_operation_errors(
+                client, loop, resource_group, deployment_name
+            )
+            if op_errors:
+                error_msg = f"{error_msg} | Operation errors: {op_errors}"
+            record.status = "failed"
+            record.error = error_msg
+            record.completed_at = datetime.now(timezone.utc).isoformat()
+            await _emit({
+                "phase": "error",
+                "detail": f"Deployment failed: {error_msg}",
+                "progress": 0,
+            })
+            deploy_manager.finish(deployment_id)
+            await _persist_deployment(record)
+            return record.to_dict()
+
+        # Check if deployment actually succeeded even if poller didn't throw
+        prov_state = ""
+        if result.properties:
+            prov_state = result.properties.provisioning_state or ""
+        if prov_state.lower() not in ("succeeded", ""):
+            op_errors = await _get_deployment_operation_errors(
+                client, loop, resource_group, deployment_name
+            )
+            error_msg = f"Deployment finished with state '{prov_state}'"
+            if op_errors:
+                error_msg = f"{error_msg} | Operation errors: {op_errors}"
             record.status = "failed"
             record.error = error_msg
             record.completed_at = datetime.now(timezone.utc).isoformat()
@@ -635,6 +722,79 @@ def _format_http_error(error) -> str:
         if hasattr(error.error, "message"):
             msg = error.error.message
     return msg
+
+
+async def _get_deployment_operation_errors(
+    client, loop, resource_group: str, deployment_name: str
+) -> str:
+    """Fetch deployment operations and extract per-resource error details.
+
+    This is the key to getting *actual* error messages instead of the
+    generic 'At least one resource deployment operation failed' message
+    that ARM returns.
+    """
+    try:
+        operations = await loop.run_in_executor(
+            None,
+            lambda: list(client.deployment_operations.list(
+                resource_group, deployment_name
+            )),
+        )
+
+        error_details = []
+        for op in operations:
+            props = op.properties
+            if not props:
+                continue
+            # Only interested in failed operations
+            if props.provisioning_state not in ("Failed",):
+                continue
+
+            res_type = ""
+            res_name = ""
+            if props.target_resource:
+                res_type = props.target_resource.resource_type or ""
+                res_name = props.target_resource.resource_name or ""
+
+            # Extract the actual error from status_message
+            error_msg = ""
+            status_msg = props.status_message
+            if status_msg:
+                if isinstance(status_msg, dict):
+                    err = status_msg.get("error", status_msg)
+                    error_msg = err.get("message", "")
+                    code = err.get("code", "")
+                    if code:
+                        error_msg = f"[{code}] {error_msg}"
+                    # Check for nested details
+                    details = err.get("details", [])
+                    if details and isinstance(details, list):
+                        for d in details[:3]:
+                            if isinstance(d, dict):
+                                d_code = d.get("code", "")
+                                d_msg = d.get("message", "")
+                                if d_msg:
+                                    error_msg += f" -> [{d_code}] {d_msg}"
+                elif hasattr(status_msg, "error"):
+                    e = status_msg.error
+                    error_msg = getattr(e, "message", str(status_msg))
+                    code = getattr(e, "code", "")
+                    if code:
+                        error_msg = f"[{code}] {error_msg}"
+                else:
+                    error_msg = str(status_msg)
+
+            if res_type or error_msg:
+                error_details.append(
+                    f"{res_type}/{res_name}: {error_msg}" if error_msg
+                    else f"{res_type}/{res_name}: Failed (no details)"
+                )
+
+        return "; ".join(error_details) if error_details else ""
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch deployment operation errors: {e}")
+        return ""
 
 
 async def _persist_deployment(record: DeploymentRecord):
