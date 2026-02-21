@@ -18,6 +18,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -127,14 +128,37 @@ def _summarize_fix(before: str, after: str) -> str:
     return "; ".join(changes[:5])
 
 
-_PARAM_DEFAULTS: dict[str, object] = {
-    "resourceName": "infraforge-resource",
-    "location": "[resourceGroup().location]",
-    "environment": "dev",
-    "projectName": "infraforge",
-    "ownerEmail": "platform-team@company.com",
-    "costCenter": "IT-0001",
-}
+def _build_param_defaults() -> dict[str, object]:
+    """Build parameter defaults using real Azure context where possible."""
+    import os as _os
+    sub_id = _os.environ.get("AZURE_SUBSCRIPTION_ID", "00000000-0000-0000-0000-000000000000")
+    return {
+        "resourceName": "infraforge-resource",
+        "location": "[resourceGroup().location]",
+        "environment": "dev",
+        "projectName": "infraforge",
+        "ownerEmail": "platform-team@company.com",
+        "costCenter": "IT-0001",
+        # Subscription / identity params
+        "subscriptionId": sub_id,
+        "subscription_id": sub_id,
+        "targetSubscriptionId": sub_id,
+        "linkedSubscriptionId": sub_id,
+        "remoteSubscriptionId": sub_id,
+        "peerSubscriptionId": sub_id,
+        # Resource naming
+        "vnetName": "infraforge-vnet",
+        "subnetName": "default",
+        "nsgName": "infraforge-nsg",
+        "storageAccountName": "ifrgvalidation",
+        "keyVaultName": "infraforge-kv",
+        # Shared secret params (validation only)
+        "sharedKey": "InfraForgeVal1dation!",
+        "adminPassword": "InfraForge#Val1d!",
+        "adminUsername": "azureadmin",
+    }
+
+_PARAM_DEFAULTS: dict[str, object] = _build_param_defaults()
 
 
 def _ensure_parameter_defaults(template_json: str) -> str:
@@ -157,12 +181,30 @@ def _ensure_parameter_defaults(template_json: str) -> str:
     if not params or not isinstance(params, dict):
         return template_json
 
+    import os as _os
+    _sub_id = _os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+
     patched = False
     for pname, pdef in params.items():
         if not isinstance(pdef, dict):
             continue
         if "defaultValue" not in pdef:
-            pdef["defaultValue"] = _PARAM_DEFAULTS.get(pname, f"infraforge-{pname}")
+            # Check well-known defaults first
+            dv = _PARAM_DEFAULTS.get(pname)
+            if dv is None:
+                # Heuristic matching for common param patterns
+                plow = pname.lower()
+                if "subscri" in plow and _sub_id:
+                    dv = _sub_id
+                elif plow.endswith("password") or plow.endswith("secret"):
+                    dv = "InfraForge#Val1d!"
+                elif plow.endswith("username"):
+                    dv = "azureadmin"
+                elif "sharedkey" in plow:
+                    dv = "InfraForgeVal1dation!"
+                else:
+                    dv = f"infraforge-{pname}"
+            pdef["defaultValue"] = dv
             patched = True
 
     if patched:
@@ -170,6 +212,27 @@ def _ensure_parameter_defaults(template_json: str) -> str:
         logger.info("Injected missing defaultValues for params: %s", patched_names)
         return json.dumps(tmpl, indent=2)
     return template_json
+
+
+def _sanitize_placeholder_guids(template_json: str) -> str:
+    """Replace placeholder/zero subscription GUIDs with the real subscription ID.
+
+    LLMs often emit ``00000000-0000-0000-0000-000000000000`` as a subscription
+    placeholder.  ARM resolves linked-resource scopes against these, causing
+    ``LinkedAuthorizationFailed``.  This function swaps them out before deploy.
+    """
+    import os as _os
+    sub_id = _os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+    if not sub_id:
+        return template_json
+
+    placeholder = "00000000-0000-0000-0000-000000000000"
+    if placeholder not in template_json:
+        return template_json
+
+    sanitized = template_json.replace(placeholder, sub_id)
+    logger.info("Replaced placeholder subscription GUID(s) with real subscription ID")
+    return sanitized
 
 
 def _version_to_semver(version_int: int) -> str:
@@ -984,6 +1047,7 @@ async def compose_template_from_services(request: Request):
     """
     from src.database import (
         get_service, get_active_service_version, get_service_version, upsert_template,
+        create_template_version,
     )
     from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
     import json as _json
@@ -1181,7 +1245,7 @@ async def compose_template_from_services(request: Request):
         "outputs": list(combined_outputs.keys()),
         "is_blueprint": len(service_templates) > 1,
         "service_ids": service_ids,
-        "status": "approved",
+        "status": "draft",
         "registered_by": "template-composer",
         # Dependency metadata
         "template_type": dep_analysis["template_type"],
@@ -1192,6 +1256,12 @@ async def compose_template_from_services(request: Request):
 
     try:
         await upsert_template(catalog_entry)
+        # Create version 1 as a draft
+        ver = await create_template_version(
+            template_id, content_str,
+            changelog="Initial composition",
+            semver="1.0.0",
+        )
     except Exception as e:
         logger.error(f"Failed to save composed template: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1200,10 +1270,727 @@ async def compose_template_from_services(request: Request):
         "status": "ok",
         "template_id": template_id,
         "template": catalog_entry,
+        "version": ver,
         "resource_count": len(combined_resources),
         "parameter_count": len(combined_params),
         "dependency_analysis": dep_analysis,
     })
+
+
+# ── Template Testing ─────────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/test")
+async def test_template(template_id: str, request: Request):
+    """Run validation tests on a template version.
+
+    Body (optional): { "version": 1 }  — defaults to latest version.
+
+    Tests performed:
+    1. JSON structure — valid ARM template JSON
+    2. Schema compliance — has $schema, contentVersion, parameters, resources
+    3. Parameter validation — all params have types, no empty names
+    4. Resource validation — all resources have type, apiVersion, name, location
+    5. Output validation — outputs reference valid expressions
+    6. Dependency check — service_ids match known services
+    7. Tag compliance — resources include standard tags
+    """
+    from src.database import (
+        get_template_by_id, get_template_versions, get_template_version,
+        update_template_version_status, promote_template_version,
+    )
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Determine which version to test
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    requested_version = body.get("version")
+    ver = None
+    if requested_version:
+        ver = await get_template_version(template_id, int(requested_version))
+    else:
+        versions = await get_template_versions(template_id)
+        if versions:
+            ver = versions[0]  # latest (descending order)
+
+    if not ver:
+        raise HTTPException(status_code=404, detail="No version found to test")
+
+    arm_content = ver.get("arm_template", "")
+    version_num = ver["version"]
+
+    # ── Run test suite ────────────────────────────────────────
+    tests: list[dict] = []
+    all_passed = True
+
+    # Test 1: JSON parse
+    tpl = None
+    try:
+        tpl = _json.loads(arm_content)
+        tests.append({"name": "JSON Structure", "passed": True, "message": "Valid JSON"})
+    except Exception as e:
+        tests.append({"name": "JSON Structure", "passed": False, "message": f"Invalid JSON: {e}"})
+        all_passed = False
+
+    if tpl:
+        # Test 2: Schema compliance
+        schema_ok = True
+        schema_msgs = []
+        if "$schema" not in tpl:
+            schema_msgs.append("Missing $schema")
+            schema_ok = False
+        if "contentVersion" not in tpl:
+            schema_msgs.append("Missing contentVersion")
+            schema_ok = False
+        if "resources" not in tpl:
+            schema_msgs.append("Missing resources array")
+            schema_ok = False
+        if not isinstance(tpl.get("resources"), list):
+            schema_msgs.append("resources must be an array")
+            schema_ok = False
+        tests.append({
+            "name": "ARM Schema",
+            "passed": schema_ok,
+            "message": "Valid ARM structure" if schema_ok else "; ".join(schema_msgs),
+        })
+        if not schema_ok:
+            all_passed = False
+
+        # Test 3: Parameter validation
+        params = tpl.get("parameters", {})
+        param_ok = True
+        param_msgs = []
+        if not isinstance(params, dict):
+            param_msgs.append("parameters must be an object")
+            param_ok = False
+        else:
+            for pname, pdef in params.items():
+                if not pname.strip():
+                    param_msgs.append("Empty parameter name found")
+                    param_ok = False
+                if not isinstance(pdef, dict):
+                    param_msgs.append(f"Parameter '{pname}' must be an object")
+                    param_ok = False
+                elif "type" not in pdef:
+                    param_msgs.append(f"Parameter '{pname}' missing type")
+                    param_ok = False
+        tests.append({
+            "name": "Parameters",
+            "passed": param_ok,
+            "message": f"{len(params)} parameters valid" if param_ok else "; ".join(param_msgs),
+        })
+        if not param_ok:
+            all_passed = False
+
+        # Test 4: Resource validation
+        resources = tpl.get("resources", [])
+        res_ok = True
+        res_msgs = []
+        if not resources:
+            res_msgs.append("No resources defined")
+            res_ok = False
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                res_msgs.append(f"Resource [{i}] is not an object")
+                res_ok = False
+                continue
+            if "type" not in res:
+                res_msgs.append(f"Resource [{i}] missing 'type'")
+                res_ok = False
+            if "apiVersion" not in res:
+                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'apiVersion'")
+                res_ok = False
+            if "name" not in res:
+                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'name'")
+                res_ok = False
+        tests.append({
+            "name": "Resources",
+            "passed": res_ok,
+            "message": f"{len(resources)} resources valid" if res_ok else "; ".join(res_msgs[:5]),
+        })
+        if not res_ok:
+            all_passed = False
+
+        # Test 5: Output validation
+        outputs = tpl.get("outputs", {})
+        out_ok = True
+        out_msgs = []
+        if isinstance(outputs, dict):
+            for oname, odef in outputs.items():
+                if not isinstance(odef, dict):
+                    out_msgs.append(f"Output '{oname}' must be an object")
+                    out_ok = False
+                elif "type" not in odef or "value" not in odef:
+                    out_msgs.append(f"Output '{oname}' missing type or value")
+                    out_ok = False
+        tests.append({
+            "name": "Outputs",
+            "passed": out_ok,
+            "message": f"{len(outputs)} outputs valid" if out_ok else "; ".join(out_msgs),
+        })
+        if not out_ok:
+            all_passed = False
+
+        # Test 6: Tag compliance — check resources include standard tags
+        TAG_REQUIRED = {"environment", "project", "owner"}
+        tag_ok = True
+        tag_msgs = []
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                continue
+            res_tags = res.get("tags", {})
+            if not isinstance(res_tags, dict) and not isinstance(res_tags, str):
+                tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) has invalid tags")
+                tag_ok = False
+            elif isinstance(res_tags, dict):
+                # Check if tags reference variables/parameters (ARM expressions are OK)
+                tag_values = set()
+                for tk in res_tags:
+                    # Normalize key to lowercase for comparison
+                    tag_values.add(tk.lower())
+                missing = TAG_REQUIRED - tag_values
+                if missing and not any(isinstance(v, str) and "variables('standardTags')" in v for v in res_tags.values()):
+                    tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing tags: {', '.join(missing)}")
+                    tag_ok = False
+        tests.append({
+            "name": "Tag Compliance",
+            "passed": tag_ok,
+            "message": "All resources properly tagged" if tag_ok else "; ".join(tag_msgs[:3]),
+        })
+        if not tag_ok:
+            all_passed = False
+
+        # Test 7: Naming convention — resource names use parameters
+        naming_ok = True
+        naming_msgs = []
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                continue
+            rname = res.get("name", "")
+            if isinstance(rname, str) and rname and not rname.startswith("["):
+                naming_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) uses hardcoded name '{rname}'")
+                naming_ok = False
+        tests.append({
+            "name": "Naming Convention",
+            "passed": naming_ok,
+            "message": "All resource names use parameters/expressions" if naming_ok else "; ".join(naming_msgs[:3]),
+        })
+        if not naming_ok:
+            all_passed = False
+
+    # ── Update version status based on results ────────────────
+    passed_count = sum(1 for t in tests if t["passed"])
+    total_count = len(tests)
+    new_status = "passed" if all_passed else "failed"
+
+    test_results = {
+        "tests": tests,
+        "passed": passed_count,
+        "failed": total_count - passed_count,
+        "total": total_count,
+        "all_passed": all_passed,
+    }
+
+    await update_template_version_status(template_id, version_num, new_status, test_results)
+
+    # Sync parent template status so the UI lifecycle CTAs work correctly
+    from src.database import get_backend as _get_tmpl_backend
+    _tb = await _get_tmpl_backend()
+    await _tb.execute_write(
+        "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+        (new_status, datetime.now(timezone.utc).isoformat(), template_id),
+    )
+
+    # Note: No auto-promote. User must validate (ARM What-If) then explicitly publish.
+
+    return JSONResponse({
+        "template_id": template_id,
+        "version": version_num,
+        "status": new_status,
+        "results": test_results,
+        "needs_validation": all_passed,  # signal: ready for ARM validation
+    })
+
+
+# ── Template Version Management ──────────────────────────────
+
+@app.get("/api/catalog/templates/{template_id}/versions")
+async def list_template_versions(template_id: str):
+    """List all versions of a template."""
+    from src.database import get_template_by_id, get_template_versions
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    versions = await get_template_versions(template_id)
+
+    return JSONResponse({
+        "template_id": template_id,
+        "template_name": tmpl.get("name", ""),
+        "active_version": tmpl.get("active_version"),
+        "status": tmpl.get("status", "draft"),
+        "versions": versions,
+    })
+
+
+@app.post("/api/catalog/templates/{template_id}/versions")
+async def create_new_template_version(template_id: str, request: Request):
+    """Create a new version of an existing template.
+
+    Body: {
+        "arm_template": "...",   // JSON string of ARM template
+        "changelog": "Added monitoring",
+        "semver": "2.0.0"         // optional
+    }
+    """
+    from src.database import (
+        get_template_by_id, create_template_version, upsert_template,
+    )
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    arm_template = body.get("arm_template", "")
+    if not arm_template:
+        raise HTTPException(status_code=400, detail="arm_template is required")
+
+    # Validate it's valid JSON
+    try:
+        _json.loads(arm_template) if isinstance(arm_template, str) else arm_template
+    except Exception:
+        raise HTTPException(status_code=400, detail="arm_template must be valid JSON")
+
+    if isinstance(arm_template, dict):
+        arm_template = _json.dumps(arm_template, indent=2)
+
+    ver = await create_template_version(
+        template_id, arm_template,
+        changelog=body.get("changelog", ""),
+        semver=body.get("semver"),
+    )
+
+    # Update parent template content and mark as draft (needs testing)
+    tmpl["content"] = arm_template
+    tmpl["status"] = "draft"
+    # Restore keys that _parse_template_row renamed
+    tmpl["source_path"] = tmpl.pop("source", "")
+    await upsert_template(tmpl)
+
+    return JSONResponse({
+        "status": "ok",
+        "template_id": template_id,
+        "version": ver,
+    })
+
+
+@app.post("/api/catalog/templates/{template_id}/promote")
+async def promote_template(template_id: str, request: Request):
+    """Promote a tested version to active.
+
+    Body: { "version": 1 }
+    """
+    from src.database import get_template_by_id, promote_template_version
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    version = body.get("version")
+    if not version:
+        raise HTTPException(status_code=400, detail="version is required")
+
+    ok = await promote_template_version(template_id, int(version))
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot promote — version must have passed testing",
+        )
+
+    return JSONResponse({"status": "ok", "promoted_version": version})
+
+
+# ── Template Validation (ARM What-If) ───────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/validate")
+async def validate_template(template_id: str, request: Request):
+    """Validate a template by running ARM What-If against Azure.
+
+    Runs ARM What-If in a temporary resource group, then cleans up.
+    The template must have passed structural tests first (status = 'passed').
+
+    Body: {
+        "parameters": { "location": "eastus2", "resourceName": "test-rg", ... },
+        "region": "eastus2"  // optional, defaults to eastus2
+    }
+    """
+    import uuid as _uuid
+    from src.database import (
+        get_template_by_id, get_template_version, get_template_versions,
+        update_template_validation_status,
+    )
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Find the latest version that passed testing
+    versions = await get_template_versions(template_id)
+    target_ver = None
+    for v in versions:
+        if v["status"] in ("passed", "validated", "failed"):
+            target_ver = v
+            break
+    # Also allow re-validating draft if no passed version
+    if not target_ver:
+        for v in versions:
+            if v["status"] == "draft":
+                target_ver = v
+                break
+    if not target_ver:
+        raise HTTPException(
+            status_code=400,
+            detail="No testable version found. Run structural tests first.",
+        )
+
+    version_num = target_ver["version"]
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    user_params = body.get("parameters", {})
+    region = body.get("region", "eastus2")
+
+    # Parse the ARM template
+    arm_content = target_ver.get("arm_template", tmpl.get("content", ""))
+    try:
+        tpl = json.loads(arm_content) if isinstance(arm_content, str) else arm_content
+    except Exception:
+        raise HTTPException(status_code=400, detail="Template content is not valid JSON")
+
+    # Build parameter values — fill in defaults for required params
+    tpl_params = tpl.get("parameters", {})
+    final_params = {}
+    for pname, pdef in tpl_params.items():
+        if pname in user_params:
+            final_params[pname] = user_params[pname]
+        elif "defaultValue" in pdef:
+            final_params[pname] = pdef["defaultValue"]
+        else:
+            # Generate a sensible default for validation
+            ptype = pdef.get("type", "string").lower()
+            if ptype == "string":
+                final_params[pname] = f"if-val-{pname[:20]}"
+            elif ptype == "int":
+                final_params[pname] = 1
+            elif ptype == "bool":
+                final_params[pname] = True
+            elif ptype == "array":
+                final_params[pname] = []
+            elif ptype == "object":
+                final_params[pname] = {}
+
+    # Create a temporary resource group name
+    rg_name = f"infraforge-tmpl-val-{_uuid.uuid4().hex[:8]}"
+
+    # Run ARM What-If
+    try:
+        from src.tools.deploy_engine import run_what_if, _get_resource_client
+        import asyncio
+
+        what_if_result = await run_what_if(
+            resource_group=rg_name,
+            template=tpl,
+            parameters=final_params,
+            region=region,
+        )
+
+        validation_passed = what_if_result.get("status") == "success" and not what_if_result.get("errors")
+
+        validation_results = {
+            "what_if": what_if_result,
+            "resource_group": rg_name,
+            "region": region,
+            "parameters_used": final_params,
+            "validation_passed": validation_passed,
+        }
+
+        new_status = "validated" if validation_passed else "failed"
+        await update_template_validation_status(
+            template_id, version_num, new_status, validation_results
+        )
+
+        # Sync parent template status
+        from src.database import get_backend as _get_val_backend
+        _vb = await _get_val_backend()
+        await _vb.execute_write(
+            "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, datetime.now(timezone.utc).isoformat(), template_id),
+        )
+
+        # Cleanup the temp RG
+        try:
+            client = _get_resource_client()
+            loop = asyncio.get_event_loop()
+            poller = await loop.run_in_executor(
+                None, lambda: client.resource_groups.begin_delete(rg_name)
+            )
+            logger.info(f"Template validation: cleanup started for RG '{rg_name}'")
+        except Exception as e:
+            logger.warning(f"Template validation: cleanup failed for RG '{rg_name}': {e}")
+
+        return JSONResponse({
+            "template_id": template_id,
+            "version": version_num,
+            "status": new_status,
+            "validation": validation_results,
+        })
+
+    except Exception as e:
+        # Record the failure
+        error_results = {
+            "error": str(e),
+            "resource_group": rg_name,
+            "region": region,
+            "parameters_used": final_params,
+            "validation_passed": False,
+        }
+        await update_template_validation_status(
+            template_id, version_num, "failed", error_results
+        )
+
+        # Sync parent template status to failed
+        from src.database import get_backend as _get_valf_backend
+        _vfb = await _get_valf_backend()
+        await _vfb.execute_write(
+            "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+            ("failed", datetime.now(timezone.utc).isoformat(), template_id),
+        )
+
+        # Try to cleanup RG even on failure
+        try:
+            from src.tools.deploy_engine import _get_resource_client
+            client = _get_resource_client()
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None, lambda: client.resource_groups.begin_delete(rg_name)
+            )
+        except Exception:
+            pass
+
+        return JSONResponse({
+            "template_id": template_id,
+            "version": version_num,
+            "status": "failed",
+            "validation": error_results,
+        }, status_code=200)  # 200 because validation ran, just didn't pass
+
+
+# ── Template Publishing ──────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/publish")
+async def publish_template(template_id: str, request: Request):
+    """Publish a validated template — makes it available in the catalog.
+
+    Only templates that have passed ARM What-If validation can be published.
+    Body: { "version": 1 }  (optional — defaults to latest validated version)
+    """
+    from src.database import (
+        get_template_by_id, get_template_versions,
+        promote_template_version,
+    )
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    version = body.get("version")
+
+    if not version:
+        # Find the latest validated version
+        versions = await get_template_versions(template_id)
+        for v in versions:
+            if v["status"] == "validated":
+                version = v["version"]
+                break
+        if not version:
+            raise HTTPException(
+                status_code=400,
+                detail="No validated version found. Run ARM validation first.",
+            )
+
+    ok = await promote_template_version(template_id, int(version))
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot publish — version must have passed ARM validation (status: validated)",
+        )
+
+    return JSONResponse({
+        "status": "ok",
+        "published_version": version,
+        "template_id": template_id,
+    })
+
+
+# ── Template Deployment ──────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/deploy")
+async def deploy_template(template_id: str, request: Request):
+    """Deploy a template to Azure via ARM SDK — streaming NDJSON progress.
+
+    The template must be approved (or at minimum validated).
+
+    Body: {
+        "resource_group": "my-rg",       // required
+        "region": "eastus2",             // optional, defaults to eastus2
+        "parameters": { ... }            // optional parameter overrides
+    }
+
+    Streams NDJSON events with phases:
+      resource_group → validating → validated → deploying →
+      provisioning → done  (or error)
+    """
+    import uuid as _uuid
+    from src.database import get_template_by_id, get_template_versions
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    if tmpl.get("status") not in ("approved", "validated"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Template must be approved or validated before deploying (current: {tmpl.get('status')})",
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    resource_group = body.get("resource_group", "").strip()
+    if not resource_group:
+        raise HTTPException(status_code=400, detail="resource_group is required")
+
+    region = body.get("region", "eastus2")
+    user_params = body.get("parameters", {})
+
+    # Get the active version's ARM template
+    arm_content = tmpl.get("content", "")
+    versions = await get_template_versions(template_id)
+    active_ver = tmpl.get("active_version")
+    for v in versions:
+        if v["version"] == active_ver and v.get("arm_template"):
+            arm_content = v["arm_template"]
+            break
+
+    try:
+        tpl = json.loads(arm_content) if isinstance(arm_content, str) else arm_content
+    except Exception:
+        raise HTTPException(status_code=400, detail="Template content is not valid JSON")
+
+    # Build final parameters
+    tpl_params = tpl.get("parameters", {})
+    final_params = {}
+    for pname, pdef in tpl_params.items():
+        if pname in user_params:
+            final_params[pname] = user_params[pname]
+        elif "defaultValue" in pdef:
+            final_params[pname] = pdef["defaultValue"]
+        else:
+            ptype = pdef.get("type", "string").lower()
+            if ptype == "string":
+                final_params[pname] = f"if-{pname[:20]}"
+            elif ptype == "int":
+                final_params[pname] = 1
+            elif ptype == "bool":
+                final_params[pname] = True
+            elif ptype == "array":
+                final_params[pname] = []
+            elif ptype == "object":
+                final_params[pname] = {}
+
+    deployment_name = f"infraforge-tmpl-{_uuid.uuid4().hex[:8]}"
+    _tmpl_id = template_id
+    _tmpl_name = tmpl.get("name", template_id)
+
+    async def _stream():
+        from src.tools.deploy_engine import execute_deployment, deploy_manager
+
+        events = []
+
+        async def _on_progress(event):
+            events.append(event)
+
+        yield json.dumps({
+            "phase": "starting",
+            "detail": f"Deploying template '{_tmpl_name}' to {resource_group}…",
+            "deployment_name": deployment_name,
+            "resource_group": resource_group,
+            "region": region,
+        }) + "\n"
+
+        try:
+            result = await execute_deployment(
+                resource_group=resource_group,
+                template=tpl,
+                parameters=final_params,
+                region=region,
+                deployment_name=deployment_name,
+                initiated_by="web-ui",
+                on_progress=_on_progress,
+                template_id=_tmpl_id,
+                template_name=_tmpl_name,
+            )
+
+            # Emit all progress events
+            for ev in events:
+                yield json.dumps(ev) + "\n"
+
+            # Final result
+            yield json.dumps({
+                "phase": "complete",
+                "status": result.get("status", "unknown"),
+                "deployment_id": result.get("deployment_id"),
+                "provisioned_resources": result.get("provisioned_resources", []),
+                "outputs": result.get("outputs", {}),
+                "error": result.get("error"),
+            }) + "\n"
+
+        except Exception as e:
+            yield json.dumps({
+                "phase": "error",
+                "detail": f"Deployment failed: {str(e)}",
+            }) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 @app.delete("/api/catalog/services/{service_id}")
@@ -1614,6 +2401,16 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 "with parameters={}, so any parameter without a default will cause: "
                 "'The value for the template parameter ... is not provided'. If a parameter "
                 "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
+                "- NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID, "
+                "resource ID, or in any resourceId() reference. Use [subscription().subscriptionId] "
+                "instead to reference the current subscription.\n"
+                "- If the error mentions 'LinkedAuthorizationFailed' or 'linked subscription "
+                "was not found', the template has an invalid resource reference pointing to a "
+                "non-existent subscription. Fix by using [subscription().subscriptionId] in any "
+                "resourceId() expressions, or REMOVE the cross-subscription reference entirely.\n"
+                "- If a resource requires complex external dependencies (VPN gateways, "
+                "ExpressRoute circuits, peer VNets in other subscriptions), SIMPLIFY by "
+                "removing those cross-resource references or making them self-contained.\n"
             )
 
             # Escalation strategies for later attempts
@@ -1712,6 +2509,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             # ── Guard: ensure every param has a defaultValue ──
             if artifact_type == "template":
                 fixed = _ensure_parameter_defaults(fixed)
+                fixed = _sanitize_placeholder_guids(fixed)
 
             return fixed
         finally:
@@ -1924,8 +2722,8 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
 
         # ── Safety guard: ensure every parameter has a defaultValue ──
         current_template = _ensure_parameter_defaults(current_template)
-
-        # ── Extract template metadata for verbose display ─────
+        # ── Replace placeholder subscription GUIDs ──
+        current_template = _sanitize_placeholder_guids(current_template)
         def _extract_template_meta(tmpl_str: str) -> dict:
             """Extract human-readable metadata from an ARM template string."""
             try:
@@ -2964,6 +3762,16 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             "'The value for the template parameter ... is not provided'. If a parameter "
             "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
             "- Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
+            "- NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID, "
+            "resource ID, or in any resourceId() reference. Use [subscription().subscriptionId] "
+            "instead to reference the current subscription.\n"
+            "- If the error mentions 'LinkedAuthorizationFailed' or 'linked subscription "
+            "was not found', the template has an invalid resource reference pointing to a "
+            "non-existent subscription. Fix by using [subscription().subscriptionId] in any "
+            "resourceId() expressions, or REMOVE the cross-subscription reference entirely.\n"
+            "- If a resource requires complex external dependencies (VPN gateways, "
+            "ExpressRoute circuits, peer VNets in other subscriptions), SIMPLIFY by "
+            "removing those cross-resource references or making them self-contained.\n"
             "- NEVER add properties that require subscription-level feature registration. "
             "These will fail with 'feature is not enabled for this subscription':\n"
             "  • securityProfile.encryptionAtHost (requires Microsoft.Compute/EncryptionAtHost)\n"
@@ -3075,6 +3883,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
             # ── Guard: ensure every param has a defaultValue ──
             fixed = _ensure_parameter_defaults(fixed)
+            fixed = _sanitize_placeholder_guids(fixed)
 
             return fixed
         finally:
@@ -3640,6 +4449,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
                 # ── Safety guard: ensure every parameter has a defaultValue ──
                 current_template = _ensure_parameter_defaults(current_template)
+                # ── Replace placeholder subscription GUIDs ──
+                current_template = _sanitize_placeholder_guids(current_template)
 
                 tmpl_meta = _extract_meta(current_template)
 

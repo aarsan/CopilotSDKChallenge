@@ -202,7 +202,7 @@ function navigateTo(page) {
         services: ['Service Catalog', `${allServices.length} services available`],
         templates: ['Template Catalog', `${allTemplates.length} templates available`],
         governance: ['Governance Standards', `${allStandards.length} organization standards`],
-        activity: ['Activity Monitor', 'Deployment validation observability'],
+        activity: ['Observability', 'Deployments & service validation'],
         chat: ['Infrastructure Designer', 'Powered by GitHub Copilot SDK'],
     };
     const [title, subtitle] = titles[page] || ['InfraForge', ''];
@@ -220,9 +220,10 @@ function navigateTo(page) {
         }, 100);
     }
 
-    // Load activity when switching to activity page
+    // Load observability data when switching to activity page
     if (page === 'activity') {
-        loadActivity();
+        loadDeploymentHistory();
+        loadActivity(true);
         _startActivityPolling();
     } else {
         _stopActivityPolling();
@@ -249,7 +250,7 @@ function updatePageActions(page) {
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button>';
             break;
         case 'activity':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadActivity()" title="Refresh">⟳ Refresh</button>';
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadDeploymentHistory(); loadActivity(true)" title="Refresh">⟳ Refresh</button>';
             break;
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
@@ -2004,7 +2005,14 @@ function renderTemplateTable(templates) {
 
     const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
     const typeLabels = { foundation: 'Foundation', workload: 'Workload', composite: 'Composite' };
-    const statusLabelsMap = { approved: '✅ Approved', draft: '📝 Draft', deprecated: '⚠️ Deprecated' };
+    const statusLabelsMap = {
+        approved: '✅ Published',
+        draft: '📝 Draft',
+        passed: '🧪 Tested — needs validation',
+        validated: '🔬 Validated — ready to publish',
+        failed: '❌ Failed',
+        deprecated: '⚠️ Deprecated',
+    };
 
     grid.innerHTML = templates.map(tmpl => {
         const ttype = tmpl.template_type || 'workload';
@@ -2053,6 +2061,7 @@ function renderTemplateTable(templates) {
                     <span class="tmpl-format-badge">${escapeHtml(tmpl.format || 'arm')}</span>
                     <span class="tmpl-cat-badge">${escapeHtml(tmpl.category || '')}</span>
                     ${serviceIds.length ? `<span class="tmpl-svc-count">${serviceIds.length} service${serviceIds.length !== 1 ? 's' : ''}</span>` : ''}
+                    ${tmpl.active_version ? `<span class="tmpl-ver-badge">v${tmpl.active_version}</span>` : ''}
                 </div>
                 <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
                     ${isStandalone ? '✅ Standalone' : '⚙️ Needs infra'}
@@ -2139,16 +2148,134 @@ function showTemplateDetail(templateId) {
     const requires = tmpl.requires || [];
     const provides = tmpl.provides || [];
     const optionalRefs = tmpl.optional_refs || [];
+    const activeVer = tmpl.active_version;
+
+    const statusBadgeMap = {
+        approved: '✅ Published',
+        draft: '📝 Draft',
+        passed: '🧪 Tested — needs validation',
+        validated: '🔬 Validated — ready to publish',
+        failed: '❌ Failed',
+        deprecated: '⚠️ Deprecated',
+    };
+
+    // Determine which CTA to show based on lifecycle state
+    let ctaHtml = '';
+    if (status === 'draft') {
+        ctaHtml = `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-pending">
+                📝 <strong>Step 1:</strong> This template needs structural testing before it can be validated.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
+                🧪 Run Structural Tests
+            </button>
+        </div>`;
+    } else if (status === 'passed') {
+        ctaHtml = `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-validate">
+                ✅ <strong>Step 2:</strong> Structural tests passed. Now validate against Azure (ARM What-If) to verify it deploys correctly.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="showValidateForm('${escapeHtml(tmpl.id)}')">
+                🔬 Validate Against Azure
+            </button>
+        </div>`;
+    } else if (status === 'validated') {
+        ctaHtml = `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-ready">
+                🔬 <strong>Step 3:</strong> ARM validation passed! This template is ready to be published to the catalog.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
+                🚀 Publish to Catalog
+            </button>
+        </div>`;
+    } else if (status === 'failed') {
+        ctaHtml = `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-failed">
+                ❌ This template failed testing or validation. Fix the issues, then re-test.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
+                🧪 Re-run Tests
+            </button>
+        </div>`;
+    } else if (status === 'approved') {
+        ctaHtml = `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-approved">
+                ✅ <strong>Published & Ready</strong> — This template is approved and available in the catalog.
+            </div>
+            <div class="tmpl-deploy-actions">
+                <button class="btn btn-primary btn-sm" onclick="showDeployForm('${escapeHtml(tmpl.id)}')">
+                    🚀 Deploy to Azure
+                </button>
+                <button class="btn btn-sm" onclick="navigateToChat('Use the template \\'${escapeHtml(tmpl.name)}\\' to generate infrastructure for my project')">
+                    💬 Use in Designer
+                </button>
+            </div>
+        </div>`;
+    }
 
     document.getElementById('detail-template-name').textContent = tmpl.name;
     document.getElementById('detail-template-body').innerHTML = `
         <div class="detail-meta">
             <span class="svc-id">${escapeHtml(tmpl.id)}</span>
             <span class="tmpl-type-badge tmpl-type-${ttype}">${typeIcons[ttype] || '📋'} ${typeLabels[ttype] || ttype}</span>
-            <span class="status-badge ${status}">${statusLabels[status] || status}</span>
+            <span class="status-badge ${status}">${statusBadgeMap[status] || status}</span>
+            ${activeVer ? `<span class="tmpl-ver-badge">v${activeVer}</span>` : ''}
             <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
                 ${isStandalone ? '✅ Standalone' : '⚙️ Needs existing infra'}
             </span>
+        </div>
+
+        ${ctaHtml}
+
+        <!-- Validation form (hidden by default) -->
+        <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
+            <h4>🔬 ARM Validation — What-If</h4>
+            <p class="tmpl-validate-desc">Enter parameter values to validate this template against Azure. A temporary resource group will be created and cleaned up automatically.</p>
+            <div id="tmpl-validate-params"></div>
+            <div class="tmpl-validate-actions">
+                <select id="tmpl-validate-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
+                    <option value="eastus2">East US 2</option>
+                    <option value="eastus">East US</option>
+                    <option value="westus2">West US 2</option>
+                    <option value="centralus">Central US</option>
+                    <option value="westeurope">West Europe</option>
+                    <option value="northeurope">North Europe</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="tmpl-validate-btn" onclick="runTemplateValidation('${escapeHtml(tmpl.id)}')">
+                    🚀 Run What-If Validation
+                </button>
+            </div>
+            <div id="tmpl-validate-results" style="display:none;"></div>
+        </div>
+
+        <!-- Deploy form (hidden by default) -->
+        <div id="tmpl-deploy-form" class="detail-section tmpl-deploy-section" style="display:none;">
+            <h4>🚀 Deploy to Azure</h4>
+            <p class="tmpl-deploy-desc">Configure the deployment target and parameter values.</p>
+            <div class="tmpl-deploy-field">
+                <label class="tmpl-deploy-label">Resource Group <span class="param-required">required</span></label>
+                <input type="text" class="form-control" id="tmpl-deploy-rg" placeholder="e.g. my-app-rg" />
+            </div>
+            <div id="tmpl-deploy-params"></div>
+            <div class="tmpl-deploy-controls">
+                <select id="tmpl-deploy-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
+                    <option value="eastus2">East US 2</option>
+                    <option value="eastus">East US</option>
+                    <option value="westus2">West US 2</option>
+                    <option value="centralus">Central US</option>
+                    <option value="westeurope">West Europe</option>
+                    <option value="northeurope">North Europe</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="tmpl-deploy-btn" onclick="deployTemplate('${escapeHtml(tmpl.id)}')">
+                    🚀 Start Deployment
+                </button>
+            </div>
+            <div id="tmpl-deploy-progress" style="display:none;"></div>
         </div>
 
         <div class="detail-section">
@@ -2222,6 +2349,14 @@ function showTemplateDetail(templateId) {
             </div>
         </div>` : ''}
 
+        <!-- Version History -->
+        <div class="detail-section">
+            <h4>📋 Version History</h4>
+            <div id="tmpl-version-history" class="tmpl-version-history">
+                <div class="compose-loading">Loading versions…</div>
+            </div>
+        </div>
+
         ${tmpl.content ? `
         <div class="detail-section">
             <h4>Template Code</h4>
@@ -2231,13 +2366,600 @@ function showTemplateDetail(templateId) {
         </div>` : ''}
 
         <div class="detail-actions">
-            <button class="btn btn-sm btn-primary" onclick="navigateToChat('Use the template \\'${escapeHtml(tmpl.name)}\\' to generate infrastructure for my project')">
-                💬 Use this template in Designer
+            ${status === 'approved' ? `
+            <button class="btn btn-sm btn-primary" onclick="showDeployForm('${escapeHtml(tmpl.id)}')">
+                🚀 Deploy to Azure
             </button>
+            <button class="btn btn-sm" onclick="navigateToChat('Use the template \\'${escapeHtml(tmpl.name)}\\' to generate infrastructure for my project')">
+                💬 Use in Designer
+            </button>` : status === 'validated' ? `
+            <button class="btn btn-sm btn-primary" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
+                🚀 Publish to Catalog
+            </button>` : status === 'passed' ? `
+            <button class="btn btn-sm btn-primary" onclick="showValidateForm('${escapeHtml(tmpl.id)}')">
+                🔬 Validate Against Azure
+            </button>` : `
+            <button class="btn btn-sm btn-primary" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
+                🧪 Run Tests
+            </button>`}
         </div>
     `;
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
+
+    // Load version history asynchronously
+    _loadTemplateVersionHistory(templateId);
+}
+
+/** Load and render version history for a template */
+async function _loadTemplateVersionHistory(templateId) {
+    const container = document.getElementById('tmpl-version-history');
+    if (!container) return;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/versions`);
+        if (!res.ok) {
+            container.innerHTML = '<div class="compose-empty">No versions found</div>';
+            return;
+        }
+        const data = await res.json();
+        const versions = data.versions || [];
+
+        if (!versions.length) {
+            container.innerHTML = '<div class="compose-empty">No versions recorded</div>';
+            return;
+        }
+
+        const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '❌', approved: '✅' };
+
+        container.innerHTML = versions.map(v => {
+            const testResults = v.test_results || {};
+            const tests = testResults.tests || [];
+            const isActive = v.version === data.active_version;
+
+            return `
+                <div class="tmpl-ver-item ${isActive ? 'tmpl-ver-active' : ''} tmpl-ver-${v.status}">
+                    <div class="tmpl-ver-header">
+                        <span class="tmpl-ver-num">v${v.version}${v.semver ? ` (${v.semver})` : ''}</span>
+                        <span class="tmpl-ver-status">${statusIcons[v.status] || '❓'} ${v.status}</span>
+                        ${isActive ? '<span class="tmpl-ver-active-badge">Active</span>' : ''}
+                    </div>
+                    ${v.changelog ? `<div class="tmpl-ver-changelog">${escapeHtml(v.changelog)}</div>` : ''}
+                    ${tests.length ? `
+                    <div class="tmpl-ver-tests">
+                        ${tests.map(t => `
+                            <span class="tmpl-ver-test ${t.passed ? 'test-pass' : 'test-fail'}">
+                                ${t.passed ? '✅' : '❌'} ${escapeHtml(t.name)}
+                            </span>
+                        `).join('')}
+                    </div>` : ''}
+                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '🔬 ARM validated' : '❌ ARM validation failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
+                    <div class="tmpl-ver-meta">
+                        ${v.created_at ? `<span>${v.created_at.substring(0, 16)}</span>` : ''}
+                        ${v.tested_at ? `<span>Tested: ${v.tested_at.substring(0, 16)}</span>` : ''}
+                        ${v.created_by ? `<span>By: ${escapeHtml(v.created_by)}</span>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (err) {
+        container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
+    }
+}
+
+/** Show the validation form with parameter inputs */
+function showValidateForm(templateId) {
+    const tmpl = allTemplates.find(t => t.id === templateId);
+    if (!tmpl) return;
+
+    const formSection = document.getElementById('tmpl-validate-form');
+    const paramsContainer = document.getElementById('tmpl-validate-params');
+    if (!formSection || !paramsContainer) return;
+
+    const params = _parseArmParams(tmpl);
+    const requiredParams = params.filter(p => p.required);
+    const optionalParams = params.filter(p => !p.required);
+
+    let html = '';
+    if (requiredParams.length) {
+        html += `<div class="tmpl-deploy-group">
+            <div class="tmpl-deploy-group-header">📋 Required Parameters</div>
+            ${requiredParams.map(p => _renderParamField(p, 'tmpl-validate')).join('')}
+        </div>`;
+    }
+    if (optionalParams.length) {
+        html += `<div class="tmpl-deploy-group tmpl-deploy-group-optional">
+            <details>
+                <summary class="tmpl-deploy-group-header tmpl-deploy-toggle">
+                    ⚙️ Optional (${optionalParams.length}) — auto-filled with defaults
+                </summary>
+                ${optionalParams.map(p => _renderParamField(p, 'tmpl-validate')).join('')}
+            </details>
+        </div>`;
+    }
+    if (!params.length) {
+        html = '<div class="tmpl-deploy-hint">No parameters needed — all use defaults.</div>';
+    }
+
+    paramsContainer.innerHTML = html;
+    formSection.style.display = 'block';
+    formSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** Run ARM What-If validation */
+async function runTemplateValidation(templateId) {
+    const btn = document.getElementById('tmpl-validate-btn');
+    const resultsDiv = document.getElementById('tmpl-validate-results');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Validating against Azure…';
+    }
+    if (resultsDiv) {
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<div class="compose-loading">🔬 Running ARM What-If analysis… This may take 30-60 seconds.</div>';
+    }
+
+    showToast('🔬 Running ARM What-If validation…', 'info');
+
+    try {
+        // Collect parameter values from form
+        const inputs = document.querySelectorAll('.tmpl-validate-input');
+        const parameters = {};
+        inputs.forEach(input => {
+            const name = input.dataset.paramName;
+            const type = input.dataset.paramType;
+            let val = input.value.trim();
+            if (val) {
+                if (type === 'int') val = parseInt(val, 10);
+                else if (type === 'bool') val = val.toLowerCase() === 'true';
+                parameters[name] = val;
+            }
+        });
+
+        const regionSelect = document.getElementById('tmpl-validate-region');
+        const region = regionSelect ? regionSelect.value : 'eastus2';
+
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parameters, region }),
+        });
+
+        const data = await res.json();
+        const validation = data.validation || {};
+        const whatIf = validation.what_if || {};
+
+        if (data.status === 'validated') {
+            showToast('✅ ARM What-If validation passed! Template is ready to publish.', 'success');
+            _renderValidationResults(resultsDiv, data, true);
+        } else {
+            showToast('❌ ARM validation failed. Check the results below.', 'error');
+            _renderValidationResults(resultsDiv, data, false);
+        }
+
+        // Refresh and reopen detail
+        await loadAllData();
+        showTemplateDetail(templateId);
+
+    } catch (err) {
+        showToast(`Validation error: ${err.message}`, 'error');
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="tmpl-validate-error">❌ ${escapeHtml(err.message)}</div>`;
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🚀 Run What-If Validation';
+        }
+    }
+}
+
+/** Render validation (What-If) results */
+function _renderValidationResults(container, data, passed) {
+    if (!container) return;
+    const validation = data.validation || {};
+    const whatIf = validation.what_if || {};
+    const changes = whatIf.changes || [];
+    const changeCounts = whatIf.change_counts || {};
+    const error = validation.error;
+
+    container.style.display = 'block';
+    container.innerHTML = `
+        <div class="tmpl-validate-result ${passed ? 'tmpl-validate-pass' : 'tmpl-validate-fail'}">
+            <div class="tmpl-validate-header">
+                ${passed ? '✅ ARM What-If Validation Passed' : '❌ ARM What-If Validation Failed'}
+            </div>
+            ${error ? `<div class="tmpl-validate-error-msg">${escapeHtml(error)}</div>` : ''}
+            ${Object.keys(changeCounts).length ? `
+            <div class="tmpl-validate-counts">
+                ${Object.entries(changeCounts).map(([type, count]) => `
+                    <span class="tmpl-whatif-chip tmpl-whatif-${type.toLowerCase()}">${type}: ${count}</span>
+                `).join('')}
+            </div>` : ''}
+            ${changes.length ? `
+            <div class="tmpl-validate-changes">
+                <h5>Resource Changes</h5>
+                ${changes.map(c => `
+                    <div class="tmpl-whatif-change tmpl-whatif-change-${c.change_type.toLowerCase()}">
+                        <span class="tmpl-whatif-type">${c.change_type}</span>
+                        <span class="tmpl-whatif-resource">${escapeHtml(c.resource_type)}</span>
+                        <span class="tmpl-whatif-name">${escapeHtml(c.resource_name)}</span>
+                    </div>
+                `).join('')}
+            </div>` : ''}
+            <div class="tmpl-validate-meta">
+                <span>Region: ${escapeHtml(validation.region || '?')}</span>
+                <span>RG: ${escapeHtml(validation.resource_group || '?')} (auto-cleaned)</span>
+            </div>
+        </div>
+    `;
+}
+
+/** Publish a validated template */
+async function publishTemplate(templateId) {
+    if (!confirm('Publish this template to the catalog? It will be available for all users.')) return;
+
+    showToast('🚀 Publishing template…', 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/publish`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Publish failed');
+        }
+
+        const data = await res.json();
+        showToast(`🎉 Template published! v${data.published_version} is now active in the catalog.`, 'success');
+
+        await loadAllData();
+        showTemplateDetail(templateId);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+/** Parse rich parameter metadata from ARM template content */
+function _parseArmParams(tmpl) {
+    let armParams = {};
+    try {
+        const content = typeof tmpl.content === 'string' ? JSON.parse(tmpl.content) : tmpl.content;
+        armParams = (content && content.parameters) || {};
+    } catch (e) { /* ignore parse errors */ }
+
+    const result = [];
+    for (const [name, def] of Object.entries(armParams)) {
+        const meta = def.metadata || {};
+        const hasDefault = 'defaultValue' in def;
+        const defaultVal = hasDefault ? def.defaultValue : undefined;
+        const isArmExpression = typeof defaultVal === 'string' && defaultVal.startsWith('[') && defaultVal.endsWith(']');
+        const allowedValues = def.allowedValues || null;
+        const description = meta.description || '';
+        const type = (def.type || 'string').toLowerCase();
+
+        // Skip 'location' — we use the region selector for that
+        if (name === 'location') continue;
+
+        // Determine if required (no usable default)
+        const required = !hasDefault || isArmExpression;
+
+        // Generate smart default for resource name fields
+        let smartDefault = '';
+        if (hasDefault && !isArmExpression) {
+            smartDefault = String(defaultVal);
+        } else if (name.startsWith('resourceName_') || name === 'resourceName') {
+            const suffix = name.replace('resourceName_', '').replace('resourceName', 'resource');
+            smartDefault = `if-${suffix.substring(0, 20)}`;
+        }
+
+        result.push({ name, type, description, required, defaultVal: smartDefault, allowedValues });
+    }
+
+    // Sort: required first, then optional
+    result.sort((a, b) => (b.required ? 1 : 0) - (a.required ? 1 : 0));
+    return result;
+}
+
+/** Render a single parameter field (shared by deploy & validate forms) */
+function _renderParamField(p, cssPrefix) {
+    const { name, type, description, required, defaultVal, allowedValues } = p;
+
+    let inputHtml;
+    if (allowedValues && allowedValues.length > 0) {
+        // Dropdown
+        inputHtml = `
+            <select class="form-control ${cssPrefix}-input"
+                data-param-name="${escapeHtml(name)}"
+                data-param-type="${escapeHtml(type)}">
+                ${allowedValues.map(v => `
+                    <option value="${escapeHtml(String(v))}" ${String(v) === String(defaultVal) ? 'selected' : ''}>
+                        ${escapeHtml(String(v))}
+                    </option>
+                `).join('')}
+            </select>`;
+    } else if (type === 'bool') {
+        inputHtml = `
+            <select class="form-control ${cssPrefix}-input"
+                data-param-name="${escapeHtml(name)}"
+                data-param-type="bool">
+                <option value="true" ${defaultVal === 'true' || defaultVal === true ? 'selected' : ''}>true</option>
+                <option value="false" ${defaultVal === 'false' || defaultVal === false ? 'selected' : ''}>false</option>
+            </select>`;
+    } else {
+        inputHtml = `
+            <input type="text" class="form-control ${cssPrefix}-input"
+                data-param-name="${escapeHtml(name)}"
+                data-param-type="${escapeHtml(type)}"
+                placeholder="${defaultVal ? escapeHtml(String(defaultVal)) : `Enter ${name}`}"
+                value="${defaultVal ? escapeHtml(String(defaultVal)) : ''}" />`;
+    }
+
+    return `
+        <div class="${cssPrefix}-field ${required ? `${cssPrefix}-field-required` : `${cssPrefix}-field-optional`}">
+            <label class="${cssPrefix}-label">
+                <span class="param-name">${escapeHtml(name)}</span>
+                ${required ? '<span class="param-required">REQUIRED</span>' : '<span class="param-optional">optional</span>'}
+            </label>
+            ${description ? `<div class="${cssPrefix}-hint">${escapeHtml(description)}</div>` : ''}
+            ${inputHtml}
+        </div>
+    `;
+}
+
+/** Show the deploy form for a template */
+function showDeployForm(templateId) {
+    const tmpl = allTemplates.find(t => t.id === templateId);
+    if (!tmpl) return;
+
+    const formSection = document.getElementById('tmpl-deploy-form');
+    const paramsContainer = document.getElementById('tmpl-deploy-params');
+    if (!formSection || !paramsContainer) return;
+
+    const params = _parseArmParams(tmpl);
+    const requiredParams = params.filter(p => p.required);
+    const optionalParams = params.filter(p => !p.required);
+
+    let html = '';
+    if (requiredParams.length) {
+        html += `<div class="tmpl-deploy-group">
+            <div class="tmpl-deploy-group-header">📋 Required Parameters</div>
+            ${requiredParams.map(p => _renderParamField(p, 'tmpl-deploy')).join('')}
+        </div>`;
+    }
+    if (optionalParams.length) {
+        html += `<div class="tmpl-deploy-group tmpl-deploy-group-optional">
+            <details>
+                <summary class="tmpl-deploy-group-header tmpl-deploy-toggle">
+                    ⚙️ Optional Parameters (${optionalParams.length}) — pre-filled with defaults
+                </summary>
+                ${optionalParams.map(p => _renderParamField(p, 'tmpl-deploy')).join('')}
+            </details>
+        </div>`;
+    }
+    if (!params.length) {
+        html = '<div class="tmpl-deploy-hint">No parameters needed — this template uses all defaults.</div>';
+    }
+
+    paramsContainer.innerHTML = html;
+    formSection.style.display = 'block';
+    formSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** Deploy a template to Azure — streaming NDJSON progress */
+async function deployTemplate(templateId) {
+    const btn = document.getElementById('tmpl-deploy-btn');
+    const progressDiv = document.getElementById('tmpl-deploy-progress');
+    const rgInput = document.getElementById('tmpl-deploy-rg');
+
+    const resourceGroup = rgInput ? rgInput.value.trim() : '';
+    if (!resourceGroup) {
+        showToast('Please enter a resource group name', 'error');
+        if (rgInput) rgInput.focus();
+        return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Deploying…';
+    }
+    if (progressDiv) {
+        progressDiv.style.display = 'block';
+        progressDiv.innerHTML = '<div class="compose-loading">🚀 Starting deployment… This may take 1-5 minutes.</div>';
+    }
+
+    showToast('🚀 Deploying template to Azure…', 'info');
+
+    try {
+        // Collect parameter values
+        const inputs = document.querySelectorAll('.tmpl-deploy-input');
+        const parameters = {};
+        inputs.forEach(input => {
+            const name = input.dataset.paramName;
+            const type = input.dataset.paramType;
+            let val = input.value.trim();
+            if (val) {
+                if (type === 'int') val = parseInt(val, 10);
+                else if (type === 'bool') val = val.toLowerCase() === 'true';
+                parameters[name] = val;
+            }
+        });
+
+        const regionSelect = document.getElementById('tmpl-deploy-region');
+        const region = regionSelect ? regionSelect.value : 'eastus2';
+
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/deploy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resource_group: resourceGroup, region, parameters }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Deploy failed');
+        }
+
+        // Read NDJSON stream
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalEvent = null;
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    finalEvent = event;
+                    _renderDeployProgress(progressDiv, event);
+                } catch (e) { /* skip malformed */ }
+            }
+        }
+
+        // Process final buffer
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                finalEvent = event;
+                _renderDeployProgress(progressDiv, event);
+            } catch (e) { /* skip */ }
+        }
+
+        if (finalEvent && finalEvent.status === 'succeeded') {
+            showToast(`✅ Deployment succeeded! ${(finalEvent.provisioned_resources || []).length} resources provisioned.`, 'success');
+        } else if (finalEvent && finalEvent.phase === 'error') {
+            showToast(`❌ Deployment failed: ${finalEvent.detail || 'Unknown error'}`, 'error');
+        } else if (finalEvent && finalEvent.status === 'failed') {
+            showToast(`❌ Deployment failed: ${finalEvent.error || 'Unknown error'}`, 'error');
+        }
+
+    } catch (err) {
+        showToast(`Deployment error: ${err.message}`, 'error');
+        if (progressDiv) {
+            progressDiv.innerHTML = `<div class="tmpl-deploy-error">❌ ${escapeHtml(err.message)}</div>`;
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🚀 Start Deployment';
+        }
+    }
+}
+
+/** Render deployment progress events */
+function _renderDeployProgress(container, event) {
+    if (!container) return;
+    container.style.display = 'block';
+
+    const phase = event.phase || '';
+    const detail = event.detail || '';
+    const progress = event.progress || 0;
+
+    if (phase === 'complete' || phase === 'done') {
+        const resources = event.provisioned_resources || [];
+        const outputs = event.outputs || {};
+        container.innerHTML = `
+            <div class="tmpl-deploy-result ${event.status === 'succeeded' ? 'tmpl-deploy-success' : 'tmpl-deploy-fail'}">
+                <div class="tmpl-deploy-header">
+                    ${event.status === 'succeeded' ? '✅ Deployment Succeeded' : '❌ Deployment Failed'}
+                </div>
+                ${event.error ? `<div class="tmpl-deploy-error-msg">${escapeHtml(event.error)}</div>` : ''}
+                ${resources.length ? `
+                <div class="tmpl-deploy-resources">
+                    <h5>Provisioned Resources (${resources.length})</h5>
+                    ${resources.map(r => `
+                        <div class="tmpl-deploy-resource">
+                            <span class="tmpl-deploy-res-type">${escapeHtml(r.type)}</span>
+                            <span class="tmpl-deploy-res-name">${escapeHtml(r.name)}</span>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                ${Object.keys(outputs).length ? `
+                <div class="tmpl-deploy-outputs">
+                    <h5>Outputs</h5>
+                    ${Object.entries(outputs).map(([k, v]) => `
+                        <div class="tmpl-deploy-output">
+                            <span class="tmpl-deploy-out-key">${escapeHtml(k)}</span>
+                            <code class="tmpl-deploy-out-val">${escapeHtml(String(v))}</code>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment ID: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+            </div>
+        `;
+    } else if (phase === 'error') {
+        container.innerHTML = `
+            <div class="tmpl-deploy-result tmpl-deploy-fail">
+                <div class="tmpl-deploy-header">❌ Deployment Failed</div>
+                <div class="tmpl-deploy-error-msg">${escapeHtml(detail)}</div>
+            </div>
+        `;
+    } else {
+        // Progress update
+        const pct = Math.round(progress * 100);
+        const phaseIcons = {
+            starting: '🚀', resource_group: '📁', validating: '🔍',
+            validated: '✅', deploying: '⚙️', provisioning: '📦',
+        };
+        const icon = phaseIcons[phase] || '⏳';
+        container.innerHTML = `
+            <div class="tmpl-deploy-progress-bar">
+                <div class="tmpl-deploy-progress-fill" style="width: ${pct}%"></div>
+            </div>
+            <div class="tmpl-deploy-phase">${icon} ${escapeHtml(detail || phase)}</div>
+            ${event.resources ? `
+            <div class="tmpl-deploy-resource-list">
+                ${event.resources.map(r => `
+                    <span class="tmpl-deploy-res-chip tmpl-deploy-res-${r.state.toLowerCase()}">
+                        ${r.state === 'Succeeded' ? '✅' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
+                    </span>
+                `).join('')}
+            </div>` : ''}
+        `;
+    }
+}
+
+/** Run tests on a template from the detail drawer */
+async function runTemplateTest(templateId) {
+    showToast('🧪 Running template tests…', 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Test failed');
+        }
+
+        const data = await res.json();
+        const results = data.results || {};
+
+        if (results.all_passed) {
+            showToast(`✅ All ${results.total} tests passed — ready for ARM validation`, 'success');
+        } else {
+            showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+        }
+
+        // Refresh data and re-open detail
+        await loadAllData();
+        showTemplateDetail(templateId);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
 }
 
 function closeTemplateDetail() {
@@ -2617,8 +3339,8 @@ function _updateComposeSubmitButton() {
         btn.disabled = _composeSelections.size === 0;
         const count = _composeSelections.size;
         btn.textContent = count > 0
-            ? `Create Template (${count} service${count !== 1 ? 's' : ''})`
-            : 'Create Template';
+            ? `Create & Test (${count} service${count !== 1 ? 's' : ''})`
+            : 'Create & Test Template';
     }
 }
 
@@ -2779,6 +3501,10 @@ async function submitTemplateOnboarding(event) {
     btn.disabled = true;
     btn.textContent = 'Composing…';
 
+    // Hide any previous test results
+    const testSection = document.getElementById('compose-test-results-section');
+    if (testSection) testSection.style.display = 'none';
+
     const name = (fd.get('name') || '').trim();
     if (!name) {
         showToast('Template name is required', 'error');
@@ -2809,6 +3535,7 @@ async function submitTemplateOnboarding(event) {
     };
 
     try {
+        // Step 1: Compose the template
         const res = await fetch('/api/catalog/templates/compose', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2821,11 +3548,33 @@ async function submitTemplateOnboarding(event) {
         }
 
         const data = await res.json();
-        showToast(`Template "${name}" created — ${data.resource_count} resource(s), ${data.parameter_count} parameter(s)`);
-        closeModal('modal-template-onboard');
-        form.reset();
-        _composeSelections.clear();
-        await loadAllData();
+        const templateId = data.template_id;
+
+        // Step 2: Run structural tests
+        btn.textContent = '🧪 Testing…';
+        const testRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ version: data.version?.version || 1 }),
+        });
+
+        const testData = await testRes.json();
+
+        // Step 3: Show test results
+        _renderComposeTestResults(testData);
+
+        if (testData.results?.all_passed) {
+            showToast(`✅ Template "${name}" created & passed structural tests — open it to validate against Azure`, 'success');
+            setTimeout(() => {
+                closeModal('modal-template-onboard');
+                form.reset();
+                _composeSelections.clear();
+                loadAllData();
+            }, 2000);
+        } else {
+            showToast(`⚠️ Template "${name}" created but failed ${testData.results?.failed || 0} test(s) — fix issues and re-test`, 'warning');
+            await loadAllData();
+        }
     } catch (err) {
         showToast(err.message, 'error');
     } finally {
@@ -2833,6 +3582,46 @@ async function submitTemplateOnboarding(event) {
         btn.textContent = origText;
         _updateComposeSubmitButton();
     }
+}
+
+/** Render test results inside the compose modal */
+function _renderComposeTestResults(testData) {
+    const section = document.getElementById('compose-test-results-section');
+    const container = document.getElementById('compose-test-results');
+    if (!section || !container) return;
+
+    section.style.display = 'block';
+    const results = testData.results || {};
+    const tests = results.tests || [];
+    const allPassed = results.all_passed;
+
+    let html = `
+        <div class="test-summary ${allPassed ? 'test-summary-pass' : 'test-summary-fail'}">
+            <span class="test-summary-icon">${allPassed ? '✅' : '❌'}</span>
+            <span class="test-summary-text">
+                ${allPassed ? 'All tests passed' : `${results.failed} of ${results.total} tests failed`}
+                — Version ${testData.version}
+                ${testData.promoted ? ' → Promoted to active' : ''}
+            </span>
+        </div>
+        <div class="test-list">
+    `;
+
+    for (const test of tests) {
+        html += `
+            <div class="test-item ${test.passed ? 'test-pass' : 'test-fail'}">
+                <span class="test-icon">${test.passed ? '✅' : '❌'}</span>
+                <span class="test-name">${escapeHtml(test.name)}</span>
+                <span class="test-message">${escapeHtml(test.message)}</span>
+            </div>
+        `;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    // Scroll to test results
+    section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 
@@ -3160,14 +3949,169 @@ async function deleteStandard(standardId) {
 
 
 // ══════════════════════════════════════════════════════════════
-// ACTIVITY MONITOR
+// OBSERVABILITY — Deployments & Service Validation
 // ══════════════════════════════════════════════════════════════
+
+let _obsCurrentTab = 'deployments';
+
+function switchObsTab(tab) {
+    _obsCurrentTab = tab;
+    document.querySelectorAll('.obs-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.obs-tab-content').forEach(c => c.classList.add('hidden'));
+    const tabBtn = document.getElementById(`obs-tab-${tab}`);
+    const content = document.getElementById(`obs-content-${tab}`);
+    if (tabBtn) tabBtn.classList.add('active');
+    if (content) content.classList.remove('hidden');
+}
+
+async function loadDeploymentHistory() {
+    try {
+        const res = await fetch('/api/deployments');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        const deployments = data.deployments || [];
+        _renderDeploymentFeed(deployments);
+    } catch (err) {
+        console.warn('Deployment history load failed:', err);
+    }
+}
+
+function _renderDeploymentFeed(deployments) {
+    const feed = document.getElementById('obs-deploy-feed');
+    if (!feed) return;
+
+    // Update summary counters
+    const total = deployments.length;
+    const succeeded = deployments.filter(d => d.status === 'succeeded').length;
+    const failed = deployments.filter(d => d.status === 'failed').length;
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    el('obs-deployments-total', total);
+    el('obs-deployments-succeeded', succeeded);
+    el('obs-deployments-failed', failed);
+
+    if (deployments.length === 0) {
+        feed.innerHTML = `
+            <div class="activity-empty">
+                <span class="activity-empty-icon">🚀</span>
+                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
+            </div>`;
+        return;
+    }
+
+    feed.innerHTML = deployments.map(d => _renderDeploymentRunCard(d)).join('');
+}
+
+function _renderDeploymentRunCard(dep) {
+    // Status display
+    let statusClass, statusIcon, statusLabel;
+    switch (dep.status) {
+        case 'succeeded':
+            statusClass = 'obs-deploy-succeeded'; statusIcon = '✅'; statusLabel = 'Succeeded'; break;
+        case 'failed':
+            statusClass = 'obs-deploy-failed'; statusIcon = '❌'; statusLabel = 'Failed'; break;
+        case 'deploying':
+            statusClass = 'obs-deploy-running'; statusIcon = '⏳'; statusLabel = 'Deploying'; break;
+        case 'validating':
+            statusClass = 'obs-deploy-running'; statusIcon = '🔍'; statusLabel = 'Validating'; break;
+        default:
+            statusClass = 'obs-deploy-pending'; statusIcon = '⏳'; statusLabel = dep.status || 'Pending';
+    }
+
+    // Template info
+    const tmplName = dep.template_name || dep.deployment_name || 'Ad-hoc deployment';
+    const tmplId = dep.template_id ? `<span class="obs-deploy-tmpl-id">${escapeHtml(dep.template_id)}</span>` : '';
+
+    // Time display
+    const startTime = dep.started_at ? new Date(dep.started_at).toLocaleString() : '';
+    const duration = dep.started_at && dep.completed_at
+        ? _formatDuration(new Date(dep.completed_at) - new Date(dep.started_at))
+        : dep.started_at ? _timeAgo(dep.started_at) : '';
+
+    // Resource group + region
+    const rgRegion = [dep.resource_group, dep.region].filter(Boolean).join(' · ');
+
+    // Provisioned resources
+    let resourcesHtml = '';
+    const resources = dep.provisioned_resources || [];
+    if (resources.length > 0) {
+        const chips = resources.map(r => {
+            const shortType = (r.type || r.resource_type || '').split('/').pop();
+            const rName = r.name || r.resource_name || '';
+            const rStatus = r.provisioning_state || r.status || '';
+            const chipClass = rStatus === 'Succeeded' ? 'obs-res-ok' : rStatus === 'Failed' ? 'obs-res-fail' : '';
+            return `<span class="obs-res-chip ${chipClass}" title="${escapeHtml(r.type || '')}">${escapeHtml(shortType)}${rName ? ': ' + escapeHtml(rName) : ''}</span>`;
+        }).join('');
+        resourcesHtml = `<div class="obs-deploy-resources"><span class="obs-deploy-resources-label">Resources:</span> ${chips}</div>`;
+    }
+
+    // Error display
+    let errorHtml = '';
+    if (dep.status === 'failed' && dep.error) {
+        const parsed = _parseValidationError(dep.error);
+        errorHtml = _renderStructuredError(parsed, { compact: true, showRaw: true });
+    }
+
+    // Outputs
+    let outputsHtml = '';
+    const outputs = dep.outputs || {};
+    const outputKeys = Object.keys(outputs);
+    if (outputKeys.length > 0 && dep.status === 'succeeded') {
+        const outputItems = outputKeys.slice(0, 5).map(k => {
+            const val = typeof outputs[k] === 'object' ? (outputs[k].value || JSON.stringify(outputs[k])) : outputs[k];
+            return `<div class="obs-output-item"><span class="obs-output-key">${escapeHtml(k)}:</span> <span class="obs-output-val">${escapeHtml(String(val).substring(0, 100))}</span></div>`;
+        }).join('');
+        outputsHtml = `<details class="obs-deploy-outputs"><summary>📤 Outputs (${outputKeys.length})</summary><div class="obs-output-list">${outputItems}</div></details>`;
+    }
+
+    // Deployment ID (short)
+    const shortId = dep.deployment_id ? dep.deployment_id.substring(0, 20) : '';
+
+    return `
+    <div class="obs-deploy-card ${statusClass}">
+        <div class="obs-deploy-header">
+            <div class="obs-deploy-title">
+                <span class="obs-deploy-icon">${statusIcon}</span>
+                <div class="obs-deploy-name-block">
+                    <span class="obs-deploy-name">${escapeHtml(tmplName)}</span>
+                    ${tmplId}
+                </div>
+            </div>
+            <div class="obs-deploy-meta-right">
+                <span class="obs-deploy-badge ${statusClass}">${statusLabel}</span>
+                <span class="obs-deploy-time" title="${escapeHtml(startTime)}">${escapeHtml(duration)}</span>
+            </div>
+        </div>
+        <div class="obs-deploy-details">
+            <span class="obs-deploy-detail-item">📦 ${escapeHtml(rgRegion)}</span>
+            <span class="obs-deploy-detail-item">🆔 ${escapeHtml(shortId)}</span>
+            <span class="obs-deploy-detail-item">👤 ${escapeHtml(dep.initiated_by || 'unknown')}</span>
+        </div>
+        ${resourcesHtml}
+        ${errorHtml}
+        ${outputsHtml}
+    </div>`;
+}
+
+function _formatDuration(ms) {
+    const secs = Math.floor(ms / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    const remSecs = secs % 60;
+    if (mins < 60) return `${mins}m ${remSecs}s`;
+    const hours = Math.floor(mins / 60);
+    return `${hours}h ${mins % 60}m`;
+}
+
+// ── Service Validation Activity (existing) ──────────────────
 
 let _activityPollTimer = null;
 
 function _startActivityPolling() {
     _stopActivityPolling();
-    _activityPollTimer = setInterval(() => loadActivity(true), 3000);
+    _activityPollTimer = setInterval(() => {
+        loadActivity(true);
+        if (_obsCurrentTab === 'deployments') loadDeploymentHistory();
+    }, 5000);
 }
 
 function _stopActivityPolling() {

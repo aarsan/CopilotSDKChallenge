@@ -59,6 +59,8 @@ class DeploymentRecord:
         self.region = region
         self.template_hash = template_hash
         self.initiated_by = initiated_by
+        self.template_id = ""           # catalog template ID if from template deploy
+        self.template_name = ""         # human-readable template name
         self.subscription_id = ""        # filled at deploy time
         self.status = "pending"          # pending → validating → deploying → succeeded / failed
         self.phase = "init"
@@ -88,6 +90,8 @@ class DeploymentRecord:
             "provisioned_resources": self.provisioned_resources,
             "error": self.error,
             "initiated_by": self.initiated_by,
+            "template_id": self.template_id,
+            "template_name": self.template_name,
         }
 
 
@@ -365,6 +369,8 @@ async def execute_deployment(
     deployment_name: Optional[str] = None,
     initiated_by: str = "agent",
     on_progress: ProgressCallback = None,
+    template_id: str = "",
+    template_name: str = "",
 ) -> dict:
     """Deploy an ARM template to Azure.
 
@@ -409,6 +415,8 @@ async def execute_deployment(
         template_hash=template_hash,
         initiated_by=initiated_by,
     )
+    record.template_id = template_id
+    record.template_name = template_name
     deploy_manager.deployments[deployment_id] = record
 
     async def _emit(data: dict):

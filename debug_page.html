@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=39">
+    <link rel="stylesheet" href="/static/styles.css?v=38">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -90,7 +90,7 @@
                     <span class="nav-icon">📜</span> Governance
                 </button>
                 <button class="nav-btn" id="nav-activity" onclick="navigateTo('activity')">
-                    <span class="nav-icon">📡</span> Observability
+                    <span class="nav-icon">📡</span> Activity Monitor
                     <span class="nav-badge" id="nav-activity-badge" style="display:none"></span>
                 </button>
                 <button class="nav-btn" id="nav-chat" onclick="navigateTo('chat')">
@@ -169,7 +169,7 @@
                             <div class="stat-number" id="stat-review">—</div>
                             <div class="stat-label">Under Review</div>
                         </div>
-                        <div class="stat-card clickable" onclick="navigateTo('activity')" title="View Observability">
+                        <div class="stat-card clickable" onclick="navigateTo('activity')" title="View Activity Monitor">
                             <div class="stat-number stat-validating" id="stat-validating">—</div>
                             <div class="stat-label">Validating</div>
                         </div>
@@ -488,66 +488,34 @@
                 </div>
             </div>
 
-            <!-- ═══ PAGE: Observability ═══════════════════════ -->
+            <!-- ═══ PAGE: Activity Monitor ═══════════════════ -->
             <div class="page page-scroll hidden" id="page-activity">
                 <div class="page-inner">
-                    <!-- Observability Summary Bar -->
-                    <div class="obs-summary" id="obs-summary">
-                        <div class="obs-stat">
-                            <span class="obs-stat-num" id="obs-deployments-total">0</span>
-                            <span class="obs-stat-label">Total Runs</span>
+                    <!-- Activity Summary Bar -->
+                    <div class="activity-summary" id="activity-summary">
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-pulse" id="activity-running">0</span>
+                            <span class="activity-stat-label">Running</span>
                         </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-ok" id="obs-deployments-succeeded">0</span>
-                            <span class="obs-stat-label">Succeeded</span>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num" id="activity-validating">0</span>
+                            <span class="activity-stat-label">Awaiting</span>
                         </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-fail" id="obs-deployments-failed">0</span>
-                            <span class="obs-stat-label">Failed</span>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-stat-ok" id="activity-approved">0</span>
+                            <span class="activity-stat-label">Approved</span>
                         </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num activity-pulse" id="activity-running">0</span>
-                            <span class="obs-stat-label">Running</span>
-                        </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-ok" id="activity-approved">0</span>
-                            <span class="obs-stat-label">Validated</span>
+                        <div class="activity-stat">
+                            <span class="activity-stat-num activity-stat-fail" id="activity-failed">0</span>
+                            <span class="activity-stat-label">Failed</span>
                         </div>
                     </div>
 
-                    <!-- Tabs -->
-                    <div class="obs-tabs">
-                        <button class="obs-tab active" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
-                        <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations</button>
-                    </div>
-
-                    <!-- Tab: Deployments -->
-                    <div class="obs-tab-content" id="obs-content-deployments">
-                        <div class="obs-deploy-feed" id="obs-deploy-feed">
-                            <div class="activity-empty">
-                                <span class="activity-empty-icon">🚀</span>
-                                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab: Service Validations (existing activity feed) -->
-                    <div class="obs-tab-content hidden" id="obs-content-validations">
-                        <div class="activity-summary" id="activity-summary">
-                            <div class="activity-stat">
-                                <span class="activity-stat-num" id="activity-validating">0</span>
-                                <span class="activity-stat-label">Awaiting</span>
-                            </div>
-                            <div class="activity-stat">
-                                <span class="activity-stat-num activity-stat-fail" id="activity-failed">0</span>
-                                <span class="activity-stat-label">Failed</span>
-                            </div>
-                        </div>
-                        <div class="activity-feed" id="activity-feed">
-                            <div class="activity-empty">
-                                <span class="activity-empty-icon">🔬</span>
-                                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
-                            </div>
+                    <!-- Activity Feed -->
+                    <div class="activity-feed" id="activity-feed">
+                        <div class="activity-empty">
+                            <span class="activity-empty-icon">📡</span>
+                            <p>No deployment activity yet. Onboard a service to trigger automated validation.</p>
                         </div>
                     </div>
                 </div>
@@ -834,7 +802,7 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=39"></script>
+    <script src="/static/app.js?v=38"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
@@ -869,3 +837,4 @@
     </div>
 </body>
 </html>
+

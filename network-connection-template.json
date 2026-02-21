@@ -1,0 +1,177 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "allowedValues": [
+        "eastus2",
+        "westus2",
+        "westeurope"
+      ],
+      "metadata": {
+        "description": "Deployment region"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "dev",
+      "metadata": {
+        "description": "Environment tag"
+      }
+    },
+    "owner": {
+      "type": "string",
+      "defaultValue": "infraforge-team",
+      "metadata": {
+        "description": "Owner tag"
+      }
+    },
+    "costCenter": {
+      "type": "string",
+      "defaultValue": "IT-001",
+      "metadata": {
+        "description": "Cost center tag"
+      }
+    },
+    "project": {
+      "type": "string",
+      "defaultValue": "network-connectivity",
+      "metadata": {
+        "description": "Project tag"
+      }
+    },
+    "connectionName": {
+      "type": "string",
+      "defaultValue": "infraforge-connection",
+      "metadata": {
+        "description": "Name of the network connection"
+      }
+    },
+    "managedIdentityName": {
+      "type": "string",
+      "defaultValue": "infraforge-identity",
+      "metadata": {
+        "description": "Name of the managed identity"
+      }
+    },
+    "diagnosticLogDestination": {
+      "type": "string",
+      "defaultValue": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/logs-rg/providers/Microsoft.OperationalInsights/workspaces/default-workspace",
+      "metadata": {
+        "description": "Destination for diagnostic logs"
+      }
+    },
+    "virtualNetworkGateway1Id": {
+      "type": "string",
+      "defaultValue": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/network-rg/providers/Microsoft.Network/virtualNetworkGateways/gateway1",
+      "metadata": {
+        "description": "Resource ID of the first virtual network gateway"
+      }
+    },
+    "virtualNetworkGateway2Id": {
+      "type": "string",
+      "defaultValue": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/network-rg/providers/Microsoft.Network/virtualNetworkGateways/gateway2",
+      "metadata": {
+        "description": "Resource ID of the second virtual network gateway"
+      }
+    }
+  },
+  "variables": {
+    "tags": {
+      "environment": "[parameters('environment')]",
+      "owner": "[parameters('owner')]",
+      "costCenter": "[parameters('costCenter')]",
+      "project": "[parameters('project')]"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[parameters('managedIdentityName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Network/connections",
+      "apiVersion": "2022-05-01",
+      "name": "[parameters('connectionName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('managedIdentityName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('managedIdentityName'))]": {}
+        }
+      },
+      "properties": {
+        "connectionType": "Vnet2Vnet",
+        "virtualNetworkGateway1": {
+          "id": "[parameters('virtualNetworkGateway1Id')]"
+        },
+        "virtualNetworkGateway2": {
+          "id": "[parameters('virtualNetworkGateway2Id')]"
+        },
+        "sharedKey": "infraforge-shared-key-placeholder",
+        "enableBgp": false,
+        "usePolicyBasedTrafficSelectors": false,
+        "connectionProtocol": "IKEv2",
+        "dpdTimeoutSeconds": 0,
+        "connectionMode": "Default",
+        "useLocalAzureIpAddress": false
+      }
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "name": "[concat(parameters('connectionName'), '-diagnostics')]",
+      "scope": "[resourceId('Microsoft.Network/connections', parameters('connectionName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/connections', parameters('connectionName'))]"
+      ],
+      "properties": {
+        "workspaceId": "[parameters('diagnosticLogDestination')]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true,
+            "retentionPolicy": {
+              "enabled": true,
+              "days": 30
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "connectionId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/connections', parameters('connectionName'))]"
+    },
+    "managedIdentityId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('managedIdentityName'))]"
+    },
+    "connectionName": {
+      "type": "string",
+      "value": "[parameters('connectionName')]"
+    }
+  }
+}

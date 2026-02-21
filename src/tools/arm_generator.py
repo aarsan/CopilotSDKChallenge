@@ -180,28 +180,21 @@ def _dns_zone():
         resources=[{
             "type": "Microsoft.Network/dnszones",
             "apiVersion": "2018-05-01",
-            "name": "[parameters('zoneName')]",
+            "name": "[parameters('resourceName')]",
             "location": "global",
             "tags": _STANDARD_TAGS,
             "properties": {
                 "zoneType": "Public"
             }
         }],
-        extra_params={
-            "zoneName": {
-                "type": "string",
-                "defaultValue": "infraforge.example.com",
-                "metadata": {"description": "DNS zone name (e.g. contoso.com)"},
-            },
-        },
         outputs={
             "zoneId": {
                 "type": "string",
-                "value": "[resourceId('Microsoft.Network/dnszones', parameters('zoneName'))]"
+                "value": "[resourceId('Microsoft.Network/dnszones', parameters('resourceName'))]"
             },
             "nameServers": {
                 "type": "array",
-                "value": "[reference(resourceId('Microsoft.Network/dnszones', parameters('zoneName'))).nameServers]"
+                "value": "[reference(resourceId('Microsoft.Network/dnszones', parameters('resourceName'))).nameServers]"
             }
         }
     )

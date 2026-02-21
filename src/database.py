@@ -450,6 +450,21 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_deployments_rg ON deployments(resource_group)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_deployments_initiated_by')
     CREATE INDEX idx_deployments_initiated_by ON deployments(initiated_by)""",
+    # ── Deployment template tracking (migration) ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'template_id'
+    )
+    ALTER TABLE deployments ADD template_id NVARCHAR(200) DEFAULT ''
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'template_name'
+    )
+    ALTER TABLE deployments ADD template_name NVARCHAR(200) DEFAULT ''
+    """,
     # ── Service Artifacts (3-gate approval) ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_artifacts')
@@ -601,6 +616,51 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_templates_type')
     CREATE INDEX idx_templates_type ON catalog_templates(template_type)""",
+    # ── Template Versioning ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'template_versions')
+    CREATE TABLE template_versions (
+        id                      INT IDENTITY(1,1) PRIMARY KEY,
+        template_id             NVARCHAR(200) NOT NULL,
+        version                 INT NOT NULL DEFAULT 1,
+        arm_template            NVARCHAR(MAX) NOT NULL,
+        status                  NVARCHAR(50) DEFAULT 'draft',
+        test_results_json       NVARCHAR(MAX) DEFAULT '{}',
+        changelog               NVARCHAR(MAX) DEFAULT '',
+        semver                  NVARCHAR(20) DEFAULT NULL,
+        created_by              NVARCHAR(200) DEFAULT 'template-composer',
+        created_at              NVARCHAR(50) NOT NULL,
+        tested_at               NVARCHAR(50),
+        UNIQUE (template_id, version)
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_tmpl_versions_template')
+    CREATE INDEX idx_tmpl_versions_template ON template_versions(template_id)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_tmpl_versions_status')
+    CREATE INDEX idx_tmpl_versions_status ON template_versions(status)""",
+    # Add active_version to catalog_templates
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'active_version'
+    )
+    ALTER TABLE catalog_templates ADD active_version INT DEFAULT NULL
+    """,
+    # Add validation_results_json + validated_at to template_versions
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('template_versions') AND name = 'validation_results_json'
+    )
+    ALTER TABLE template_versions ADD validation_results_json NVARCHAR(MAX) DEFAULT NULL
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('template_versions') AND name = 'validated_at'
+    )
+    ALTER TABLE template_versions ADD validated_at NVARCHAR(50) DEFAULT NULL
+    """,
 ]
 
 
@@ -1442,6 +1502,161 @@ async def delete_template(template_id: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
+# TEMPLATE VERSIONS
+# ══════════════════════════════════════════════════════════════
+
+async def create_template_version(
+    template_id: str,
+    arm_template: str,
+    *,
+    changelog: str = "",
+    semver: Optional[str] = None,
+    created_by: str = "template-composer",
+) -> dict:
+    """Create a new version of a template. Auto-increments version number."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Determine next version number
+    rows = await backend.execute(
+        "SELECT COALESCE(MAX(version), 0) AS max_ver FROM template_versions WHERE template_id = ?",
+        (template_id,),
+    )
+    next_ver = (rows[0]["max_ver"] if rows else 0) + 1
+
+    await backend.execute_write(
+        """
+        INSERT INTO template_versions
+            (template_id, version, arm_template, status, test_results_json,
+             changelog, semver, created_by, created_at)
+        VALUES (?, ?, ?, 'draft', '{}', ?, ?, ?, ?)
+        """,
+        (template_id, next_ver, arm_template, changelog, semver, created_by, now),
+    )
+
+    return {
+        "template_id": template_id,
+        "version": next_ver,
+        "status": "draft",
+        "semver": semver,
+        "changelog": changelog,
+        "created_by": created_by,
+        "created_at": now,
+    }
+
+
+async def get_template_versions(template_id: str) -> list[dict]:
+    """Get all versions for a template, ordered by version descending."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        """SELECT * FROM template_versions
+           WHERE template_id = ?
+           ORDER BY version DESC""",
+        (template_id,),
+    )
+    result = []
+    for row in rows:
+        v = dict(row)
+        v["test_results"] = json.loads(v.pop("test_results_json", "{}") or "{}")
+        v["validation_results"] = json.loads(v.pop("validation_results_json", None) or "{}")
+        result.append(v)
+    return result
+
+
+async def get_template_version(template_id: str, version: int) -> Optional[dict]:
+    """Get a specific version of a template."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM template_versions WHERE template_id = ? AND version = ?",
+        (template_id, version),
+    )
+    if not rows:
+        return None
+    v = dict(rows[0])
+    v["test_results"] = json.loads(v.pop("test_results_json", "{}") or "{}")
+    v["validation_results"] = json.loads(v.pop("validation_results_json", None) or "{}")
+    return v
+
+
+async def update_template_version_status(
+    template_id: str,
+    version: int,
+    status: str,
+    test_results: Optional[dict] = None,
+) -> bool:
+    """Update a template version's status and optionally its test results."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if test_results is not None:
+        await backend.execute_write(
+            """UPDATE template_versions
+               SET status = ?, test_results_json = ?, tested_at = ?
+               WHERE template_id = ? AND version = ?""",
+            (status, json.dumps(test_results), now, template_id, version),
+        )
+    else:
+        await backend.execute_write(
+            """UPDATE template_versions
+               SET status = ?
+               WHERE template_id = ? AND version = ?""",
+            (status, template_id, version),
+        )
+    return True
+
+
+async def update_template_validation_status(
+    template_id: str,
+    version: int,
+    status: str,
+    validation_results: Optional[dict] = None,
+) -> bool:
+    """Update a template version's validation (ARM What-If) results."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    await backend.execute_write(
+        """UPDATE template_versions
+           SET status = ?, validation_results_json = ?, validated_at = ?
+           WHERE template_id = ? AND version = ?""",
+        (status, json.dumps(validation_results or {}), now, template_id, version),
+    )
+    return True
+
+
+async def promote_template_version(template_id: str, version: int) -> bool:
+    """Promote a validated template version to active, update parent template."""
+    backend = await get_backend()
+
+    # Verify the version exists and has been validated (ARM What-If passed)
+    rows = await backend.execute(
+        "SELECT status FROM template_versions WHERE template_id = ? AND version = ?",
+        (template_id, version),
+    )
+    if not rows:
+        return False
+    if rows[0]["status"] not in ("validated", "passed"):
+        return False
+
+    # Mark this version as approved, un-approve others
+    await backend.execute_write(
+        """UPDATE template_versions SET status = 'approved'
+           WHERE template_id = ? AND version = ?""",
+        (template_id, version),
+    )
+
+    # Update parent template's active_version and status
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """UPDATE catalog_templates
+           SET active_version = ?, status = 'approved', updated_at = ?
+           WHERE id = ?""",
+        (version, now, template_id),
+    )
+    return True
+
+
+# ══════════════════════════════════════════════════════════════
 # DEPLOYMENTS
 # ══════════════════════════════════════════════════════════════
 
@@ -1458,8 +1673,9 @@ async def save_deployment(deployment: dict) -> None:
            (deployment_id, deployment_name, resource_group, region,
             status, phase, progress, detail, template_hash,
             initiated_by, started_at, completed_at, error,
-            resources_json, what_if_json, outputs_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            resources_json, what_if_json, outputs_json,
+            template_id, template_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             deployment["deployment_id"],
             deployment["deployment_name"],
@@ -1477,6 +1693,8 @@ async def save_deployment(deployment: dict) -> None:
             json.dumps(deployment.get("provisioned_resources", [])),
             json.dumps(deployment.get("what_if_results")),
             json.dumps(deployment.get("outputs", {})),
+            deployment.get("template_id", ""),
+            deployment.get("template_name", ""),
         ),
     )
 
@@ -1510,6 +1728,8 @@ async def get_deployments(
         d["provisioned_resources"] = json.loads(d.pop("resources_json", None) or "[]")
         d["what_if_results"] = json.loads(d.pop("what_if_json", None) or "null")
         d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
+        d.setdefault("template_id", "")
+        d.setdefault("template_name", "")
         result.append(d)
     return result
 
@@ -1527,6 +1747,8 @@ async def get_deployment(deployment_id: str) -> Optional[dict]:
     d["provisioned_resources"] = json.loads(d.pop("resources_json", None) or "[]")
     d["what_if_results"] = json.loads(d.pop("what_if_json", None) or "null")
     d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
+    d.setdefault("template_id", "")
+    d.setdefault("template_name", "")
     return d
 
 
