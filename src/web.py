@@ -845,13 +845,29 @@ async def get_approved_services_for_templates():
     template-builder UI can show parameter checkboxes.
     """
     try:
-        from src.database import get_all_services, get_active_service_version
+        from src.database import get_all_services, get_active_service_version, get_service_versions
         from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
+        import json as _json
 
         STANDARD_PARAMS = {
             "resourceName", "location", "environment",
             "projectName", "ownerEmail", "costCenter",
         }
+
+        def _extract_params(all_params: dict) -> list[dict]:
+            """Convert ARM parameter dict into a list of param descriptors."""
+            result = []
+            for pname, pdef in all_params.items():
+                meta = pdef.get("metadata", {})
+                result.append({
+                    "name": pname,
+                    "type": pdef.get("type", "string"),
+                    "description": meta.get("description", ""),
+                    "defaultValue": pdef.get("defaultValue"),
+                    "allowedValues": pdef.get("allowedValues"),
+                    "is_standard": pname in STANDARD_PARAMS,
+                })
+            return result
 
         services = await get_all_services()
         logger.info(f"approved-for-templates: total services={len(services)}")
@@ -864,43 +880,68 @@ async def get_approved_services_for_templates():
             service_id = svc["id"]
             logger.info(f"approved-for-templates: processing {service_id}")
 
-            # Try to get ARM template parameters from the active version first,
-            # then fall back to the built-in skeleton.
-            all_params: dict = {}
-            active = await get_active_service_version(service_id)
-            if active and active.get("arm_template"):
-                try:
-                    import json as _json
-                    tpl = _json.loads(active["arm_template"])
-                    all_params = tpl.get("parameters", {})
-                except Exception:
-                    logger.exception(f"Failed to parse ARM template for {service_id}")
+            # Fetch ALL versions for this service that have ARM templates
+            all_versions_raw = await get_service_versions(service_id)
+            versions_list = []
+            active_params: list[dict] = []
+            active_ver = svc.get("active_version")
 
-            if not all_params and has_builtin_skeleton(service_id):
+            for ver in all_versions_raw:
+                # Only include approved or draft versions that have ARM templates
+                ver_status = ver.get("status", "")
+                if ver_status not in ("approved", "draft"):
+                    continue
+                arm_str = ver.get("arm_template")
+                if not arm_str:
+                    continue
+                try:
+                    tpl = _json.loads(arm_str)
+                    ver_params = _extract_params(tpl.get("parameters", {}))
+                except Exception:
+                    logger.warning(f"Failed to parse ARM for {service_id} v{ver.get('version')}")
+                    continue
+
+                ver_num = ver.get("version")
+                ver_entry = {
+                    "version": ver_num,
+                    "status": ver_status,
+                    "semver": ver.get("semver", ""),
+                    "is_active": ver_num == active_ver,
+                    "parameters": ver_params,
+                    "changelog": ver.get("changelog", ""),
+                    "created_at": ver.get("created_at", ""),
+                }
+                versions_list.append(ver_entry)
+                if ver_num == active_ver:
+                    active_params = ver_params
+
+            # Fallback: if no versions found, try built-in skeleton
+            if not versions_list and has_builtin_skeleton(service_id):
                 tpl = generate_arm_template(service_id)
                 if tpl:
-                    all_params = tpl.get("parameters", {})
+                    active_params = _extract_params(tpl.get("parameters", {}))
+                    versions_list = [{
+                        "version": 0,
+                        "status": "builtin",
+                        "semver": "",
+                        "is_active": True,
+                        "parameters": active_params,
+                        "changelog": "Built-in skeleton",
+                        "created_at": "",
+                    }]
 
-            # Split into standard vs extra
-            extra_params = []
-            for pname, pdef in all_params.items():
-                meta = pdef.get("metadata", {})
-                extra_params.append({
-                    "name": pname,
-                    "type": pdef.get("type", "string"),
-                    "description": meta.get("description", ""),
-                    "defaultValue": pdef.get("defaultValue"),
-                    "allowedValues": pdef.get("allowedValues"),
-                    "is_standard": pname in STANDARD_PARAMS,
-                })
+            # Use active version params as the top-level default
+            if not active_params and versions_list:
+                active_params = versions_list[0]["parameters"]
 
             result.append({
                 "id": service_id,
                 "name": svc.get("name", service_id),
                 "category": svc.get("category", "other"),
                 "risk_tier": svc.get("risk_tier"),
-                "active_version": svc.get("active_version"),
-                "parameters": extra_params,
+                "active_version": active_ver,
+                "parameters": active_params,
+                "versions": versions_list,
             })
 
         logger.info(f"approved-for-templates: returning {len(result)} services")
@@ -942,7 +983,7 @@ async def compose_template_from_services(request: Request):
     names with an index when quantity > 1.
     """
     from src.database import (
-        get_service, get_active_service_version, upsert_template,
+        get_service, get_active_service_version, get_service_version, upsert_template,
     )
     from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
     import json as _json
@@ -974,6 +1015,7 @@ async def compose_template_from_services(request: Request):
         sid = sel.get("service_id", "")
         qty = max(1, int(sel.get("quantity", 1)))
         chosen_params = set(sel.get("parameters", []))
+        chosen_version = sel.get("version")  # None means "use active/latest"
 
         svc = await get_service(sid)
         if not svc:
@@ -984,14 +1026,27 @@ async def compose_template_from_services(request: Request):
                 detail=f"Service '{sid}' is not approved — only approved services can be used in templates",
             )
 
-        # Get the ARM template
+        # Get the ARM template — use specific version if requested
         tpl_dict = None
-        active = await get_active_service_version(sid)
-        if active and active.get("arm_template"):
-            try:
-                tpl_dict = _json.loads(active["arm_template"])
-            except Exception:
-                pass
+        if chosen_version is not None:
+            ver = await get_service_version(sid, int(chosen_version))
+            if ver and ver.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(ver["arm_template"])
+                except Exception:
+                    pass
+            if not tpl_dict:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Version {chosen_version} of '{sid}' has no ARM template",
+                )
+        else:
+            active = await get_active_service_version(sid)
+            if active and active.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(active["arm_template"])
+                except Exception:
+                    pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
         if not tpl_dict:

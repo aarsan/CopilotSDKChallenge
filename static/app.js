@@ -2399,7 +2399,7 @@ function openGovernanceEditor(serviceId) {
 // ── Template Composition from Approved Services ─────────────
 
 let _approvedServicesForCompose = [];
-let _composeSelections = new Map(); // service_id -> { quantity, parameters: Set }
+let _composeSelections = new Map(); // service_id -> { quantity, parameters: Set, version: number|null }
 
 async function openTemplateOnboarding() {
     document.getElementById('modal-template-onboard').classList.remove('hidden');
@@ -2443,21 +2443,38 @@ function _renderComposeServiceList(services) {
 
     list.innerHTML = services.map(svc => {
         const selected = _composeSelections.has(svc.id);
+        const sel = _composeSelections.get(svc.id);
+        const chosenVer = sel ? sel.version : svc.active_version;
+        const versions = svc.versions || [];
         const extraParams = svc.parameters.filter(p => !p.is_standard);
         return `
         <div class="compose-svc-card ${selected ? 'compose-svc-selected' : ''}"
-             onclick="toggleComposeService('${escapeHtml(svc.id)}')"
              data-service-id="${escapeHtml(svc.id)}">
-            <div class="compose-svc-card-main">
+            <div class="compose-svc-card-main" onclick="toggleComposeService('${escapeHtml(svc.id)}')">
                 <div class="compose-svc-check">${selected ? '☑' : '☐'}</div>
                 <div class="compose-svc-info">
                     <div class="compose-svc-name">${escapeHtml(svc.name)}</div>
                     <div class="compose-svc-id">${escapeHtml(svc.id)}</div>
                 </div>
                 <span class="category-badge">${escapeHtml(svc.category)}</span>
-                <span class="version-badge version-active">v${svc.active_version || '?'}</span>
                 ${extraParams.length ? `<span class="compose-param-count">${extraParams.length} param${extraParams.length !== 1 ? 's' : ''}</span>` : ''}
             </div>
+            ${versions.length > 1 ? `
+            <div class="compose-version-picker" onclick="event.stopPropagation()">
+                <label class="compose-version-label">Version:</label>
+                <select class="compose-version-select" onchange="changeComposeVersion('${escapeHtml(svc.id)}', this.value)">
+                    ${versions.map(v => {
+                        const label = 'v' + v.version + (v.semver ? ' (' + v.semver + ')' : '')
+                            + (v.is_active ? ' — active' : '')
+                            + (v.status === 'draft' ? ' [draft]' : '');
+                        const isSelected = v.version === chosenVer;
+                        return `<option value="${v.version}" ${isSelected ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                    }).join('')}
+                </select>
+            </div>` : `
+            <div class="compose-version-picker">
+                <span class="version-badge version-active">v${svc.active_version || '?'}</span>
+            </div>`}
         </div>`;
     }).join('');
 }
@@ -2466,7 +2483,9 @@ function toggleComposeService(serviceId) {
     if (_composeSelections.has(serviceId)) {
         _composeSelections.delete(serviceId);
     } else {
-        _composeSelections.set(serviceId, { quantity: 1, parameters: new Set() });
+        const svc = _approvedServicesForCompose.find(s => s.id === serviceId);
+        const initVersion = svc ? svc.active_version : null;
+        _composeSelections.set(serviceId, { quantity: 1, parameters: new Set(), version: initVersion });
     }
     _renderComposeServiceList(
         _approvedServicesForCompose.filter(s => {
@@ -2477,6 +2496,26 @@ function toggleComposeService(serviceId) {
     _renderComposeSelections();
     _updateComposeSubmitButton();
     _runComposeDependencyAnalysis();
+}
+
+function changeComposeVersion(serviceId, versionStr) {
+    const ver = parseInt(versionStr, 10);
+    const sel = _composeSelections.get(serviceId);
+    if (sel) {
+        sel.version = ver;
+        sel.parameters.clear(); // reset params since different version may have different params
+    } else {
+        _composeSelections.set(serviceId, { quantity: 1, parameters: new Set(), version: ver });
+    }
+    // Re-render the selection detail cards with the new version's parameters
+    _renderComposeServiceList(
+        _approvedServicesForCompose.filter(s => {
+            const q = (document.getElementById('compose-service-search')?.value || '').toLowerCase();
+            return s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || (s.category || '').toLowerCase().includes(q);
+        })
+    );
+    _renderComposeSelections();
+    _updateComposeSubmitButton();
 }
 
 function _renderComposeSelections() {
@@ -2494,20 +2533,41 @@ function _renderComposeSelections() {
     container.innerHTML = Array.from(_composeSelections.entries()).map(([sid, sel]) => {
         const svc = _approvedServicesForCompose.find(s => s.id === sid);
         if (!svc) return '';
-        const extraParams = svc.parameters.filter(p => !p.is_standard);
+        const versions = svc.versions || [];
+        // Get params for the chosen version (fall back to active/top-level)
+        const chosenVer = sel.version;
+        const verObj = versions.find(v => v.version === chosenVer);
+        const verParams = verObj ? verObj.parameters : svc.parameters;
+        const extraParams = verParams.filter(p => !p.is_standard);
+        const verLabel = chosenVer != null ? `v${chosenVer}` : 'latest';
 
         return `
         <div class="compose-selection-card">
             <div class="compose-selection-header">
                 <div class="compose-selection-title">
                     <span class="compose-svc-name">${escapeHtml(svc.name)}</span>
+                    <span class="version-badge ${verObj && verObj.status === 'draft' ? 'version-draft' : 'version-active'}">${verLabel}</span>
                     <button type="button" class="btn btn-xs btn-ghost" onclick="toggleComposeService('${escapeHtml(sid)}')" title="Remove">✕</button>
                 </div>
-                <div class="compose-qty-row">
-                    <label>Quantity:</label>
-                    <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', -1)">−</button>
-                    <span class="compose-qty-val" id="compose-qty-${sid.replace(/[/.]/g, '-')}">${sel.quantity}</span>
-                    <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', 1)">+</button>
+                <div class="compose-selection-controls">
+                    ${versions.length > 1 ? `
+                    <div class="compose-ver-row">
+                        <label>Version:</label>
+                        <select class="compose-version-select" onchange="changeComposeVersion('${escapeHtml(sid)}', this.value)">
+                            ${versions.map(v => {
+                                const label = 'v' + v.version + (v.semver ? ' (' + v.semver + ')' : '')
+                                    + (v.is_active ? ' — active' : '')
+                                    + (v.status === 'draft' ? ' [draft]' : '');
+                                return `<option value="${v.version}" ${v.version === chosenVer ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                            }).join('')}
+                        </select>
+                    </div>` : ''}
+                    <div class="compose-qty-row">
+                        <label>Quantity:</label>
+                        <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', -1)">−</button>
+                        <span class="compose-qty-val" id="compose-qty-${sid.replace(/[/.]/g, '-')}">${sel.quantity}</span>
+                        <button type="button" class="compose-qty-btn" onclick="adjustComposeQty('${escapeHtml(sid)}', 1)">+</button>
+                    </div>
                 </div>
             </div>
             ${extraParams.length ? `
@@ -2738,6 +2798,7 @@ async function submitTemplateOnboarding(event) {
         service_id: sid,
         quantity: sel.quantity,
         parameters: Array.from(sel.parameters),
+        version: sel.version,
     }));
 
     const body = {
