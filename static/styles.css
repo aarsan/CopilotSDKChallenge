@@ -6102,3 +6102,208 @@ details[open] > .tmpl-deploy-group-optional {
     margin: 0;
     display: inline;
 }
+
+/* ══════════════════════════════════════════════════════════
+   TEMPLATE REVISION  &  COMPOSE TABS
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Revision Form (template detail) ───────────────── */
+.tmpl-revision-section {
+    border: 1px solid var(--accent-primary);
+    border-radius: 10px;
+    padding: 1rem;
+    background: var(--bg-secondary);
+}
+
+.tmpl-revision-textarea {
+    width: 100%;
+    min-height: 70px;
+    resize: vertical;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+.tmpl-revision-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+/* ── Policy Verdict Panels ─────────────────────────── */
+.tmpl-revision-policy {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+.tmpl-policy-pass {
+    background: rgba(46, 204, 113, 0.08);
+    border: 1px solid rgba(46, 204, 113, 0.35);
+}
+.tmpl-policy-warning {
+    background: rgba(241, 196, 15, 0.08);
+    border: 1px solid rgba(241, 196, 15, 0.4);
+}
+.tmpl-policy-block {
+    background: rgba(231, 76, 60, 0.08);
+    border: 1px solid rgba(231, 76, 60, 0.4);
+}
+.tmpl-policy-header {
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 0.3rem;
+}
+.tmpl-policy-summary {
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+.tmpl-policy-issues {
+    margin: 0.4rem 0 0.4rem 1.2rem;
+    padding: 0;
+    list-style: disc;
+}
+.tmpl-policy-issues li {
+    margin-bottom: 0.2rem;
+}
+.tmpl-policy-issue-high   { color: var(--danger);  }
+.tmpl-policy-issue-medium { color: #e67e22;        }
+.tmpl-policy-issue-low    { color: var(--text-secondary); }
+.tmpl-policy-hint {
+    margin-top: 0.3rem;
+    font-style: italic;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+/* ── Revision Result Panels ────────────────────────── */
+.tmpl-revision-loading {
+    padding: 0.6rem;
+    font-style: italic;
+    color: var(--text-secondary);
+    animation: revisionPulse 1.5s ease-in-out infinite;
+}
+@keyframes revisionPulse {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1;   }
+}
+.tmpl-revision-error {
+    padding: 0.6rem;
+    border-radius: 6px;
+    background: rgba(231, 76, 60, 0.1);
+    border: 1px solid rgba(231, 76, 60, 0.3);
+    color: var(--danger);
+}
+.tmpl-revision-success {
+    padding: 0.6rem;
+    border-radius: 6px;
+    background: rgba(46, 204, 113, 0.08);
+    border: 1px solid rgba(46, 204, 113, 0.3);
+}
+.tmpl-revision-no-change {
+    padding: 0.6rem;
+    border-radius: 6px;
+    background: rgba(52, 152, 219, 0.08);
+    border: 1px solid rgba(52, 152, 219, 0.3);
+}
+.tmpl-revision-analysis {
+    margin-bottom: 0.5rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+.tmpl-revision-actions {
+    margin: 0.5rem 0;
+    font-size: 0.82rem;
+}
+.tmpl-revision-actions ul {
+    margin: 0.25rem 0 0 1rem;
+    padding: 0;
+}
+.tmpl-revision-actions li {
+    margin-bottom: 0.25rem;
+}
+.tmpl-revision-summary {
+    margin-top: 0.5rem;
+    font-size: 0.82rem;
+    line-height: 1.6;
+}
+.tmpl-revision-hint {
+    margin-top: 0.3rem;
+    font-size: 0.78rem;
+    font-style: italic;
+    color: var(--text-secondary);
+}
+
+/* ── Compose Tab Switcher ──────────────────────────── */
+.compose-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 1.25rem;
+    border-bottom: 2px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+.compose-tab {
+    flex: 1;
+    padding: 0.7rem 1rem;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.2s, border-color 0.2s;
+    text-align: center;
+}
+.compose-tab:hover {
+    color: var(--text-primary);
+}
+.compose-tab-active {
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
+}
+.compose-panel {
+    /* panels hide/show via JS display toggle */
+}
+
+/* ── Prompt-Driven Compose ─────────────────────────── */
+.compose-prompt-section {
+    margin-bottom: 1rem;
+}
+.compose-prompt-label {
+    display: block;
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.4rem;
+    color: var(--text-primary);
+}
+.compose-prompt-textarea {
+    width: 100%;
+    min-height: 80px;
+    resize: vertical;
+    font-size: 0.88rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    padding: 0.65rem 0.85rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+.compose-prompt-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+.compose-prompt-hint {
+    margin-top: 0.35rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    font-style: italic;
+}

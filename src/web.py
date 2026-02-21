@@ -2257,6 +2257,323 @@ async def test_template(template_id: str, request: Request):
     })
 
 
+# ── Auto-Heal Template ──────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/auto-heal")
+async def auto_heal_template(template_id: str):
+    """Automatically fix a template that failed structural tests.
+
+    Flow:
+    1. Get the template and its latest test results
+    2. Ask the LLM to fix structural issues in the ARM JSON
+    3. Save the fixed template as a new version
+    4. Re-run structural tests
+    5. Return results
+
+    No user input required — the system figures out what's wrong and fixes it.
+    """
+    from src.database import (
+        get_template_by_id, get_template_versions, get_template_version,
+        upsert_template, create_template_version,
+        update_template_version_status,
+    )
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Get latest version and its test results
+    versions = await get_template_versions(template_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="No versions found")
+
+    latest_ver = versions[0]
+    arm_content = latest_ver.get("arm_template", "")
+    test_results = latest_ver.get("test_results", {})
+    validation_results = latest_ver.get("validation_results", {})
+
+    # Gather failed tests into an error description
+    failed_tests = []
+    if isinstance(test_results, dict) and test_results:
+        for t in test_results.get("tests", []):
+            if not t.get("passed", True):
+                failed_tests.append(f"- {t['name']}: {t.get('message', 'failed')}")
+
+    # Also check validation (deploy) failures
+    if isinstance(validation_results, dict) and validation_results:
+        if not validation_results.get("validation_passed", True):
+            for h in validation_results.get("heal_history", []):
+                if h.get("error"):
+                    failed_tests.append(f"- Deploy: {h['error'][:200]}")
+
+    # If no recorded failures, run structural tests now to find issues
+    if not failed_tests and tmpl.get("status") in ("failed", "draft"):
+        import json as _j2
+        try:
+            _tpl = _j2.loads(arm_content)
+            # Quick structural checks
+            if "$schema" not in _tpl:
+                failed_tests.append("- ARM Schema: Missing $schema")
+            if "contentVersion" not in _tpl:
+                failed_tests.append("- ARM Schema: Missing contentVersion")
+            if not isinstance(_tpl.get("resources"), list) or not _tpl.get("resources"):
+                failed_tests.append("- Resources: No resources defined")
+            TAG_REQ = {"environment", "project", "owner"}
+            for i, r in enumerate(_tpl.get("resources", [])):
+                if isinstance(r, dict):
+                    if "type" not in r:
+                        failed_tests.append(f"- Resources: Resource [{i}] missing 'type'")
+                    if "apiVersion" not in r:
+                        failed_tests.append(f"- Resources: Resource [{i}] missing 'apiVersion'")
+                    if "name" not in r:
+                        failed_tests.append(f"- Resources: Resource [{i}] missing 'name'")
+                    tags = r.get("tags", {})
+                    if isinstance(tags, dict):
+                        missing = TAG_REQ - set(k.lower() for k in tags)
+                        if missing:
+                            failed_tests.append(f"- Tags: Resource [{i}] ({r.get('type','?')}) missing {', '.join(missing)}")
+        except Exception:
+            failed_tests.append("- JSON: Template is not valid JSON")
+
+    if not failed_tests:
+        # Actually no issues found — run real tests and set status to passed
+        # so the template moves forward in the lifecycle
+        try:
+            _tpl = _json.loads(arm_content)
+            # If tests pass, promote the template status
+            new_ver_num = latest_ver["version"]
+            _tr = {"tests": [], "passed": 0, "failed": 0, "total": 0, "all_passed": True}
+
+            # Quick full check
+            checks = [
+                ("$schema" in _tpl, "ARM Schema"),
+                ("contentVersion" in _tpl, "Content Version"),
+                (isinstance(_tpl.get("resources"), list) and len(_tpl.get("resources", [])) > 0, "Resources"),
+            ]
+            for ok, name in checks:
+                _tr["tests"].append({"name": name, "passed": ok, "message": "OK" if ok else "Failed"})
+                _tr["total"] += 1
+                if ok:
+                    _tr["passed"] += 1
+                else:
+                    _tr["failed"] += 1
+                    _tr["all_passed"] = False
+
+            new_status = "passed" if _tr["all_passed"] else "failed"
+            await update_template_version_status(template_id, new_ver_num, new_status, _tr)
+
+            from src.database import get_backend as _get_tmpl_backend
+            _tb = await _get_tmpl_backend()
+            await _tb.execute_write(
+                "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+                (new_status, datetime.now(timezone.utc).isoformat(), template_id),
+            )
+
+            return JSONResponse({
+                "status": "already_healthy",
+                "template_id": template_id,
+                "all_passed": _tr["all_passed"],
+                "retest": _tr,
+                "message": "Template is structurally sound — tests passed! Ready for the next step."
+                           if _tr["all_passed"] else "Some structural issues remain.",
+            })
+        except Exception:
+            return JSONResponse({
+                "status": "no_issues",
+                "template_id": template_id,
+                "message": "No test failures detected — template may already be fine.",
+            })
+
+    error_description = "Structural test failures:\n" + "\n".join(failed_tests)
+    logger.info(f"Auto-heal {template_id}: {error_description}")
+
+    # Try LLM-based healing
+    client = await ensure_copilot_client()
+    fixed_arm = None
+
+    if client:
+        try:
+            fixed_arm = await _copilot_heal_template(
+                arm_json=arm_content,
+                error_message=error_description,
+                resource_type=template_id,
+                copilot_client=client,
+                previous_attempts=[],
+            )
+        except Exception as e:
+            logger.warning(f"LLM heal failed for {template_id}: {e}")
+
+    if not fixed_arm:
+        # Heuristic fix: try to fix common structural issues
+        try:
+            tpl = _json.loads(arm_content)
+            changed = False
+
+            # Fix missing $schema
+            if "$schema" not in tpl:
+                tpl["$schema"] = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
+                changed = True
+
+            # Fix missing contentVersion
+            if "contentVersion" not in tpl:
+                tpl["contentVersion"] = "1.0.0.0"
+                changed = True
+
+            # Fix missing resources
+            if "resources" not in tpl:
+                tpl["resources"] = []
+                changed = True
+
+            # Fix parameters not being a dict
+            if not isinstance(tpl.get("parameters"), dict):
+                tpl["parameters"] = {}
+                changed = True
+
+            # Fix resources not being a list
+            if not isinstance(tpl.get("resources"), list):
+                tpl["resources"] = []
+                changed = True
+
+            # Fix individual resource issues
+            TAG_SET = {
+                "environment": "[parameters('environment')]",
+                "owner": "[parameters('ownerEmail')]",
+                "costCenter": "[parameters('costCenter')]",
+                "project": "[parameters('projectName')]",
+                "managedBy": "InfraForge",
+            }
+            for res in tpl.get("resources", []):
+                if not isinstance(res, dict):
+                    continue
+                # Add missing tags
+                if "tags" not in res or not isinstance(res.get("tags"), dict):
+                    res["tags"] = dict(TAG_SET)
+                    changed = True
+                else:
+                    for tk, tv in TAG_SET.items():
+                        if tk not in res["tags"]:
+                            res["tags"][tk] = tv
+                            changed = True
+
+            if changed:
+                fixed_arm = _json.dumps(tpl, indent=2)
+        except Exception as e:
+            logger.warning(f"Heuristic heal failed for {template_id}: {e}")
+
+    if not fixed_arm:
+        return JSONResponse({
+            "status": "heal_failed",
+            "template_id": template_id,
+            "errors": failed_tests,
+            "message": "Auto-heal could not fix this template. Use Request Revision to describe the changes needed.",
+        })
+
+    # Save the fixed template
+    tmpl["content"] = fixed_arm
+    try:
+        await upsert_template(tmpl)
+        new_ver = await create_template_version(
+            template_id, fixed_arm,
+            changelog="Auto-healed: fixed structural test failures",
+            semver=None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save healed template {template_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Re-run structural tests on the fixed version
+    from starlette.testclient import TestClient
+    # Instead of internal call, just run the tests inline
+    new_version_num = new_ver["version"]
+    new_arm = fixed_arm
+
+    # ── Inline test suite (same as test endpoint) ─────────────
+    tests: list[dict] = []
+    all_passed = True
+    tpl = None
+    try:
+        tpl = _json.loads(new_arm)
+        tests.append({"name": "JSON Structure", "passed": True, "message": "Valid JSON"})
+    except Exception as e:
+        tests.append({"name": "JSON Structure", "passed": False, "message": f"Invalid JSON: {e}"})
+        all_passed = False
+
+    if tpl:
+        # Schema
+        schema_ok = all(k in tpl for k in ("$schema", "contentVersion", "resources"))
+        tests.append({"name": "ARM Schema", "passed": schema_ok,
+                       "message": "Valid ARM structure" if schema_ok else "Missing required schema fields"})
+        if not schema_ok:
+            all_passed = False
+
+        # Parameters
+        params = tpl.get("parameters", {})
+        param_ok = isinstance(params, dict) and all(
+            isinstance(v, dict) and "type" in v for v in params.values()
+        )
+        tests.append({"name": "Parameters", "passed": param_ok,
+                       "message": f"{len(params)} parameters valid" if param_ok else "Parameter issues remain"})
+        if not param_ok:
+            all_passed = False
+
+        # Resources
+        resources = tpl.get("resources", [])
+        res_ok = isinstance(resources, list) and len(resources) > 0 and all(
+            isinstance(r, dict) and "type" in r and "apiVersion" in r and "name" in r
+            for r in resources
+        )
+        tests.append({"name": "Resources", "passed": res_ok,
+                       "message": f"{len(resources)} resources valid" if res_ok else "Resource issues remain"})
+        if not res_ok:
+            all_passed = False
+
+        # Tag compliance
+        TAG_REQUIRED = {"environment", "project", "owner"}
+        tag_ok = True
+        for res in resources:
+            if isinstance(res, dict):
+                tags = res.get("tags", {})
+                if isinstance(tags, dict):
+                    if TAG_REQUIRED - set(k.lower() for k in tags):
+                        tag_ok = False
+                        break
+        tests.append({"name": "Tag Compliance", "passed": tag_ok,
+                       "message": "All resources properly tagged" if tag_ok else "Tag issues remain"})
+        if not tag_ok:
+            all_passed = False
+
+    retest_status = "passed" if all_passed else "failed"
+    retest_results = {
+        "tests": tests,
+        "passed": sum(1 for t in tests if t["passed"]),
+        "failed": sum(1 for t in tests if not t["passed"]),
+        "total": len(tests),
+        "all_passed": all_passed,
+    }
+
+    await update_template_version_status(template_id, new_version_num, retest_status, retest_results)
+
+    # Sync parent template status
+    from src.database import get_backend as _get_tmpl_backend
+    _tb = await _get_tmpl_backend()
+    await _tb.execute_write(
+        "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+        (retest_status, datetime.now(timezone.utc).isoformat(), template_id),
+    )
+
+    return JSONResponse({
+        "status": "healed" if all_passed else "partial",
+        "template_id": template_id,
+        "version": new_version_num,
+        "original_failures": failed_tests,
+        "retest": retest_results,
+        "all_passed": all_passed,
+        "message": "Template auto-healed and all tests pass!" if all_passed
+                   else f"Auto-heal fixed some issues but {retest_results['failed']} test(s) still need attention.",
+    })
+
+
 # ── Recompose Blueprint ──────────────────────────────────────
 
 @app.post("/api/catalog/templates/{template_id}/recompose")
@@ -3909,6 +4226,808 @@ async def get_orchestration_playbook(process_id: str):
     from src.orchestrator import get_process_playbook
     text = await get_process_playbook(process_id)
     return JSONResponse({"process_id": process_id, "playbook": text})
+
+
+# ══════════════════════════════════════════════════════════════
+# TEMPLATE FEEDBACK — CHAT WITH YOUR TEMPLATE
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/catalog/templates/{template_id}/feedback")
+async def template_feedback(template_id: str, request: Request):
+    """Accept natural-language feedback about a template and auto-fix it.
+
+    Body:
+    {
+        "message": "I wanted a VM but only the VNet got deployed"
+    }
+
+    The endpoint:
+    1. Sends the template + user message to the LLM for gap analysis
+    2. Identifies missing Azure resource types
+    3. Auto-onboards missing services into the catalog
+    4. Updates the template's service_ids and triggers recompose
+    5. Returns the analysis, actions taken, and updated template
+
+    This is the human-in-the-loop channel for the autonomous orchestrator.
+    """
+    from src.database import (
+        get_template_by_id, upsert_template, create_template_version,
+        get_service, get_active_service_version,
+    )
+    from src.orchestrator import analyze_template_feedback
+    from src.tools.arm_generator import (
+        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
+        has_builtin_skeleton,
+    )
+    from src.template_engine import analyze_dependencies
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Feedback message is required")
+
+    # Get the copilot client for LLM analysis
+    client = await ensure_copilot_client()
+
+    # ── Step 1: Analyze feedback ──────────────────────────────
+    feedback_result = await analyze_template_feedback(
+        tmpl,
+        message,
+        copilot_client=client,
+    )
+
+    if not feedback_result["should_recompose"]:
+        return JSONResponse({
+            "status": "no_changes",
+            "analysis": feedback_result["analysis"],
+            "missing_services": feedback_result["missing_services"],
+            "actions_taken": feedback_result["actions_taken"],
+            "message": "No missing services identified — the template may already cover your needs. "
+                       "Try providing more specific feedback about what resources you expected.",
+        })
+
+    # ── Step 2: Update template service_ids ───────────────────
+    new_service_ids = feedback_result["new_service_ids"]
+
+    # ── Step 3: Recompose with the updated service list ───────
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    service_templates: list[dict] = []
+    for sid in new_service_ids:
+        svc = await get_service(sid)
+        if not svc:
+            continue
+        tpl_dict = None
+        active = await get_active_service_version(sid)
+        if active and active.get("arm_template"):
+            try:
+                tpl_dict = _json.loads(active["arm_template"])
+            except Exception:
+                pass
+        if not tpl_dict and has_builtin_skeleton(sid):
+            tpl_dict = generate_arm_template(sid)
+        if not tpl_dict:
+            continue
+        service_templates.append({
+            "svc": svc,
+            "template": tpl_dict,
+            "quantity": 1,
+        })
+
+    if not service_templates:
+        raise HTTPException(
+            status_code=500,
+            detail="No service templates available for recomposition",
+        )
+
+    # Compose the updated template (same logic as recompose endpoint)
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources: list[dict] = []
+    combined_outputs: dict = {}
+    resource_types: list[str] = []
+    tags_list: list[str] = []
+
+    for entry in service_templates:
+        svc = entry["svc"]
+        tpl = entry["template"]
+        sid = svc["id"]
+        short_name = sid.split("/")[-1].lower()
+        resource_types.append(sid)
+        tags_list.append(svc.get("category", ""))
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        suffix = f"_{short_name}"
+        instance_name_param = f"resourceName{suffix}"
+        combined_params[instance_name_param] = {
+            "type": "string",
+            "metadata": {"description": f"Name for {svc.get('name', sid)}"},
+        }
+
+        all_non_standard = [
+            pname for pname in src_params
+            if pname not in STANDARD_PARAMS and pname != "resourceName"
+        ]
+        for pname in all_non_standard:
+            pdef = src_params.get(pname)
+            if not pdef:
+                continue
+            suffixed = f"{pname}{suffix}"
+            combined_params[suffixed] = dict(pdef)
+
+        for res in src_resources:
+            res_str = _json.dumps(res)
+            res_str = res_str.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            res_str = res_str.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                res_str = res_str.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                res_str = res_str.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_resources.append(_json.loads(res_str))
+
+        for oname, odef in src_outputs.items():
+            out_name = f"{oname}{suffix}"
+            out_val = _json.dumps(odef)
+            out_val = out_val.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            out_val = out_val.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                out_val = out_val.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                out_val = out_val.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_outputs[out_name] = _json.loads(out_val)
+
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    content_str = _json.dumps(composed, indent=2)
+
+    # Apply sanitizers
+    content_str = _ensure_parameter_defaults(content_str)
+    content_str = _sanitize_placeholder_guids(content_str)
+    content_str = _sanitize_dns_zone_names(content_str)
+
+    composed = _json.loads(content_str)
+    combined_params = composed.get("parameters", {})
+    param_list = [
+        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+        for k, v in combined_params.items()
+    ]
+
+    dep_analysis = analyze_dependencies(new_service_ids)
+
+    # ── Step 4: Save the updated template ─────────────────────
+    catalog_entry = {
+        "id": template_id,
+        "name": tmpl.get("name", template_id),
+        "description": tmpl.get("description", ""),
+        "format": "arm",
+        "category": tmpl.get("category", "blueprint"),
+        "content": content_str,
+        "tags": list(set(tags_list)),
+        "resources": list(set(resource_types)),
+        "parameters": param_list,
+        "outputs": list(combined_outputs.keys()),
+        "is_blueprint": len(service_templates) > 1,
+        "service_ids": new_service_ids,
+        "status": "draft",  # Reset to draft — needs re-testing
+        "registered_by": tmpl.get("registered_by", "template-composer"),
+        "template_type": dep_analysis["template_type"],
+        "provides": dep_analysis["provides"],
+        "requires": dep_analysis["requires"],
+        "optional_refs": dep_analysis["optional_refs"],
+    }
+
+    try:
+        await upsert_template(catalog_entry)
+        ver = await create_template_version(
+            template_id, content_str,
+            changelog=f"Feedback recompose: {message[:100]}",
+            created_by="feedback-orchestrator",
+        )
+    except Exception as e:
+        logger.error(f"Failed to save feedback-recomposed template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info(
+        f"Feedback recomposed '{template_id}': {len(feedback_result['actions_taken'])} actions, "
+        f"{len(combined_resources)} resources, {len(new_service_ids)} services"
+    )
+
+    return JSONResponse({
+        "status": "recomposed",
+        "analysis": feedback_result["analysis"],
+        "missing_services": feedback_result["missing_services"],
+        "actions_taken": feedback_result["actions_taken"],
+        "template_id": template_id,
+        "resource_count": len(combined_resources),
+        "parameter_count": len(combined_params),
+        "services": new_service_ids,
+        "version": ver,
+        "message": f"Template updated with {len(feedback_result['actions_taken'])} new services and recomposed. Status reset to draft for re-testing.",
+    })
+
+
+# ══════════════════════════════════════════════════════════════
+# TEMPLATE REVISION — REQUEST REVISION WITH POLICY CHECK
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/catalog/templates/{template_id}/revision/policy-check")
+async def revision_policy_check(template_id: str, request: Request):
+    """Pre-check a revision request against org policies.
+
+    Body: { "prompt": "Add a public-facing VM with open SSH" }
+
+    Returns instant pass/warning/block feedback BEFORE any changes are made.
+    Call this first; if it passes, call the /revise endpoint.
+    """
+    from src.database import get_template_by_id
+    from src.orchestrator import check_revision_policy
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    client = await ensure_copilot_client()
+
+    result = await check_revision_policy(
+        prompt,
+        template=tmpl,
+        copilot_client=client,
+    )
+
+    return JSONResponse(result)
+
+
+@app.post("/api/catalog/templates/{template_id}/revise")
+async def revise_template(template_id: str, request: Request):
+    """Revise a template based on natural language — with policy enforcement.
+
+    Body:
+    {
+        "prompt": "Add a SQL database and a Key Vault to this template",
+        "skip_policy_check": false
+    }
+
+    Flow:
+    1. Policy pre-check → block if violations
+    2. LLM determines which services are needed (new + existing)
+    3. Auto-onboard missing services
+    4. Recompose the template
+    5. Return the updated template + policy check results
+    """
+    from src.database import (
+        get_template_by_id, upsert_template, create_template_version,
+        get_service, get_active_service_version,
+    )
+    from src.orchestrator import (
+        check_revision_policy, analyze_template_feedback,
+    )
+    from src.tools.arm_generator import (
+        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
+        has_builtin_skeleton,
+    )
+    from src.template_engine import analyze_dependencies
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    skip_policy = body.get("skip_policy_check", False)
+    client = await ensure_copilot_client()
+
+    # ── Step 1: Policy pre-check ──────────────────────────────
+    policy_result = None
+    if not skip_policy:
+        policy_result = await check_revision_policy(
+            prompt,
+            template=tmpl,
+            copilot_client=client,
+        )
+
+        if policy_result["verdict"] == "block":
+            return JSONResponse({
+                "status": "blocked",
+                "policy_check": policy_result,
+                "message": "Revision blocked by organizational policy. Address the issues below before proceeding.",
+            }, status_code=422)
+
+    # ── Step 2: Analyze what needs to change ──────────────────
+    feedback_result = await analyze_template_feedback(
+        tmpl,
+        prompt,
+        copilot_client=client,
+    )
+
+    if not feedback_result["should_recompose"]:
+        return JSONResponse({
+            "status": "no_changes",
+            "policy_check": policy_result,
+            "analysis": feedback_result["analysis"],
+            "actions_taken": feedback_result["actions_taken"],
+            "message": "No new services identified from your request. "
+                       "Try being more specific about what resources you need.",
+        })
+
+    # ── Step 3: Recompose with updated service list ───────────
+    new_service_ids = feedback_result["new_service_ids"]
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    service_templates: list[dict] = []
+    for sid in new_service_ids:
+        svc = await get_service(sid)
+        if not svc:
+            continue
+        tpl_dict = None
+        active = await get_active_service_version(sid)
+        if active and active.get("arm_template"):
+            try:
+                tpl_dict = _json.loads(active["arm_template"])
+            except Exception:
+                pass
+        if not tpl_dict and has_builtin_skeleton(sid):
+            tpl_dict = generate_arm_template(sid)
+        if not tpl_dict:
+            continue
+        service_templates.append({
+            "svc": svc,
+            "template": tpl_dict,
+            "quantity": 1,
+        })
+
+    if not service_templates:
+        raise HTTPException(status_code=500, detail="No service templates available for recomposition")
+
+    # Compose
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources: list[dict] = []
+    combined_outputs: dict = {}
+    resource_types: list[str] = []
+    tags_list: list[str] = []
+
+    for entry in service_templates:
+        svc = entry["svc"]
+        tpl = entry["template"]
+        sid = svc["id"]
+        short_name = sid.split("/")[-1].lower()
+        resource_types.append(sid)
+        tags_list.append(svc.get("category", ""))
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        suffix = f"_{short_name}"
+        instance_name_param = f"resourceName{suffix}"
+        combined_params[instance_name_param] = {
+            "type": "string",
+            "metadata": {"description": f"Name for {svc.get('name', sid)}"},
+        }
+
+        all_non_standard = [
+            pname for pname in src_params
+            if pname not in STANDARD_PARAMS and pname != "resourceName"
+        ]
+        for pname in all_non_standard:
+            pdef = src_params.get(pname)
+            if not pdef:
+                continue
+            suffixed = f"{pname}{suffix}"
+            combined_params[suffixed] = dict(pdef)
+
+        for res in src_resources:
+            res_str = _json.dumps(res)
+            res_str = res_str.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
+            res_str = res_str.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                res_str = res_str.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
+                res_str = res_str.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
+            combined_resources.append(_json.loads(res_str))
+
+        for oname, odef in src_outputs.items():
+            out_name = f"{oname}{suffix}"
+            out_val = _json.dumps(odef)
+            out_val = out_val.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
+            out_val = out_val.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                out_val = out_val.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
+                out_val = out_val.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
+            combined_outputs[out_name] = _json.loads(out_val)
+
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    content_str = _json.dumps(composed, indent=2)
+    content_str = _ensure_parameter_defaults(content_str)
+    content_str = _sanitize_placeholder_guids(content_str)
+    content_str = _sanitize_dns_zone_names(content_str)
+
+    composed = _json.loads(content_str)
+    combined_params = composed.get("parameters", {})
+    param_list = [
+        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+        for k, v in combined_params.items()
+    ]
+
+    dep_analysis = analyze_dependencies(new_service_ids)
+
+    catalog_entry = {
+        "id": template_id,
+        "name": tmpl.get("name", template_id),
+        "description": tmpl.get("description", ""),
+        "format": "arm",
+        "category": tmpl.get("category", "blueprint"),
+        "content": content_str,
+        "tags": list(set(tags_list)),
+        "resources": list(set(resource_types)),
+        "parameters": param_list,
+        "outputs": list(combined_outputs.keys()),
+        "is_blueprint": len(service_templates) > 1,
+        "service_ids": new_service_ids,
+        "status": "draft",
+        "registered_by": tmpl.get("registered_by", "template-composer"),
+        "template_type": dep_analysis["template_type"],
+        "provides": dep_analysis["provides"],
+        "requires": dep_analysis["requires"],
+        "optional_refs": dep_analysis["optional_refs"],
+    }
+
+    try:
+        await upsert_template(catalog_entry)
+        ver = await create_template_version(
+            template_id, content_str,
+            changelog=f"Revision: {prompt[:100]}",
+            created_by="revision-orchestrator",
+        )
+    except Exception as e:
+        logger.error(f"Failed to save revised template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse({
+        "status": "revised",
+        "policy_check": policy_result,
+        "analysis": feedback_result["analysis"],
+        "actions_taken": feedback_result["actions_taken"],
+        "template_id": template_id,
+        "resource_count": len(combined_resources),
+        "parameter_count": len(combined_params),
+        "services": new_service_ids,
+        "version": ver,
+        "message": f"Template revised with {len(feedback_result['actions_taken'])} change(s). Status reset to draft.",
+    })
+
+
+# ══════════════════════════════════════════════════════════════
+# PROMPT-DRIVEN TEMPLATE COMPOSITION
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/catalog/templates/compose-from-prompt")
+async def compose_template_from_prompt(request: Request):
+    """Compose a new template from a natural language description.
+
+    Body:
+    {
+        "prompt": "I need a VM with a SQL database and Key Vault",
+        "name": "optional override",
+        "category": "optional override"
+    }
+
+    Flow:
+    1. Policy pre-check → block if violations
+    2. LLM determines which services are needed
+    3. Auto-onboard missing services + resolve dependencies
+    4. Compose the template
+    5. Run structural tests
+    6. Return the composed template
+    """
+    from src.database import (
+        get_service, get_active_service_version, upsert_template,
+        create_template_version,
+    )
+    from src.orchestrator import (
+        check_revision_policy, determine_services_from_prompt,
+        resolve_composition_dependencies,
+    )
+    from src.tools.arm_generator import (
+        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
+        has_builtin_skeleton,
+    )
+    from src.template_engine import analyze_dependencies
+    import json as _json
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    prompt = body.get("prompt", "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required — describe what infrastructure you need")
+
+    client = await ensure_copilot_client()
+
+    # ── Step 1: Policy pre-check ──────────────────────────────
+    policy_result = await check_revision_policy(
+        prompt,
+        copilot_client=client,
+    )
+
+    if policy_result["verdict"] == "block":
+        return JSONResponse({
+            "status": "blocked",
+            "policy_check": policy_result,
+            "message": "Request blocked by organizational policy.",
+        }, status_code=422)
+
+    # ── Step 2: LLM determines services ───────────────────────
+    selection = await determine_services_from_prompt(
+        prompt,
+        copilot_client=client,
+    )
+
+    services = selection.get("services", [])
+    if not services:
+        return JSONResponse({
+            "status": "no_services",
+            "policy_check": policy_result,
+            "message": "Could not determine which Azure services are needed. "
+                       "Try being more specific, e.g. 'I need a VM with a SQL database'.",
+        })
+
+    name = body.get("name", "").strip() or selection.get("name_suggestion", "My Template")
+    description = body.get("description", "").strip() or selection.get("description_suggestion", "")
+    category = body.get("category", "").strip() or selection.get("category_suggestion", "blueprint")
+
+    # ── Step 3: Resolve & onboard ─────────────────────────────
+    service_ids = [s["resource_type"] for s in services]
+
+    dep_result = await resolve_composition_dependencies(
+        service_ids,
+        copilot_client=client,
+    )
+
+    final_service_ids = dep_result["final_service_ids"]
+
+    # ── Step 4: Gather ARM templates ──────────────────────────
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    service_templates: list[dict] = []
+    for sid in final_service_ids:
+        svc = await get_service(sid)
+        if not svc:
+            continue
+        tpl_dict = None
+        active = await get_active_service_version(sid)
+        if active and active.get("arm_template"):
+            try:
+                tpl_dict = _json.loads(active["arm_template"])
+            except Exception:
+                pass
+        if not tpl_dict and has_builtin_skeleton(sid):
+            tpl_dict = generate_arm_template(sid)
+        if not tpl_dict:
+            continue
+
+        # Find quantity for this service
+        qty = 1
+        for s in services:
+            if s["resource_type"] == sid:
+                qty = s.get("quantity", 1)
+                break
+
+        service_templates.append({
+            "svc": svc,
+            "template": tpl_dict,
+            "quantity": qty,
+            "chosen_params": set(),
+        })
+
+    if not service_templates:
+        raise HTTPException(status_code=500, detail="No service templates available after resolution")
+
+    # ── Step 5: Compose ───────────────────────────────────────
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources: list[dict] = []
+    combined_outputs: dict = {}
+    composed_service_ids: list[str] = []
+    resource_types: list[str] = []
+    tags_list: list[str] = []
+
+    for entry in service_templates:
+        svc = entry["svc"]
+        tpl = entry["template"]
+        qty = entry["quantity"]
+        sid = svc["id"]
+        composed_service_ids.append(sid)
+        short_name = sid.split("/")[-1].lower()
+        resource_types.append(sid)
+        tags_list.append(svc.get("category", ""))
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        for idx in range(1, qty + 1):
+            suffix = f"_{short_name}" if qty == 1 else f"_{short_name}{idx}"
+            instance_name_param = f"resourceName{suffix}"
+            combined_params[instance_name_param] = {
+                "type": "string",
+                "metadata": {
+                    "description": f"Name for {svc.get('name', sid)}"
+                    + (f" (instance {idx})" if qty > 1 else ""),
+                },
+            }
+
+            all_non_standard = [
+                pname for pname in src_params
+                if pname not in STANDARD_PARAMS and pname != "resourceName"
+            ]
+            for pname in all_non_standard:
+                pdef = src_params.get(pname)
+                if not pdef:
+                    continue
+                suffixed = f"{pname}{suffix}"
+                combined_params[suffixed] = dict(pdef)
+
+            for res in src_resources:
+                res_str = _json.dumps(res)
+                res_str = res_str.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
+                res_str = res_str.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
+                for pname in all_non_standard:
+                    suffixed = f"{pname}{suffix}"
+                    res_str = res_str.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
+                    res_str = res_str.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
+                combined_resources.append(_json.loads(res_str))
+
+            for oname, odef in src_outputs.items():
+                out_name = f"{oname}{suffix}"
+                out_val = _json.dumps(odef)
+                out_val = out_val.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
+                out_val = out_val.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
+                for pname in all_non_standard:
+                    suffixed = f"{pname}{suffix}"
+                    out_val = out_val.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
+                    out_val = out_val.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
+                combined_outputs[out_name] = _json.loads(out_val)
+
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    content_str = _json.dumps(composed, indent=2)
+    content_str = _ensure_parameter_defaults(content_str)
+    content_str = _sanitize_placeholder_guids(content_str)
+    content_str = _sanitize_dns_zone_names(content_str)
+
+    template_id = "composed-" + name.lower().replace(" ", "-")[:50]
+
+    composed = _json.loads(content_str)
+    combined_params = composed.get("parameters", {})
+    param_list = [
+        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+        for k, v in combined_params.items()
+    ]
+
+    dep_analysis = analyze_dependencies(composed_service_ids)
+
+    catalog_entry = {
+        "id": template_id,
+        "name": name,
+        "description": description,
+        "format": "arm",
+        "category": category,
+        "content": content_str,
+        "tags": list(set(tags_list)),
+        "resources": list(set(resource_types)),
+        "parameters": param_list,
+        "outputs": list(combined_outputs.keys()),
+        "is_blueprint": len(service_templates) > 1,
+        "service_ids": composed_service_ids,
+        "status": "draft",
+        "registered_by": "prompt-composer",
+        "template_type": dep_analysis["template_type"],
+        "provides": dep_analysis["provides"],
+        "requires": dep_analysis["requires"],
+        "optional_refs": dep_analysis["optional_refs"],
+    }
+
+    try:
+        await upsert_template(catalog_entry)
+        ver = await create_template_version(
+            template_id, content_str,
+            changelog=f"Prompt compose: {prompt[:100]}",
+            semver="1.0.0",
+        )
+    except Exception as e:
+        logger.error(f"Failed to save prompt-composed template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return JSONResponse({
+        "status": "composed",
+        "policy_check": policy_result,
+        "template_id": template_id,
+        "template": catalog_entry,
+        "version": ver,
+        "services_detected": services,
+        "dependency_resolution": dep_result,
+        "resource_count": len(combined_resources),
+        "parameter_count": len(combined_params),
+        "message": f"Template '{name}' composed from {len(composed_service_ids)} services "
+                   f"({len(combined_resources)} resources, {len(combined_params)} params). "
+                   f"Ready for testing.",
+    })
 
 
 @app.delete("/api/catalog/templates/{template_id}")

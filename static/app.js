@@ -2165,10 +2165,10 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-pending">
-                📝 <strong>Step 1:</strong> This template needs structural testing before it can be validated.
+                📝 <strong>New Template</strong> — Run tests to verify this template before deploying.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
-                🧪 Run Structural Tests
+                🧪 Run Tests
             </button>
         </div>`;
     } else if (status === 'passed') {
@@ -2195,11 +2195,16 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ This template failed testing or validation. Fix the issues, then re-test.
+                🔄 This template needs attention — use <strong>Request Revision</strong> below to describe what's wrong, or re-run tests after changes.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
-                🧪 Re-run Tests
-            </button>
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
+                    🔧 Auto-Heal
+                </button>
+                <button class="btn btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
+                    🧪 Re-run Tests
+                </button>
+            </div>
         </div>`;
     } else if (status === 'approved') {
         ctaHtml = `
@@ -2226,7 +2231,7 @@ function showTemplateDetail(templateId) {
             <span class="status-badge ${status}">${statusBadgeMap[status] || status}</span>
             ${activeVer ? `<span class="tmpl-ver-badge">v${activeVer}</span>` : ''}
             <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
-                ${isStandalone ? '✅ Standalone' : '⚙️ Needs existing infra'}
+                ${isStandalone ? '✅ Standalone' : '🔗 Has dependencies'}
             </span>
         </div>
 
@@ -2291,7 +2296,7 @@ function showTemplateDetail(templateId) {
 
         ${requires.length ? `
         <div class="detail-section">
-            <h4>⚠️ Requires Existing Infrastructure</h4>
+            <h4>🔗 Infrastructure Dependencies</h4>
             <div class="tmpl-dep-list">
                 ${requires.map(r => `
                     <div class="tmpl-dep-item tmpl-dep-required">
@@ -2301,7 +2306,7 @@ function showTemplateDetail(templateId) {
                     </div>
                 `).join('')}
             </div>
-            <p class="tmpl-dep-note">At deploy time, InfraForge will show a resource picker for each required dependency.</p>
+            <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
         </div>` : ''}
 
         ${optionalRefs.length ? `
@@ -2351,6 +2356,24 @@ function showTemplateDetail(templateId) {
                 `).join('')}
             </div>
         </div>` : ''}
+
+        <!-- Request Revision — Prompt-Driven Template Changes -->
+        <div class="detail-section tmpl-revision-section">
+            <h4>📝 Request Revision</h4>
+            <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Your request is checked against org policies first.</p>
+            <div class="tmpl-revision-input-group">
+                <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
+                    rows="2"
+                    placeholder="e.g. Add a SQL database and Key Vault for secrets management…"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
+                <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
+                    onclick="submitRevision('${escapeHtml(tmpl.id)}')">
+                    ✏️ Request Revision
+                </button>
+            </div>
+            <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
+            <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
+        </div>
 
         <!-- Version History -->
         <div class="detail-section">
@@ -2660,6 +2683,133 @@ async function recomposeBlueprint(templateId) {
         await showTemplateDetail(templateId);
     } catch (err) {
         showToast(`❌ Recompose error: ${err.message}`, 'error');
+    }
+}
+
+/** Submit a revision request for a template — policy check + LLM-driven recompose */
+async function submitRevision(templateId) {
+    const textarea = document.getElementById('tmpl-revision-prompt');
+    const btn = document.getElementById('tmpl-revision-btn');
+    const policyDiv = document.getElementById('tmpl-revision-policy');
+    const resultDiv = document.getElementById('tmpl-revision-result');
+    if (!textarea || !btn) return;
+
+    const prompt = textarea.value.trim();
+    if (!prompt) {
+        showToast('Describe what changes you need', 'warning');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Checking policies…';
+    policyDiv.style.display = 'none';
+    resultDiv.style.display = 'none';
+
+    try {
+        // ── Step 1: Instant policy pre-check ─────────────────
+        const policyRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/revision/policy-check`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt }),
+        });
+        const policyData = await policyRes.json();
+
+        // Show policy result
+        policyDiv.style.display = 'block';
+        if (policyData.verdict === 'block') {
+            policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
+            policyDiv.innerHTML = `
+                <div class="tmpl-policy-header">🚫 Blocked by Policy</div>
+                <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>
+                ${policyData.issues?.length ? `<ul class="tmpl-policy-issues">
+                    ${policyData.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
+                        <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
+                    </li>`).join('')}
+                </ul>` : ''}
+                <div class="tmpl-policy-hint">Revise your request to comply with organizational policies.</div>`;
+            btn.disabled = false;
+            btn.textContent = '✏️ Request Revision';
+            return;
+        } else if (policyData.verdict === 'warning') {
+            policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';
+            policyDiv.innerHTML = `
+                <div class="tmpl-policy-header">⚠️ Policy Warnings</div>
+                <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>
+                ${policyData.issues?.length ? `<ul class="tmpl-policy-issues">
+                    ${policyData.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
+                        <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
+                    </li>`).join('')}
+                </ul>` : ''}
+                <div class="tmpl-policy-hint">Proceeding with revision despite warnings…</div>`;
+        } else {
+            policyDiv.className = 'tmpl-revision-policy tmpl-policy-pass';
+            policyDiv.innerHTML = `<div class="tmpl-policy-header">✅ Policy Check Passed</div>
+                <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>`;
+        }
+
+        // ── Step 2: Submit revision ──────────────────────────
+        btn.textContent = '⏳ Revising template…';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Analyzing request and recomposing template…</div>';
+
+        const revRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/revise`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, skip_policy_check: true }),
+        });
+        const revData = await revRes.json();
+
+        if (!revRes.ok) {
+            resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(revData.detail || revData.message || 'Revision failed')}</div>`;
+            return;
+        }
+
+        if (revData.status === 'no_changes') {
+            resultDiv.innerHTML = `
+                <div class="tmpl-revision-no-change">
+                    <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
+                    <div class="tmpl-revision-hint">ℹ️ ${escapeHtml(revData.message)}</div>
+                </div>`;
+            return;
+        }
+
+        // Show success
+        let actionsHtml = '';
+        if (revData.actions_taken?.length) {
+            actionsHtml = '<div class="tmpl-revision-actions"><strong>Changes made:</strong><ul>' +
+                revData.actions_taken.map(a => {
+                    const icon = a.action === 'auto_onboarded' ? '🔧' :
+                                 a.action === 'added_from_catalog' ? '✅' : '❌';
+                    return `<li>${icon} <strong>${escapeHtml(a.service_id.split('/').pop())}</strong> — ${escapeHtml(a.detail)}</li>`;
+                }).join('') + '</ul></div>';
+        }
+
+        resultDiv.innerHTML = `
+            <div class="tmpl-revision-success">
+                <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
+                ${actionsHtml}
+                <div class="tmpl-revision-summary">
+                    ✅ Template revised: <strong>${revData.resource_count}</strong> resources,
+                    <strong>${revData.parameter_count}</strong> params from
+                    <strong>${revData.services?.length || '?'}</strong> services.
+                    <br><em>Status reset to draft — run tests to validate.</em>
+                </div>
+            </div>`;
+
+        textarea.value = '';
+        showToast('✅ Template revised — reloading…', 'success');
+        setTimeout(async () => {
+            await loadCatalog();
+            showTemplateDetail(templateId);
+        }, 2000);
+
+    } catch (err) {
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
+        showToast(`❌ Revision error: ${err.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '✏️ Request Revision';
     }
 }
 
@@ -3425,6 +3575,38 @@ function _renderDeployProgress(container, event, ctx) {
     `;
 }
 
+/** Auto-heal a failed template — system fixes it, not the user */
+async function autoHealTemplate(templateId) {
+    showToast('🔧 Auto-healing template…', 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.detail || 'Auto-heal failed');
+        }
+
+        if (data.status === 'no_issues') {
+            showToast('ℹ️ No issues found — template looks fine', 'info');
+        } else if (data.all_passed) {
+            showToast(`✅ Template auto-healed — all ${data.retest?.total || ''} tests pass!`, 'success');
+        } else {
+            showToast(`🔧 Partial fix — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. Try Request Revision for remaining issues.`, 'warning');
+        }
+
+        await loadAllData();
+        showTemplateDetail(templateId);
+    } catch (err) {
+        showToast(`Auto-heal error: ${err.message}`, 'error');
+    }
+}
+
 /** Run tests on a template from the detail drawer */
 async function runTemplateTest(templateId) {
     showToast('🧪 Running template tests…', 'info');
@@ -3623,6 +3805,17 @@ async function openTemplateOnboarding() {
     document.getElementById('modal-template-onboard').classList.remove('hidden');
     _composeSelections.clear();
     _updateComposeSubmitButton();
+
+    // Reset prompt tab state
+    switchComposeTab('prompt');
+    const promptInput = document.getElementById('compose-prompt-input');
+    if (promptInput) promptInput.value = '';
+    const promptPolicy = document.getElementById('compose-prompt-policy');
+    if (promptPolicy) { promptPolicy.style.display = 'none'; promptPolicy.innerHTML = ''; }
+    const promptResult = document.getElementById('compose-prompt-result');
+    if (promptResult) { promptResult.style.display = 'none'; promptResult.innerHTML = ''; }
+    const promptBtn = document.getElementById('btn-prompt-compose');
+    if (promptBtn) { promptBtn.disabled = false; promptBtn.textContent = '🚀 Create Template'; }
 
     const list = document.getElementById('compose-service-list');
     list.innerHTML = '<div class="compose-loading">Loading approved services…</div>';
@@ -3865,7 +4058,7 @@ async function _runComposeDependencyAnalysis() {
         });
         const analysis = await res.json();
         const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
-        const typeLabels = { foundation: 'Foundation — deploys standalone', workload: 'Workload — requires existing infrastructure', composite: 'Composite — self-contained bundle' };
+        const typeLabels = { foundation: 'Foundation — deploys standalone', workload: 'Workload — dependencies auto-wired at deploy', composite: 'Composite — self-contained bundle' };
 
         let html = `
             <div class="dep-type-banner dep-type-${analysis.template_type}">
@@ -3890,8 +4083,8 @@ async function _runComposeDependencyAnalysis() {
         }
 
         if (analysis.requires?.length) {
-            html += '<div class="dep-block"><h5>⚠️ Requires Existing Infrastructure</h5>';
-            html += '<p class="dep-note">These resources must already exist. InfraForge will show a resource picker at deploy time.</p>';
+            html += '<div class="dep-block"><h5>🔗 Infrastructure Dependencies</h5>';
+            html += '<p class="dep-note">These are automatically wired at deploy time — no action needed.</p>';
             analysis.requires.forEach(r => {
                 html += `<div class="dep-detail-item dep-required"><code>${escapeHtml(r.type)}</code> — ${escapeHtml(r.reason)}</div>`;
             });
@@ -3909,7 +4102,7 @@ async function _runComposeDependencyAnalysis() {
         if (analysis.deployable_standalone) {
             html += '<div class="dep-standalone-ok">✅ This template can be deployed standalone — no existing infrastructure required.</div>';
         } else {
-            html += '<div class="dep-standalone-no">⚠️ This template requires existing infrastructure. Users will need to select resources at deploy time.</div>';
+            html += '<div class="dep-standalone-no">🔗 This template has infrastructure dependencies — InfraForge wires them automatically at deploy time.</div>';
         }
 
         container.innerHTML = html;
@@ -3985,6 +4178,148 @@ async function submitGovernanceUpdate(event) {
     } finally {
         btn.disabled = false;
         btn.textContent = origText;
+    }
+}
+
+/* ──── Compose Tab Switcher ──────────────────────────── */
+function switchComposeTab(tab) {
+    const promptPanel = document.getElementById('compose-panel-prompt');
+    const manualPanel = document.getElementById('compose-panel-manual');
+    const tabPrompt = document.getElementById('compose-tab-prompt');
+    const tabManual = document.getElementById('compose-tab-manual');
+    if (!promptPanel || !manualPanel) return;
+
+    if (tab === 'prompt') {
+        promptPanel.style.display = '';
+        manualPanel.style.display = 'none';
+        tabPrompt.classList.add('compose-tab-active');
+        tabManual.classList.remove('compose-tab-active');
+    } else {
+        promptPanel.style.display = 'none';
+        manualPanel.style.display = '';
+        tabPrompt.classList.remove('compose-tab-active');
+        tabManual.classList.add('compose-tab-active');
+    }
+}
+
+/* ──── Prompt-Driven Compose ────────────────────────── */
+async function submitPromptCompose() {
+    const textarea = document.getElementById('compose-prompt-input');
+    const btn = document.getElementById('btn-prompt-compose');
+    const policyDiv = document.getElementById('compose-prompt-policy');
+    const resultDiv = document.getElementById('compose-prompt-result');
+    if (!textarea || !btn) return;
+
+    const prompt = textarea.value.trim();
+    if (!prompt) {
+        showToast('Describe the infrastructure you need', 'warning');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Checking policies…';
+    policyDiv.style.display = 'none';
+    resultDiv.style.display = 'none';
+
+    try {
+        // ── Step 1: Policy pre-check via a lightweight POST ──
+        // We reuse the compose-from-prompt endpoint but show incremental feedback
+        btn.textContent = '⏳ Analyzing services…';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Identifying services, checking policies, resolving dependencies…</div>';
+
+        const res = await fetch('/api/catalog/templates/compose-from-prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt }),
+        });
+        const data = await res.json();
+
+        // Show policy result if present
+        if (data.policy_check) {
+            policyDiv.style.display = 'block';
+            const pr = data.policy_check;
+            if (pr.verdict === 'block') {
+                policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
+                policyDiv.innerHTML = `
+                    <div class="tmpl-policy-header">🚫 Blocked by Policy</div>
+                    <div class="tmpl-policy-summary">${escapeHtml(pr.summary)}</div>
+                    ${pr.issues?.length ? `<ul class="tmpl-policy-issues">
+                        ${pr.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
+                            <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
+                        </li>`).join('')}
+                    </ul>` : ''}
+                    <div class="tmpl-policy-hint">Revise your request to comply with organizational policies.</div>`;
+                resultDiv.style.display = 'none';
+                return;
+            } else if (pr.verdict === 'warning') {
+                policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';
+                policyDiv.innerHTML = `
+                    <div class="tmpl-policy-header">⚠️ Policy Warnings</div>
+                    <div class="tmpl-policy-summary">${escapeHtml(pr.summary)}</div>
+                    ${pr.issues?.length ? `<ul class="tmpl-policy-issues">
+                        ${pr.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
+                            <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
+                        </li>`).join('')}
+                    </ul>` : ''}`;
+            } else {
+                policyDiv.className = 'tmpl-revision-policy tmpl-policy-pass';
+                policyDiv.innerHTML = `<div class="tmpl-policy-header">✅ Policy Check Passed</div>
+                    <div class="tmpl-policy-summary">${escapeHtml(pr.summary)}</div>`;
+            }
+        }
+
+        if (!res.ok) {
+            resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(data.detail || data.message || 'Compose failed')}</div>`;
+            return;
+        }
+
+        // Show detected services
+        let servicesHtml = '';
+        if (data.services_detected?.length) {
+            servicesHtml = '<div class="tmpl-revision-actions"><strong>🔎 Detected services:</strong><ul>' +
+                data.services_detected.map(s => {
+                    return `<li>🎯 <strong>${escapeHtml(s.resource_type.split('/').pop())}</strong>${s.reason ? ' — ' + escapeHtml(s.reason) : ''}${s.quantity > 1 ? ' ×' + s.quantity : ''}</li>`;
+                }).join('') + '</ul></div>';
+        }
+
+        let depsHtml = '';
+        const depResolved = data.dependency_resolution?.resolved || [];
+        if (depResolved.length) {
+            depsHtml = '<div class="tmpl-revision-actions"><strong>📎 Dependencies resolved:</strong><ul>' +
+                depResolved.map(a => {
+                    const icon = a.action === 'auto_onboarded' ? '🔧' :
+                                 a.action === 'added_from_catalog' ? '✅' : '❌';
+                    return `<li>${icon} <strong>${escapeHtml(a.service_id.split('/').pop())}</strong> — ${escapeHtml(a.detail)}</li>`;
+                }).join('') + '</ul></div>';
+        }
+
+        resultDiv.innerHTML = `
+            <div class="tmpl-revision-success">
+                ${servicesHtml}
+                ${depsHtml}
+                <div class="tmpl-revision-summary">
+                    ✅ Template created: <strong>${escapeHtml(data.template?.name || data.name || '?')}</strong><br>
+                    <strong>${data.resource_count || '?'}</strong> resources,
+                    <strong>${data.parameter_count || '?'}</strong> parameters from
+                    <strong>${data.services_detected?.length || data.service_count || '?'}</strong> services.
+                </div>
+            </div>`;
+
+        textarea.value = '';
+        showToast('✅ Template created — reloading catalog…', 'success');
+        setTimeout(async () => {
+            await loadCatalog();
+            closeModal('modal-template-onboard');
+        }, 2000);
+
+    } catch (err) {
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
+        showToast(`❌ Compose error: ${err.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🚀 Create Template';
     }
 }
 
@@ -4079,7 +4414,7 @@ async function submitTemplateOnboarding(event) {
                 loadAllData();
             }, 2000);
         } else {
-            showToast(`⚠️ Template "${name}" created but failed ${testData.results?.failed || 0} test(s) — fix issues and re-test`, 'warning');
+            showToast(`⚠️ Template "${name}" created — ${testData.results?.failed || 0} test(s) need attention. Open the template to auto-heal.`, 'warning');
             await loadAllData();
         }
     } catch (err) {

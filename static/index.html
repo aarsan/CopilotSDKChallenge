@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=50">
+    <link rel="stylesheet" href="/static/styles.css?v=53">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -674,9 +674,43 @@
     <div id="modal-template-onboard" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-onboard')">
         <div class="modal-dialog modal-wide" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3>📦 Create Template from Approved Services</h3>
+                <h3>📦 Create Template</h3>
                 <button class="modal-close" onclick="closeModal('modal-template-onboard')">×</button>
             </div>
+
+            <!-- ── Tab Switcher ─────────────────────────── -->
+            <div class="compose-tabs">
+                <button class="compose-tab compose-tab-active" id="compose-tab-prompt" onclick="switchComposeTab('prompt')">
+                    💬 Describe What You Need
+                </button>
+                <button class="compose-tab" id="compose-tab-manual" onclick="switchComposeTab('manual')">
+                    🔧 Pick Services Manually
+                </button>
+            </div>
+
+            <!-- ═══ Tab 1: Prompt-Driven ═══════════════════ -->
+            <div id="compose-panel-prompt" class="compose-panel">
+                <div class="modal-body">
+                    <div class="compose-prompt-section">
+                        <label class="compose-prompt-label">What infrastructure do you need?</label>
+                        <textarea id="compose-prompt-input" class="form-control compose-prompt-textarea"
+                            rows="3"
+                            placeholder="e.g. I need a VM with a SQL database and Key Vault for secrets management…"></textarea>
+                        <div class="compose-prompt-hint">InfraForge will determine the right Azure services, check policies, and compose the template for you.</div>
+                    </div>
+                    <div id="compose-prompt-policy" class="tmpl-revision-policy" style="display:none;"></div>
+                    <div id="compose-prompt-result" style="display:none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-template-onboard')">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="btn-prompt-compose" onclick="submitPromptCompose()">
+                        🚀 Create Template
+                    </button>
+                </div>
+            </div>
+
+            <!-- ═══ Tab 2: Manual Service Picker ══════════ -->
+            <div id="compose-panel-manual" class="compose-panel" style="display:none;">
             <form id="form-template-onboard" onsubmit="submitTemplateOnboarding(event)">
                 <div class="modal-body">
                     <!-- Step 1: Template basics -->
@@ -752,6 +786,7 @@
                     </button>
                 </div>
             </form>
+            </div><!-- /compose-panel-manual -->
         </div>
     </div>
 
@@ -834,7 +869,7 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=50"></script>
+    <script src="/static/app.js?v=53"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
