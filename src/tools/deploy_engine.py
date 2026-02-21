@@ -59,6 +59,7 @@ class DeploymentRecord:
         self.region = region
         self.template_hash = template_hash
         self.initiated_by = initiated_by
+        self.subscription_id = ""        # filled at deploy time
         self.status = "pending"          # pending → validating → deploying → succeeded / failed
         self.phase = "init"
         self.progress = 0.0
@@ -76,6 +77,7 @@ class DeploymentRecord:
             "resource_group": self.resource_group,
             "deployment_name": self.deployment_name,
             "region": self.region,
+            "subscription_id": self.subscription_id,
             "status": self.status,
             "phase": self.phase,
             "progress": self.progress,
@@ -417,6 +419,7 @@ async def execute_deployment(
 
     client = _get_resource_client()
     loop = asyncio.get_event_loop()
+    record.subscription_id = _get_subscription_id()
 
     try:
         # ── Phase 1: Resource Group ───────────────────────

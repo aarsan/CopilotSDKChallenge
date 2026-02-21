@@ -2690,6 +2690,34 @@ body {
     gap: 0.5rem;
     margin-top: 0.6rem;
 }
+.version-tracking-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    padding: 0.5rem 0.7rem;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+    border-radius: 8px;
+    margin-top: 0.3rem;
+}
+.version-tracking-info strong {
+    flex-basis: 100%;
+    font-size: 0.72rem;
+    color: var(--accent);
+}
+.tracking-field {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+}
+.tracking-field code {
+    background: rgba(0,0,0,0.2);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--text-primary);
+}
 .version-item-deprecated-label {
     background: rgba(148, 163, 184, 0.15);
     color: var(--text-muted);
@@ -2725,6 +2753,8 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    overflow-y: auto;
+    max-height: calc(90vh - 4rem);
 }
 .template-viewer-meta {
     display: flex;
@@ -2753,7 +2783,9 @@ body {
     border-radius: 8px;
     padding: 1rem;
     overflow: auto;
-    max-height: 65vh;
+    max-height: 50vh;
+    flex: 1;
+    min-height: 200px;
     font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
     font-size: 0.75rem;
     line-height: 1.6;
@@ -2766,6 +2798,118 @@ body {
     font-family: inherit;
     font-size: inherit;
 }
+
+/* ── Draft Version Styles ─────────────────────────────────── */
+.version-history-drafts {
+    margin-bottom: 0.75rem;
+}
+.version-history-header-draft {
+    color: var(--accent-amber) !important;
+}
+.version-history-header-draft span:first-child {
+    color: var(--accent-amber);
+}
+.version-item-draft {
+    border-left: 3px solid var(--accent-amber) !important;
+    background: rgba(251, 191, 36, 0.04);
+}
+.version-item-draft:hover {
+    background: rgba(251, 191, 36, 0.08);
+}
+.version-badge-draft {
+    background: rgba(251, 191, 36, 0.15) !important;
+    color: var(--accent-amber) !important;
+}
+.version-status-draft {
+    color: var(--accent-amber) !important;
+    font-weight: 500;
+}
+
+/* ── Template Modify Section ──────────────────────────────── */
+.template-modify-section {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 0.75rem;
+    margin-top: 0.25rem;
+}
+.template-modify-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+.template-modify-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+.template-modify-hint {
+    font-size: 0.68rem;
+    color: var(--text-tertiary);
+}
+.template-modify-input-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+}
+.template-modify-prompt {
+    flex: 1;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.78rem;
+    padding: 0.5rem 0.75rem;
+    resize: vertical;
+    min-height: 2.2rem;
+    max-height: 6rem;
+    line-height: 1.5;
+    transition: border-color 0.2s;
+}
+.template-modify-prompt:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.template-modify-prompt::placeholder {
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+.template-modify-btn {
+    white-space: nowrap;
+    padding: 0.45rem 1rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border-radius: 8px;
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin-top: 0;
+}
+.template-modify-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+.template-modify-progress {
+    margin-top: 0.5rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    max-height: 8rem;
+    overflow-y: auto;
+    font-size: 0.72rem;
+    line-height: 1.6;
+}
+.modify-progress-item {
+    color: var(--text-secondary);
+    padding: 0.1rem 0;
+}
+.modify-progress-item:last-child {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
 /* JSON syntax highlighting */
 .json-key {
     color: #93c5fd;

@@ -1215,76 +1215,143 @@ function _renderOnboardButton(svc, status, latestVersion) {
 }
 
 function _renderVersionHistory(versions, activeVersion) {
-    // Only show approved (working) versions — failed/draft/validating are internal
     const approvedVersions = versions.filter(v => v.status === 'approved');
+    const draftVersions = versions.filter(v => v.status === 'draft');
     const totalCount = versions.length;
     const approvedCount = approvedVersions.length;
+    const draftCount = draftVersions.length;
 
-    if (approvedCount === 0) {
-        return `
-        <div class="version-history">
-            <div class="version-history-header">
-                <span>📦 Published Versions</span>
-                <span class="version-count">No approved versions yet (${totalCount} total attempt${totalCount === 1 ? '' : 's'})</span>
+    let html = '';
+
+    // ── Draft versions (pending validation) ──
+    if (draftCount > 0) {
+        html += `
+        <div class="version-history version-history-drafts">
+            <div class="version-history-header version-history-header-draft">
+                <span>📝 Draft Versions (Pending Validation)</span>
+                <span class="version-count">${draftCount} draft${draftCount === 1 ? '' : 's'}</span>
+            </div>
+            <div class="version-list">
+                ${draftVersions.map(v => {
+                    const sizeKB = v.template_size_bytes
+                        ? (v.template_size_bytes / 1024).toFixed(1)
+                        : v.arm_template
+                            ? (v.arm_template.length / 1024).toFixed(1)
+                            : '?';
+                    const displayVer = v.semver || `${v.version}.0.0`;
+
+                    return `
+                    <div class="version-item version-item-draft" onclick="toggleVersionDetail(this)">
+                        <div class="version-item-header">
+                            <span class="version-item-badge version-badge-draft">v${displayVer}</span>
+                            <span class="version-item-status version-status-draft">📝 draft</span>
+                            <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
+                            <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
+                        </div>
+                        <div class="version-item-detail hidden">
+                            <div class="version-detail-row">
+                                <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Modified template')}
+                            </div>
+                            <div class="version-detail-row">
+                                <strong>Template:</strong> ${sizeKB} KB
+                            </div>
+                            <div class="version-detail-actions">
+                                <button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); triggerDraftValidation('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
+                                    🚀 Validate & Promote
+                                </button>
+                                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
+                                    👁 View Template
+                                </button>
+                                <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
+                                    ⬇ Download
+                                </button>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('')}
             </div>
         </div>`;
     }
 
-    return `
-    <div class="version-history">
-        <div class="version-history-header">
-            <span>📦 Published Versions</span>
-            <span class="version-count">${approvedCount} approved version${approvedCount === 1 ? '' : 's'}</span>
-        </div>
-        <div class="version-list">
-            ${approvedVersions.map(v => {
-                const isActive = v.version === activeVersion;
-                const sizeKB = v.template_size_bytes
-                    ? (v.template_size_bytes / 1024).toFixed(1)
-                    : v.arm_template
-                        ? (v.arm_template.length / 1024).toFixed(1)
-                        : '?';
+    // ── Approved versions ──
+    if (approvedCount === 0 && draftCount === 0) {
+        html += `
+        <div class="version-history">
+            <div class="version-history-header">
+                <span>📦 Published Versions</span>
+                <span class="version-count">No versions yet (${totalCount} total attempt${totalCount === 1 ? '' : 's'})</span>
+            </div>
+        </div>`;
+    } else {
+        html += `
+        <div class="version-history">
+            <div class="version-history-header">
+                <span>📦 Published Versions</span>
+                <span class="version-count">${approvedCount} approved version${approvedCount === 1 ? '' : 's'}</span>
+            </div>
+            ${approvedCount === 0 ? '' : `<div class="version-list">
+                ${approvedVersions.map(v => {
+                    const isActive = v.version === activeVersion;
+                    const sizeKB = v.template_size_bytes
+                        ? (v.template_size_bytes / 1024).toFixed(1)
+                        : v.arm_template
+                            ? (v.arm_template.length / 1024).toFixed(1)
+                            : '?';
+                    const displayVer = v.semver || `${v.version}.0.0`;
 
-                return `
-                <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
-                    <div class="version-item-header">
-                        <span class="version-item-badge">v${v.version}</span>
-                        <span class="version-item-status">✅ approved</span>
-                        ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>'}
-                        <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
-                        <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
-                    </div>
-                    <div class="version-item-detail hidden">
-                        <div class="version-detail-row">
-                            <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Initial onboarding')}
+                    return `
+                    <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
+                        <div class="version-item-header">
+                            <span class="version-item-badge">v${displayVer}</span>
+                            <span class="version-item-status">✅ approved</span>
+                            ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>'}
+                            <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
+                            <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
                         </div>
-                        ${v.policy_check && v.policy_check.total_checks ? `
-                        <div class="version-detail-row">
-                            <strong>Policy:</strong> ${v.policy_check.passed_checks}/${v.policy_check.total_checks} passed,
-                            ${v.policy_check.blockers || 0} blocker(s)
-                        </div>` : ''}
-                        <div class="version-detail-row">
-                            <strong>Template:</strong> ${sizeKB} KB
+                        <div class="version-item-detail hidden">
+                            <div class="version-detail-row">
+                                <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Initial onboarding')}
+                            </div>
+                            ${v.policy_check && v.policy_check.total_checks ? `
+                            <div class="version-detail-row">
+                                <strong>Policy:</strong> ${v.policy_check.passed_checks}/${v.policy_check.total_checks} passed,
+                                ${v.policy_check.blockers || 0} blocker(s)
+                            </div>` : ''}
+                            <div class="version-detail-row">
+                                <strong>Template:</strong> ${sizeKB} KB
+                            </div>
+                            ${v.run_id ? `
+                            <div class="version-detail-row version-tracking-info">
+                                <strong>🔗 Deployment Tracking:</strong>
+                                <span class="tracking-field" title="Validation run ID">Run: <code>${escapeHtml(v.run_id)}</code></span>
+                                <span class="tracking-field" title="Azure Resource Group">RG: <code>${escapeHtml(v.resource_group || '')}</code></span>
+                                <span class="tracking-field" title="ARM Deployment Name">Deploy: <code>${escapeHtml(v.deployment_name || '')}</code></span>
+                                ${v.subscription_id ? `<span class="tracking-field" title="Azure Subscription">Sub: <code>${escapeHtml(v.subscription_id.substring(0, 12))}…</code></span>` : ''}
+                            </div>` : ''}
+                            <div class="version-detail-actions">
+                                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
+                                    👁 View Template
+                                </button>
+                                <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
+                                    ⬇ Download
+                                </button>
+                            </div>
                         </div>
-                        <div class="version-detail-actions">
-                            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
-                                👁 View Template
-                            </button>
-                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
-                                ⬇ Download
-                            </button>
-                        </div>
-                    </div>
-                </div>`;
-            }).join('')}
-        </div>
-    </div>`;
+                    </div>`;
+                }).join('')}
+            </div>`}
+        </div>`;
+    }
+
+    return html;
 }
 
 // ── Template Viewer ─────────────────────────────────────────
 
 let _currentTemplateContent = '';
 let _currentTemplateFilename = '';
+let _currentTemplateServiceId = '';
+let _currentTemplateVersion = null;
 
 async function viewTemplate(serviceId, version) {
     const modal = document.getElementById('modal-template-viewer');
@@ -1293,10 +1360,20 @@ async function viewTemplate(serviceId, version) {
     const code = document.getElementById('template-viewer-code');
 
     title.textContent = `ARM Template — v${version}`;
-    meta.innerHTML = `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span><span class="template-meta-badge">v${version}</span><span class="template-meta-loading">Loading…</span>`;
+    meta.innerHTML = `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span><span class="template-meta-badge">Loading…</span><span class="template-meta-loading">Loading…</span>`;
     code.querySelector('code').textContent = 'Loading template…';
     _currentTemplateContent = '';
     _currentTemplateFilename = `${serviceId.replace(/\//g, '_')}_v${version}.json`;
+    _currentTemplateServiceId = serviceId;
+    _currentTemplateVersion = version;
+
+    // Reset modification UI
+    const modifyPrompt = document.getElementById('template-modify-prompt');
+    const modifyProgress = document.getElementById('template-modify-progress');
+    const modifyBtn = document.getElementById('template-modify-btn');
+    if (modifyPrompt) modifyPrompt.value = '';
+    if (modifyProgress) { modifyProgress.classList.add('hidden'); modifyProgress.innerHTML = ''; }
+    if (modifyBtn) { modifyBtn.disabled = false; modifyBtn.textContent = '🚀 Apply'; }
 
     modal.classList.remove('hidden');
 
@@ -1319,17 +1396,34 @@ async function viewTemplate(serviceId, version) {
         // Render with basic syntax highlighting
         code.querySelector('code').innerHTML = _highlightJSON(formatted);
 
-        // Update meta
+        // Update meta — extract InfraForge metadata from the template itself
         const sizeKB = (formatted.length / 1024).toFixed(1);
-        const resourceCount = (formatted.match(/"type"\s*:/g) || []).length;
         const validatedAt = data.validated_at ? data.validated_at.substring(0, 10) : '—';
-        meta.innerHTML = `
-            <span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span>
-            <span class="template-meta-badge">v${version}</span>
-            <span class="template-meta-badge">${sizeKB} KB</span>
-            <span class="template-meta-badge">~${resourceCount} resource type ref${resourceCount === 1 ? '' : 's'}</span>
-            <span class="template-meta-badge">Validated: ${validatedAt}</span>
-        `;
+        const semver = data.semver || `${version}.0.0`;
+
+        // Try to extract embedded metadata
+        let tmplMeta = null;
+        try {
+            const parsed = JSON.parse(template);
+            tmplMeta = parsed.metadata?.infrapiForge || null;
+        } catch {}
+
+        const metaBadges = [
+            `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span>`,
+            `<span class="template-meta-badge">v${semver}</span>`,
+            `<span class="template-meta-badge">${sizeKB} KB</span>`,
+            `<span class="template-meta-badge">Validated: ${validatedAt}</span>`,
+        ];
+
+        if (tmplMeta) {
+            if (tmplMeta.generatedBy) metaBadges.push(`<span class="template-meta-badge">🔧 ${escapeHtml(tmplMeta.generatedBy)}</span>`);
+            if (tmplMeta.generatedAt) metaBadges.push(`<span class="template-meta-badge">📅 ${tmplMeta.generatedAt.substring(0, 10)}</span>`);
+        }
+        const templateHash = data.arm_template ? (() => { try { const p = JSON.parse(data.arm_template); return p.metadata?._generator?.templateHash || ''; } catch { return ''; } })() : '';
+        if (templateHash) metaBadges.push(`<span class="template-meta-badge" title="Content hash">🔑 ${templateHash}</span>`);
+
+        title.textContent = `ARM Template — v${semver}`;
+        meta.innerHTML = metaBadges.join('\n');
     } catch (err) {
         code.querySelector('code').textContent = `Error loading template: ${err.message}`;
         meta.querySelector('.template-meta-loading')?.remove();
@@ -1395,9 +1489,191 @@ function downloadTemplateBlob(content, filename) {
     showToast('Template downloaded', 'success');
 }
 
+async function submitTemplateModification() {
+    const promptEl = document.getElementById('template-modify-prompt');
+    const progressEl = document.getElementById('template-modify-progress');
+    const btnEl = document.getElementById('template-modify-btn');
+    const prompt = (promptEl?.value || '').trim();
+
+    if (!prompt) {
+        showToast('Please describe the modification you want to make', 'error');
+        promptEl?.focus();
+        return;
+    }
+    if (!_currentTemplateServiceId || _currentTemplateVersion === null) {
+        showToast('No template loaded to modify', 'error');
+        return;
+    }
+
+    // Disable UI during modification
+    btnEl.disabled = true;
+    btnEl.textContent = '⏳ Working…';
+    progressEl.classList.remove('hidden');
+    progressEl.innerHTML = '<div class="modify-progress-item">⏳ Starting modification…</div>';
+
+    try {
+        const url = `/api/services/${encodeURIComponent(_currentTemplateServiceId)}/versions/${_currentTemplateVersion}/modify`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `Server returned ${res.status}`);
+        }
+
+        // Stream NDJSON events
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalEvent = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const ev = JSON.parse(line);
+                    const icon = ev.type === 'error' ? '❌' : ev.type === 'complete' ? '✅' : '⏳';
+                    progressEl.innerHTML += `<div class="modify-progress-item">${icon} ${escapeHtml(ev.detail || '')}</div>`;
+                    progressEl.scrollTop = progressEl.scrollHeight;
+                    finalEvent = ev;
+                } catch {}
+            }
+        }
+
+        // Handle completion
+        if (finalEvent?.type === 'complete') {
+            showToast(`Draft v${finalEvent.semver} saved — validate to promote`, 'success');
+
+            // Reload the template viewer with the new draft version
+            setTimeout(() => {
+                viewTemplate(_currentTemplateServiceId, finalEvent.version);
+            }, 600);
+
+            // Refresh the service detail panel to show the new draft in version history
+            if (typeof loadServiceDetail === 'function') {
+                setTimeout(() => loadServiceDetail(_currentTemplateServiceId), 800);
+            }
+        } else if (finalEvent?.type === 'error') {
+            showToast(finalEvent.detail || 'Modification failed', 'error');
+            btnEl.disabled = false;
+            btnEl.textContent = '🚀 Apply';
+        }
+    } catch (err) {
+        progressEl.innerHTML += `<div class="modify-progress-item">❌ ${escapeHtml(err.message)}</div>`;
+        showToast(`Modification failed: ${err.message}`, 'error');
+        btnEl.disabled = false;
+        btnEl.textContent = '🚀 Apply';
+    }
+}
+
 function toggleVersionDetail(el) {
     const detail = el.querySelector('.version-item-detail');
     if (detail) detail.classList.toggle('hidden');
+}
+
+async function triggerDraftValidation(serviceId, version, semver) {
+    // Close the template viewer if open
+    closeModal('modal-template-viewer');
+
+    showToast(`Starting validation for draft v${semver}…`, 'info');
+
+    // Trigger the onboard pipeline with use_version to skip generation
+    const card = document.getElementById('validation-card');
+    const modelSelect = document.getElementById('onboard-model-select');
+    const selectedModel = modelSelect ? modelSelect.value : '';
+
+    if (card) {
+        card.className = 'validation-card validation-running';
+        card.innerHTML = `
+            <div class="validation-header">
+                <span class="validation-icon validation-spinner">⏳</span>
+                <span class="validation-title">Validating Draft v${semver}…</span>
+            </div>
+            <div class="validation-model-badge" id="validation-model-badge"></div>
+            <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+            <div class="validation-progress">
+                <div class="validation-progress-track">
+                    <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="validation-detail" id="validation-detail">Initializing validation pipeline for draft v${semver}…</div>
+            <div class="validation-log" id="validation-log">
+                <div class="validation-log-header">
+                    <span>Validation Log</span>
+                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
+                </div>
+            </div>
+        `;
+    }
+
+    try {
+        const body = { use_version: version };
+        if (selectedModel) body.model = selectedModel;
+
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Validation request failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    _handleValidationEvent(event);
+                } catch (e) {}
+            }
+        }
+
+        if (buffer.trim()) {
+            try {
+                _handleValidationEvent(JSON.parse(buffer));
+            } catch (e) {}
+        }
+
+        await loadAllData();
+        await showServiceDetail(serviceId);
+
+    } catch (err) {
+        showToast(`Validation failed: ${err.message}`, 'error');
+        if (card) {
+            card.className = 'validation-card validation-failed';
+            card.innerHTML = `
+                <div class="validation-header">
+                    <span class="validation-icon">❌</span>
+                    <span class="validation-title">Validation Failed</span>
+                </div>
+                <div class="validation-detail">${escapeHtml(err.message)}</div>
+            `;
+        }
+    }
 }
 
 // ── Model Selector ──────────────────────────────────────────
@@ -2135,6 +2411,11 @@ async function openTemplateOnboarding() {
 
     try {
         const res = await fetch('/api/catalog/services/approved-for-templates');
+        if (!res.ok) {
+            const errText = await res.text();
+            list.innerHTML = `<div class="compose-empty">Failed to load approved services (${res.status}): ${escapeHtml(errText.slice(0, 200))}</div>`;
+            return;
+        }
         const data = await res.json();
         _approvedServicesForCompose = data.services || [];
         _renderComposeServiceList(_approvedServicesForCompose);

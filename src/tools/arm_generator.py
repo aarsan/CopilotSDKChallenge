@@ -14,6 +14,7 @@ Each generated template follows these principles:
 
 import json
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,39 @@ def _appgw():
                 "requestRoutingRules": []
             }
         }]
+    )
+
+
+@_register("Microsoft.Network/dnszones")
+def _dns_zone():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/dnszones",
+            "apiVersion": "2018-05-01",
+            "name": "[parameters('zoneName')]",
+            "location": "global",
+            "tags": _STANDARD_TAGS,
+            "properties": {
+                "zoneType": "Public"
+            }
+        }],
+        extra_params={
+            "zoneName": {
+                "type": "string",
+                "defaultValue": "infraforge.example.com",
+                "metadata": {"description": "DNS zone name (e.g. contoso.com)"},
+            },
+        },
+        outputs={
+            "zoneId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/dnszones', parameters('zoneName'))]"
+            },
+            "nameServers": {
+                "type": "array",
+                "value": "[reference(resourceId('Microsoft.Network/dnszones', parameters('zoneName'))).nameServers]"
+            }
+        }
     )
 
 
@@ -876,6 +910,125 @@ def generate_arm_template_json(resource_type: str) -> Optional[str]:
     return json.dumps(template, indent=2)
 
 
+async def modify_arm_template_with_copilot(
+    existing_template: str,
+    modification_prompt: str,
+    resource_type: str,
+    copilot_client,
+    model: str = "gpt-4.1",
+) -> str:
+    """Use the Copilot SDK to modify an existing ARM template based on a user prompt.
+
+    Takes the current ARM template and a natural-language modification request,
+    sends both to the LLM, and returns the modified template.
+
+    Args:
+        existing_template: The current ARM template JSON string to modify
+        modification_prompt: Natural-language description of the desired changes
+        resource_type: Azure resource type (for context)
+        copilot_client: Initialized CopilotClient instance
+        model: LLM model ID to use for generation
+
+    Returns:
+        Modified ARM template as a JSON string
+
+    Raises:
+        ValueError: If the LLM fails to produce a valid ARM template after retries
+    """
+    import asyncio
+
+    prompt = (
+        f"You are modifying an existing ARM template for Azure resource type '{resource_type}'.\n\n"
+        f"--- CURRENT ARM TEMPLATE ---\n"
+        f"{existing_template}\n"
+        f"--- END CURRENT TEMPLATE ---\n\n"
+        f"--- REQUESTED MODIFICATION ---\n"
+        f"{modification_prompt}\n"
+        f"--- END MODIFICATION ---\n\n"
+        "Apply the requested modification to the ARM template above.\n"
+        "RULES:\n"
+        "- Return the COMPLETE modified ARM template as a single JSON object\n"
+        "- Preserve ALL existing parameters, resources, outputs, and tags unless the modification explicitly asks to remove them\n"
+        "- EVERY parameter MUST keep a defaultValue\n"
+        "- Keep contentVersion, $schema, and metadata sections intact\n"
+        "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
+        "- If the modification asks for something that doesn't make sense for this resource type, "
+        "still return the template with a best-effort change and add a comment in the template metadata\n"
+    )
+
+    session = None
+    max_attempts = 3
+    last_error = ""
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            session = await copilot_client.create_session({
+                "model": model,
+                "streaming": True,
+                "tools": [],
+                "system_message": {
+                    "content": (
+                        "You are an Azure infrastructure expert. "
+                        "You modify existing ARM templates based on user instructions. "
+                        "Return ONLY the complete modified ARM template as raw JSON — "
+                        "no markdown, no code fences, no explanation."
+                    )
+                },
+            })
+
+            actual_prompt = prompt
+            if attempt > 1:
+                actual_prompt += (
+                    f"\n\nPREVIOUS ATTEMPT FAILED: {last_error}\n"
+                    "Return ONLY the raw JSON object starting with {{ and ending with }}. "
+                    "No markdown fences, no explanation text."
+                )
+
+            chunks: list[str] = []
+            done_ev = asyncio.Event()
+
+            def on_event(ev):
+                try:
+                    if ev.type.value == "assistant.message_delta":
+                        chunks.append(ev.data.delta_content or "")
+                    elif ev.type.value in ("assistant.message", "session.idle"):
+                        done_ev.set()
+                except Exception:
+                    done_ev.set()
+
+            unsub = session.on(on_event)
+            try:
+                await session.send({"prompt": actual_prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=90)
+            finally:
+                unsub()
+
+            result = "".join(chunks).strip()
+            result = _extract_json_from_llm_response(result)
+
+            parsed = json.loads(result)
+
+            if not isinstance(parsed, dict) or ("resources" not in parsed and "$schema" not in parsed):
+                raise json.JSONDecodeError("Response is valid JSON but not an ARM template", result, 0)
+
+            logger.info(f"Copilot modified ARM template for {resource_type} (attempt {attempt})")
+            return result
+
+        except (json.JSONDecodeError, ValueError) as e:
+            last_error = str(e)
+            logger.warning(f"ARM modification attempt {attempt}/{max_attempts} for {resource_type} failed: {last_error}")
+            if attempt == max_attempts:
+                logger.error(f"Copilot failed to modify ARM template for {resource_type} after {max_attempts} attempts")
+                raise ValueError(f"Failed to modify ARM template for {resource_type}: {last_error}")
+        finally:
+            if session:
+                try:
+                    await session.destroy()
+                except Exception:
+                    pass
+                session = None
+
+
 async def generate_arm_template_with_copilot(
     resource_type: str,
     service_name: str,
@@ -949,57 +1102,125 @@ async def generate_arm_template_with_copilot(
         )
 
     session = None
-    try:
-        session = await copilot_client.create_session({
-            "model": model,
-            "streaming": True,
-            "tools": [],
-            "system_message": {
-                "content": (
-                    "You are an Azure infrastructure expert. "
-                    "Generate production-ready ARM templates. "
-                    "Return ONLY raw JSON — no markdown, no code fences, no explanation."
-                )
-            },
-        })
+    max_attempts = 3
+    last_error = ""
 
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
-        unsub = session.on(on_event)
+    for attempt in range(1, max_attempts + 1):
         try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=60)
-        finally:
-            unsub()
+            session = await copilot_client.create_session({
+                "model": model,
+                "streaming": True,
+                "tools": [],
+                "system_message": {
+                    "content": (
+                        "You are an Azure infrastructure expert. "
+                        "Generate production-ready ARM templates. "
+                        "Return ONLY raw JSON — no markdown, no code fences, no explanation."
+                    )
+                },
+            })
 
-        result = "".join(chunks).strip()
-        if result.startswith("```"):
-            lines = result.split("\n")[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            result = "\n".join(lines).strip()
+            actual_prompt = prompt
+            if attempt > 1:
+                actual_prompt += (
+                    f"\n\nPREVIOUS ATTEMPT FAILED: {last_error}\n"
+                    "Return ONLY the raw JSON object starting with {{ and ending with }}. "
+                    "No markdown fences, no explanation text, no comments."
+                )
 
-        # Validate it's valid JSON
-        json.loads(result)
-        logger.info(f"Copilot generated ARM template for {resource_type}")
-        return result
+            chunks: list[str] = []
+            done_ev = asyncio.Event()
 
-    except json.JSONDecodeError:
-        logger.error(f"Copilot returned invalid JSON for {resource_type}")
-        raise ValueError(f"Failed to generate valid ARM template for {resource_type}")
-    finally:
-        if session:
+            def on_event(ev):
+                try:
+                    if ev.type.value == "assistant.message_delta":
+                        chunks.append(ev.data.delta_content or "")
+                    elif ev.type.value in ("assistant.message", "session.idle"):
+                        done_ev.set()
+                except Exception:
+                    done_ev.set()
+
+            unsub = session.on(on_event)
             try:
-                await session.destroy()
-            except Exception:
-                pass
+                await session.send({"prompt": actual_prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=60)
+            finally:
+                unsub()
+
+            result = "".join(chunks).strip()
+            result = _extract_json_from_llm_response(result)
+
+            # Validate it's valid JSON
+            parsed = json.loads(result)
+
+            # Sanity check: must have $schema or resources to be an ARM template
+            if not isinstance(parsed, dict) or ("resources" not in parsed and "$schema" not in parsed):
+                raise json.JSONDecodeError("Response is valid JSON but not an ARM template", result, 0)
+
+            logger.info(f"Copilot generated ARM template for {resource_type} (attempt {attempt})")
+            return result
+
+        except (json.JSONDecodeError, ValueError) as e:
+            last_error = str(e)
+            logger.warning(f"ARM generation attempt {attempt}/{max_attempts} for {resource_type} failed: {last_error}")
+            if attempt == max_attempts:
+                logger.error(f"Copilot returned invalid JSON for {resource_type} after {max_attempts} attempts")
+                raise ValueError(f"Failed to generate valid ARM template for {resource_type}")
+        finally:
+            if session:
+                try:
+                    await session.destroy()
+                except Exception:
+                    pass
+                session = None
+
+
+def _extract_json_from_llm_response(text: str) -> str:
+    """Extract JSON from an LLM response that may contain markdown fences or extra text.
+
+    Handles common LLM output patterns:
+    - Raw JSON (ideal)
+    - ```json ... ``` wrapped
+    - ``` ... ``` wrapped (no language tag)
+    - JSON embedded in explanatory text
+    """
+    text = text.strip()
+
+    # 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
+    fence_match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # 2. If it already starts with {, try it directly
+    if text.startswith('{'):
+        return text
+
+    # 3. Try to find the outermost JSON object in the text
+    brace_start = text.find('{')
+    if brace_start != -1:
+        # Walk forward to find the matching closing brace
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(brace_start, len(text)):
+            c = text[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if c == '\\' and in_string:
+                escape_next = True
+                continue
+            if c == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[brace_start:i + 1]
+
+    # 4. Nothing worked, return as-is and let the caller handle the error
+    return text

@@ -500,6 +500,43 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE services ADD active_version INT DEFAULT NULL
     """,
+    # ── Deployment tracking columns on service_versions ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'run_id'
+    )
+    ALTER TABLE service_versions ADD run_id NVARCHAR(50) DEFAULT NULL
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'resource_group'
+    )
+    ALTER TABLE service_versions ADD resource_group NVARCHAR(200) DEFAULT NULL
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'deployment_name'
+    )
+    ALTER TABLE service_versions ADD deployment_name NVARCHAR(200) DEFAULT NULL
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'subscription_id'
+    )
+    ALTER TABLE service_versions ADD subscription_id NVARCHAR(100) DEFAULT NULL
+    """,
+    # ── Semver column on service_versions ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'semver'
+    )
+    ALTER TABLE service_versions ADD semver NVARCHAR(20) DEFAULT NULL
+    """,
     # ── Template Catalog ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')
@@ -965,7 +1002,7 @@ async def get_project(project_id: str) -> Optional[dict]:
     if not rows:
         return None
     result = rows[0]
-    result["metadata"] = json.loads(result.pop("metadata_json", "{}"))
+    result["metadata"] = json.loads(result.pop("metadata_json", None) or "{}")
     return result
 
 
@@ -997,7 +1034,7 @@ async def list_projects(
         tuple(params),
     )
     for row in rows:
-        row["metadata"] = json.loads(row.pop("metadata_json", "{}"))
+        row["metadata"] = json.loads(row.pop("metadata_json", None) or "{}")
     return rows
 
 
@@ -1232,7 +1269,7 @@ async def get_all_services(
             {"text": p["policy_text"], "standard_id": p["security_standard_id"]}
             for p in svc_policies if p.get("security_standard_id")
         ]
-        svc["conditions"] = json.loads(svc.pop("conditions_json", "[]"))
+        svc["conditions"] = json.loads(svc.pop("conditions_json", None) or "[]")
 
         # Approval gate summary
         svc_arts = artifacts_map.get(svc_id, {})
@@ -1345,16 +1382,16 @@ async def get_all_templates(
     result = []
     for row in rows:
         t = dict(row)
-        t["tags"] = json.loads(t.pop("tags_json", "[]"))
-        t["resources"] = json.loads(t.pop("resources_json", "[]"))
-        t["parameters"] = json.loads(t.pop("parameters_json", "[]"))
-        t["outputs"] = json.loads(t.pop("outputs_json", "[]"))
-        t["service_ids"] = json.loads(t.pop("service_ids_json", "[]"))
+        t["tags"] = json.loads(t.pop("tags_json", None) or "[]")
+        t["resources"] = json.loads(t.pop("resources_json", None) or "[]")
+        t["parameters"] = json.loads(t.pop("parameters_json", None) or "[]")
+        t["outputs"] = json.loads(t.pop("outputs_json", None) or "[]")
+        t["service_ids"] = json.loads(t.pop("service_ids_json", None) or "[]")
         t["is_blueprint"] = bool(t.get("is_blueprint"))
         # Dependency metadata
-        t["provides"] = json.loads(t.pop("provides_json", "[]"))
-        t["requires"] = json.loads(t.pop("requires_json", "[]"))
-        t["optional_refs"] = json.loads(t.pop("optional_refs_json", "[]"))
+        t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
+        t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
+        t["optional_refs"] = json.loads(t.pop("optional_refs_json", None) or "[]")
         t.setdefault("template_type", "workload")
         # Rename source_path back to 'source' for compatibility
         t["source"] = t.pop("source_path", "")
@@ -1470,9 +1507,9 @@ async def get_deployments(
     result = []
     for row in rows[:limit]:
         d = dict(row)
-        d["provisioned_resources"] = json.loads(d.pop("resources_json", "[]"))
-        d["what_if_results"] = json.loads(d.pop("what_if_json", "null"))
-        d["outputs"] = json.loads(d.pop("outputs_json", "{}"))
+        d["provisioned_resources"] = json.loads(d.pop("resources_json", None) or "[]")
+        d["what_if_results"] = json.loads(d.pop("what_if_json", None) or "null")
+        d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
         result.append(d)
     return result
 
@@ -1487,9 +1524,9 @@ async def get_deployment(deployment_id: str) -> Optional[dict]:
     if not rows:
         return None
     d = dict(rows[0])
-    d["provisioned_resources"] = json.loads(d.pop("resources_json", "[]"))
-    d["what_if_results"] = json.loads(d.pop("what_if_json", "null"))
-    d["outputs"] = json.loads(d.pop("outputs_json", "{}"))
+    d["provisioned_resources"] = json.loads(d.pop("resources_json", None) or "[]")
+    d["what_if_results"] = json.loads(d.pop("what_if_json", None) or "null")
+    d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
     return d
 
 
@@ -1758,6 +1795,7 @@ async def create_service_version(
     service_id: str,
     arm_template: str,
     version: int | None = None,
+    semver: str | None = None,
     status: str = "draft",
     changelog: str = "",
     created_by: str = "auto-generated",
@@ -1765,6 +1803,7 @@ async def create_service_version(
     """Create a new version of a service's ARM template.
 
     If version is None, automatically increments from the latest version.
+    If semver is None, auto-computed as ``{version}.0.0``.
     Returns the created version record.
     """
     backend = await get_backend()
@@ -1778,15 +1817,18 @@ async def create_service_version(
         current_max = rows[0]["max_ver"] if rows and rows[0]["max_ver"] else 0
         version = current_max + 1
 
+    if semver is None:
+        semver = f"{version}.0.0"
+
     await backend.execute_write(
         """INSERT INTO service_versions
-           (service_id, version, arm_template, status, changelog,
+           (service_id, version, semver, arm_template, status, changelog,
             created_by, created_at, validation_result_json, policy_check_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, '{}', '{}')""",
-        (service_id, version, arm_template, status, changelog, created_by, now),
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}')""",
+        (service_id, version, semver, arm_template, status, changelog, created_by, now),
     )
 
-    logger.info(f"Created service version {service_id} v{version} ({status})")
+    logger.info(f"Created service version {service_id} v{semver} ({status})")
     return await get_service_version(service_id, version)
 
 
@@ -1800,8 +1842,10 @@ async def get_service_version(service_id: str, version: int) -> dict | None:
     if not rows:
         return None
     row = dict(rows[0])
-    row["validation_result"] = json.loads(row.pop("validation_result_json", "{}"))
-    row["policy_check"] = json.loads(row.pop("policy_check_json", "{}"))
+    vr_json = row.pop("validation_result_json", None) or "{}"
+    pc_json = row.pop("policy_check_json", None) or "{}"
+    row["validation_result"] = json.loads(vr_json)
+    row["policy_check"] = json.loads(pc_json)
     return row
 
 
@@ -1824,8 +1868,11 @@ async def get_service_versions(
     result = []
     for row in rows:
         d = dict(row)
-        d["validation_result"] = json.loads(d.pop("validation_result_json", "{}"))
-        d["policy_check"] = json.loads(d.pop("policy_check_json", "{}"))
+        # Handle NULL values from Azure SQL — pop returns None if key exists but value is NULL
+        vr_json = d.pop("validation_result_json", None) or "{}"
+        pc_json = d.pop("policy_check_json", None) or "{}"
+        d["validation_result"] = json.loads(vr_json)
+        d["policy_check"] = json.loads(pc_json)
         result.append(d)
     return result
 
@@ -1840,8 +1887,10 @@ async def get_latest_service_version(service_id: str) -> dict | None:
     if not rows:
         return None
     row = dict(rows[0])
-    row["validation_result"] = json.loads(row.pop("validation_result_json", "{}"))
-    row["policy_check"] = json.loads(row.pop("policy_check_json", "{}"))
+    vr_json = row.pop("validation_result_json", None) or "{}"
+    pc_json = row.pop("policy_check_json", None) or "{}"
+    row["validation_result"] = json.loads(vr_json)
+    row["policy_check"] = json.loads(pc_json)
     return row
 
 
@@ -1893,6 +1942,42 @@ async def update_service_version_template(
         "UPDATE service_versions SET arm_template = ?, created_by = ? "
         "WHERE service_id = ? AND version = ?",
         (arm_template, created_by, service_id, version),
+    )
+    return count > 0
+
+
+async def update_service_version_deployment_info(
+    service_id: str,
+    version: int,
+    *,
+    run_id: str | None = None,
+    resource_group: str | None = None,
+    deployment_name: str | None = None,
+    subscription_id: str | None = None,
+) -> bool:
+    """Persist Azure deployment tracking info on a service version."""
+    backend = await get_backend()
+    set_clauses = []
+    params: list = []
+    if run_id is not None:
+        set_clauses.append("run_id = ?")
+        params.append(run_id)
+    if resource_group is not None:
+        set_clauses.append("resource_group = ?")
+        params.append(resource_group)
+    if deployment_name is not None:
+        set_clauses.append("deployment_name = ?")
+        params.append(deployment_name)
+    if subscription_id is not None:
+        set_clauses.append("subscription_id = ?")
+        params.append(subscription_id)
+    if not set_clauses:
+        return False
+    params.extend([service_id, version])
+    count = await backend.execute_write(
+        f"UPDATE service_versions SET {', '.join(set_clauses)} "
+        f"WHERE service_id = ? AND version = ?",
+        tuple(params),
     )
     return count > 0
 

@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=25">
+    <link rel="stylesheet" href="/static/styles.css?v=31">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -793,7 +793,7 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=27"></script>
+    <script src="/static/app.js?v=31"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
@@ -809,6 +809,20 @@
             <div class="modal-body template-viewer-body">
                 <div id="template-viewer-meta" class="template-viewer-meta"></div>
                 <pre id="template-viewer-code" class="template-viewer-code"><code>Loading…</code></pre>
+                <!-- Modification prompt -->
+                <div id="template-modify-section" class="template-modify-section">
+                    <div class="template-modify-header">
+                        <span class="template-modify-label">✏️ Modify Template</span>
+                        <span class="template-modify-hint">Describe your changes in plain English — the LLM will apply them and create a new version</span>
+                    </div>
+                    <div class="template-modify-input-row">
+                        <textarea id="template-modify-prompt" class="template-modify-prompt" rows="2" placeholder="e.g. Add a second subnet called 'data-subnet' with CIDR 10.0.2.0/24…"></textarea>
+                        <button id="template-modify-btn" class="btn btn-primary template-modify-btn" onclick="submitTemplateModification()">
+                            🚀 Apply
+                        </button>
+                    </div>
+                    <div id="template-modify-progress" class="template-modify-progress hidden"></div>
+                </div>
             </div>
         </div>
     </div>

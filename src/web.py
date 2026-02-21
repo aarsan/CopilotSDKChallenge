@@ -172,6 +172,72 @@ def _ensure_parameter_defaults(template_json: str) -> str:
     return template_json
 
 
+def _version_to_semver(version_int: int) -> str:
+    """Convert an integer version number to semver format.
+
+    Scheme:  version N → N.0.0
+    Each new onboarding creates a new major version (the template is
+    regenerated from scratch). The heal loop updates in-place and doesn't
+    create new versions, so minor/patch stay at 0.
+    """
+    return f"{version_int}.0.0"
+
+
+def _stamp_template_metadata(
+    template_json: str,
+    *,
+    service_id: str,
+    version_int: int,
+    gen_source: str = "unknown",
+    region: str = "eastus2",
+) -> str:
+    """Embed InfraForge provenance metadata into an ARM template.
+
+    Adds a top-level ``metadata`` property (ARM supports this for any
+    template) and updates ``contentVersion`` to the semver string.
+    This makes every template self-describing — version, origin, and
+    content hash travel with the template even outside the database.
+
+    ARM ignores the ``metadata`` property during deployment, so this
+    is safe to include.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    try:
+        tmpl = json.loads(template_json)
+    except (json.JSONDecodeError, TypeError):
+        return template_json
+
+    semver = _version_to_semver(version_int)
+
+    # Update contentVersion to match our semver
+    tmpl["contentVersion"] = semver
+
+    # Compute a content hash of the resources section (stable fingerprint)
+    resources_str = json.dumps(tmpl.get("resources", []), sort_keys=True)
+    content_hash = hashlib.sha256(resources_str.encode()).hexdigest()[:12]
+
+    tmpl["metadata"] = {
+        "_generator": {
+            "name": "InfraForge",
+            "version": semver,
+            "templateHash": content_hash,
+        },
+        "infrapiForge": {
+            "serviceId": service_id,
+            "version": version_int,
+            "semver": semver,
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "generatedBy": gen_source,
+            "region": region,
+            "platform": "InfraForge Self-Service Infrastructure",
+        },
+    }
+
+    return json.dumps(tmpl, indent=2)
+
+
 def _extract_param_values(template: dict) -> dict:
     """Extract explicit parameter values from a template's defaultValues.
 
@@ -206,6 +272,31 @@ def _extract_param_values(template: dict) -> dict:
 
 # ── Global state ─────────────────────────────────────────────
 copilot_client: Optional[CopilotClient] = None
+_copilot_init_lock = asyncio.Lock()
+
+
+async def ensure_copilot_client() -> Optional[CopilotClient]:
+    """Lazily initialize the Copilot SDK client on first use.
+
+    Returns the client, or None if initialization fails.
+    """
+    global copilot_client
+    if copilot_client is not None:
+        return copilot_client
+    async with _copilot_init_lock:
+        if copilot_client is not None:
+            return copilot_client
+        try:
+            logger.info("Lazy-initializing Copilot SDK client...")
+            copilot_client = CopilotClient({"log_level": COPILOT_LOG_LEVEL})
+            await copilot_client.start()
+            logger.info("Copilot SDK client started successfully")
+            return copilot_client
+        except Exception as e:
+            logger.error(f"Copilot SDK failed to start: {e}")
+            copilot_client = None
+            return None
+
 
 # Track active Copilot sessions: session_token → { copilot_session, user_context }
 # (Chat history and usage analytics are persisted in the database)
@@ -246,9 +337,8 @@ async def lifespan(app: FastAPI):
     await cleanup_expired_sessions()
     logger.info("Initializing organization standards...")
     await init_standards()
-    logger.info("Starting Copilot SDK client...")
-    copilot_client = CopilotClient({"log_level": COPILOT_LOG_LEVEL})
-    await copilot_client.start()
+    logger.info("Deferring Copilot SDK client start (lazy init on first chat)...")
+    copilot_client = None  # Will be started lazily on first WebSocket connection
     ensure_output_dir(OUTPUT_DIR)
 
     # Azure resource provider sync — runs on-demand via the Sync button.
@@ -263,7 +353,11 @@ async def lifespan(app: FastAPI):
             await session_data["copilot_session"].destroy()
         except Exception:
             pass
-    await copilot_client.stop()
+    if copilot_client:
+        try:
+            await copilot_client.stop()
+        except Exception:
+            pass
     logger.info("Shutdown complete")
 
 
@@ -750,66 +844,73 @@ async def get_approved_services_for_templates():
     location, environment, projectName, ownerEmail, costCenter) so the
     template-builder UI can show parameter checkboxes.
     """
-    from src.database import get_all_services, get_active_service_version
-    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
+    try:
+        from src.database import get_all_services, get_active_service_version
+        from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
 
-    STANDARD_PARAMS = {
-        "resourceName", "location", "environment",
-        "projectName", "ownerEmail", "costCenter",
-    }
+        STANDARD_PARAMS = {
+            "resourceName", "location", "environment",
+            "projectName", "ownerEmail", "costCenter",
+        }
 
-    services = await get_all_services()
-    result = []
+        services = await get_all_services()
+        logger.info(f"approved-for-templates: total services={len(services)}")
+        result = []
 
-    for svc in services:
-        if svc.get("status") != "approved":
-            continue
+        for svc in services:
+            if svc.get("status") != "approved":
+                continue
 
-        service_id = svc["id"]
+            service_id = svc["id"]
+            logger.info(f"approved-for-templates: processing {service_id}")
 
-        # Try to get ARM template parameters from the active version first,
-        # then fall back to the built-in skeleton.
-        all_params: dict = {}
-        active = await get_active_service_version(service_id)
-        if active and active.get("arm_template"):
-            try:
-                import json as _json
-                tpl = _json.loads(active["arm_template"])
-                all_params = tpl.get("parameters", {})
-            except Exception:
-                pass
+            # Try to get ARM template parameters from the active version first,
+            # then fall back to the built-in skeleton.
+            all_params: dict = {}
+            active = await get_active_service_version(service_id)
+            if active and active.get("arm_template"):
+                try:
+                    import json as _json
+                    tpl = _json.loads(active["arm_template"])
+                    all_params = tpl.get("parameters", {})
+                except Exception:
+                    logger.exception(f"Failed to parse ARM template for {service_id}")
 
-        if not all_params and has_builtin_skeleton(service_id):
-            tpl = generate_arm_template(service_id)
-            if tpl:
-                all_params = tpl.get("parameters", {})
+            if not all_params and has_builtin_skeleton(service_id):
+                tpl = generate_arm_template(service_id)
+                if tpl:
+                    all_params = tpl.get("parameters", {})
 
-        # Split into standard vs extra
-        extra_params = []
-        for pname, pdef in all_params.items():
-            meta = pdef.get("metadata", {})
-            extra_params.append({
-                "name": pname,
-                "type": pdef.get("type", "string"),
-                "description": meta.get("description", ""),
-                "defaultValue": pdef.get("defaultValue"),
-                "allowedValues": pdef.get("allowedValues"),
-                "is_standard": pname in STANDARD_PARAMS,
+            # Split into standard vs extra
+            extra_params = []
+            for pname, pdef in all_params.items():
+                meta = pdef.get("metadata", {})
+                extra_params.append({
+                    "name": pname,
+                    "type": pdef.get("type", "string"),
+                    "description": meta.get("description", ""),
+                    "defaultValue": pdef.get("defaultValue"),
+                    "allowedValues": pdef.get("allowedValues"),
+                    "is_standard": pname in STANDARD_PARAMS,
+                })
+
+            result.append({
+                "id": service_id,
+                "name": svc.get("name", service_id),
+                "category": svc.get("category", "other"),
+                "risk_tier": svc.get("risk_tier"),
+                "active_version": svc.get("active_version"),
+                "parameters": extra_params,
             })
 
-        result.append({
-            "id": service_id,
-            "name": svc.get("name", service_id),
-            "category": svc.get("category", "other"),
-            "risk_tier": svc.get("risk_tier"),
-            "active_version": svc.get("active_version"),
-            "parameters": extra_params,
+        logger.info(f"approved-for-templates: returning {len(result)} services")
+        return JSONResponse({
+            "services": result,
+            "total": len(result),
         })
-
-    return JSONResponse({
-        "services": result,
-        "total": len(result),
-    })
+    except Exception:
+        logger.exception("approved-for-templates endpoint failed")
+        raise
 
 
 @app.post("/api/catalog/templates/compose")
@@ -1489,7 +1590,10 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
 
         session = None
         try:
-            session = await copilot_client.create_session({
+            _client = await ensure_copilot_client()
+            if _client is None:
+                raise RuntimeError("Copilot SDK not available")
+            session = await _client.create_session({
                 "model": get_model_for_task(Task.CODE_FIXING), "streaming": True, "tools": [],
                 "system_message": {"content": (
                     "You are an Azure infrastructure expert. "
@@ -2027,6 +2131,22 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 # Deployment succeeded!
                 provisioned = deploy_result.get("provisioned_resources", [])
                 resource_summaries = [f"{r.get('type','?')}/{r.get('name','?')} ({r.get('location', region)})" for r in provisioned]
+
+                # ── Persist deployment tracking info ──
+                _deploy_name = f"validate-{attempt}"
+                _subscription_id = deploy_result.get("subscription_id", "")
+                try:
+                    await update_service_version_deployment_info(
+                        service_id, None,
+                        run_id=_run_id,
+                        resource_group=rg_name,
+                        deployment_name=_deploy_name,
+                        subscription_id=_subscription_id,
+                    )
+                    logger.info(f"[validate-deployment] Persisted deployment tracking: run_id={_run_id}, rg={rg_name}, deploy={_deploy_name}")
+                except Exception as _te:
+                    logger.warning(f"[validate-deployment] Failed to persist deployment tracking: {_te}")
+
                 yield json.dumps({
                     "type": "progress", "phase": "deploy_complete", "attempt": attempt,
                     "detail": f"✓ ARM deployment 'validate-{attempt}' succeeded — {len(provisioned)} resource(s) provisioned in '{rg_name}': {'; '.join(resource_summaries[:5]) or 'none'}",
@@ -2196,6 +2316,17 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                     "policy_compliance": policy_results,
                     "all_compliant": all(r["compliant"] for r in policy_results) if policy_results else True,
                     "attempts": attempt,
+                    "run_id": _run_id,
+                    "resource_group": rg_name,
+                    "deployment_name": _deploy_name,
+                    "subscription_id": _subscription_id,
+                    "deployment_id": deploy_result.get("deployment_id", ""),
+                    "deploy_result": {
+                        "status": deploy_result.get("status", ""),
+                        "started_at": deploy_result.get("started_at", ""),
+                        "completed_at": deploy_result.get("completed_at", ""),
+                    },
+                    "heal_history": heal_history,
                 }
 
                 yield json.dumps({
@@ -2322,7 +2453,10 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
         session = None
         try:
             # Create a temporary Copilot session for this generation
-            session = await copilot_client.create_session({
+            _client = await ensure_copilot_client()
+            if _client is None:
+                raise RuntimeError("Copilot SDK not available")
+            session = await _client.create_session({
                 "model": _artifact_model,
                 "streaming": True,
                 "tools": [],  # No tools needed for pure generation
@@ -2402,22 +2536,28 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
     """
     from src.database import get_service, get_service_versions
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    try:
+        svc = await get_service(service_id)
+        if not svc:
+            raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
 
-    versions = await get_service_versions(service_id, status=status)
-    # Strip arm_template from listing to keep payload small; use single-version endpoint to fetch it
-    versions_summary = []
-    for v in versions:
-        vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
-        vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
-        versions_summary.append(vs)
-    return JSONResponse({
-        "service_id": service_id,
-        "active_version": svc.get("active_version"),
-        "versions": versions_summary,
-    })
+        versions = await get_service_versions(service_id, status=status)
+        # Strip arm_template from listing to keep payload small; use single-version endpoint to fetch it
+        versions_summary = []
+        for v in versions:
+            vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
+            vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+            versions_summary.append(vs)
+        return JSONResponse({
+            "service_id": service_id,
+            "active_version": svc.get("active_version"),
+            "versions": versions_summary,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error fetching versions for {service_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/services/{service_id:path}/versions/{version:int}")
@@ -2435,6 +2575,176 @@ async def get_service_version_detail(service_id: str, version: int):
         raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
 
     return JSONResponse(match)
+
+
+@app.post("/api/services/{service_id:path}/versions/{version:int}/modify")
+async def modify_service_version(service_id: str, version: int, request: Request):
+    """Modify an existing ARM template version via LLM and save as a new version.
+
+    Accepts a natural-language prompt describing the desired modification,
+    sends the current template + prompt to the Copilot SDK, and saves the
+    result as a new version with a semver bump.
+
+    Request body:
+        prompt (str): Description of the modification to apply
+        model (str, optional): LLM model override
+
+    Streams NDJSON events for real-time progress tracking.
+    """
+    from src.database import (
+        get_service, get_service_versions, create_service_version,
+    )
+    from src.tools.arm_generator import modify_arm_template_with_copilot
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be JSON with a 'prompt' field")
+
+    modification_prompt = (body.get("prompt") or "").strip()
+    if not modification_prompt:
+        raise HTTPException(status_code=400, detail="'prompt' field is required and cannot be empty")
+
+    model_id = body.get("model", get_active_model())
+
+    # Fetch the source version
+    versions = await get_service_versions(service_id)
+    source = next((v for v in versions if v.get("version") == version), None)
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
+
+    source_template = source.get("arm_template", "")
+    if not source_template:
+        raise HTTPException(status_code=400, detail=f"Version {version} has no ARM template content")
+
+    source_semver = source.get("semver") or f"{version}.0.0"
+
+    async def _stream():
+        yield json.dumps({
+            "type": "progress",
+            "phase": "start",
+            "detail": f"Modifying ARM template v{source_semver} for {service_id}…",
+            "progress": 0.0,
+        }) + "\n"
+
+        yield json.dumps({
+            "type": "progress",
+            "phase": "llm",
+            "detail": f"Sending template + modification prompt to LLM ({model_id})…",
+            "progress": 0.15,
+        }) + "\n"
+
+        try:
+            # Send to LLM for modification
+            _client = await ensure_copilot_client()
+            if _client is None:
+                raise RuntimeError("Copilot SDK not available")
+            modified_template = await modify_arm_template_with_copilot(
+                existing_template=source_template,
+                modification_prompt=modification_prompt,
+                resource_type=service_id,
+                copilot_client=_client,
+                model=model_id,
+            )
+
+            yield json.dumps({
+                "type": "progress",
+                "phase": "generated",
+                "detail": "✓ LLM returned modified template — processing…",
+                "progress": 0.50,
+            }) + "\n"
+
+            # Ensure parameter defaults
+            modified_template = _ensure_parameter_defaults(modified_template)
+
+            # Compute new version number
+            from src.database import get_backend as _get_db_backend
+            _db = await _get_db_backend()
+            _vrows = await _db.execute(
+                "SELECT MAX(version) as max_ver FROM service_versions WHERE service_id = ?",
+                (service_id,),
+            )
+            new_ver = (_vrows[0]["max_ver"] if _vrows and _vrows[0]["max_ver"] else 0) + 1
+
+            # Semver: bump minor from the source version
+            # e.g. source 1.0.0 → 1.1.0, source 2.0.0 → 2.1.0
+            source_parts = source_semver.split(".")
+            try:
+                major = int(source_parts[0])
+                minor = int(source_parts[1]) + 1 if len(source_parts) > 1 else 1
+            except (ValueError, IndexError):
+                major, minor = new_ver, 0
+            new_semver = f"{major}.{minor}.0"
+
+            # Stamp metadata
+            modified_template = _stamp_template_metadata(
+                modified_template,
+                service_id=service_id,
+                version_int=new_ver,
+                gen_source=f"llm-modify ({model_id})",
+                region="eastus2",
+            )
+
+            yield json.dumps({
+                "type": "progress",
+                "phase": "saving",
+                "detail": f"Saving as v{new_semver} (version {new_ver})…",
+                "progress": 0.75,
+            }) + "\n"
+
+            # Save as a new draft version — must pass validation before becoming active
+            ver = await create_service_version(
+                service_id=service_id,
+                arm_template=modified_template,
+                version=new_ver,
+                semver=new_semver,
+                status="draft",
+                changelog=f"Modified from v{source_semver}: {modification_prompt[:200]}",
+                created_by=f"llm-modify ({model_id})",
+            )
+
+            # Parse for summary
+            try:
+                parsed = json.loads(modified_template)
+                resource_count = len(parsed.get("resources", []))
+                size_kb = f"{len(modified_template) / 1024:.1f}"
+            except Exception:
+                resource_count = "?"
+                size_kb = "?"
+
+            yield json.dumps({
+                "type": "complete",
+                "phase": "done",
+                "detail": f"✓ Template saved as draft v{new_semver} "
+                          f"({resource_count} resource(s), {size_kb} KB) — validate to promote",
+                "progress": 1.0,
+                "version": new_ver,
+                "semver": new_semver,
+                "service_id": service_id,
+                "status": "draft",
+            }) + "\n"
+
+        except ValueError as e:
+            yield json.dumps({
+                "type": "error",
+                "phase": "failed",
+                "detail": f"✗ Modification failed: {str(e)}",
+                "progress": 1.0,
+            }) + "\n"
+        except Exception as e:
+            logger.exception(f"Template modification failed for {service_id}")
+            yield json.dumps({
+                "type": "error",
+                "phase": "failed",
+                "detail": f"✗ Unexpected error: {str(e)}",
+                "progress": 1.0,
+            }) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 @app.post("/api/services/{service_id:path}/onboard")
@@ -2457,6 +2767,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         get_service, create_service_version, update_service_version_status,
         update_service_version_template, set_active_service_version,
         fail_service_validation, get_governance_policies_as_dict,
+        update_service_version_deployment_info,
     )
     from src.tools.arm_generator import (
         generate_arm_template, has_builtin_skeleton,
@@ -2485,6 +2796,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
     region = body.get("region", "eastus2")
     # Allow per-request model override, fall back to active global model
     model_id = body.get("model", get_active_model())
+    # If use_version is set, skip generation and validate the existing draft version
+    use_version: int | None = body.get("use_version")
     import uuid as _uuid
     _run_id = _uuid.uuid4().hex[:8]
     rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
@@ -2500,7 +2813,10 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         logger.info(f"[ModelRouter] _llm_reason task={task.value} → model={task_model}")
         session = None
         try:
-            session = await copilot_client.create_session({
+            _client = await ensure_copilot_client()
+            if _client is None:
+                raise RuntimeError("Copilot SDK not available")
+            session = await _client.create_session({
                 "model": task_model, "streaming": True, "tools": [],
                 "system_message": {"content": system_msg or (
                     "You are an Azure infrastructure expert performing a detailed analysis. "
@@ -2624,7 +2940,10 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
         session = None
         try:
-            session = await copilot_client.create_session({
+            _client = await ensure_copilot_client()
+            if _client is None:
+                raise RuntimeError("Copilot SDK not available")
+            session = await _client.create_session({
                 "model": fix_model, "streaming": True, "tools": [],
                 "system_message": {"content": (
                     "You are an Azure infrastructure expert. "
@@ -3002,232 +3321,333 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 }) + "\n"
 
             # ═══════════════════════════════════════════════════
+            # SHORTCUT: use_version — skip generation, validate existing draft
+            # ═══════════════════════════════════════════════════
+
+            _skip_generation = False
+
+            if use_version is not None:
+                from src.database import get_service_versions as _get_svc_versions
+                _all_vers = await _get_svc_versions(service_id)
+                _draft = next((v for v in _all_vers if v.get("version") == use_version), None)
+                if not _draft:
+                    yield json.dumps({
+                        "type": "error", "phase": "init",
+                        "detail": f"Version {use_version} not found for {service_id}",
+                    }) + "\n"
+                    return
+
+                current_template = _draft.get("arm_template", "")
+                if not current_template:
+                    yield json.dumps({
+                        "type": "error", "phase": "init",
+                        "detail": f"Version {use_version} has no ARM template content",
+                    }) + "\n"
+                    return
+
+                version_num = use_version
+                _draft_semver = _draft.get("semver") or f"{use_version}.0.0"
+                gen_source = _draft.get("created_by") or "draft"
+
+                # Mark version as validating
+                await update_service_version_status(service_id, use_version, "validating")
+
+                tmpl_meta = _extract_meta(current_template)
+                applicable_standards = await get_standards_for_service(service_id)
+                policy_standards_ctx = await build_policy_generation_context(service_id)
+
+                yield json.dumps({
+                    "type": "progress", "phase": "use_version",
+                    "detail": f"📋 Using existing draft v{_draft_semver} — skipping generation, proceeding to validation…",
+                    "progress": 0.10,
+                }) + "\n"
+
+                yield json.dumps({
+                    "type": "init", "phase": "generated",
+                    "detail": f"✓ Draft ARM template v{_draft_semver} loaded — "
+                              f"{tmpl_meta['resource_count']} resource(s), {tmpl_meta['size_kb']} KB",
+                    "progress": 0.12,
+                    "version": version_num,
+                    "semver": _draft_semver,
+                    "meta": {
+                        "service_name": svc.get("name", service_id),
+                        "service_id": service_id,
+                        "category": svc.get("category", ""),
+                        "region": region,
+                        "subscription": _sub_id,
+                        "resource_group": rg_name,
+                        "template_size_kb": tmpl_meta["size_kb"],
+                        "resource_count": tmpl_meta["resource_count"],
+                        "resource_types": tmpl_meta["resource_types"],
+                        "resource_names": tmpl_meta.get("resource_names", []),
+                        "api_versions": tmpl_meta.get("api_versions", []),
+                        "schema": tmpl_meta["schema"],
+                        "parameters": tmpl_meta.get("parameters", []),
+                        "outputs": tmpl_meta.get("outputs", []),
+                        "max_attempts": MAX_HEAL_ATTEMPTS,
+                        "version": version_num,
+                        "gen_source": gen_source,
+                        "model_routing": _routing,
+                        "standards_count": len(applicable_standards),
+                    },
+                }) + "\n"
+
+                _skip_generation = True
+
+            # ═══════════════════════════════════════════════════
             # PHASE 1: ORGANIZATION STANDARDS ANALYSIS
+            # (skipped when validating an existing draft via use_version)
             # ═══════════════════════════════════════════════════
 
-            yield json.dumps({
-                "type": "progress", "phase": "standards_analysis",
-                "detail": f"Fetching organization standards applicable to {service_id}…",
-                "progress": 0.02,
-            }) + "\n"
+            if not _skip_generation:
+                yield json.dumps({
+                    "type": "progress", "phase": "standards_analysis",
+                    "detail": f"Fetching organization standards applicable to {service_id}…",
+                    "progress": 0.02,
+                }) + "\n"
 
-            applicable_standards = await get_standards_for_service(service_id)
-            standards_ctx = await build_arm_generation_context(service_id)
-            policy_standards_ctx = await build_policy_generation_context(service_id)
+                applicable_standards = await get_standards_for_service(service_id)
+                standards_ctx = await build_arm_generation_context(service_id)
+                policy_standards_ctx = await build_policy_generation_context(service_id)
 
-            if applicable_standards:
-                # Emit each standard as a separate event for the log
-                for std in applicable_standards:
-                    rule = std.get("rule", {})
-                    sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(std.get("severity", ""), "⚪")
-                    rule_summary = ""
-                    rt = rule.get("type", "")
-                    if rt == "property":
-                        rule_summary = f" → {rule.get('key', '?')} {rule.get('operator', '==')} {json.dumps(rule.get('value', True))}"
-                    elif rt == "tags":
-                        rule_summary = f" → require tags: {', '.join(rule.get('required_tags', []))}"
-                    elif rt == "allowed_values":
-                        rule_summary = f" → {rule.get('key', '?')} in [{', '.join(str(v) for v in rule.get('values', [])[:5])}]"
-                    elif rt == "cost_threshold":
-                        rule_summary = f" → max ${rule.get('max_monthly_usd', 0)}/month"
+                if applicable_standards:
+                    # Emit each standard as a separate event for the log
+                    for std in applicable_standards:
+                        rule = std.get("rule", {})
+                        sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(std.get("severity", ""), "⚪")
+                        rule_summary = ""
+                        rt = rule.get("type", "")
+                        if rt == "property":
+                            rule_summary = f" → {rule.get('key', '?')} {rule.get('operator', '==')} {json.dumps(rule.get('value', True))}"
+                        elif rt == "tags":
+                            rule_summary = f" → require tags: {', '.join(rule.get('required_tags', []))}"
+                        elif rt == "allowed_values":
+                            rule_summary = f" → {rule.get('key', '?')} in [{', '.join(str(v) for v in rule.get('values', [])[:5])}]"
+                        elif rt == "cost_threshold":
+                            rule_summary = f" → max ${rule.get('max_monthly_usd', 0)}/month"
+
+                        yield json.dumps({
+                            "type": "standard_check", "phase": "standards_analysis",
+                            "detail": f"{sev_icon} [{std.get('severity', '?').upper()}] {std['name']}: {std['description']}{rule_summary}",
+                            "standard": {"id": std["id"], "name": std["name"], "severity": std.get("severity"), "category": std.get("category")},
+                            "progress": 0.03,
+                        }) + "\n"
 
                     yield json.dumps({
-                        "type": "standard_check", "phase": "standards_analysis",
-                        "detail": f"{sev_icon} [{std.get('severity', '?').upper()}] {std['name']}: {std['description']}{rule_summary}",
-                        "standard": {"id": std["id"], "name": std["name"], "severity": std.get("severity"), "category": std.get("category")},
-                        "progress": 0.03,
+                        "type": "progress", "phase": "standards_complete",
+                        "detail": f"✓ {len(applicable_standards)} organization standard(s) apply — these will constrain ARM template generation and policy validation",
+                        "progress": 0.04,
+                    }) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "progress", "phase": "standards_complete",
+                        "detail": "No organization standards match this service type — proceeding with default governance rules",
+                        "progress": 0.04,
                     }) + "\n"
 
+                # ═══════════════════════════════════════════════════
+                # PHASE 2: ARCHITECTURE PLANNING (REASONING MODEL)
+                # ═══════════════════════════════════════════════════
+                #
+                # This is the PLAN phase. It uses a reasoning model (o3-mini) to
+                # think deeply about what the ARM template should contain. The
+                # plan output is then fed into the EXECUTE phase (code generation)
+                # so the generation model doesn't have to figure out architecture
+                # — it just follows the plan.
+
+                _planning_model = get_model_display(Task.PLANNING)
                 yield json.dumps({
-                    "type": "progress", "phase": "standards_complete",
-                    "detail": f"✓ {len(applicable_standards)} organization standard(s) apply — these will constrain ARM template generation and policy validation",
-                    "progress": 0.04,
-                }) + "\n"
-            else:
-                yield json.dumps({
-                    "type": "progress", "phase": "standards_complete",
-                    "detail": "No organization standards match this service type — proceeding with default governance rules",
-                    "progress": 0.04,
+                    "type": "progress", "phase": "planning",
+                    "detail": f"🧠 PLAN phase — {_planning_model} is reasoning about architecture for {service_id}…",
+                    "progress": 0.05,
                 }) + "\n"
 
-            # ═══════════════════════════════════════════════════
-            # PHASE 2: ARCHITECTURE PLANNING (REASONING MODEL)
-            # ═══════════════════════════════════════════════════
-            #
-            # This is the PLAN phase. It uses a reasoning model (o3-mini) to
-            # think deeply about what the ARM template should contain. The
-            # plan output is then fed into the EXECUTE phase (code generation)
-            # so the generation model doesn't have to figure out architecture
-            # — it just follows the plan.
-
-            _planning_model = get_model_display(Task.PLANNING)
-            yield json.dumps({
-                "type": "progress", "phase": "planning",
-                "detail": f"🧠 PLAN phase — {_planning_model} is reasoning about architecture for {service_id}…",
-                "progress": 0.05,
-            }) + "\n"
-
-            planning_prompt = (
-                f"You are planning an ARM template for the Azure resource type '{service_id}' "
-                f"(service: {svc['name']}, category: {svc.get('category', 'general')}).\n\n"
-            )
-            if standards_ctx:
-                planning_prompt += (
-                    f"The organization has these mandatory standards that MUST be satisfied:\n"
-                    f"{standards_ctx}\n\n"
+                planning_prompt = (
+                    f"You are planning an ARM template for the Azure resource type '{service_id}' "
+                    f"(service: {svc['name']}, category: {svc.get('category', 'general')}).\n\n"
                 )
-            planning_prompt += (
-                "Produce a structured architecture plan. This plan will be handed to a "
-                "separate code generation model, so be specific and concrete.\n\n"
-                "## Required Output Sections:\n"
-                "1. **Resources**: List every Azure resource to create (type, API version, purpose)\n"
-                "2. **Security**: Specific security configs (TLS version, encryption, managed identity, network rules)\n"
-                "3. **Parameters**: Template parameters to expose (name, type, default, purpose)\n"
-                "4. **Properties**: Critical properties to set for production readiness\n"
-                "5. **Standards Compliance**: How each org standard will be satisfied\n"
-                "6. **Validation Criteria**: What should pass for this template to be considered correct\n\n"
-                "Be specific — include actual property names, API versions, and configuration values. "
-                "This plan drives code generation."
-            )
+                if standards_ctx:
+                    planning_prompt += (
+                        f"The organization has these mandatory standards that MUST be satisfied:\n"
+                        f"{standards_ctx}\n\n"
+                    )
+                planning_prompt += (
+                    "Produce a structured architecture plan. This plan will be handed to a "
+                    "separate code generation model, so be specific and concrete.\n\n"
+                    "## Required Output Sections:\n"
+                    "1. **Resources**: List every Azure resource to create (type, API version, purpose)\n"
+                    "2. **Security**: Specific security configs (TLS version, encryption, managed identity, network rules)\n"
+                    "3. **Parameters**: Template parameters to expose (name, type, default, purpose)\n"
+                    "4. **Properties**: Critical properties to set for production readiness\n"
+                    "5. **Standards Compliance**: How each org standard will be satisfied\n"
+                    "6. **Validation Criteria**: What should pass for this template to be considered correct\n\n"
+                    "Be specific — include actual property names, API versions, and configuration values. "
+                    "This plan drives code generation."
+                )
 
-            try:
-                planning_response = await _llm_reason(planning_prompt, task=Task.PLANNING)
-            except Exception as e:
-                logger.warning(f"Planning phase failed (non-fatal): {e}")
-                planning_response = ""
+                try:
+                    planning_response = await _llm_reason(planning_prompt, task=Task.PLANNING)
+                except Exception as e:
+                    logger.warning(f"Planning phase failed (non-fatal): {e}")
+                    planning_response = ""
 
-            # Stream the planning response line by line
-            for line in planning_response.split("\n"):
-                line = line.strip()
-                if line:
+                # Stream the planning response line by line
+                for line in planning_response.split("\n"):
+                    line = line.strip()
+                    if line:
+                        yield json.dumps({
+                            "type": "llm_reasoning", "phase": "planning",
+                            "detail": line,
+                            "progress": 0.06,
+                        }) + "\n"
+
+                if not planning_response:
                     yield json.dumps({
-                        "type": "llm_reasoning", "phase": "planning",
-                        "detail": line,
-                        "progress": 0.06,
+                        "type": "progress", "phase": "planning_complete",
+                        "detail": f"⚠️ Planning phase returned no response — proceeding with ARM template generation without plan",
+                        "progress": 0.08,
+                    }) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "progress", "phase": "planning_complete",
+                        "detail": f"✓ Architecture plan complete ({len(planning_response)} chars) — handing to code generation model",
+                        "progress": 0.08,
                     }) + "\n"
 
-            if not planning_response:
+                # ═══════════════════════════════════════════════════
+                # PHASE 3: EXECUTE — ARM TEMPLATE GENERATION
+                # ═══════════════════════════════════════════════════
+                #
+                # This is the EXECUTE phase. The code generation model receives
+                # the architecture plan and produces the ARM template. It doesn't
+                # need to reason about what to build — just follow the plan.
+
+                _gen_model = get_model_display(Task.CODE_GENERATION)
+                _gen_model_id = get_model_for_task(Task.CODE_GENERATION)
                 yield json.dumps({
-                    "type": "progress", "phase": "planning_complete",
-                    "detail": f"⚠️ Planning phase returned no response — proceeding with ARM template generation without plan",
-                    "progress": 0.08,
-                }) + "\n"
-            else:
-                yield json.dumps({
-                    "type": "progress", "phase": "planning_complete",
-                    "detail": f"✓ Architecture plan complete ({len(planning_response)} chars) — handing to code generation model",
-                    "progress": 0.08,
+                    "type": "progress", "phase": "generating",
+                    "detail": f"⚙️ EXECUTE phase — {_gen_model} is generating ARM template guided by the architecture plan…",
+                    "progress": 0.09,
                 }) + "\n"
 
-            # ═══════════════════════════════════════════════════
-            # PHASE 3: EXECUTE — ARM TEMPLATE GENERATION
-            # ═══════════════════════════════════════════════════
-            #
-            # This is the EXECUTE phase. The code generation model receives
-            # the architecture plan and produces the ARM template. It doesn't
-            # need to reason about what to build — just follow the plan.
+                if has_builtin_skeleton(service_id):
+                    template_dict = generate_arm_template(service_id)
+                    current_template = json.dumps(template_dict, indent=2)
+                    gen_source = "built-in skeleton"
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "generating",
+                        "detail": f"📦 Using built-in ARM skeleton for {service_id} — pre-tested template, no LLM generation needed.",
+                        "progress": 0.10,
+                    }) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "generating",
+                        "detail": f"No built-in skeleton — {_gen_model} generating ARM template with architecture plan + org standards…",
+                        "progress": 0.10,
+                    }) + "\n"
+                    try:
+                        _gen_client = await ensure_copilot_client()
+                        if _gen_client is None:
+                            raise RuntimeError("Copilot SDK not available for ARM generation")
+                        current_template = await generate_arm_template_with_copilot(
+                            service_id, svc["name"], _gen_client, _gen_model_id,
+                            standards_context=standards_ctx,
+                            planning_context=planning_response,
+                        )
+                    except Exception as gen_err:
+                        logger.error(f"ARM generation failed for {service_id}: {gen_err}", exc_info=True)
+                        yield json.dumps({
+                            "type": "error", "phase": "generating",
+                            "detail": f"ARM template generation failed: {str(gen_err)[:300]}",
+                        }) + "\n"
+                        await fail_service_validation(service_id, f"ARM generation failed: {gen_err}")
+                        return
+                    gen_source = f"Copilot SDK ({_gen_model})"
 
-            _gen_model = get_model_display(Task.CODE_GENERATION)
-            _gen_model_id = get_model_for_task(Task.CODE_GENERATION)
-            yield json.dumps({
-                "type": "progress", "phase": "generating",
-                "detail": f"⚙️ EXECUTE phase — {_gen_model} is generating ARM template guided by the architecture plan…",
-                "progress": 0.09,
-            }) + "\n"
-
-            if has_builtin_skeleton(service_id):
-                template_dict = generate_arm_template(service_id)
-                current_template = json.dumps(template_dict, indent=2)
-                gen_source = "built-in skeleton"
-                yield json.dumps({
-                    "type": "llm_reasoning", "phase": "generating",
-                    "detail": f"📦 Using built-in ARM skeleton for {service_id} — pre-tested template, no LLM generation needed.",
-                    "progress": 0.10,
-                }) + "\n"
-            else:
-                yield json.dumps({
-                    "type": "llm_reasoning", "phase": "generating",
-                    "detail": f"No built-in skeleton — {_gen_model} generating ARM template with architecture plan + org standards…",
-                    "progress": 0.10,
-                }) + "\n"
-                try:
-                    current_template = await generate_arm_template_with_copilot(
-                        service_id, svc["name"], copilot_client, _gen_model_id,
-                        standards_context=standards_ctx,
-                        planning_context=planning_response,
-                    )
-                except Exception as gen_err:
-                    logger.error(f"ARM generation failed for {service_id}: {gen_err}", exc_info=True)
+                # Validate we actually have JSON before proceeding
+                if not current_template or not current_template.strip():
                     yield json.dumps({
                         "type": "error", "phase": "generating",
-                        "detail": f"ARM template generation failed: {str(gen_err)[:300]}",
+                        "detail": "ARM template generation returned empty content",
                     }) + "\n"
-                    await fail_service_validation(service_id, f"ARM generation failed: {gen_err}")
+                    await fail_service_validation(service_id, "ARM template generation returned empty content")
                     return
-                gen_source = f"Copilot SDK ({_gen_model})"
 
-            # Validate we actually have JSON before proceeding
-            if not current_template or not current_template.strip():
+                try:
+                    json.loads(current_template)
+                except json.JSONDecodeError as e:
+                    yield json.dumps({
+                        "type": "error", "phase": "generating",
+                        "detail": f"Generated ARM template is not valid JSON: {e}",
+                    }) + "\n"
+                    await fail_service_validation(service_id, f"Generated ARM template is not valid JSON: {e}")
+                    return
+
+                # ── Safety guard: ensure every parameter has a defaultValue ──
+                current_template = _ensure_parameter_defaults(current_template)
+
+                tmpl_meta = _extract_meta(current_template)
+
+                # Peek at the next version number for metadata stamping
+                from src.database import get_backend as _get_db_backend
+                _db = await _get_db_backend()
+                _vrows = await _db.execute(
+                    "SELECT MAX(version) as max_ver FROM service_versions WHERE service_id = ?",
+                    (service_id,),
+                )
+                _next_ver = (_vrows[0]["max_ver"] if _vrows and _vrows[0]["max_ver"] else 0) + 1
+                _semver = _version_to_semver(_next_ver)
+
+                # ── Stamp InfraForge metadata into the ARM template ──
+                current_template = _stamp_template_metadata(
+                    current_template,
+                    service_id=service_id,
+                    version_int=_next_ver,
+                    gen_source=gen_source,
+                    region=region,
+                )
+
+                # Create version record
+                ver = await create_service_version(
+                    service_id=service_id,
+                    arm_template=current_template,
+                    version=_next_ver,
+                    semver=_semver,
+                    status="validating",
+                    changelog=f"Auto-generated via {gen_source}",
+                    created_by=gen_source,
+                )
+                version_num = ver["version"]
+
                 yield json.dumps({
-                    "type": "error", "phase": "generating",
-                    "detail": "ARM template generation returned empty content",
-                }) + "\n"
-                await fail_service_validation(service_id, "ARM template generation returned empty content")
-                return
-
-            try:
-                json.loads(current_template)
-            except json.JSONDecodeError as e:
-                yield json.dumps({
-                    "type": "error", "phase": "generating",
-                    "detail": f"Generated ARM template is not valid JSON: {e}",
-                }) + "\n"
-                await fail_service_validation(service_id, f"Generated ARM template is not valid JSON: {e}")
-                return
-
-            # ── Safety guard: ensure every parameter has a defaultValue ──
-            current_template = _ensure_parameter_defaults(current_template)
-
-            tmpl_meta = _extract_meta(current_template)
-
-            # Create version record
-            ver = await create_service_version(
-                service_id=service_id,
-                arm_template=current_template,
-                status="validating",
-                changelog=f"Auto-generated via {gen_source}",
-                created_by=gen_source,
-            )
-            version_num = ver["version"]
-
-            yield json.dumps({
-                "type": "init", "phase": "generated",
-                "detail": f"✓ ARM template v{version_num} generated via {gen_source} — "
-                          f"{tmpl_meta['resource_count']} resource(s), {tmpl_meta['size_kb']} KB",
-                "progress": 0.12,
-                "version": version_num,
-                "meta": {
-                    "service_name": svc.get("name", service_id),
-                    "service_id": service_id,
-                    "category": svc.get("category", ""),
-                    "region": region,
-                    "subscription": _sub_id,
-                    "resource_group": rg_name,
-                    "template_size_kb": tmpl_meta["size_kb"],
-                    "resource_count": tmpl_meta["resource_count"],
-                    "resource_types": tmpl_meta["resource_types"],
-                    "resource_names": tmpl_meta.get("resource_names", []),
-                    "api_versions": tmpl_meta.get("api_versions", []),
-                    "schema": tmpl_meta["schema"],
-                    "parameters": tmpl_meta.get("parameters", []),
-                    "outputs": tmpl_meta.get("outputs", []),
-                    "max_attempts": MAX_HEAL_ATTEMPTS,
+                    "type": "init", "phase": "generated",
+                    "detail": f"✓ ARM template v{_semver} generated via {gen_source} — "
+                              f"{tmpl_meta['resource_count']} resource(s), {tmpl_meta['size_kb']} KB",
+                    "progress": 0.12,
                     "version": version_num,
-                    "gen_source": gen_source,
-                    "model_routing": _routing,
-                    "standards_count": len(applicable_standards),
-                },
-            }) + "\n"
+                    "semver": _semver,
+                    "meta": {
+                        "service_name": svc.get("name", service_id),
+                        "service_id": service_id,
+                        "category": svc.get("category", ""),
+                        "region": region,
+                        "subscription": _sub_id,
+                        "resource_group": rg_name,
+                        "template_size_kb": tmpl_meta["size_kb"],
+                        "resource_count": tmpl_meta["resource_count"],
+                        "resource_types": tmpl_meta["resource_types"],
+                        "resource_names": tmpl_meta.get("resource_names", []),
+                        "api_versions": tmpl_meta.get("api_versions", []),
+                        "schema": tmpl_meta["schema"],
+                        "parameters": tmpl_meta.get("parameters", []),
+                        "outputs": tmpl_meta.get("outputs", []),
+                        "max_attempts": MAX_HEAL_ATTEMPTS,
+                        "version": version_num,
+                        "gen_source": gen_source,
+                        "model_routing": _routing,
+                        "standards_count": len(applicable_standards),
+                    },
+                }) + "\n"
 
             # ═══════════════════════════════════════════════════
             # PHASE 3.5: AZURE POLICY GENERATION
@@ -3600,6 +4020,19 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 # Deploy succeeded!
                 provisioned = deploy_result.get("provisioned_resources", [])
                 resource_summaries = [f"{r.get('type','?')}/{r.get('name','?')}" for r in provisioned]
+
+                # Persist deployment tracking info to the version row
+                _deploy_name = f"validate-{attempt}"
+                _subscription_id = deploy_result.get("subscription_id", "")
+                _deployment_id = deploy_result.get("deployment_id", "")
+                await update_service_version_deployment_info(
+                    service_id, version_num,
+                    run_id=_run_id,
+                    resource_group=rg_name,
+                    deployment_name=_deploy_name,
+                    subscription_id=_subscription_id,
+                )
+
                 yield json.dumps({
                     "type": "progress", "phase": "deploy_complete", "attempt": attempt,
                     "detail": f"✓ Deployment succeeded — {len(provisioned)} resource(s): {'; '.join(resource_summaries[:5])}",
@@ -3768,7 +4201,18 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
                 # ── 8. Promote ────────────────────────────────
                 validation_summary = {
+                    "run_id": _run_id,
+                    "resource_group": rg_name,
+                    "deployment_name": _deploy_name,
+                    "subscription_id": _subscription_id,
+                    "deployment_id": _deployment_id,
                     "what_if": wif,
+                    "deploy_result": {
+                        "status": deploy_result.get("status"),
+                        "started_at": deploy_result.get("started_at"),
+                        "completed_at": deploy_result.get("completed_at"),
+                        "deployment_id": _deployment_id,
+                    },
                     "deployed_resources": [{"name": r["name"], "type": r["type"], "location": r["location"]}
                                            for r in resource_details],
                     "policy_check": report.to_dict(),
@@ -3776,6 +4220,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "all_policy_compliant": all_policy_compliant,
                     "has_runtime_policy": generated_policy is not None,
                     "attempts": attempt,
+                    "heal_history": heal_history,
                 }
 
                 yield json.dumps({
@@ -4109,17 +4554,35 @@ async def websocket_chat(websocket: WebSocket):
             return
 
         # ── Step 2: Create Copilot session with user context ─
+        client = await ensure_copilot_client()
+        if client is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Copilot SDK is not available. Chat is disabled but the rest of InfraForge works.",
+            })
+            await websocket.close()
+            return
+
         personalized_system_message = (
             SYSTEM_MESSAGE + "\n" + user_context.to_prompt_context()
         )
 
         tools = get_all_tools()
-        copilot_session = await copilot_client.create_session({
-            "model": get_active_model(),
-            "streaming": True,
-            "tools": tools,
-            "system_message": {"content": personalized_system_message},
-        })
+        try:
+            copilot_session = await client.create_session({
+                "model": get_active_model(),
+                "streaming": True,
+                "tools": tools,
+                "system_message": {"content": personalized_system_message},
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Copilot session: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to create chat session: {e}",
+            })
+            await websocket.close()
+            return
 
         active_sessions[session_token] = {
             "copilot_session": copilot_session,
