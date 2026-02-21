@@ -741,6 +741,19 @@ async def _deep_heal_composed_template(
             "phase": "deep_heal_versioned",
             "detail": f"Published {culprit_sid} v{new_semver} (version {new_ver_num})",
         })
+
+        # Full lifecycle promotion: set active version + approve service
+        from src.orchestrator import promote_healed_service
+        promo = await promote_healed_service(
+            culprit_sid,
+            int(new_ver_num) if isinstance(new_ver_num, (int, str)) and str(new_ver_num).isdigit() else 1,
+            progress_callback=lambda evt: _emit(evt),
+        )
+        if promo["status"] == "promoted":
+            await _emit({
+                "phase": "deep_heal_promoted",
+                "detail": f"Service {culprit_sid} promoted to approved with active v{new_ver_num}",
+            })
     except Exception as ver_err:
         logger.warning(f"Failed to save service version: {ver_err}")
         # Continue anyway — we still have the fixed ARM in memory
@@ -1785,6 +1798,47 @@ async def compose_template_from_services(request: Request):
             "chosen_params": chosen_params,
         })
 
+    # ── Resolve dependencies (auto-add missing required services) ─
+    from src.orchestrator import resolve_composition_dependencies
+
+    dep_events: list[dict] = []
+
+    async def _dep_progress(event):
+        dep_events.append(event)
+
+    selected_ids = [e["svc"]["id"] for e in service_templates]
+    dep_result = await resolve_composition_dependencies(
+        selected_ids,
+        progress_callback=_dep_progress,
+    )
+
+    # Auto-add resolved dependencies
+    for item in dep_result.get("resolved", []):
+        dep_sid = item["service_id"]
+        # Avoid duplicates
+        if any(e["svc"]["id"] == dep_sid for e in service_templates):
+            continue
+        dep_svc = await get_service(dep_sid)
+        if not dep_svc:
+            continue
+        dep_tpl = None
+        dep_active = await get_active_service_version(dep_sid)
+        if dep_active and dep_active.get("arm_template"):
+            try:
+                dep_tpl = _json.loads(dep_active["arm_template"])
+            except Exception:
+                pass
+        if not dep_tpl and has_builtin_skeleton(dep_sid):
+            dep_tpl = generate_arm_template(dep_sid)
+        if dep_tpl:
+            service_templates.append({
+                "svc": dep_svc,
+                "template": dep_tpl,
+                "quantity": 1,
+                "chosen_params": set(),
+            })
+            logger.info(f"Auto-added dependency: {dep_sid} ({item['action']})")
+
     # ── Compose the combined ARM template ─────────────────────
     from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, _STANDARD_TAGS
 
@@ -1957,6 +2011,7 @@ async def compose_template_from_services(request: Request):
         "resource_count": len(combined_resources),
         "parameter_count": len(combined_params),
         "dependency_analysis": dep_analysis,
+        "dependency_resolution": dep_result,
     })
 
 
@@ -2274,6 +2329,36 @@ async def recompose_blueprint(template_id: str):
             "template": tpl_dict,
             "quantity": 1,
         })
+
+    # ── Resolve dependencies (auto-add missing services) ──────
+    from src.orchestrator import resolve_composition_dependencies
+
+    dep_result = await resolve_composition_dependencies(svc_ids)
+
+    for item in dep_result.get("resolved", []):
+        dep_sid = item["service_id"]
+        if any(e["svc"]["id"] == dep_sid for e in service_templates):
+            continue
+        dep_svc = await get_service(dep_sid)
+        if not dep_svc:
+            continue
+        dep_tpl = None
+        dep_active = await get_active_service_version(dep_sid)
+        if dep_active and dep_active.get("arm_template"):
+            try:
+                dep_tpl = _json.loads(dep_active["arm_template"])
+            except Exception:
+                pass
+        if not dep_tpl and has_builtin_skeleton(dep_sid):
+            dep_tpl = generate_arm_template(dep_sid)
+        if dep_tpl:
+            service_templates.append({
+                "svc": dep_svc,
+                "template": dep_tpl,
+                "quantity": 1,
+            })
+            svc_ids.append(dep_sid)
+            logger.info(f"Recompose auto-added dependency: {dep_sid}")
 
     # ── Compose ───────────────────────────────────────────────
     combined_params = dict(_STANDARD_PARAMETERS)
@@ -3796,6 +3881,34 @@ async def sync_stats():
             "last_synced_ago_sec": None,
             "last_sync_result": None,
         })
+
+
+# ── Orchestration Processes API ──────────────────────────────
+
+@app.get("/api/orchestration/processes")
+async def list_orchestration_processes():
+    """List all orchestration processes and their steps."""
+    from src.database import get_all_processes
+    processes = await get_all_processes()
+    return JSONResponse({"processes": processes, "total": len(processes)})
+
+
+@app.get("/api/orchestration/processes/{process_id}")
+async def get_orchestration_process(process_id: str):
+    """Get a specific orchestration process with its steps."""
+    from src.database import get_process
+    proc = await get_process(process_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail=f"Process '{process_id}' not found")
+    return JSONResponse(proc)
+
+
+@app.get("/api/orchestration/processes/{process_id}/playbook")
+async def get_orchestration_playbook(process_id: str):
+    """Get a human/LLM-readable playbook for a process."""
+    from src.orchestrator import get_process_playbook
+    text = await get_process_playbook(process_id)
+    return JSONResponse({"process_id": process_id, "playbook": text})
 
 
 @app.delete("/api/catalog/templates/{template_id}")

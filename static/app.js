@@ -4046,6 +4046,17 @@ async function submitTemplateOnboarding(event) {
         const data = await res.json();
         const templateId = data.template_id;
 
+        // Show dependency resolution results if any
+        const depRes = data.dependency_resolution || {};
+        const autoAdded = (depRes.resolved || []).filter(r => r.action === 'onboarded');
+        const depAdded = (depRes.resolved || []).filter(r => r.action === 'added');
+        if (autoAdded.length) {
+            showToast(`🔧 Auto-onboarded ${autoAdded.length} missing service(s): ${autoAdded.map(r => r.service_id.split('/').pop()).join(', ')}`, 'info');
+        }
+        if (depAdded.length) {
+            showToast(`📦 Auto-added ${depAdded.length} required dependency: ${depAdded.map(r => r.service_id.split('/').pop()).join(', ')}`, 'info');
+        }
+
         // Step 2: Run structural tests
         btn.textContent = '🧪 Testing…';
         const testRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {

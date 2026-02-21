@@ -661,6 +661,40 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE template_versions ADD validated_at NVARCHAR(50) DEFAULT NULL
     """,
+    # ══════════════════════════════════════════════════════════
+    # ORCHESTRATION PROCESSES — Step-by-step workflows the LLM
+    # reads at runtime to know what to do.
+    # ══════════════════════════════════════════════════════════
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'orchestration_processes')
+    CREATE TABLE orchestration_processes (
+        id              NVARCHAR(100) PRIMARY KEY,
+        name            NVARCHAR(200) NOT NULL,
+        description     NVARCHAR(MAX) DEFAULT '',
+        trigger_event   NVARCHAR(200) NOT NULL,
+        enabled         BIT DEFAULT 1,
+        created_at      NVARCHAR(50) NOT NULL,
+        updated_at      NVARCHAR(50) NOT NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'process_steps')
+    CREATE TABLE process_steps (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        process_id      NVARCHAR(100) NOT NULL,
+        step_order      INT NOT NULL,
+        name            NVARCHAR(200) NOT NULL,
+        description     NVARCHAR(MAX) NOT NULL,
+        action          NVARCHAR(200) NOT NULL,
+        condition_json  NVARCHAR(MAX) DEFAULT '{}',
+        on_success      NVARCHAR(200) DEFAULT 'next',
+        on_failure      NVARCHAR(200) DEFAULT 'abort',
+        config_json     NVARCHAR(MAX) DEFAULT '{}',
+        FOREIGN KEY (process_id) REFERENCES orchestration_processes(id)
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_process_steps_process')
+    CREATE INDEX idx_process_steps_process ON process_steps(process_id, step_order)""",
 ]
 
 
@@ -2516,8 +2550,13 @@ async def seed_governance_data() -> dict:
     templates_exist = tmpl_rows and tmpl_rows[0]["cnt"] > 0
 
     if services_exist and templates_exist:
-        logger.info("Governance data already seeded — skipping.")
-        return {"status": "already_seeded"}
+        # Still check if orchestration processes need seeding
+        proc_count = await seed_orchestration_processes()
+        if proc_count > 0:
+            logger.info(f"Seeded {proc_count} orchestration processes (services/templates already existed)")
+        else:
+            logger.info("Governance data already seeded — skipping.")
+        return {"status": "already_seeded", "orchestration_processes": proc_count}
 
     logger.info("Seeding governance data into database...")
     now = datetime.now(timezone.utc).isoformat()
@@ -2529,6 +2568,10 @@ async def seed_governance_data() -> dict:
     # ── Seed templates (section 5) if not already present ──
     if not templates_exist:
         await _seed_templates(summary)
+
+    # ── Seed orchestration processes ──
+    proc_count = await seed_orchestration_processes()
+    summary["orchestration_processes"] = proc_count
 
     logger.info(f"Governance data seeded: {summary}")
     return summary
@@ -2901,3 +2944,476 @@ async def _seed_templates(summary: dict) -> None:
     """
     summary["templates"] = 0
     logger.info("Template seeding skipped — no approved services yet")
+
+
+# ══════════════════════════════════════════════════════════════
+# ORCHESTRATION PROCESS HELPERS
+# ══════════════════════════════════════════════════════════════
+
+async def get_process(process_id: str) -> dict | None:
+    """Get a process definition with its steps."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM orchestration_processes WHERE id = ?",
+        (process_id,),
+    )
+    if not rows:
+        return None
+    proc = dict(rows[0])
+    steps = await backend.execute(
+        "SELECT * FROM process_steps WHERE process_id = ? ORDER BY step_order",
+        (process_id,),
+    )
+    proc["steps"] = [dict(s) for s in steps]
+    return proc
+
+
+async def get_all_processes() -> list[dict]:
+    """Get all orchestration processes."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM orchestration_processes ORDER BY id", ()
+    )
+    result = []
+    for row in rows:
+        proc = dict(row)
+        steps = await backend.execute(
+            "SELECT * FROM process_steps WHERE process_id = ? ORDER BY step_order",
+            (proc["id"],),
+        )
+        proc["steps"] = [dict(s) for s in steps]
+        result.append(proc)
+    return result
+
+
+async def seed_orchestration_processes() -> int:
+    """Seed the orchestration processes if not already present."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    existing = await backend.execute(
+        "SELECT COUNT(*) as cnt FROM orchestration_processes", ()
+    )
+    if existing and existing[0]["cnt"] > 0:
+        return 0
+
+    processes = [
+        # ─────────────────────────────────────────────────────
+        # 1. SERVICE ONBOARDING
+        # ─────────────────────────────────────────────────────
+        {
+            "id": "service_onboarding",
+            "name": "Service Onboarding",
+            "description": (
+                "End-to-end process for bringing a new Azure service into the "
+                "approved catalog. Ensures governance, generates ARM template, "
+                "validates it against Azure, and promotes to approved."
+            ),
+            "trigger_event": "service_requested",
+            "steps": [
+                {
+                    "step_order": 1,
+                    "name": "Create service entry",
+                    "description": (
+                        "Register the service in the catalog with status='under_review'. "
+                        "Set name, category, risk_tier based on the resource type. "
+                        "Use the RESOURCE_DEPENDENCIES map to determine the category."
+                    ),
+                    "action": "upsert_service",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                    "config_json": '{"initial_status": "under_review"}',
+                },
+                {
+                    "step_order": 2,
+                    "name": "Generate ARM template",
+                    "description": (
+                        "Check if a builtin skeleton exists (has_builtin_skeleton). "
+                        "If yes, use generate_arm_template. "
+                        "If no, use generate_arm_template_with_copilot to have the LLM "
+                        "produce one. ALL parameters MUST have defaultValues."
+                    ),
+                    "action": "generate_arm",
+                    "on_success": "next",
+                    "on_failure": "retry_with_llm",
+                    "config_json": '{"max_retries": 3}',
+                },
+                {
+                    "step_order": 3,
+                    "name": "Create service version",
+                    "description": (
+                        "Save the ARM template as version 1 with status='draft'. "
+                        "Use create_service_version(service_id, arm_json)."
+                    ),
+                    "action": "create_service_version",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 4,
+                    "name": "Validate via ARM deploy",
+                    "description": (
+                        "Deploy the ARM template to a temporary resource group using "
+                        "What-If validation. If it fails, run the self-heal loop "
+                        "(up to 5 attempts) to fix the template. Save each fix as a "
+                        "new version. Delete the temp resource group after validation."
+                    ),
+                    "action": "validate_arm_deploy",
+                    "on_success": "next",
+                    "on_failure": "mark_failed",
+                    "config_json": '{"max_heal_attempts": 5, "cleanup": true}',
+                },
+                {
+                    "step_order": 5,
+                    "name": "Approve and promote",
+                    "description": (
+                        "If validation passed, set service status='approved', "
+                        "set the validated version as active_version. "
+                        "Use promote_service_after_validation and set_active_service_version."
+                    ),
+                    "action": "promote_service",
+                    "on_success": "done",
+                    "on_failure": "abort",
+                },
+            ],
+        },
+        # ─────────────────────────────────────────────────────
+        # 2. TEMPLATE COMPOSITION
+        # ─────────────────────────────────────────────────────
+        {
+            "id": "template_composition",
+            "name": "Template Composition",
+            "description": (
+                "Compose a multi-service ARM template from approved services. "
+                "Resolves dependencies, auto-onboards missing services, "
+                "and validates the composed template."
+            ),
+            "trigger_event": "compose_requested",
+            "steps": [
+                {
+                    "step_order": 1,
+                    "name": "Gather selected services",
+                    "description": (
+                        "For each selected service, fetch its active ARM template version. "
+                        "If no version exists, check for builtin skeletons."
+                    ),
+                    "action": "gather_service_templates",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 2,
+                    "name": "Resolve dependencies",
+                    "description": (
+                        "Use analyze_dependencies to check what resources the selected "
+                        "services require. For each REQUIRED dependency (required=True) "
+                        "that is NOT provided by any selected service and is NOT "
+                        "created_by_template: check if it's in the catalog. "
+                        "If approved → auto-add to the composition. "
+                        "If not in catalog → trigger service_onboarding sub-process. "
+                        "Skip optional dependencies (just report them)."
+                    ),
+                    "action": "resolve_dependencies",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                    "config_json": '{"auto_add_required": true, "onboard_missing": true}',
+                },
+                {
+                    "step_order": 3,
+                    "name": "Compose ARM template",
+                    "description": (
+                        "Merge all service ARM templates into a single composed template. "
+                        "Remap ALL parameters (standard get shared, non-standard get "
+                        "suffixed per service). Replace ALL parameter references in "
+                        "resources AND outputs, including bare references inside "
+                        "compound ARM expressions like resourceId()."
+                    ),
+                    "action": "compose_template",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 4,
+                    "name": "Save as draft",
+                    "description": (
+                        "Save the composed template to catalog_templates and "
+                        "create version 1 as a draft. Include dependency analysis "
+                        "metadata (provides, requires, optional_refs, template_type)."
+                    ),
+                    "action": "save_template",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 5,
+                    "name": "Run structural tests",
+                    "description": (
+                        "Run the template test suite: JSON structure, schema compliance, "
+                        "parameter validation, resource validation, output validation, "
+                        "dependency check, tag compliance. Template must pass all tests."
+                    ),
+                    "action": "run_template_tests",
+                    "on_success": "next",
+                    "on_failure": "heal_and_retry",
+                },
+                {
+                    "step_order": 6,
+                    "name": "Validate via ARM deploy",
+                    "description": (
+                        "Deploy to a temp resource group with What-If + actual deploy. "
+                        "If it fails, run the self-heal loop (surface heal first, "
+                        "deep heal after 3 attempts for blueprints). "
+                        "Save each successful fix as a new version."
+                    ),
+                    "action": "validate_arm_deploy",
+                    "on_success": "next",
+                    "on_failure": "mark_failed",
+                    "config_json": '{"max_heal_attempts": 5, "deep_heal_after": 3}',
+                },
+                {
+                    "step_order": 7,
+                    "name": "Promote to approved",
+                    "description": (
+                        "Set template status='approved', update active_version. "
+                        "The template is now available for deployment."
+                    ),
+                    "action": "promote_template",
+                    "on_success": "done",
+                    "on_failure": "abort",
+                },
+            ],
+        },
+        # ─────────────────────────────────────────────────────
+        # 3. DEPENDENCY RESOLUTION
+        # ─────────────────────────────────────────────────────
+        {
+            "id": "dependency_resolution",
+            "name": "Dependency Resolution",
+            "description": (
+                "Sub-process invoked during template composition when a required "
+                "dependency is missing. Finds or creates the missing service, "
+                "then adds it to the composition."
+            ),
+            "trigger_event": "dependency_missing",
+            "steps": [
+                {
+                    "step_order": 1,
+                    "name": "Check catalog for service",
+                    "description": (
+                        "Query get_service(resource_type) to see if the service "
+                        "exists in the catalog. If approved → use it. "
+                        "If under_review or not_approved → attempt onboarding."
+                    ),
+                    "action": "check_service_exists",
+                    "on_success": "step_4",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 2,
+                    "name": "Auto-onboard service",
+                    "description": (
+                        "Run the service_onboarding process for the missing resource type. "
+                        "This creates the service, generates ARM, validates, and promotes. "
+                        "If onboarding fails, report the gap and continue without it."
+                    ),
+                    "action": "run_service_onboarding",
+                    "on_success": "next",
+                    "on_failure": "report_gap",
+                },
+                {
+                    "step_order": 3,
+                    "name": "Verify onboarded service",
+                    "description": (
+                        "Confirm the service is now approved with an active ARM template. "
+                        "If not, it means onboarding failed — skip this dependency."
+                    ),
+                    "action": "verify_service_approved",
+                    "on_success": "next",
+                    "on_failure": "skip",
+                },
+                {
+                    "step_order": 4,
+                    "name": "Add to composition",
+                    "description": (
+                        "Add the resolved service to the composition's service list. "
+                        "Fetch its ARM template and include it in the merge."
+                    ),
+                    "action": "add_to_composition",
+                    "on_success": "done",
+                    "on_failure": "abort",
+                },
+            ],
+        },
+        # ─────────────────────────────────────────────────────
+        # 4. DEEP HEALING
+        # ─────────────────────────────────────────────────────
+        {
+            "id": "deep_healing",
+            "name": "Deep Healing",
+            "description": (
+                "Escalation process when surface healing of a blueprint template "
+                "fails repeatedly. Identifies the broken service, fixes it "
+                "standalone, validates it, promotes it, and recomposes the parent."
+            ),
+            "trigger_event": "surface_heal_exhausted",
+            "steps": [
+                {
+                    "step_order": 1,
+                    "name": "Identify culprit service",
+                    "description": (
+                        "Analyze the ARM error to determine which service's resources "
+                        "are causing the failure. Use the LLM to map the error to a "
+                        "service_id from the blueprint's service_ids list."
+                    ),
+                    "action": "identify_culprit",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 2,
+                    "name": "Fix culprit template",
+                    "description": (
+                        "Extract the culprit service's ARM template. Send it to the "
+                        "LLM with the error context and have it fix the template. "
+                        "Save the fix as a new service version."
+                    ),
+                    "action": "heal_service_template",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 3,
+                    "name": "Validate fix standalone",
+                    "description": (
+                        "Deploy the fixed service template standalone to a temp RG. "
+                        "If it fails, go back to step 2 (re-heal). Max 3 re-heals."
+                    ),
+                    "action": "validate_service_standalone",
+                    "on_success": "next",
+                    "on_failure": "step_2",
+                    "config_json": '{"max_retries": 3}',
+                },
+                {
+                    "step_order": 4,
+                    "name": "Promote fixed service",
+                    "description": (
+                        "Promote the validated service version: set status='validated', "
+                        "update active_version. Run promote_service_after_validation."
+                    ),
+                    "action": "promote_service",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 5,
+                    "name": "Recompose parent blueprint",
+                    "description": (
+                        "Re-run the composition logic using the fixed service templates. "
+                        "This uses the same compose logic with proper parameter remapping. "
+                        "Save the recomposed template as a new version."
+                    ),
+                    "action": "recompose_blueprint",
+                    "on_success": "done",
+                    "on_failure": "abort",
+                },
+            ],
+        },
+        # ─────────────────────────────────────────────────────
+        # 5. TEMPLATE VALIDATION
+        # ─────────────────────────────────────────────────────
+        {
+            "id": "template_validation",
+            "name": "Template Validation",
+            "description": (
+                "Full lifecycle validation of a template: structural tests, "
+                "ARM deploy, self-heal, and promotion."
+            ),
+            "trigger_event": "validation_requested",
+            "steps": [
+                {
+                    "step_order": 1,
+                    "name": "Run structural tests",
+                    "description": (
+                        "Run the template test suite. All 7 test categories must pass."
+                    ),
+                    "action": "run_template_tests",
+                    "on_success": "next",
+                    "on_failure": "heal_and_retry",
+                },
+                {
+                    "step_order": 2,
+                    "name": "What-If analysis",
+                    "description": (
+                        "Run ARM What-If to preview changes without deploying. "
+                        "Shows what would be created, modified, or deleted."
+                    ),
+                    "action": "what_if_analysis",
+                    "on_success": "next",
+                    "on_failure": "heal_and_retry",
+                },
+                {
+                    "step_order": 3,
+                    "name": "Deploy to temp RG",
+                    "description": (
+                        "Actually deploy to a temporary resource group. "
+                        "Stream progress events with per-resource status. "
+                        "If failure: run self-heal loop (up to 5 attempts)."
+                    ),
+                    "action": "deploy_to_temp_rg",
+                    "on_success": "next",
+                    "on_failure": "mark_failed",
+                    "config_json": '{"max_heal_attempts": 5, "cleanup": true}',
+                },
+                {
+                    "step_order": 4,
+                    "name": "Cleanup temp RG",
+                    "description": (
+                        "Delete the temporary resource group after validation. "
+                        "This is fire-and-forget — don't block on it."
+                    ),
+                    "action": "cleanup_rg",
+                    "on_success": "next",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 5,
+                    "name": "Promote template",
+                    "description": (
+                        "Set template status='validated', update active_version. "
+                        "Template is ready for publishing/approval."
+                    ),
+                    "action": "promote_template",
+                    "on_success": "done",
+                    "on_failure": "abort",
+                },
+            ],
+        },
+    ]
+
+    count = 0
+    for proc in processes:
+        steps = proc.pop("steps")
+        await backend.execute_write(
+            """INSERT INTO orchestration_processes
+               (id, name, description, trigger_event, enabled, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 1, ?, ?)""",
+            (proc["id"], proc["name"], proc["description"],
+             proc["trigger_event"], now, now),
+        )
+        for step in steps:
+            await backend.execute_write(
+                """INSERT INTO process_steps
+                   (process_id, step_order, name, description, action,
+                    condition_json, on_success, on_failure, config_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (proc["id"], step["step_order"], step["name"],
+                 step["description"], step["action"],
+                 step.get("condition_json", "{}"),
+                 step.get("on_success", "next"),
+                 step.get("on_failure", "abort"),
+                 step.get("config_json", "{}")),
+            )
+        count += 1
+
+    logger.info(f"Seeded {count} orchestration processes")
+    return count
