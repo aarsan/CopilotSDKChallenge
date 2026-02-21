@@ -152,6 +152,15 @@ def _build_param_defaults() -> dict[str, object]:
         "nsgName": "infraforge-nsg",
         "storageAccountName": "ifrgvalidation",
         "keyVaultName": "infraforge-kv",
+        # DNS / domain params (must be valid FQDNs — at least 2 labels)
+        "dnsZoneName": "infraforge-demo.com",
+        "dnszones": "infraforge-demo.com",
+        "dnsZone": "infraforge-demo.com",
+        "zoneName": "infraforge-demo.com",
+        "domainName": "infraforge-demo.com",
+        "domain": "infraforge-demo.com",
+        "hostName": "app.infraforge-demo.com",
+        "fqdn": "app.infraforge-demo.com",
         # Shared secret params (validation only)
         "sharedKey": "InfraForgeVal1dation!",
         "adminPassword": "InfraForge#Val1d!",
@@ -202,6 +211,10 @@ def _ensure_parameter_defaults(template_json: str) -> str:
                     dv = "azureadmin"
                 elif "sharedkey" in plow:
                     dv = "InfraForgeVal1dation!"
+                elif any(k in plow for k in ("dns", "zone", "domain", "fqdn")):
+                    dv = "infraforge-demo.com"
+                elif "hostname" in plow:
+                    dv = "app.infraforge-demo.com"
                 else:
                     dv = f"infraforge-{pname}"
             pdef["defaultValue"] = dv
@@ -233,6 +246,645 @@ def _sanitize_placeholder_guids(template_json: str) -> str:
     sanitized = template_json.replace(placeholder, sub_id)
     logger.info("Replaced placeholder subscription GUID(s) with real subscription ID")
     return sanitized
+
+
+def _sanitize_dns_zone_names(template_json: str) -> str:
+    """Ensure DNS zone resources have valid FQDN names (at least 2 labels).
+
+    Azure DNS zones require names like ``example.com`` — a bare label like
+    ``infraforge-dnszones`` is rejected with 'invalid DNS zone name'.
+    This catches bad defaults before they hit ARM.
+    """
+    try:
+        tmpl = json.loads(template_json)
+    except (json.JSONDecodeError, TypeError):
+        return template_json
+
+    patched = False
+    resources = tmpl.get("resources", [])
+    params = tmpl.get("parameters", {})
+
+    for res in resources:
+        rtype = (res.get("type") or "").lower()
+        if "dnszones" not in rtype:
+            continue
+
+        # Check the name — it might be a direct string or a parameter ref
+        name = res.get("name", "")
+        if isinstance(name, str) and not name.startswith("[") and "." not in name:
+            # Bare label without dots — invalid DNS zone name
+            res["name"] = "infraforge-demo.com"
+            patched = True
+            logger.info(f"Fixed invalid DNS zone name '{name}' → 'infraforge-demo.com'")
+
+        # Also check if the name references a parameter whose default is bad
+        if isinstance(name, str) and name.startswith("[") and "parameters(" in name:
+            import re
+            m = re.search(r"parameters\(['\"](\w+)['\"]\)", name)
+            if m:
+                param_name = m.group(1)
+                pdef = params.get(param_name, {})
+                dv = pdef.get("defaultValue", "")
+                if isinstance(dv, str) and dv and "." not in dv and not dv.startswith("["):
+                    pdef["defaultValue"] = "infraforge-demo.com"
+                    patched = True
+                    logger.info(
+                        f"Fixed DNS zone param '{param_name}' default "
+                        f"'{dv}' → 'infraforge-demo.com'"
+                    )
+
+    if patched:
+        return json.dumps(tmpl, indent=2)
+    return template_json
+
+
+# ── Module-level LLM template healer ─────────────────────────
+
+async def _copilot_heal_template(
+    content: str,
+    error: str,
+    previous_attempts: list[dict] | None = None,
+    parameters: dict | None = None,
+) -> str:
+    """Ask the Copilot SDK to fix an ARM template that failed deployment.
+
+    This is a top-level utility so both the validation pipeline and the
+    template deploy endpoint can use the same self-healing logic.
+
+    Args:
+        content: The ARM template JSON string.
+        error: The Azure error message.
+        previous_attempts: History of previous heal attempts.
+        parameters: The actual parameter VALUES sent to ARM. Including
+            these lets the LLM see what values caused the error and fix
+            the corresponding defaultValues in the template.
+    """
+    attempt_num = len(previous_attempts) + 1 if previous_attempts else 1
+
+    prompt = (
+        "The following ARM template failed Azure deployment.\n\n"
+        f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
+        f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+    )
+
+    if parameters:
+        prompt += (
+            "--- PARAMETER VALUES SENT TO ARM ---\n"
+            f"{json.dumps(parameters, indent=2, default=str)}\n"
+            "--- END PARAMETER VALUES ---\n\n"
+            "IMPORTANT: These are the actual values that were sent to Azure. "
+            "If the error is caused by one of these values (e.g. an invalid "
+            "name, bad format, wrong length), you MUST fix the corresponding "
+            "parameter's \"defaultValue\" in the template so it produces a "
+            "valid value. The parameter values above are derived from the "
+            "template's defaultValues — fixing the defaultValue fixes the "
+            "deployed value.\n\n"
+        )
+
+    if previous_attempts:
+        prompt += "--- PREVIOUS FAILED ATTEMPTS (DO NOT repeat these fixes) ---\n"
+        for pa in previous_attempts:
+            prompt += (
+                f"Attempt {pa['attempt']}: Error was: {pa['error'][:300]}\n"
+                f"  Fix tried: {pa['fix_summary']}\n"
+                f"  Result: STILL FAILED — do something DIFFERENT\n\n"
+            )
+        prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
+
+    prompt += (
+        "Fix the template so it deploys successfully. Return ONLY the "
+        "corrected raw JSON — no markdown fences, no explanation.\n\n"
+        "CRITICAL RULES (in priority order):\n\n"
+        "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
+        "   - If the error mentions an invalid resource name, the name likely "
+        "     comes from a parameter defaultValue. Find that parameter and fix "
+        "     its defaultValue to comply with Azure naming rules.\n"
+        "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
+        "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
+        "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
+        "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
+        "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
+        "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
+        "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
+        "   EXCEPTION: Globally-scoped resources MUST use location \"global\":\n"
+        "   * Microsoft.Network/dnszones → location MUST be \"global\"\n"
+        "   * Microsoft.Network/trafficManagerProfiles → \"global\"\n"
+        "   * Microsoft.Cdn/profiles → \"global\"\n"
+        "   * Microsoft.Network/frontDoors → \"global\"\n\n"
+        "3. API VERSIONS — Use supported API versions:\n"
+        "   - Microsoft.Network/dnszones: use \"2018-05-01\" (NOT 2023-09-01)\n"
+        "   - Prefer stable 2023-xx-xx or 2024-xx-xx versions for other resources\n\n"
+        "4. STRUCTURAL FIXES:\n"
+        "   - Keep the same resource intent and resource names.\n"
+        "   - Fix schema issues, missing required properties.\n"
+        "   - If diagnosticSettings requires an external dependency, REMOVE it.\n"
+        "   - NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID — "
+        "     use [subscription().subscriptionId] instead.\n"
+        "   - If the error mentions 'LinkedAuthorizationFailed', use "
+        "     [subscription().subscriptionId] in resourceId() expressions.\n"
+        "   - If a resource requires complex external deps (VPN gateways, "
+        "     ExpressRoute), SIMPLIFY by removing those references.\n"
+    )
+
+    if attempt_num >= 4:
+        prompt += (
+            f"\n\nESCALATION (attempt {attempt_num} — drastic measures needed):\n"
+            "- SIMPLIFY the template: remove optional/nice-to-have resources\n"
+            "- Remove diagnosticSettings, locks, autoscale rules if causing issues\n"
+            "- Use the SIMPLEST valid configuration for each resource\n"
+            "- Strip down to ONLY the primary resource with minimal properties\n"
+            "- Use well-known, stable API versions (prefer 2023-xx-xx or 2024-xx-xx)\n"
+        )
+    elif attempt_num >= 2:
+        prompt += (
+            f"\n\nThis is attempt {attempt_num}. The previous fix(es) did NOT work.\n"
+            "You MUST try a FUNDAMENTALLY DIFFERENT approach:\n"
+            "- Try a different API version for the failing resource\n"
+            "- Restructure resource dependencies\n"
+            "- Remove or replace the problematic sub-resource\n"
+            "- Check if required properties changed in newer API versions\n"
+        )
+
+    session = None
+    try:
+        _client = await ensure_copilot_client()
+        if _client is None:
+            raise RuntimeError("Copilot SDK not available")
+        session = await _client.create_session({
+            "model": get_model_for_task(Task.CODE_FIXING),
+            "streaming": True,
+            "tools": [],
+            "system_message": {"content": (
+                "You are an Azure infrastructure expert. "
+                "When fixing ARM templates, check parameter defaultValues FIRST — "
+                "invalid resource names usually come from bad parameter defaults. "
+                "Return ONLY raw JSON — no markdown, no code fences."
+            )},
+        })
+        chunks: list[str] = []
+        done_ev = asyncio.Event()
+
+        def on_event(ev):
+            try:
+                if ev.type.value == "assistant.message_delta":
+                    chunks.append(ev.data.delta_content or "")
+                elif ev.type.value in ("assistant.message", "session.idle"):
+                    done_ev.set()
+            except Exception:
+                done_ev.set()
+
+        unsub = session.on(on_event)
+        try:
+            await session.send({"prompt": prompt})
+            await asyncio.wait_for(done_ev.wait(), timeout=90)
+        finally:
+            unsub()
+
+        fixed = "".join(chunks).strip()
+        if fixed.startswith("```"):
+            lines = fixed.split("\n")[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            fixed = "\n".join(lines).strip()
+
+        # Guard: ensure healer didn't corrupt the location parameter
+        # NOTE: some resource types (DNS zones, Traffic Manager, Front Door, etc.)
+        # legitimately use location "global" — don't override those.
+        _GLOBAL_LOCATION_TYPES = {
+            "microsoft.network/dnszones",
+            "microsoft.network/trafficmanagerprofiles",
+            "microsoft.cdn/profiles",
+            "microsoft.network/frontdoors",
+            "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+        }
+        try:
+            _ft = json.loads(fixed)
+            _params = _ft.get("parameters", {})
+            _loc = _params.get("location", {})
+            _dv = _loc.get("defaultValue", "")
+            if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+                _loc["defaultValue"] = "[resourceGroup().location]"
+                fixed = json.dumps(_ft, indent=2)
+            for _res in _ft.get("resources", []):
+                _rtype = (_res.get("type") or "").lower()
+                _rloc = _res.get("location", "")
+                # Skip resources that should use "global"
+                if _rtype in _GLOBAL_LOCATION_TYPES:
+                    if isinstance(_rloc, str) and _rloc.lower() != "global":
+                        _res["location"] = "global"
+                        fixed = json.dumps(_ft, indent=2)
+                    continue
+                if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                    _res["location"] = "[parameters('location')]"
+                    fixed = json.dumps(_ft, indent=2)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        fixed = _ensure_parameter_defaults(fixed)
+        fixed = _sanitize_placeholder_guids(fixed)
+        fixed = _sanitize_dns_zone_names(fixed)
+        return fixed
+    finally:
+        if session:
+            try:
+                await session.destroy()
+            except Exception:
+                pass
+
+
+# ── Deep healing engine for composed/blueprint templates ──────
+
+async def _deep_heal_composed_template(
+    template_id: str,
+    service_ids: list[str],
+    error_msg: str,
+    current_template: dict,
+    region: str = "eastus2",
+    on_event=None,
+) -> dict | None:
+    """Deep-heal a composed template by fixing the underlying service templates.
+
+    Flow:
+    1. Root-cause analysis (o3-mini) — which service's ARM is broken?
+    2. Fix that service's ARM template via LLM
+    3. Validate the fixed service ARM with a standalone deploy
+    4. Save as new service version
+    5. Recompose the parent template from all service ARMs
+    6. Return the fixed composed template dict
+
+    Returns the fixed composed template dict, or None if healing failed.
+    ``on_event`` is an async callable for streaming progress events.
+    """
+    import uuid as _dh_uuid
+    from src.database import (
+        get_service, get_active_service_version, create_service_version,
+        upsert_template, create_template_version, get_template_by_id,
+    )
+    from src.tools.arm_generator import (
+        generate_arm_template, has_builtin_skeleton,
+        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER,
+    )
+    from src.tools.deploy_engine import execute_deployment
+
+    async def _emit(evt: dict):
+        if on_event:
+            await on_event(evt)
+
+    await _emit({"phase": "deep_heal_start", "detail": "Analyzing root cause across service templates…"})
+
+    # ── Step 1: Root-cause analysis ──────────────────────────
+    # Identify which service template is causing the failure
+    resource_type_map: dict[str, dict] = {}  # service_id → ARM template dict
+    for sid in service_ids:
+        svc = await get_service(sid)
+        if not svc:
+            continue
+        ver = await get_active_service_version(sid)
+        arm = None
+        if ver and ver.get("arm_template"):
+            try:
+                arm = json.loads(ver["arm_template"])
+            except Exception:
+                pass
+        if not arm and has_builtin_skeleton(sid):
+            arm = generate_arm_template(sid)
+        if arm:
+            resource_type_map[sid] = arm
+
+    if not resource_type_map:
+        await _emit({"phase": "deep_heal_fail", "detail": "No source service templates found"})
+        return None
+
+    # Use the error message + resource types to identify the culprit
+    # Extract resource type from the error (e.g. "Microsoft.Network/dnszones/if-dnszones")
+    culprit_sid = None
+    error_lower = error_msg.lower()
+    for sid in service_ids:
+        # Match by resource type in error
+        rt_lower = sid.lower()
+        short = rt_lower.split("/")[-1]
+        if rt_lower in error_lower or short in error_lower:
+            culprit_sid = sid
+            break
+
+    if not culprit_sid:
+        # If can't detect from error, try o3-mini reasoning
+        try:
+            _client = await ensure_copilot_client()
+            if _client:
+                session = await _client.create_session({
+                    "model": get_model_for_task(Task.PLANNING),
+                    "streaming": True, "tools": [],
+                    "system_message": {"content": "You are an Azure infrastructure error analyst. Return ONLY the Azure resource type ID."},
+                })
+                chunks = []
+                done_ev = asyncio.Event()
+                def _on_ev(ev):
+                    try:
+                        if ev.type.value == "assistant.message_delta":
+                            chunks.append(ev.data.delta_content or "")
+                        elif ev.type.value in ("assistant.message", "session.idle"):
+                            done_ev.set()
+                    except Exception:
+                        done_ev.set()
+                unsub = session.on(_on_ev)
+                try:
+                    await session.send({"prompt": (
+                        f"Error: {error_msg[:500]}\n\n"
+                        f"Service templates: {', '.join(service_ids)}\n\n"
+                        "Which service template is causing this error? "
+                        "Reply with ONLY the exact service ID from the list above."
+                    )})
+                    await asyncio.wait_for(done_ev.wait(), timeout=30)
+                finally:
+                    unsub()
+                resp = "".join(chunks).strip()
+                for sid in service_ids:
+                    if sid.lower() in resp.lower():
+                        culprit_sid = sid
+                        break
+                try:
+                    await session.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if not culprit_sid:
+        culprit_sid = service_ids[0]  # fallback to first
+
+    await _emit({
+        "phase": "deep_heal_identified",
+        "detail": f"Root cause: {culprit_sid} template needs fixing",
+        "culprit_service": culprit_sid,
+    })
+
+    # ── Step 2: Fix the culprit service ARM template ─────────
+    source_arm = resource_type_map.get(culprit_sid)
+    if not source_arm:
+        await _emit({"phase": "deep_heal_fail", "detail": f"No ARM template found for {culprit_sid}"})
+        return None
+
+    source_json = json.dumps(source_arm, indent=2)
+    heal_attempts: list[dict] = []
+    MAX_SVC_HEAL = 3
+    fixed_svc_arm = None
+
+    for svc_attempt in range(1, MAX_SVC_HEAL + 1):
+        await _emit({
+            "phase": "deep_heal_fix",
+            "detail": f"Fixing {culprit_sid} ARM template (attempt {svc_attempt}/{MAX_SVC_HEAL})…",
+            "service_id": culprit_sid,
+            "attempt": svc_attempt,
+        })
+
+        try:
+            fixed_json = await _copilot_heal_template(
+                content=source_json,
+                error=error_msg,
+                previous_attempts=heal_attempts,
+                parameters=_extract_param_values(
+                    json.loads(source_json) if isinstance(source_json, str) else source_json
+                ),
+            )
+            candidate = json.loads(fixed_json)
+        except Exception as fix_err:
+            await _emit({"phase": "deep_heal_fix_error", "detail": f"LLM fix failed: {fix_err}"})
+            continue
+
+        # ── Step 3: Validate standalone ──────────────────────
+        await _emit({
+            "phase": "deep_heal_validate",
+            "detail": f"Validating fixed {culprit_sid} template with standalone deploy…",
+        })
+
+        val_rg = f"infraforge-dheal-{_dh_uuid.uuid4().hex[:8]}"
+        val_deploy = f"dheal-{_dh_uuid.uuid4().hex[:8]}"
+
+        # Build params using the same function as deploy pipeline
+        val_params = _extract_param_values(candidate)
+
+        try:
+            val_result = await execute_deployment(
+                resource_group=val_rg,
+                template=candidate,
+                parameters=val_params,
+                region=region,
+                deployment_name=val_deploy,
+                initiated_by="deep-healer",
+            )
+            val_status = val_result.get("status", "failed")
+        except Exception as val_err:
+            val_status = "failed"
+            val_result = {"error": str(val_err)}
+
+        # Cleanup the validation RG (fire and forget)
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.mgmt.resource import ResourceManagementClient
+            import os
+            cred = DefaultAzureCredential()
+            sub_id = os.environ.get("AZURE_SUBSCRIPTION_ID", "")
+            if sub_id:
+                rc = ResourceManagementClient(cred, sub_id)
+                rc.resource_groups.begin_delete(val_rg)
+        except Exception:
+            pass
+
+        if val_status == "succeeded":
+            await _emit({
+                "phase": "deep_heal_validated",
+                "detail": f"✅ {culprit_sid} template validated successfully!",
+                "service_id": culprit_sid,
+                "resources": val_result.get("provisioned_resources", []),
+            })
+            fixed_svc_arm = candidate
+            source_json = fixed_json  # for next iterations if needed
+            break
+        else:
+            val_error = val_result.get("error", "unknown")
+            await _emit({
+                "phase": "deep_heal_validate_fail",
+                "detail": f"Validation failed: {val_error[:200]}",
+            })
+            # Track for next heal attempt
+            heal_attempts.append({
+                "attempt": svc_attempt,
+                "phase": "deploy",
+                "error": val_error[:500],
+                "fix_summary": _summarize_fix(json.dumps(source_arm, indent=2), fixed_json),
+            })
+            source_json = fixed_json  # try fixing THIS version next
+            error_msg = val_error  # update error for next LLM call
+
+    if not fixed_svc_arm:
+        await _emit({"phase": "deep_heal_fail", "detail": f"Could not fix {culprit_sid} after {MAX_SVC_HEAL} attempts"})
+        return None
+
+    # ── Step 4: Save new service version ─────────────────────
+    await _emit({
+        "phase": "deep_heal_version",
+        "detail": f"Publishing new version of {culprit_sid}…",
+    })
+
+    try:
+        new_ver = await create_service_version(
+            service_id=culprit_sid,
+            arm_template=json.dumps(fixed_svc_arm, indent=2),
+            status="approved",
+            changelog=f"Deep-healed: fixed ARM template during deployment of {template_id}",
+            created_by="deep-healer",
+        )
+        new_ver_num = new_ver.get("version", "?")
+        new_semver = new_ver.get("semver", "?")
+        await _emit({
+            "phase": "deep_heal_versioned",
+            "detail": f"Published {culprit_sid} v{new_semver} (version {new_ver_num})",
+        })
+    except Exception as ver_err:
+        logger.warning(f"Failed to save service version: {ver_err}")
+        # Continue anyway — we still have the fixed ARM in memory
+
+    # ── Step 5: Recompose the parent template ────────────────
+    await _emit({
+        "phase": "deep_heal_recompose",
+        "detail": f"Recomposing {template_id} with fixed service templates…",
+    })
+
+    # Gather all service ARM templates (using fixed one for culprit)
+    all_arms: dict[str, dict] = {}
+    for sid in service_ids:
+        if sid == culprit_sid:
+            all_arms[sid] = fixed_svc_arm
+        else:
+            arm = resource_type_map.get(sid)
+            if arm:
+                all_arms[sid] = arm
+
+    # Recompose using the same logic as the compose endpoint
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources = []
+    combined_outputs = {}
+
+    for sid in service_ids:
+        tpl = all_arms.get(sid)
+        if not tpl:
+            continue
+        short_name = sid.split("/")[-1].lower()
+        suffix = f"_{short_name}"
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        instance_name_param = f"resourceName{suffix}"
+        combined_params[instance_name_param] = {
+            "type": "string",
+            "metadata": {"description": f"Name for {sid}"},
+        }
+
+        # Add ALL non-standard params from the service template
+        all_non_standard = [
+            pname for pname in src_params
+            if pname not in {"resourceName", "location", "environment",
+                             "projectName", "ownerEmail", "costCenter"}
+        ]
+        for pname in all_non_standard:
+            pdef = src_params.get(pname)
+            if not pdef:
+                continue
+            suffixed = f"{pname}{suffix}"
+            combined_params[suffixed] = dict(pdef)
+
+        # Clone resources, replacing ALL parameter references
+        for res in src_resources:
+            res_str = json.dumps(res)
+            res_str = res_str.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            res_str = res_str.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                res_str = res_str.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                res_str = res_str.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_resources.append(json.loads(res_str))
+
+        for oname, odef in src_outputs.items():
+            out_name = f"{oname}{suffix}"
+            out_val = json.dumps(odef)
+            out_val = out_val.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            out_val = out_val.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                out_val = out_val.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                out_val = out_val.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_outputs[out_name] = json.loads(out_val)
+
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    # Ensure all params have defaults
+    composed_json = _ensure_parameter_defaults(json.dumps(composed, indent=2))
+    composed_json = _sanitize_placeholder_guids(composed_json)
+    composed_json = _sanitize_dns_zone_names(composed_json)
+    composed = json.loads(composed_json)
+
+    # ── Step 6: Save new template version ────────────────────
+    try:
+        new_tmpl_ver = await create_template_version(
+            template_id,
+            composed_json,
+            changelog=f"Deep-healed: fixed {culprit_sid}, recomposed",
+            created_by="deep-healer",
+        )
+        # Also update the catalog_templates content
+        from src.database import get_backend
+        backend = await get_backend()
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        await backend.execute_write(
+            "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+            (composed_json, now, template_id),
+        )
+        await _emit({
+            "phase": "deep_heal_complete",
+            "detail": f"Recomposed template saved — fixed {culprit_sid}, ready to deploy",
+            "fixed_service": culprit_sid,
+            "new_version": new_tmpl_ver.get("version"),
+        })
+    except Exception as save_err:
+        logger.warning(f"Failed to save recomposed template: {save_err}")
+        await _emit({
+            "phase": "deep_heal_complete",
+            "detail": f"Template recomposed in memory (save failed: {save_err})",
+        })
+
+    return composed
 
 
 def _version_to_semver(version_int: int) -> str:
@@ -324,7 +976,14 @@ def _extract_param_values(template: dict) -> dict:
             # No default — provide one from our well-known list
             dv = _PARAM_DEFAULTS.get(pname)
         if dv is None:
-            dv = f"infraforge-{pname}"
+            # Heuristic: DNS/domain/zone params need valid FQDNs
+            plow = pname.lower()
+            if any(k in plow for k in ("dns", "zone", "domain", "fqdn")):
+                dv = "infraforge-demo.com"
+            elif "hostname" in plow:
+                dv = "app.infraforge-demo.com"
+            else:
+                dv = f"infraforge-{pname}"
         # Skip ARM expressions — they only work inside the template, not as
         # explicit parameter values.
         if isinstance(dv, str) and dv.startswith("["):
@@ -1165,10 +1824,14 @@ async def compose_template_from_services(request: Request):
                 },
             }
 
-            # Add chosen extra parameters (with suffix to avoid collisions)
-            for pname in chosen:
-                if pname in STANDARD_PARAMS:
-                    continue
+            # Add ALL non-standard parameters from the service template
+            # (not just user-chosen ones). This ensures every parameter
+            # reference in the resource body has a matching definition.
+            all_non_standard = [
+                pname for pname in src_params
+                if pname not in STANDARD_PARAMS and pname != "resourceName"
+            ]
+            for pname in all_non_standard:
                 pdef = src_params.get(pname)
                 if not pdef:
                     continue
@@ -1178,27 +1841,33 @@ async def compose_template_from_services(request: Request):
                 if qty > 1:
                     meta["description"] = meta.get("description", pname) + f" (instance {idx})"
 
-            # Clone resources, replacing parameter references
+            # Clone resources, replacing ALL parameter references
             for res in src_resources:
                 cloned = _json.loads(_json.dumps(res))
-                # Replace [parameters('resourceName')] with instance param
                 res_str = _json.dumps(cloned)
+                # Replace resourceName first (bracketed + bare for compound expressions)
                 res_str = res_str.replace(
                     "[parameters('resourceName')]",
                     f"[parameters('{instance_name_param}')]",
                 )
-                # Replace chosen extra param references
-                for pname in chosen:
-                    if pname in STANDARD_PARAMS:
-                        continue
+                res_str = res_str.replace(
+                    "parameters('resourceName')",
+                    f"parameters('{instance_name_param}')",
+                )
+                # Replace ALL non-standard param references (not just chosen)
+                for pname in all_non_standard:
                     suffixed = f"{pname}{suffix}"
                     res_str = res_str.replace(
                         f"[parameters('{pname}')]",
                         f"[parameters('{suffixed}')]",
                     )
+                    res_str = res_str.replace(
+                        f"parameters('{pname}')",
+                        f"parameters('{suffixed}')",
+                    )
                 combined_resources.append(_json.loads(res_str))
 
-            # Clone outputs with suffixed names
+            # Clone outputs with suffixed names and remapped param refs
             for oname, odef in src_outputs.items():
                 out_name = f"{oname}{suffix}"
                 out_val = _json.dumps(odef)
@@ -1206,6 +1875,20 @@ async def compose_template_from_services(request: Request):
                     "[parameters('resourceName')]",
                     f"[parameters('{instance_name_param}')]",
                 )
+                out_val = out_val.replace(
+                    "parameters('resourceName')",
+                    f"parameters('{instance_name_param}')",
+                )
+                for pname in all_non_standard:
+                    suffixed = f"{pname}{suffix}"
+                    out_val = out_val.replace(
+                        f"[parameters('{pname}')]",
+                        f"[parameters('{suffixed}')]",
+                    )
+                    out_val = out_val.replace(
+                        f"parameters('{pname}')",
+                        f"parameters('{suffixed}')",
+                    )
                 combined_outputs[out_name] = _json.loads(out_val)
 
     # Build the final composed template
@@ -1519,6 +2202,238 @@ async def test_template(template_id: str, request: Request):
     })
 
 
+# ── Recompose Blueprint ──────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/recompose")
+async def recompose_blueprint(template_id: str):
+    """Re-compose a blueprint from its source service templates.
+
+    Fetches the current active ARM templates for each service_id stored
+    on the blueprint, runs the same compose logic (with the fixed
+    parameter remapping), and saves the result as a new version.
+    """
+    from src.database import (
+        get_template_by_id, get_service, get_active_service_version,
+        upsert_template, create_template_version,
+    )
+    from src.tools.arm_generator import (
+        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
+        has_builtin_skeleton,
+    )
+    from src.template_engine import analyze_dependencies
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Parse service_ids
+    svc_ids_raw = tmpl.get("service_ids") or tmpl.get("service_ids_json") or []
+    if isinstance(svc_ids_raw, str):
+        try:
+            svc_ids = _json.loads(svc_ids_raw)
+        except Exception:
+            svc_ids = []
+    else:
+        svc_ids = list(svc_ids_raw) if svc_ids_raw else []
+
+    if not svc_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="This template has no service_ids — it can't be recomposed",
+        )
+
+    STANDARD_PARAMS = {
+        "resourceName", "location", "environment",
+        "projectName", "ownerEmail", "costCenter",
+    }
+
+    # ── Gather current ARM templates for each service ─────────
+    service_templates: list[dict] = []
+    for sid in svc_ids:
+        svc = await get_service(sid)
+        if not svc:
+            raise HTTPException(status_code=404, detail=f"Service '{sid}' not found")
+
+        tpl_dict = None
+        active = await get_active_service_version(sid)
+        if active and active.get("arm_template"):
+            try:
+                tpl_dict = _json.loads(active["arm_template"])
+            except Exception:
+                pass
+        if not tpl_dict and has_builtin_skeleton(sid):
+            tpl_dict = generate_arm_template(sid)
+        if not tpl_dict:
+            raise HTTPException(
+                status_code=400, detail=f"No ARM template available for '{sid}'",
+            )
+
+        service_templates.append({
+            "svc": svc,
+            "template": tpl_dict,
+            "quantity": 1,
+        })
+
+    # ── Compose ───────────────────────────────────────────────
+    combined_params = dict(_STANDARD_PARAMETERS)
+    combined_resources: list[dict] = []
+    combined_outputs: dict = {}
+    resource_types: list[str] = []
+    tags_list: list[str] = []
+
+    for entry in service_templates:
+        svc = entry["svc"]
+        tpl = entry["template"]
+        sid = svc["id"]
+
+        short_name = sid.split("/")[-1].lower()
+        resource_types.append(sid)
+        tags_list.append(svc.get("category", ""))
+
+        src_params = tpl.get("parameters", {})
+        src_resources = tpl.get("resources", [])
+        src_outputs = tpl.get("outputs", {})
+
+        suffix = f"_{short_name}"
+        instance_name_param = f"resourceName{suffix}"
+        combined_params[instance_name_param] = {
+            "type": "string",
+            "metadata": {"description": f"Name for {svc.get('name', sid)}"},
+        }
+
+        # Add ALL non-standard params from the service template
+        all_non_standard = [
+            pname for pname in src_params
+            if pname not in STANDARD_PARAMS and pname != "resourceName"
+        ]
+        for pname in all_non_standard:
+            pdef = src_params.get(pname)
+            if not pdef:
+                continue
+            suffixed = f"{pname}{suffix}"
+            combined_params[suffixed] = dict(pdef)
+
+        # Clone resources, replacing ALL parameter references
+        for res in src_resources:
+            res_str = _json.dumps(res)
+            res_str = res_str.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            res_str = res_str.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                res_str = res_str.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                res_str = res_str.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_resources.append(_json.loads(res_str))
+
+        # Clone outputs with suffixed names and remapped param refs
+        for oname, odef in src_outputs.items():
+            out_name = f"{oname}{suffix}"
+            out_val = _json.dumps(odef)
+            out_val = out_val.replace(
+                "[parameters('resourceName')]",
+                f"[parameters('{instance_name_param}')]",
+            )
+            out_val = out_val.replace(
+                "parameters('resourceName')",
+                f"parameters('{instance_name_param}')",
+            )
+            for pname in all_non_standard:
+                suffixed = f"{pname}{suffix}"
+                out_val = out_val.replace(
+                    f"[parameters('{pname}')]",
+                    f"[parameters('{suffixed}')]",
+                )
+                out_val = out_val.replace(
+                    f"parameters('{pname}')",
+                    f"parameters('{suffixed}')",
+                )
+            combined_outputs[out_name] = _json.loads(out_val)
+
+    # ── Build the recomposed template ─────────────────────────
+    composed = dict(_TEMPLATE_WRAPPER)
+    composed["parameters"] = combined_params
+    composed["variables"] = {}
+    composed["resources"] = combined_resources
+    composed["outputs"] = combined_outputs
+
+    content_str = _json.dumps(composed, indent=2)
+
+    # Apply standard sanitizers
+    content_str = _ensure_parameter_defaults(content_str)
+    content_str = _sanitize_placeholder_guids(content_str)
+    content_str = _sanitize_dns_zone_names(content_str)
+
+    # Update parameter list for catalog storage
+    composed = _json.loads(content_str)
+    combined_params = composed.get("parameters", {})
+    param_list = [
+        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+        for k, v in combined_params.items()
+    ]
+
+    dep_analysis = analyze_dependencies(svc_ids)
+
+    # ── Save back ─────────────────────────────────────────────
+    catalog_entry = {
+        "id": template_id,
+        "name": tmpl.get("name", template_id),
+        "description": tmpl.get("description", ""),
+        "format": "arm",
+        "category": tmpl.get("category", "blueprint"),
+        "content": content_str,
+        "tags": list(set(tags_list)),
+        "resources": list(set(resource_types)),
+        "parameters": param_list,
+        "outputs": list(combined_outputs.keys()),
+        "is_blueprint": len(service_templates) > 1,
+        "service_ids": svc_ids,
+        "status": tmpl.get("status", "draft"),
+        "registered_by": tmpl.get("registered_by", "template-composer"),
+        "template_type": dep_analysis["template_type"],
+        "provides": dep_analysis["provides"],
+        "requires": dep_analysis["requires"],
+        "optional_refs": dep_analysis["optional_refs"],
+    }
+
+    try:
+        await upsert_template(catalog_entry)
+        ver = await create_template_version(
+            template_id, content_str,
+            changelog="Recomposed from current service templates",
+            created_by="recomposer",
+        )
+    except Exception as e:
+        logger.error(f"Failed to save recomposed template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info(
+        f"Recomposed blueprint '{template_id}' from {len(svc_ids)} services "
+        f"→ {len(combined_resources)} resources, {len(combined_params)} params"
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "template_id": template_id,
+        "resource_count": len(combined_resources),
+        "parameter_count": len(combined_params),
+        "services_recomposed": svc_ids,
+        "version": ver,
+        "message": f"Blueprint recomposed from {len(svc_ids)} services with latest templates",
+    })
+
+
 # ── Template Version Management ──────────────────────────────
 
 @app.get("/api/catalog/templates/{template_id}/versions")
@@ -1629,18 +2544,21 @@ async def promote_template(template_id: str, request: Request):
     return JSONResponse({"status": "ok", "promoted_version": version})
 
 
-# ── Template Validation (ARM What-If) ───────────────────────
+# ── Template Validation (Deploy-Test with Self-Healing) ─────
 
 @app.post("/api/catalog/templates/{template_id}/validate")
 async def validate_template(template_id: str, request: Request):
-    """Validate a template by running ARM What-If against Azure.
+    """Validate a template by deploying it to a temporary resource group.
 
-    Runs ARM What-If in a temporary resource group, then cleans up.
-    The template must have passed structural tests first (status = 'passed').
+    Streams NDJSON progress. Uses the full self-healing loop (shallow +
+    deep healing for blueprints). On success the template version is
+    marked 'validated' and the temp RG is cleaned up. On failure it is
+    marked 'failed'. The template is NOT published until explicitly
+    promoted — this is just the validation gate.
 
     Body: {
-        "parameters": { "location": "eastus2", "resourceName": "test-rg", ... },
-        "region": "eastus2"  // optional, defaults to eastus2
+        "parameters": { ... },
+        "region": "eastus2"  // optional
     }
     """
     import uuid as _uuid
@@ -1653,14 +2571,13 @@ async def validate_template(template_id: str, request: Request):
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    # Find the latest version that passed testing
+    # Find the latest version that can be validated
     versions = await get_template_versions(template_id)
     target_ver = None
     for v in versions:
         if v["status"] in ("passed", "validated", "failed"):
             target_ver = v
             break
-    # Also allow re-validating draft if no passed version
     if not target_ver:
         for v in versions:
             if v["status"] == "draft":
@@ -1689,7 +2606,7 @@ async def validate_template(template_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Template content is not valid JSON")
 
-    # Build parameter values — fill in defaults for required params
+    # Build parameter values
     tpl_params = tpl.get("parameters", {})
     final_params = {}
     for pname, pdef in tpl_params.items():
@@ -1698,7 +2615,6 @@ async def validate_template(template_id: str, request: Request):
         elif "defaultValue" in pdef:
             final_params[pname] = pdef["defaultValue"]
         else:
-            # Generate a sensible default for validation
             ptype = pdef.get("type", "string").lower()
             if ptype == "string":
                 final_params[pname] = f"if-val-{pname[:20]}"
@@ -1711,100 +2627,339 @@ async def validate_template(template_id: str, request: Request):
             elif ptype == "object":
                 final_params[pname] = {}
 
-    # Create a temporary resource group name
-    rg_name = f"infraforge-tmpl-val-{_uuid.uuid4().hex[:8]}"
+    rg_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
+    deployment_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
+    _tmpl_id = template_id
+    _tmpl_name = tmpl.get("name", template_id)
+    _ver_num = version_num
 
-    # Run ARM What-If
-    try:
-        from src.tools.deploy_engine import run_what_if, _get_resource_client
-        import asyncio
+    # Blueprint / service info for deep healing
+    is_blueprint = bool(tmpl.get("is_blueprint"))
+    svc_ids_raw = tmpl.get("service_ids") or tmpl.get("service_ids_json") or []
+    if isinstance(svc_ids_raw, str):
+        try:
+            svc_ids = json.loads(svc_ids_raw)
+        except Exception:
+            svc_ids = []
+    else:
+        svc_ids = list(svc_ids_raw) if svc_ids_raw else []
 
-        what_if_result = await run_what_if(
-            resource_group=rg_name,
-            template=tpl,
-            parameters=final_params,
-            region=region,
-        )
+    async def _stream():
+        from src.tools.deploy_engine import execute_deployment
+        import uuid as _heal_uuid
 
-        validation_passed = what_if_result.get("status") == "success" and not what_if_result.get("errors")
+        MAX_HEAL = 5
+        DEEP_HEAL_AFTER = 2
+        heal_history: list[dict] = []
+        current_tpl = tpl
+        current_params = dict(final_params)
+        current_deploy_name = deployment_name
+        deep_healed = False
+        final_tpl = None         # the template that eventually succeeded
+        final_status = "failed"
 
+        yield json.dumps({
+            "phase": "starting",
+            "detail": f"Validating template '{_tmpl_name}' — deploying to temp RG {rg_name}…",
+            "deployment_name": deployment_name,
+            "resource_group": rg_name,
+            "region": region,
+            "max_attempts": MAX_HEAL,
+            "is_blueprint": is_blueprint,
+            "mode": "validation",
+        }) + "\n"
+
+        for attempt in range(1, MAX_HEAL + 1):
+            is_last = attempt == MAX_HEAL
+            events: list[dict] = []
+
+            async def _on_progress(event):
+                events.append(event)
+
+            if attempt > 1:
+                current_deploy_name = f"infraforge-val-{_heal_uuid.uuid4().hex[:8]}"
+
+            yield json.dumps({
+                "phase": "attempt_start",
+                "attempt": attempt,
+                "max_attempts": MAX_HEAL,
+                "detail": f"Validation attempt {attempt}/{MAX_HEAL}" + (
+                    "" if attempt == 1 else (
+                        " — retrying with deep-healed template" if deep_healed
+                        else " — retrying with LLM-corrected template"
+                    )
+                ),
+            }) + "\n"
+
+            try:
+                result = await execute_deployment(
+                    resource_group=rg_name,
+                    template=current_tpl,
+                    parameters=current_params,
+                    region=region,
+                    deployment_name=current_deploy_name,
+                    initiated_by="validation",
+                    on_progress=_on_progress,
+                    template_id=_tmpl_id,
+                    template_name=_tmpl_name,
+                )
+            except Exception as exc:
+                result = {"status": "failed", "error": str(exc)}
+
+            for ev in events:
+                yield json.dumps(ev) + "\n"
+
+            status = result.get("status", "unknown")
+
+            # ── SUCCESS ──
+            if status == "succeeded":
+                final_tpl = current_tpl
+                final_status = "validated"
+
+                yield json.dumps({
+                    "phase": "complete",
+                    "status": "succeeded",
+                    "attempt": attempt,
+                    "deployment_id": result.get("deployment_id"),
+                    "provisioned_resources": result.get("provisioned_resources", []),
+                    "outputs": result.get("outputs", {}),
+                    "healed": attempt > 1,
+                    "deep_healed": deep_healed,
+                }) + "\n"
+                break
+
+            # ── FAILURE ──
+            error_msg = result.get("error") or result.get("detail") or "Unknown deployment error"
+
+            if is_last:
+                yield json.dumps({
+                    "phase": "complete",
+                    "status": "failed",
+                    "attempt": attempt,
+                    "deployment_id": result.get("deployment_id"),
+                    "error": error_msg,
+                    "detail": f"Template could not be verified after {MAX_HEAL} iterations",
+                    "heal_history": [
+                        {"attempt": h["attempt"], "error": h["error"][:200], "fix_summary": h["fix_summary"]}
+                        for h in heal_history
+                    ],
+                }) + "\n"
+                break
+
+            # ── DEEP HEALING (for blueprints) ──
+            if is_blueprint and svc_ids and attempt >= DEEP_HEAL_AFTER and not deep_healed:
+                yield json.dumps({
+                    "phase": "deep_heal_trigger",
+                    "attempt": attempt,
+                    "detail": (
+                        f"Surface-level adjustments tried {attempt} times — "
+                        f"switching to deep analysis: examining underlying service templates…"
+                    ),
+                    "service_ids": svc_ids,
+                }) + "\n"
+
+                deep_events: list[dict] = []
+                async def _on_deep_event(evt):
+                    deep_events.append(evt)
+
+                try:
+                    fixed_composed = await _deep_heal_composed_template(
+                        template_id=_tmpl_id,
+                        service_ids=svc_ids,
+                        error_msg=error_msg,
+                        current_template=current_tpl,
+                        region=region,
+                        on_event=_on_deep_event,
+                    )
+                except Exception as dh_err:
+                    fixed_composed = None
+                    deep_events.append({
+                        "phase": "deep_heal_fail",
+                        "detail": f"Deep healing error: {dh_err}",
+                    })
+
+                for de in deep_events:
+                    yield json.dumps(de) + "\n"
+
+                if fixed_composed:
+                    deep_healed = True
+                    current_tpl = fixed_composed
+
+                    new_params = {}
+                    for pname, pdef in current_tpl.get("parameters", {}).items():
+                        if pname in user_params:
+                            new_params[pname] = user_params[pname]
+                        elif "defaultValue" in pdef:
+                            new_params[pname] = pdef["defaultValue"]
+                        else:
+                            ptype = pdef.get("type", "string").lower()
+                            if ptype == "string":
+                                new_params[pname] = f"if-val-{pname[:20]}"
+                            elif ptype == "int":
+                                new_params[pname] = 1
+                            elif ptype == "bool":
+                                new_params[pname] = True
+                            elif ptype == "array":
+                                new_params[pname] = []
+                            elif ptype == "object":
+                                new_params[pname] = {}
+                    current_params = new_params
+
+                    heal_history.append({
+                        "attempt": attempt,
+                        "phase": "deep_heal",
+                        "error": error_msg[:500],
+                        "fix_summary": "Deep healed: fixed underlying service templates and recomposed",
+                    })
+
+                    yield json.dumps({
+                        "phase": "healed",
+                        "attempt": attempt,
+                        "detail": "Deep healing complete — recomposed template ready, retrying…",
+                        "fix_summary": "Deep healed: fixed underlying service templates and recomposed",
+                        "deep_healed": True,
+                    }) + "\n"
+                    continue
+
+                yield json.dumps({
+                    "phase": "deep_heal_fallback",
+                    "attempt": attempt,
+                    "detail": "Deep healing did not produce a fix — falling back to shallow heal…",
+                }) + "\n"
+
+            # ── SHALLOW HEAL ──
+            yield json.dumps({
+                "phase": "healing",
+                "attempt": attempt,
+                "detail": f"Iteration {attempt} returned feedback — analyzing and adjusting template…",
+                "error_summary": error_msg[:300],
+            }) + "\n"
+
+            pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
+            try:
+                _heal_params = _extract_param_values(
+                    current_tpl if isinstance(current_tpl, dict) else json.loads(pre_fix)
+                )
+                fixed_json = await _copilot_heal_template(
+                    content=pre_fix,
+                    error=error_msg,
+                    previous_attempts=heal_history,
+                    parameters=_heal_params,
+                )
+                fixed_tpl = json.loads(fixed_json)
+            except Exception as heal_err:
+                yield json.dumps({
+                    "phase": "complete",
+                    "status": "failed",
+                    "attempt": attempt,
+                    "error": error_msg,
+                    "detail": f"LLM healing failed: {heal_err}",
+                }) + "\n"
+                final_status = "failed"
+                break
+
+            fix_summary = _summarize_fix(pre_fix, fixed_json)
+            heal_history.append({
+                "attempt": attempt,
+                "phase": "deploy",
+                "error": error_msg[:500],
+                "fix_summary": fix_summary,
+            })
+
+            new_params = {}
+            for pname, pdef in fixed_tpl.get("parameters", {}).items():
+                if pname in user_params:
+                    new_params[pname] = user_params[pname]
+                elif "defaultValue" in pdef:
+                    new_params[pname] = pdef["defaultValue"]
+                else:
+                    ptype = pdef.get("type", "string").lower()
+                    if ptype == "string":
+                        new_params[pname] = f"if-val-{pname[:20]}"
+                    elif ptype == "int":
+                        new_params[pname] = 1
+                    elif ptype == "bool":
+                        new_params[pname] = True
+                    elif ptype == "array":
+                        new_params[pname] = []
+                    elif ptype == "object":
+                        new_params[pname] = {}
+
+            current_tpl = fixed_tpl
+            current_params = new_params
+
+            yield json.dumps({
+                "phase": "healed",
+                "attempt": attempt,
+                "detail": f"Applied fix: {fix_summary}",
+                "fix_summary": fix_summary,
+            }) + "\n"
+
+        # ── Post-loop: update DB status and save healed template ──
+        yield json.dumps({
+            "phase": "cleanup",
+            "detail": f"Cleaning up validation resource group {rg_name}…",
+        }) + "\n"
+
+        # Update template version status
         validation_results = {
-            "what_if": what_if_result,
             "resource_group": rg_name,
             "region": region,
             "parameters_used": final_params,
-            "validation_passed": validation_passed,
+            "validation_passed": final_status == "validated",
+            "heal_history": heal_history,
+            "deep_healed": deep_healed,
         }
-
-        new_status = "validated" if validation_passed else "failed"
         await update_template_validation_status(
-            template_id, version_num, new_status, validation_results
+            _tmpl_id, _ver_num, final_status, validation_results
         )
+
+        # If healed, save the corrected template back to the version
+        if final_status == "validated" and final_tpl and (heal_history or deep_healed):
+            fixed_content = json.dumps(final_tpl, indent=2)
+            from src.database import get_backend as _get_hb
+            _hb = await _get_hb()
+            await _hb.execute_write(
+                """UPDATE template_versions
+                   SET arm_template = ?
+                   WHERE template_id = ? AND version = ?""",
+                (fixed_content, _tmpl_id, _ver_num),
+            )
+            await _hb.execute_write(
+                """UPDATE catalog_templates
+                   SET content = ?, updated_at = ?
+                   WHERE id = ?""",
+                (fixed_content, datetime.now(timezone.utc).isoformat(), _tmpl_id),
+            )
 
         # Sync parent template status
         from src.database import get_backend as _get_val_backend
         _vb = await _get_val_backend()
         await _vb.execute_write(
             "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
-            (new_status, datetime.now(timezone.utc).isoformat(), template_id),
+            (final_status, datetime.now(timezone.utc).isoformat(), _tmpl_id),
         )
 
-        # Cleanup the temp RG
-        try:
-            client = _get_resource_client()
-            loop = asyncio.get_event_loop()
-            poller = await loop.run_in_executor(
-                None, lambda: client.resource_groups.begin_delete(rg_name)
-            )
-            logger.info(f"Template validation: cleanup started for RG '{rg_name}'")
-        except Exception as e:
-            logger.warning(f"Template validation: cleanup failed for RG '{rg_name}': {e}")
-
-        return JSONResponse({
-            "template_id": template_id,
-            "version": version_num,
-            "status": new_status,
-            "validation": validation_results,
-        })
-
-    except Exception as e:
-        # Record the failure
-        error_results = {
-            "error": str(e),
-            "resource_group": rg_name,
-            "region": region,
-            "parameters_used": final_params,
-            "validation_passed": False,
-        }
-        await update_template_validation_status(
-            template_id, version_num, "failed", error_results
-        )
-
-        # Sync parent template status to failed
-        from src.database import get_backend as _get_valf_backend
-        _vfb = await _get_valf_backend()
-        await _vfb.execute_write(
-            "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
-            ("failed", datetime.now(timezone.utc).isoformat(), template_id),
-        )
-
-        # Try to cleanup RG even on failure
+        # Cleanup the validation RG (fire-and-forget)
         try:
             from src.tools.deploy_engine import _get_resource_client
             client = _get_resource_client()
-            loop = asyncio.get_event_loop()
+            import asyncio as _aio
+            loop = _aio.get_event_loop()
             await loop.run_in_executor(
                 None, lambda: client.resource_groups.begin_delete(rg_name)
             )
-        except Exception:
-            pass
+            yield json.dumps({
+                "phase": "cleanup_done",
+                "detail": f"Temp RG {rg_name} deletion started.",
+            }) + "\n"
+        except Exception as cle:
+            yield json.dumps({
+                "phase": "cleanup_warning",
+                "detail": f"Could not delete temp RG {rg_name}: {cle}",
+            }) + "\n"
 
-        return JSONResponse({
-            "template_id": template_id,
-            "version": version_num,
-            "status": "failed",
-            "validation": error_results,
-        }, status_code=200)  # 200 because validation ran, just didn't pass
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 # ── Template Publishing ──────────────────────────────────────
@@ -1859,35 +3014,185 @@ async def publish_template(template_id: str, request: Request):
     })
 
 
-# ── Template Deployment ──────────────────────────────────────
+
+# ── Template Deployment (approved templates only) ────────────
+
+# ══════════════════════════════════════════════════════════════
+# DEPLOYMENT AGENT — Process-as-Code Pipeline
+# ══════════════════════════════════════════════════════════════
+#
+# The deployment process is a DETERMINISTIC STATE MACHINE, not an LLM.
+# The LLM is called for specific intelligence tasks (error analysis,
+# template fixing), but it never decides what step comes next.
+#
+# Pipeline steps (enforced by code, not prompts):
+#   1. SANITIZE  — _ensure_parameter_defaults, _sanitize_placeholder_guids
+#   2. WHAT-IF   — ARM validation preview (catches errors before deploy)
+#   3. DEPLOY    — Real ARM deployment with progress streaming
+#   4. ON FAIL   —
+#      a. Surface heal: _copilot_heal_template (LLM fixes the ARM JSON)
+#      b. Deep heal:    _deep_heal_composed_template (fix underlying service
+#                       templates, validate standalone, recompose parent)
+#      c. Retry from step 2
+#   5. ON SUCCESS — Save healed version, report provisioned resources
+#   6. EXHAUSTED  — LLM deployment agent summarizes for the user
+#
+# The LLM cannot skip steps. It cannot decide to stop early. It cannot
+# bypass What-If. The pipeline runs to completion or exhaustion.
+# ══════════════════════════════════════════════════════════════
+
+MAX_DEPLOY_HEAL_ATTEMPTS = 5   # Match validate's budget
+DEEP_HEAL_THRESHOLD = 3        # After this many surface heals, go deep
+
+DEPLOY_AGENT_PROMPT = """\
+You are the InfraForge Deployment Agent. A deployment failed after the
+auto-healing pipeline tried {attempts} iteration(s). Summarize what
+happened clearly for the user.
+
+When explaining:
+1. Explain the error in plain language (what went wrong)
+2. Describe what the pipeline tried (surface heals, deep heals if any)
+3. Suggest specific next steps
+
+Guidelines:
+- Be concise (3-5 sentences max)
+- Use markdown for formatting
+- Don't be alarming — deployment issues are normal in iterative development
+- Frame problems as improvements needed, not failures
+- If the error is a template issue, suggest re-running validation
+- If the error is an Azure issue (quota, region, SKU), explain the limitation
+- Never dump raw error codes — translate them for humans
+"""
+
+
+async def _get_deploy_agent_analysis(
+    error: str,
+    template_name: str,
+    resource_group: str,
+    region: str,
+    heal_history: list[dict] | None = None,
+) -> str:
+    """Ask the deployment agent (LLM) to interpret a deployment failure.
+
+    Called only after the pipeline exhausts all heal attempts. The agent
+    produces a human-readable summary. This is a LEAF call — the LLM has
+    no tools and cannot trigger further actions.
+    """
+    attempts = len(heal_history) if heal_history else 0
+    history_text = ""
+    if heal_history:
+        history_text = "\n**Pipeline history:**\n"
+        for h in heal_history:
+            phase = h.get("phase", "deploy")
+            history_text += (
+                f"- Iteration {h['attempt']} ({phase}): {h['error'][:150]}… "
+                f"→ {h['fix_summary']}\n"
+            )
+
+    try:
+        client = await ensure_copilot_client()
+        if not client:
+            return _fallback_deploy_analysis(error, heal_history)
+
+        session = await client.create_session({
+            "model": get_model_for_task(Task.VALIDATION_ANALYSIS),
+            "streaming": True,
+            "tools": [],
+            "system_message": {"content": DEPLOY_AGENT_PROMPT.format(attempts=attempts)},
+        })
+
+        prompt = (
+            f"A deployment of **{template_name}** to resource group "
+            f"`{resource_group}` in **{region}** failed after "
+            f"{attempts} pipeline iteration(s).\n\n"
+            f"**Final Azure error:**\n```\n{error[:500]}\n```\n"
+            f"{history_text}\n"
+            f"Explain what happened and what to do next."
+        )
+
+        chunks: list[str] = []
+        done = asyncio.Event()
+
+        def on_event(event):
+            try:
+                if event.type.value == "assistant.message_delta":
+                    chunks.append(event.data.delta_content or "")
+                elif event.type.value in ("assistant.message", "session.idle"):
+                    done.set()
+            except Exception:
+                done.set()
+
+        unsub = session.on(on_event)
+        try:
+            await session.send({"prompt": prompt})
+            await asyncio.wait_for(done.wait(), timeout=30)
+        finally:
+            unsub()
+            try:
+                await session.destroy()
+            except Exception:
+                pass
+
+        return "".join(chunks) or _fallback_deploy_analysis(error, heal_history)
+
+    except Exception as e:
+        logger.error(f"Deploy agent analysis failed: {e}")
+        return _fallback_deploy_analysis(error, heal_history)
+
+
+def _fallback_deploy_analysis(error: str, heal_history: list[dict] | None = None) -> str:
+    """Structured message when the LLM agent isn't available."""
+    attempts = len(heal_history) if heal_history else 0
+    history_text = ""
+    if heal_history:
+        history_text = "\n\n**What the pipeline tried:**\n"
+        for h in heal_history:
+            history_text += f"- Iteration {h['attempt']}: {h['fix_summary']}\n"
+
+    return (
+        f"The deployment pipeline tried {attempts} iteration(s) but couldn't "
+        f"resolve the issue.\n\n"
+        f"**Last error:**\n> {error[:300]}\n"
+        f"{history_text}\n"
+        f"**Suggested next steps:** Re-run validation to diagnose and fix "
+        f"the underlying issue with the full healing pipeline."
+    )
+
 
 @app.post("/api/catalog/templates/{template_id}/deploy")
 async def deploy_template(template_id: str, request: Request):
-    """Deploy a template to Azure via ARM SDK — streaming NDJSON progress.
+    """Deploy an approved template to Azure — process-as-code pipeline.
 
-    The template must be approved (or at minimum validated).
+    The deployment is managed by a deterministic pipeline that:
+      1. Sanitizes the template (parameter defaults, GUID placeholders)
+      2. Runs What-If validation (catches errors before spending resources)
+      3. Deploys to Azure with real-time progress streaming
+      4. On failure: surface-heals → deep-heals (for composed templates)
+      5. On exhaustion: LLM agent summarizes for the user
 
-    Body: {
-        "resource_group": "my-rg",       // required
-        "region": "eastus2",             // optional, defaults to eastus2
-        "parameters": { ... }            // optional parameter overrides
-    }
+    The LLM is called for intelligence tasks, not for process control.
+    The pipeline cannot be short-circuited by the LLM.
 
-    Streams NDJSON events with phases:
-      resource_group → validating → validated → deploying →
-      provisioning → done  (or error)
+    Event protocol (NDJSON):
+      {"type": "status",  "message": "...", "progress": 0.5}  — progress
+      {"type": "agent",   "content": "...", "action": "..."}   — agent activity
+      {"type": "result",  "status": "succeeded|needs_work"}    — final outcome
     """
     import uuid as _uuid
-    from src.database import get_template_by_id, get_template_versions
+    from src.database import (
+        get_template_by_id, get_template_versions,
+        create_template_version, update_template_version_status,
+    )
 
     tmpl = await get_template_by_id(template_id)
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    if tmpl.get("status") not in ("approved", "validated"):
+    if tmpl.get("status") not in ("approved",):
         raise HTTPException(
             status_code=400,
-            detail=f"Template must be approved or validated before deploying (current: {tmpl.get('status')})",
+            detail=f"Template must be published (approved) before deploying. "
+                   f"Current: {tmpl.get('status')}. Run validation and publish first.",
         )
 
     try:
@@ -1902,7 +3207,7 @@ async def deploy_template(template_id: str, request: Request):
     region = body.get("region", "eastus2")
     user_params = body.get("parameters", {})
 
-    # Get the active version's ARM template
+    # Get the active (approved) version's ARM template
     arm_content = tmpl.get("content", "")
     versions = await get_template_versions(template_id)
     active_ver = tmpl.get("active_version")
@@ -1916,82 +3221,483 @@ async def deploy_template(template_id: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Template content is not valid JSON")
 
-    # Build final parameters
-    tpl_params = tpl.get("parameters", {})
-    final_params = {}
-    for pname, pdef in tpl_params.items():
-        if pname in user_params:
-            final_params[pname] = user_params[pname]
-        elif "defaultValue" in pdef:
-            final_params[pname] = pdef["defaultValue"]
-        else:
-            ptype = pdef.get("type", "string").lower()
-            if ptype == "string":
-                final_params[pname] = f"if-{pname[:20]}"
-            elif ptype == "int":
-                final_params[pname] = 1
-            elif ptype == "bool":
-                final_params[pname] = True
-            elif ptype == "array":
-                final_params[pname] = []
-            elif ptype == "object":
-                final_params[pname] = {}
+    # Template metadata for deep healing
+    is_blueprint = tmpl.get("is_blueprint", False)
+    service_ids = tmpl.get("service_ids") or []
 
-    deployment_name = f"infraforge-tmpl-{_uuid.uuid4().hex[:8]}"
+    deployment_name = f"infraforge-{_uuid.uuid4().hex[:8]}"
     _tmpl_id = template_id
     _tmpl_name = tmpl.get("name", template_id)
 
     async def _stream():
-        from src.tools.deploy_engine import execute_deployment, deploy_manager
+        """Process-as-code deployment pipeline.
 
-        events = []
+        Steps are enforced by code, not by the LLM. The LLM is called
+        for intelligence tasks (healing, analysis) as a sub-agent.
+        """
+        from src.tools.deploy_engine import execute_deployment, run_what_if
 
-        async def _on_progress(event):
-            events.append(event)
+        heal_history: list[dict] = []
 
+        # ── STEP 1: SANITIZE ─────────────────────────────────
         yield json.dumps({
-            "phase": "starting",
-            "detail": f"Deploying template '{_tmpl_name}' to {resource_group}…",
+            "type": "status",
+            "message": f"🚀 Deploying **{_tmpl_name}** to `{resource_group}`…",
+            "progress": 0.02,
             "deployment_name": deployment_name,
             "resource_group": resource_group,
             "region": region,
         }) + "\n"
 
-        try:
-            result = await execute_deployment(
-                resource_group=resource_group,
-                template=tpl,
-                parameters=final_params,
-                region=region,
-                deployment_name=deployment_name,
-                initiated_by="web-ui",
-                on_progress=_on_progress,
-                template_id=_tmpl_id,
-                template_name=_tmpl_name,
+        current_template_json = _ensure_parameter_defaults(json.dumps(tpl, indent=2))
+        current_template_json = _sanitize_placeholder_guids(current_template_json)
+        current_template_json = _sanitize_dns_zone_names(current_template_json)
+        current_template = json.loads(current_template_json)
+
+        # Build parameters using _extract_param_values (same as validate)
+        final_params = _extract_param_values(current_template)
+        final_params.update({
+            k: v for k, v in user_params.items() if v is not None
+        })
+
+        for attempt in range(1, MAX_DEPLOY_HEAL_ATTEMPTS + 1):
+            is_last = attempt == MAX_DEPLOY_HEAL_ATTEMPTS
+            att_base = (attempt - 1) / MAX_DEPLOY_HEAL_ATTEMPTS
+
+            if attempt > 1:
+                yield json.dumps({
+                    "type": "agent",
+                    "action": "retry",
+                    "content": f"🔄 **Iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS}** — retrying with the fixed template…",
+                }) + "\n"
+
+            # ── STEP 2: WHAT-IF VALIDATION ────────────────────
+            yield json.dumps({
+                "type": "status",
+                "message": "Validating ARM template against Azure (What-If)…",
+                "progress": att_base + 0.03 / MAX_DEPLOY_HEAL_ATTEMPTS,
+            }) + "\n"
+
+            try:
+                wif = await run_what_if(
+                    resource_group=resource_group,
+                    template=current_template,
+                    parameters=final_params,
+                    region=region,
+                )
+            except Exception as e:
+                wif = {"status": "error", "errors": [str(e)]}
+
+            if wif.get("status") != "success":
+                what_if_errors = "; ".join(
+                    str(e) for e in wif.get("errors", [])
+                ) or "Unknown What-If error"
+
+                # Detect transient Azure errors (don't burn a heal attempt)
+                _infra_keywords = (
+                    "beingdeleted", "being deleted", "deprovisioning",
+                    "throttled", "toomanyrequests", "retryable",
+                    "serviceunavailable", "internalservererror",
+                )
+                if any(kw in what_if_errors.lower() for kw in _infra_keywords):
+                    yield json.dumps({
+                        "type": "status",
+                        "message": "Transient Azure issue — waiting before retry…",
+                        "progress": att_base + 0.05 / MAX_DEPLOY_HEAL_ATTEMPTS,
+                    }) + "\n"
+                    await asyncio.sleep(10)
+                    continue
+
+                # Template error — heal it
+                yield json.dumps({
+                    "type": "agent",
+                    "action": "healing",
+                    "content": f"🧠 **What-If rejected** — deployment agent fixing the template (iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
+                }) + "\n"
+
+                healed = await _run_heal_step(
+                    current_template, what_if_errors, heal_history,
+                    attempt, is_blueprint, service_ids, _tmpl_id, region,
+                )
+                if healed:
+                    current_template = healed["template"]
+                    final_params = _extract_param_values(current_template)
+                    final_params.update({k: v for k, v in user_params.items() if v is not None})
+
+                    yield json.dumps({
+                        "type": "agent",
+                        "action": "healed",
+                        "content": f"🔧 **Fixed:** {healed['fix_summary']}",
+                    }) + "\n"
+
+                    heal_history.append({
+                        "attempt": attempt,
+                        "phase": "what_if",
+                        "error": what_if_errors[:500],
+                        "fix_summary": healed["fix_summary"],
+                        "deep": healed.get("deep", False),
+                    })
+                else:
+                    heal_history.append({
+                        "attempt": attempt,
+                        "phase": "what_if",
+                        "error": what_if_errors[:500],
+                        "fix_summary": "Heal failed",
+                    })
+                    if is_last:
+                        break
+                    yield json.dumps({
+                        "type": "agent",
+                        "action": "heal_failed",
+                        "content": "⚠️ Auto-heal couldn't resolve the What-If error — trying a different approach…",
+                    }) + "\n"
+                continue  # Retry from What-If with the fixed template
+
+            # What-If passed!
+            change_summary = ", ".join(
+                f"{v} {k}" for k, v in wif.get("change_counts", {}).items()
+            )
+            yield json.dumps({
+                "type": "status",
+                "message": f"✓ What-If passed — {change_summary or 'template accepted'}",
+                "progress": att_base + 0.08 / MAX_DEPLOY_HEAL_ATTEMPTS,
+            }) + "\n"
+
+            # ── STEP 3: DEPLOY ────────────────────────────────
+            deploy_name_i = (
+                deployment_name if attempt == 1
+                else f"{deployment_name}-r{attempt}"
             )
 
-            # Emit all progress events
-            for ev in events:
-                yield json.dumps(ev) + "\n"
+            progress_queue: asyncio.Queue = asyncio.Queue()
 
-            # Final result
+            async def _on_progress(event):
+                await progress_queue.put(event)
+
+            deploy_task = asyncio.create_task(
+                execute_deployment(
+                    resource_group=resource_group,
+                    template=current_template,
+                    parameters=final_params,
+                    region=region,
+                    deployment_name=deploy_name_i,
+                    initiated_by="web-ui",
+                    on_progress=_on_progress,
+                    template_id=_tmpl_id,
+                    template_name=_tmpl_name,
+                )
+            )
+
+            # Stream progress in real-time
+            while not deploy_task.done():
+                try:
+                    event = await asyncio.wait_for(
+                        progress_queue.get(), timeout=2.0
+                    )
+                    phase = event.get("phase", "")
+                    if phase not in ("error",):
+                        yield json.dumps({
+                            "type": "status",
+                            "message": event.get("detail", ""),
+                            "progress": att_base + (
+                                event.get("progress", 0) * 0.8
+                            ) / MAX_DEPLOY_HEAL_ATTEMPTS,
+                        }) + "\n"
+                except asyncio.TimeoutError:
+                    continue
+
+            # Drain remaining
+            while not progress_queue.empty():
+                event = progress_queue.get_nowait()
+                if event.get("phase") not in ("error",):
+                    yield json.dumps({
+                        "type": "status",
+                        "message": event.get("detail", ""),
+                        "progress": att_base + (
+                            event.get("progress", 0) * 0.8
+                        ) / MAX_DEPLOY_HEAL_ATTEMPTS,
+                    }) + "\n"
+
+            try:
+                result = deploy_task.result()
+            except Exception as exc:
+                result = {"status": "failed", "error": str(exc)}
+
+            # ── SUCCESS ──
+            if result.get("status") == "succeeded":
+                if attempt > 1:
+                    try:
+                        fixed_json = json.dumps(current_template, indent=2)
+                        new_ver = await create_template_version(
+                            _tmpl_id,
+                            arm_template=fixed_json,
+                            changelog=(
+                                f"Auto-healed during deployment "
+                                f"(iteration {attempt}): "
+                                f"{heal_history[-1]['fix_summary'][:200]}"
+                            ),
+                            created_by="deployment-agent",
+                        )
+                        await update_template_version_status(
+                            _tmpl_id, new_ver["version"], "approved",
+                        )
+                        logger.info(
+                            f"Deploy pipeline saved healed template "
+                            f"as version {new_ver['version']}"
+                        )
+                        yield json.dumps({
+                            "type": "agent",
+                            "action": "saved",
+                            "content": (
+                                f"💾 Fixed template saved as "
+                                f"**version {new_ver['version']}**."
+                            ),
+                        }) + "\n"
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to save healed template version: {e}"
+                        )
+
+                yield json.dumps({
+                    "type": "result",
+                    "status": "succeeded",
+                    "attempt": attempt,
+                    "deployment_id": result.get("deployment_id"),
+                    "provisioned_resources": result.get(
+                        "provisioned_resources", []
+                    ),
+                    "outputs": result.get("outputs", {}),
+                    "healed": attempt > 1,
+                }) + "\n"
+                return
+
+            # ── DEPLOY FAILED → HEAL ──
+            deploy_error = result.get("error") or "Unknown deployment error"
+
+            # Try to get operation-level details for better diagnostics
+            try:
+                from src.tools.deploy_engine import (
+                    _get_resource_client,
+                    _get_deployment_operation_errors,
+                )
+                _rc = _get_resource_client()
+                _lp = asyncio.get_event_loop()
+                op_errors = await _get_deployment_operation_errors(
+                    _rc, _lp, resource_group, deploy_name_i
+                )
+                if op_errors:
+                    deploy_error = f"{deploy_error} | Operation errors: {op_errors}"
+            except Exception:
+                pass
+
+            # Detect transient Azure errors
+            if any(
+                kw in deploy_error.lower()
+                for kw in (
+                    "beingdeleted", "being deleted", "deprovisioning",
+                    "throttled", "toomanyrequests", "retryable",
+                    "serviceunavailable", "internalservererror",
+                )
+            ):
+                yield json.dumps({
+                    "type": "status",
+                    "message": "Transient Azure issue — waiting before retry…",
+                    "progress": att_base + 0.15 / MAX_DEPLOY_HEAL_ATTEMPTS,
+                }) + "\n"
+                await asyncio.sleep(10)
+                continue
+
+            if is_last:
+                break
+
             yield json.dumps({
-                "phase": "complete",
-                "status": result.get("status", "unknown"),
-                "deployment_id": result.get("deployment_id"),
-                "provisioned_resources": result.get("provisioned_resources", []),
-                "outputs": result.get("outputs", {}),
-                "error": result.get("error"),
+                "type": "agent",
+                "action": "healing",
+                "content": (
+                    f"🧠 **Deploy failed** — deployment agent fixing the "
+                    f"template (iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…"
+                ),
             }) + "\n"
 
-        except Exception as e:
-            yield json.dumps({
-                "phase": "error",
-                "detail": f"Deployment failed: {str(e)}",
-            }) + "\n"
+            healed = await _run_heal_step(
+                current_template, deploy_error, heal_history,
+                attempt, is_blueprint, service_ids, _tmpl_id, region,
+            )
+            if healed:
+                current_template = healed["template"]
+                final_params = _extract_param_values(current_template)
+                final_params.update({
+                    k: v for k, v in user_params.items() if v is not None
+                })
+
+                yield json.dumps({
+                    "type": "agent",
+                    "action": "healed",
+                    "content": f"🔧 **Fixed:** {healed['fix_summary']}",
+                }) + "\n"
+                if healed.get("deep"):
+                    yield json.dumps({
+                        "type": "agent",
+                        "action": "deep_healed",
+                        "content": (
+                            f"🔬 **Deep heal:** Fixed the underlying "
+                            f"`{healed.get('culprit', '?')}` service template, "
+                            f"validated it standalone, and recomposed the parent."
+                        ),
+                    }) + "\n"
+
+                heal_history.append({
+                    "attempt": attempt,
+                    "phase": "deploy",
+                    "error": deploy_error[:500],
+                    "fix_summary": healed["fix_summary"],
+                    "deep": healed.get("deep", False),
+                })
+            else:
+                heal_history.append({
+                    "attempt": attempt,
+                    "phase": "deploy",
+                    "error": deploy_error[:500],
+                    "fix_summary": "Heal failed",
+                })
+                yield json.dumps({
+                    "type": "agent",
+                    "action": "heal_failed",
+                    "content": (
+                        "⚠️ Auto-heal couldn't resolve this error "
+                        "— trying a different approach…"
+                    ),
+                }) + "\n"
+
+            # Loop continues to next attempt
+
+        # ── STEP 6: EXHAUSTED → LLM summarizes ───────────────
+        last_error = (
+            heal_history[-1]["error"] if heal_history
+            else "Unknown error"
+        )
+
+        yield json.dumps({
+            "type": "agent",
+            "action": "analyzing",
+            "content": (
+                f"🧠 Deployment agent analyzing the issue after "
+                f"{len(heal_history)} iteration(s)…"
+            ),
+        }) + "\n"
+
+        analysis = await _get_deploy_agent_analysis(
+            last_error, _tmpl_name, resource_group, region,
+            heal_history=heal_history,
+        )
+
+        yield json.dumps({
+            "type": "agent",
+            "action": "analysis",
+            "content": analysis,
+        }) + "\n"
+
+        yield json.dumps({
+            "type": "result",
+            "status": "needs_work",
+            "attempt": len(heal_history),
+            "deployment_id": deployment_name,
+        }) + "\n"
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
+
+async def _run_heal_step(
+    current_template: dict,
+    error_msg: str,
+    heal_history: list[dict],
+    attempt: int,
+    is_blueprint: bool,
+    service_ids: list[str],
+    template_id: str,
+    region: str,
+) -> dict | None:
+    """Run one heal iteration: surface heal, or deep heal if threshold met.
+
+    Returns:
+        {"template": dict, "fix_summary": str, "deep": bool, "culprit": str}
+        or None if healing failed.
+
+    This function is deterministic in its decision of WHICH strategy to use.
+    The LLM is called only for the actual fix, not for the strategy choice.
+    """
+    surface_attempts = sum(
+        1 for h in heal_history if not h.get("deep", False)
+    )
+    should_deep_heal = (
+        is_blueprint
+        and len(service_ids) > 0
+        and surface_attempts >= DEEP_HEAL_THRESHOLD
+    )
+
+    if should_deep_heal:
+        # ── Deep heal: decompose → fix service → validate → recompose ──
+        logger.info(
+            f"Deploy pipeline: escalating to deep heal "
+            f"(attempt {attempt}, {surface_attempts} surface heals exhausted)"
+        )
+        try:
+            deep_events: list[dict] = []
+
+            async def _capture_deep_event(evt):
+                deep_events.append(evt)
+
+            fixed = await _deep_heal_composed_template(
+                template_id=template_id,
+                service_ids=service_ids,
+                error_msg=error_msg,
+                current_template=current_template,
+                region=region,
+                on_event=_capture_deep_event,
+            )
+            if fixed:
+                culprit = "unknown"
+                for evt in deep_events:
+                    if evt.get("culprit_service"):
+                        culprit = evt["culprit_service"]
+                        break
+
+                fix_summary = (
+                    f"Deep heal: fixed {culprit}, validated standalone, "
+                    f"recomposed parent template"
+                )
+                return {
+                    "template": fixed,
+                    "fix_summary": fix_summary,
+                    "deep": True,
+                    "culprit": culprit,
+                }
+        except Exception as e:
+            logger.error(f"Deep heal failed: {e}")
+        # Fall through to surface heal if deep heal fails
+
+    # ── Surface heal: LLM fixes the ARM JSON directly ──
+    try:
+        pre_fix = json.dumps(current_template, indent=2)
+        # Pass the actual parameter values so the LLM can see what
+        # was sent to ARM and fix the corresponding defaultValues.
+        current_params = _extract_param_values(current_template)
+        fixed_content = await _copilot_heal_template(
+            content=pre_fix,
+            error=error_msg,
+            previous_attempts=heal_history,
+            parameters=current_params,
+        )
+        fixed_template = json.loads(fixed_content)
+        fix_summary = _summarize_fix(pre_fix, fixed_content)
+        return {
+            "template": fixed_template,
+            "fix_summary": fix_summary,
+            "deep": False,
+        }
+    except Exception as e:
+        logger.error(f"Surface heal failed: {e}")
+        return None
 
 @app.delete("/api/catalog/services/{service_id}")
 async def delete_service_endpoint(service_id: str):
@@ -2373,6 +4079,23 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
             )
 
+            # Include parameter values so the LLM can see what was sent to ARM
+            try:
+                _fix_tpl = json.loads(content)
+                _fix_params = _extract_param_values(_fix_tpl)
+                if _fix_params:
+                    prompt += (
+                        "--- PARAMETER VALUES SENT TO ARM ---\n"
+                        f"{json.dumps(_fix_params, indent=2, default=str)}\n"
+                        "--- END PARAMETER VALUES ---\n\n"
+                        "IMPORTANT: These are the actual values sent to Azure. "
+                        "If the error is caused by one of these values (invalid "
+                        "name, bad format), fix the corresponding parameter's "
+                        "\"defaultValue\" in the template.\n\n"
+                    )
+            except Exception:
+                pass
+
             # Previous attempt history
             if previous_attempts:
                 prompt += "--- PREVIOUS FAILED ATTEMPTS (DO NOT repeat these fixes) ---\n"
@@ -2387,30 +4110,32 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             prompt += (
                 "Fix the template so it deploys successfully. Return ONLY the "
                 "corrected raw JSON — no markdown fences, no explanation.\n\n"
-                "CRITICAL RULES:\n"
-                "- Keep ALL location parameters as \"[resourceGroup().location]\" or "
-                "\"[parameters('location')]\" — NEVER hardcode a region like 'centralus', "
-                "'eastus2', etc.\n"
-                "- Keep the same resource intent and resource names.\n"
-                "- Fix schema issues, missing required properties, invalid API versions, "
-                "and structural problems.\n"
-                "- If a resource like diagnosticSettings requires an external dependency "
-                "(Log Analytics workspace, storage account), REMOVE it rather than adding "
-                "a fake dependency.\n"
-                "- Ensure EVERY parameter has a \"defaultValue\". This template is deployed "
-                "with parameters={}, so any parameter without a default will cause: "
-                "'The value for the template parameter ... is not provided'. If a parameter "
-                "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
-                "- NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID, "
-                "resource ID, or in any resourceId() reference. Use [subscription().subscriptionId] "
-                "instead to reference the current subscription.\n"
-                "- If the error mentions 'LinkedAuthorizationFailed' or 'linked subscription "
-                "was not found', the template has an invalid resource reference pointing to a "
-                "non-existent subscription. Fix by using [subscription().subscriptionId] in any "
-                "resourceId() expressions, or REMOVE the cross-subscription reference entirely.\n"
-                "- If a resource requires complex external dependencies (VPN gateways, "
-                "ExpressRoute circuits, peer VNets in other subscriptions), SIMPLIFY by "
-                "removing those cross-resource references or making them self-contained.\n"
+                "CRITICAL RULES (in priority order):\n\n"
+                "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
+                "   - If the error mentions an invalid resource name, the name likely "
+                "     comes from a parameter defaultValue. Find that parameter and fix "
+                "     its defaultValue to comply with Azure naming rules.\n"
+                "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
+                "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
+                "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
+                "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
+                "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
+                "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
+                "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
+                "   EXCEPTION: Globally-scoped resources MUST use location \"global\":\n"
+                "   * Microsoft.Network/dnszones → \"global\"\n"
+                "   * Microsoft.Network/trafficManagerProfiles → \"global\"\n"
+                "   * Microsoft.Cdn/profiles → \"global\"\n\n"
+                "3. STRUCTURAL FIXES:\n"
+                "   - Keep the same resource intent and resource names.\n"
+                "   - Fix schema issues, missing required properties, invalid API versions.\n"
+                "   - If diagnosticSettings requires an external dependency, REMOVE it.\n"
+                "   - NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID — "
+                "     use [subscription().subscriptionId] instead.\n"
+                "   - If the error mentions 'LinkedAuthorizationFailed', use "
+                "     [subscription().subscriptionId] in resourceId() expressions.\n"
+                "   - If a resource requires complex external deps (VPN gateways, "
+                "     ExpressRoute), SIMPLIFY by removing those references.\n"
             )
 
             # Escalation strategies for later attempts
@@ -2479,6 +4204,14 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 fixed = "\n".join(lines).strip()
 
             # ── Guard: ensure healer didn't corrupt the location parameter ──
+            # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
+            _GLOBAL_LOCATION_TYPES_INNER = {
+                "microsoft.network/dnszones",
+                "microsoft.network/trafficmanagerprofiles",
+                "microsoft.cdn/profiles",
+                "microsoft.network/frontdoors",
+                "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+            }
             if artifact_type == "template":
                 try:
                     _ft = json.loads(fixed)
@@ -2495,7 +4228,13 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                         fixed = json.dumps(_ft, indent=2)
                     # Also check each resource's location property
                     for _res in _ft.get("resources", []):
+                        _rtype = (_res.get("type") or "").lower()
                         _rloc = _res.get("location", "")
+                        if _rtype in _GLOBAL_LOCATION_TYPES_INNER:
+                            if isinstance(_rloc, str) and _rloc.lower() != "global":
+                                _res["location"] = "global"
+                                fixed = json.dumps(_ft, indent=2)
+                            continue
                         if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
                             _res["location"] = "[parameters('location')]"
                             logger.warning(
@@ -2724,6 +4463,8 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
         current_template = _ensure_parameter_defaults(current_template)
         # ── Replace placeholder subscription GUIDs ──
         current_template = _sanitize_placeholder_guids(current_template)
+        # ── Ensure DNS zone names are valid FQDNs ──
+        current_template = _sanitize_dns_zone_names(current_template)
         def _extract_template_meta(tmpl_str: str) -> dict:
             """Extract human-readable metadata from an ARM template string."""
             try:
@@ -3723,6 +5464,23 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
         )
 
+        # Include parameter values so the LLM can see what was sent to ARM
+        try:
+            _fix_tpl2 = json.loads(content)
+            _fix_params2 = _extract_param_values(_fix_tpl2)
+            if _fix_params2:
+                prompt += (
+                    "--- PARAMETER VALUES SENT TO ARM ---\n"
+                    f"{json.dumps(_fix_params2, indent=2, default=str)}\n"
+                    "--- END PARAMETER VALUES ---\n\n"
+                    "IMPORTANT: These are the actual values sent to Azure. "
+                    "If the error is caused by one of these values (invalid "
+                    "name, bad format), fix the corresponding parameter's "
+                    "\"defaultValue\" in the template.\n\n"
+                )
+        except Exception:
+            pass
+
         # ── Previous attempt history (prevents repeating the same fix) ──
         if previous_attempts:
             prompt += "--- PREVIOUS FAILED ATTEMPTS (DO NOT repeat these fixes) ---\n"
@@ -3747,38 +5505,35 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         prompt += (
             "Fix the template so it deploys successfully. Return ONLY the "
             "corrected raw JSON — no markdown fences, no explanation.\n\n"
-            "CRITICAL RULES:\n"
-            "- Keep ALL location parameters as \"[resourceGroup().location]\" or "
-            "\"[parameters('location')]\" — NEVER hardcode a region like 'centralus', "
-            "'eastus2', etc.\n"
-            "- Keep the same resource intent and resource names.\n"
-            "- Fix schema issues, missing required properties, invalid API versions, "
-            "and structural problems.\n"
-            "- If a resource like diagnosticSettings requires an external dependency "
-            "(Log Analytics workspace, storage account), REMOVE it rather than adding "
-            "a fake dependency.\n"
-            "- Ensure EVERY parameter has a \"defaultValue\". This template is deployed "
-            "with parameters={}, so any parameter without a default will cause: "
-            "'The value for the template parameter ... is not provided'. If a parameter "
-            "is missing a default, ADD one (e.g. resourceName \u2192 \"infraforge-resource\").\n"
-            "- Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
-            "- NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID, "
-            "resource ID, or in any resourceId() reference. Use [subscription().subscriptionId] "
-            "instead to reference the current subscription.\n"
-            "- If the error mentions 'LinkedAuthorizationFailed' or 'linked subscription "
-            "was not found', the template has an invalid resource reference pointing to a "
-            "non-existent subscription. Fix by using [subscription().subscriptionId] in any "
-            "resourceId() expressions, or REMOVE the cross-subscription reference entirely.\n"
-            "- If a resource requires complex external dependencies (VPN gateways, "
-            "ExpressRoute circuits, peer VNets in other subscriptions), SIMPLIFY by "
-            "removing those cross-resource references or making them self-contained.\n"
-            "- NEVER add properties that require subscription-level feature registration. "
-            "These will fail with 'feature is not enabled for this subscription':\n"
-            "  • securityProfile.encryptionAtHost (requires Microsoft.Compute/EncryptionAtHost)\n"
-            "  • properties.diskControllerType (requires Microsoft.Compute/DiskControllerTypes)\n"
-            "  • securityProfile.securityType 'ConfidentialVM' (requires Microsoft.Compute/ConfidentialVMPreview)\n"
-            "  • properties.ultraSSDEnabled (requires Microsoft.Compute/UltraSSDWithVMSS)\n"
-            "  If the error mentions 'feature is not enabled', REMOVE the property entirely.\n"
+            "CRITICAL RULES (in priority order):\n\n"
+            "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
+            "   - If the error mentions an invalid resource name, the name likely "
+            "     comes from a parameter defaultValue. Find that parameter and fix "
+            "     its defaultValue to comply with Azure naming rules.\n"
+            "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
+            "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
+            "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
+            "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
+            "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
+            "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
+            "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
+            "   EXCEPTION: Globally-scoped resources MUST use location \"global\":\n"
+            "   * Microsoft.Network/dnszones → \"global\"\n"
+            "   * Microsoft.Network/trafficManagerProfiles → \"global\"\n"
+            "   * Microsoft.Cdn/profiles → \"global\"\n\n"
+            "3. STRUCTURAL FIXES:\n"
+            "   - Keep the same resource intent and resource names.\n"
+            "   - Fix schema issues, missing required properties, invalid API versions.\n"
+            "   - If diagnosticSettings requires an external dependency, REMOVE it.\n"
+            "   - Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
+            "   - NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID — "
+            "     use [subscription().subscriptionId] instead.\n"
+            "   - If the error mentions 'LinkedAuthorizationFailed', use "
+            "     [subscription().subscriptionId] in resourceId() expressions.\n"
+            "   - If a resource requires complex external deps (VPN gateways, "
+            "     ExpressRoute), SIMPLIFY by removing those references.\n"
+            "   - NEVER add properties that require subscription-level feature registration. "
+            "     If the error mentions 'feature is not enabled', REMOVE the property.\n"
         )
 
         # ── Escalation strategies for later attempts ──
@@ -3863,6 +5618,14 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 return content
 
             # Guard: ensure healer didn't corrupt the location parameter
+            # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
+            _GLOBAL_LOCATION_TYPES_TOOL = {
+                "microsoft.network/dnszones",
+                "microsoft.network/trafficmanagerprofiles",
+                "microsoft.cdn/profiles",
+                "microsoft.network/frontdoors",
+                "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+            }
             try:
                 _ft = json.loads(fixed)
                 _params = _ft.get("parameters", {})
@@ -3873,7 +5636,13 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     logger.warning(f"Copilot healer corrupted location to '{_dv}' — restored")
                     fixed = json.dumps(_ft, indent=2)
                 for _res in _ft.get("resources", []):
+                    _rtype = (_res.get("type") or "").lower()
                     _rloc = _res.get("location", "")
+                    if _rtype in _GLOBAL_LOCATION_TYPES_TOOL:
+                        if isinstance(_rloc, str) and _rloc.lower() != "global":
+                            _res["location"] = "global"
+                            fixed = json.dumps(_ft, indent=2)
+                        continue
                     if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
                         _res["location"] = "[parameters('location')]"
                         logger.warning(f"Copilot healer hardcoded resource location to '{_rloc}' — restored")
@@ -5455,7 +7224,6 @@ async def websocket_chat(websocket: WebSocket):
             "user_context": user_context,
             "connected_at": time.time(),
         }
-
         await websocket.send_json({
             "type": "auth_ok",
             "user": {

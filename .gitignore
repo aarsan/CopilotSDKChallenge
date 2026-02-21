@@ -31,3 +31,9 @@ Thumbs.db
 
 # Copilot CLI
 .copilot/
+
+# Server logs
+server.log
+server_err.log
+server_stdout.log
+server_stderr.log

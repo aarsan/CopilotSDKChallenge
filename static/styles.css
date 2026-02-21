@@ -5658,6 +5658,39 @@ details[open] > .tmpl-deploy-group-optional {
     background: rgba(220, 38, 38, 0.06);
     border: 1px solid rgba(220, 38, 38, 0.2);
 }
+
+/* Validation "needs work" — amber not red, it's normal dev iteration */
+.tmpl-deploy-needs-work {
+    background: rgba(217, 119, 6, 0.06);
+    border: 1px solid rgba(217, 119, 6, 0.25);
+}
+.tmpl-deploy-needs-work .tmpl-deploy-header {
+    color: #d97706;
+}
+.tmpl-deploy-diag-msg {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    padding: 0.3rem 0;
+    line-height: 1.5;
+}
+.deploy-diag-details {
+    margin: 0.4rem 0;
+    font-size: 0.75rem;
+}
+.deploy-diag-details summary {
+    cursor: pointer;
+    color: #d97706;
+    font-weight: 600;
+}
+.deploy-diag-content {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    padding: 0.3rem 0.5rem;
+    background: rgba(217, 119, 6, 0.04);
+    border-radius: 4px;
+    margin-top: 0.3rem;
+    word-break: break-word;
+}
 .tmpl-deploy-header {
     font-weight: 600;
     font-size: 0.88rem;
@@ -5721,4 +5754,351 @@ details[open] > .tmpl-deploy-group-optional {
     font-size: 0.72rem;
     color: var(--text-secondary);
     margin-top: 0.4rem;
+}
+
+/* ── Deploy self-healing iteration log ─────────────────────── */
+.deploy-iteration-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-bottom: 0.5rem;
+}
+
+.deploy-log-entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    line-height: 1.4;
+}
+
+.deploy-log-icon {
+    flex-shrink: 0;
+    width: 1.2em;
+    text-align: center;
+}
+
+.deploy-log-attempt {
+    background: rgba(59, 130, 246, 0.06);
+    border-left: 3px solid var(--accent-blue);
+    color: var(--text-primary);
+}
+
+.deploy-log-healing {
+    background: rgba(168, 85, 247, 0.06);
+    border-left: 3px solid var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+.deploy-log-error-detail {
+    background: rgba(220, 38, 38, 0.04);
+    padding-left: 1.6rem;
+}
+
+.deploy-log-error-detail code {
+    font-size: 0.7rem;
+    color: var(--accent-red);
+    word-break: break-word;
+}
+
+/* Diagnostic entry — amber/neutral, not red (used during validation iterations) */
+.deploy-log-diagnostic {
+    background: rgba(217, 119, 6, 0.06);
+    border-left: 3px solid #d97706;
+    padding-left: 1.6rem;
+}
+
+.deploy-log-diagnostic code {
+    font-size: 0.7rem;
+    color: #d97706;
+    word-break: break-word;
+}
+
+/* Cleanup phase */
+.deploy-log-cleanup {
+    background: rgba(107, 114, 128, 0.06);
+    border-left: 3px solid var(--text-secondary);
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.deploy-log-healed {
+    background: rgba(16, 185, 129, 0.06);
+    border-left: 3px solid var(--accent-green);
+    color: var(--accent-green);
+}
+
+.deploy-log-error {
+    background: rgba(220, 38, 38, 0.06);
+    border-left: 3px solid var(--accent-red);
+    color: var(--accent-red);
+}
+
+.deploy-active-progress {
+    margin-top: 0.3rem;
+}
+
+/* Heal history accordion */
+.deploy-heal-history {
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+}
+
+.deploy-heal-history summary {
+    cursor: pointer;
+    color: var(--accent-purple);
+    font-weight: 600;
+}
+
+.deploy-heal-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 0.72rem;
+}
+
+.deploy-heal-attempt {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.deploy-heal-error {
+    color: var(--accent-red);
+    word-break: break-word;
+}
+
+.deploy-heal-diag {
+    color: #d97706;
+    word-break: break-word;
+}
+
+.deploy-heal-fix {
+    color: var(--accent-green);
+    font-style: italic;
+}
+
+/* ── Deep healing log entries ── */
+.deploy-log-deep-heal {
+    background: rgba(139, 92, 246, 0.06);
+    border-left: 3px solid var(--accent-purple);
+    color: var(--text-secondary);
+}
+
+.deploy-log-deep-heal .deploy-log-icon {
+    font-size: 0.85rem;
+}
+
+.deploy-log-deep-identified {
+    color: var(--accent-purple);
+    font-weight: 500;
+}
+
+.deploy-log-deep-success {
+    background: rgba(16, 185, 129, 0.08);
+    border-left-color: var(--accent-green);
+    color: var(--accent-green);
+    font-weight: 500;
+}
+
+.deploy-log-deep-error {
+    background: rgba(245, 158, 11, 0.06);
+    border-left-color: var(--accent-amber);
+    color: var(--accent-amber);
+}
+
+/* Retry/iteration (amber, not red — used in validation context) */
+.deploy-log-deep-retry {
+    background: rgba(245, 158, 11, 0.04);
+    border-left-color: #d97706;
+    color: #d97706;
+}
+
+.deploy-deep-services {
+    margin-top: 0.25rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.deploy-deep-services code {
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.68rem;
+    margin: 0 0.15rem;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Agent-Mediated Deploy UI
+   The deploy flow uses a simplified 3-event protocol:
+   status → agent → result
+   ═══════════════════════════════════════════════════════════ */
+
+/* Status log — real-time progress from the deploy engine */
+.deploy-agent-status {
+    margin-bottom: 0.5rem;
+}
+
+.deploy-agent-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin-bottom: 0.5rem;
+}
+
+.deploy-agent-log-latest {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.deploy-agent-log-history {
+    opacity: 0.55;
+    font-weight: 400;
+}
+
+/* Progress bar */
+.deploy-agent-bar {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+
+.deploy-agent-bar-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 4px;
+    transition: width 0.4s ease;
+    width: 0%;
+}
+
+/* Agent analysis — LLM-interpreted error explanation */
+.deploy-agent-analysis {
+    margin: 0.75rem 0;
+    border: 1px solid rgba(139, 92, 246, 0.25);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(139, 92, 246, 0.04);
+}
+
+.deploy-agent-analysis-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(139, 92, 246, 0.08);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-purple);
+    letter-spacing: 0.02em;
+}
+
+.deploy-agent-analysis-icon {
+    font-size: 1rem;
+}
+
+.deploy-agent-analysis-content {
+    padding: 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.deploy-agent-analysis-content p {
+    margin: 0 0 0.5rem 0;
+}
+
+.deploy-agent-analysis-content p:last-child {
+    margin-bottom: 0;
+}
+
+.deploy-agent-analysis-content strong {
+    color: var(--accent-purple);
+}
+
+.deploy-agent-analysis-content code {
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+}
+
+.deploy-agent-analysis-content blockquote {
+    border-left: 3px solid var(--accent-purple);
+    margin: 0.5rem 0;
+    padding: 0.25rem 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.deploy-agent-analysis-content ul,
+.deploy-agent-analysis-content ol {
+    padding-left: 1.2rem;
+    margin: 0.3rem 0;
+}
+
+.deploy-agent-analysis-content li {
+    margin: 0.15rem 0;
+}
+
+/* Agent activity log entries (healing, retry, saved) */
+.deploy-agent-healing {
+    background: rgba(139, 92, 246, 0.06);
+    border-left: 3px solid var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+.deploy-agent-healed {
+    background: rgba(16, 185, 129, 0.06);
+    border-left: 3px solid var(--accent-green);
+    color: var(--accent-green);
+}
+
+.deploy-agent-deep-healed {
+    background: rgba(139, 92, 246, 0.08);
+    border-left: 3px solid var(--accent-purple);
+    color: var(--accent-purple);
+    font-weight: 500;
+}
+
+.deploy-agent-heal-failed {
+    background: rgba(245, 158, 11, 0.06);
+    border-left: 3px solid #d97706;
+    color: #d97706;
+}
+
+.deploy-agent-retry {
+    background: rgba(59, 130, 246, 0.06);
+    border-left: 3px solid var(--accent-blue);
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.deploy-agent-saved {
+    background: rgba(16, 185, 129, 0.06);
+    border-left: 3px solid var(--accent-green);
+    color: var(--accent-green);
+}
+
+.deploy-agent-analyzing {
+    background: rgba(139, 92, 246, 0.04);
+    border-left: 3px solid var(--accent-purple);
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Agent log entries render markdown inline — remove extra margins */
+.deploy-agent-healing p,
+.deploy-agent-healed p,
+.deploy-agent-deep-healed p,
+.deploy-agent-retry p,
+.deploy-agent-saved p,
+.deploy-agent-heal-failed p,
+.deploy-agent-analyzing p {
+    margin: 0;
+    display: inline;
 }

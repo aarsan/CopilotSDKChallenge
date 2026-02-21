@@ -2175,17 +2175,17 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-validate">
-                ✅ <strong>Step 2:</strong> Structural tests passed. Now validate against Azure (ARM What-If) to verify it deploys correctly.
+                ✅ <strong>Step 2:</strong> Structural tests passed. Now validate by deploying to a temporary resource group. Self-healing will fix any issues automatically.
             </div>
             <button class="btn btn-primary btn-sm" onclick="showValidateForm('${escapeHtml(tmpl.id)}')">
-                🔬 Validate Against Azure
+                🧪 Validate (Deploy Test)
             </button>
         </div>`;
     } else if (status === 'validated') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-ready">
-                🔬 <strong>Step 3:</strong> ARM validation passed! This template is ready to be published to the catalog.
+                🧪 <strong>Step 3:</strong> Deploy test passed — template deployed successfully to Azure! Ready to publish.
             </div>
             <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
                 🚀 Publish to Catalog
@@ -2234,8 +2234,8 @@ function showTemplateDetail(templateId) {
 
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
-            <h4>🔬 ARM Validation — What-If</h4>
-            <p class="tmpl-validate-desc">Enter parameter values to validate this template against Azure. A temporary resource group will be created and cleaned up automatically.</p>
+            <h4>🧪 Validation — Deploy Test</h4>
+            <p class="tmpl-validate-desc">Deploys this template to a temporary resource group to verify it works. If deployment fails, the self-healing engine will fix the template automatically. The temp RG is cleaned up afterward.</p>
             <div id="tmpl-validate-params"></div>
             <div class="tmpl-validate-actions">
                 <select id="tmpl-validate-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
@@ -2247,7 +2247,7 @@ function showTemplateDetail(templateId) {
                     <option value="northeurope">North Europe</option>
                 </select>
                 <button class="btn btn-primary btn-sm" id="tmpl-validate-btn" onclick="runTemplateValidation('${escapeHtml(tmpl.id)}')">
-                    🚀 Run What-If Validation
+                    🧪 Run Deploy Test
                 </button>
             </div>
             <div id="tmpl-validate-results" style="display:none;"></div>
@@ -2333,6 +2333,9 @@ function showTemplateDetail(templateId) {
         <div class="detail-section">
             <h4>Composed From Services</h4>
             <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
+            <button class="btn btn-sm" style="margin-top:8px" onclick="recomposeBlueprint('${escapeHtml(tmpl.id)}')">
+                🔄 Recompose from Latest
+            </button>
         </div>` : ''}
 
         ${(tmpl.parameters && tmpl.parameters.length) ? `
@@ -2433,7 +2436,7 @@ async function _loadTemplateVersionHistory(templateId) {
                             </span>
                         `).join('')}
                     </div>` : ''}
-                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '🔬 ARM validated' : '❌ ARM validation failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
+                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '🧪 Deploy tested' : '❌ Deploy test failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
                     <div class="tmpl-ver-meta">
                         ${v.created_at ? `<span>${v.created_at.substring(0, 16)}</span>` : ''}
                         ${v.tested_at ? `<span>Tested: ${v.tested_at.substring(0, 16)}</span>` : ''}
@@ -2486,20 +2489,20 @@ function showValidateForm(templateId) {
     formSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-/** Run ARM What-If validation */
+/** Run deploy-test validation (streaming NDJSON with self-healing) */
 async function runTemplateValidation(templateId) {
     const btn = document.getElementById('tmpl-validate-btn');
     const resultsDiv = document.getElementById('tmpl-validate-results');
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '⏳ Validating against Azure…';
+        btn.innerHTML = '⏳ Deploying to temp RG…';
     }
     if (resultsDiv) {
         resultsDiv.style.display = 'block';
-        resultsDiv.innerHTML = '<div class="compose-loading">🔬 Running ARM What-If analysis… This may take 30-60 seconds.</div>';
+        resultsDiv.innerHTML = '<div class="compose-loading">🧪 Starting deploy test… This may take 1-5 minutes.</div>';
     }
 
-    showToast('🔬 Running ARM What-If validation…', 'info');
+    showToast('🧪 Running deploy-test validation…', 'info');
 
     try {
         // Collect parameter values from form
@@ -2525,16 +2528,51 @@ async function runTemplateValidation(templateId) {
             body: JSON.stringify({ parameters, region }),
         });
 
-        const data = await res.json();
-        const validation = data.validation || {};
-        const whatIf = validation.what_if || {};
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Validation failed');
+        }
 
-        if (data.status === 'validated') {
-            showToast('✅ ARM What-If validation passed! Template is ready to publish.', 'success');
-            _renderValidationResults(resultsDiv, data, true);
-        } else {
-            showToast('❌ ARM validation failed. Check the results below.', 'error');
-            _renderValidationResults(resultsDiv, data, false);
+        // Read NDJSON stream — reuse _renderDeployProgress for the iteration log
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalEvent = null;
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    finalEvent = event;
+                    _renderDeployProgress(resultsDiv, event, 'validate');
+                } catch (e) { /* skip malformed */ }
+            }
+        }
+
+        // Process final buffer
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                finalEvent = event;
+                _renderDeployProgress(resultsDiv, event, 'validate');
+            } catch (e) { /* skip */ }
+        }
+
+        if (finalEvent && finalEvent.status === 'succeeded') {
+            const iterations = finalEvent.attempt || 1;
+            const iterMsg = iterations > 1 ? ` after ${iterations} iterations` : '';
+            showToast(`✅ Template verified${iterMsg}! Ready to publish.`, 'success');
+        } else if (finalEvent && finalEvent.status === 'failed') {
+            const iterations = finalEvent.attempt || 1;
+            showToast(`⚠️ Template could not be verified after ${iterations} iteration(s). Review the log for details.`, 'error');
         }
 
         // Refresh and reopen detail
@@ -2542,14 +2580,14 @@ async function runTemplateValidation(templateId) {
         showTemplateDetail(templateId);
 
     } catch (err) {
-        showToast(`Validation error: ${err.message}`, 'error');
+        showToast(`⚠️ Validation issue: ${err.message}`, 'error');
         if (resultsDiv) {
-            resultsDiv.innerHTML = `<div class="tmpl-validate-error">❌ ${escapeHtml(err.message)}</div>`;
+            resultsDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
         }
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '🚀 Run What-If Validation';
+            btn.innerHTML = '🧪 Run Deploy Test';
         }
     }
 }
@@ -2593,6 +2631,36 @@ function _renderValidationResults(container, data, passed) {
             </div>
         </div>
     `;
+}
+
+/** Recompose a blueprint from its latest service templates */
+async function recomposeBlueprint(templateId) {
+    if (!confirm('Recompose this blueprint from the latest service templates? This will create a new version.')) return;
+
+    showToast('🔄 Recomposing blueprint…', 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/recompose`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(`❌ Recompose failed: ${data.detail || 'Unknown error'}`, 'error');
+            return;
+        }
+
+        showToast(
+            `✅ Recomposed! ${data.resource_count} resources, ${data.parameter_count} params from ${data.services_recomposed?.length || '?'} services`,
+            'success'
+        );
+
+        // Refresh the detail view
+        await showTemplateDetail(templateId);
+    } catch (err) {
+        showToast(`❌ Recompose error: ${err.message}`, 'error');
+    }
 }
 
 /** Publish a validated template */
@@ -2802,11 +2870,11 @@ async function deployTemplate(templateId) {
             throw new Error(err.detail || 'Deploy failed');
         }
 
-        // Read NDJSON stream
+        // Read NDJSON stream — new agent-mediated event protocol
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let finalEvent = null;
+        let finalResult = null;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -2820,8 +2888,8 @@ async function deployTemplate(templateId) {
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
-                    finalEvent = event;
-                    _renderDeployProgress(progressDiv, event);
+                    _renderDeployAgentEvent(progressDiv, event);
+                    if (event.type === 'result') finalResult = event;
                 } catch (e) { /* skip malformed */ }
             }
         }
@@ -2830,23 +2898,21 @@ async function deployTemplate(templateId) {
         if (buffer.trim()) {
             try {
                 const event = JSON.parse(buffer);
-                finalEvent = event;
-                _renderDeployProgress(progressDiv, event);
+                _renderDeployAgentEvent(progressDiv, event);
+                if (event.type === 'result') finalResult = event;
             } catch (e) { /* skip */ }
         }
 
-        if (finalEvent && finalEvent.status === 'succeeded') {
-            showToast(`✅ Deployment succeeded! ${(finalEvent.provisioned_resources || []).length} resources provisioned.`, 'success');
-        } else if (finalEvent && finalEvent.phase === 'error') {
-            showToast(`❌ Deployment failed: ${finalEvent.detail || 'Unknown error'}`, 'error');
-        } else if (finalEvent && finalEvent.status === 'failed') {
-            showToast(`❌ Deployment failed: ${finalEvent.error || 'Unknown error'}`, 'error');
+        if (finalResult && finalResult.status === 'succeeded') {
+            showToast(`✅ Deployment succeeded! ${(finalResult.provisioned_resources || []).length} resources provisioned.`, 'success');
+        } else if (finalResult && finalResult.status === 'needs_work') {
+            showToast('⚠️ Deployment needs attention — see the agent analysis.', 'error');
         }
 
     } catch (err) {
-        showToast(`Deployment error: ${err.message}`, 'error');
+        showToast(`⚠️ Deployment issue: ${err.message}`, 'error');
         if (progressDiv) {
-            progressDiv.innerHTML = `<div class="tmpl-deploy-error">❌ ${escapeHtml(err.message)}</div>`;
+            progressDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
         }
     } finally {
         if (btn) {
@@ -2856,24 +2922,244 @@ async function deployTemplate(templateId) {
     }
 }
 
-/** Render deployment progress events */
-function _renderDeployProgress(container, event) {
+/**
+ * Render agent-mediated deploy events.
+ *
+ * The deploy endpoint now streams 3 event types:
+ *   - status  — real-time progress updates from the deploy engine
+ *   - agent   — LLM-interpreted analysis (on failure)
+ *   - result  — final outcome (succeeded / needs_work)
+ *
+ * This replaces the old 20-phase _renderDeployProgress for the deploy flow.
+ * The validate flow still uses _renderDeployProgress unchanged.
+ */
+function _renderDeployAgentEvent(container, event) {
     if (!container) return;
+    container.style.display = 'block';
+
+    const type = event.type || '';
+
+    // Clear initial loading message on first real event
+    const loadingMsg = container.querySelector('.compose-loading');
+    if (loadingMsg) loadingMsg.remove();
+
+    // ── Status: real-time progress updates ──
+    if (type === 'status') {
+        let statusDiv = container.querySelector('.deploy-agent-status');
+        if (!statusDiv) {
+            statusDiv = document.createElement('div');
+            statusDiv.className = 'deploy-agent-status';
+            container.appendChild(statusDiv);
+        }
+
+        const message = event.message || '';
+        const progress = event.progress || 0;
+        const progressPct = Math.round(progress * 100);
+
+        // Append to status log (shows history of phases)
+        let logDiv = statusDiv.querySelector('.deploy-agent-log');
+        if (!logDiv) {
+            logDiv = document.createElement('div');
+            logDiv.className = 'deploy-agent-log';
+            statusDiv.appendChild(logDiv);
+        }
+
+        // Update or add the latest status entry
+        let latestEntry = logDiv.querySelector('.deploy-agent-log-latest');
+        if (latestEntry) {
+            // Move previous "latest" to history
+            latestEntry.classList.remove('deploy-agent-log-latest');
+            latestEntry.classList.add('deploy-agent-log-history');
+        }
+
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-agent-log-latest';
+        const icon = progress >= 0.9 ? '✅' : progress > 0 ? '⏳' : '🚀';
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(message)}`;
+        logDiv.appendChild(entry);
+
+        // Update progress bar
+        let barDiv = statusDiv.querySelector('.deploy-agent-bar');
+        if (!barDiv && progress > 0) {
+            barDiv = document.createElement('div');
+            barDiv.className = 'deploy-agent-bar';
+            barDiv.innerHTML = '<div class="deploy-agent-bar-fill"></div>';
+            statusDiv.appendChild(barDiv);
+        }
+        if (barDiv) {
+            const fill = barDiv.querySelector('.deploy-agent-bar-fill');
+            if (fill) fill.style.width = `${progressPct}%`;
+        }
+        return;
+    }
+
+    // ── Agent: deployment agent activity (healing, analysis, retry) ──
+    if (type === 'agent') {
+        const action = event.action || '';
+        const content = event.content || '';
+
+        // Remove the progress bar while agent is working (deploy phase is paused)
+        const statusDiv = container.querySelector('.deploy-agent-status');
+        if (statusDiv && (action === 'analysis' || action === 'analyzing')) {
+            const bar = statusDiv.querySelector('.deploy-agent-bar');
+            if (bar) bar.remove();
+        }
+
+        // For the full analysis card (after all retries exhausted), use rich rendering
+        if (action === 'analysis') {
+            const agentDiv = document.createElement('div');
+            agentDiv.className = 'deploy-agent-analysis';
+            agentDiv.innerHTML = `
+                <div class="deploy-agent-analysis-header">
+                    <span class="deploy-agent-analysis-icon">🧠</span>
+                    <span>Deployment Agent</span>
+                </div>
+                <div class="deploy-agent-analysis-content">
+                    ${renderMarkdown(content)}
+                </div>
+            `;
+            container.appendChild(agentDiv);
+            return;
+        }
+
+        // For activity messages (healing, healed, retry, saved), show as log entries
+        let logDiv = container.querySelector('.deploy-agent-log');
+        if (!logDiv) {
+            // Create log inside status div if it exists, otherwise create fresh
+            const sd = container.querySelector('.deploy-agent-status');
+            logDiv = document.createElement('div');
+            logDiv.className = 'deploy-agent-log';
+            if (sd) {
+                sd.insertBefore(logDiv, sd.firstChild);
+            } else {
+                container.appendChild(logDiv);
+            }
+        }
+
+        const entry = document.createElement('div');
+        const actionClasses = {
+            'healing': 'deploy-agent-healing',
+            'healed': 'deploy-agent-healed',
+            'deep_healed': 'deploy-agent-deep-healed',
+            'heal_failed': 'deploy-agent-heal-failed',
+            'retry': 'deploy-agent-retry',
+            'saved': 'deploy-agent-saved',
+            'analyzing': 'deploy-agent-analyzing',
+        };
+        entry.className = `deploy-log-entry ${actionClasses[action] || ''}`;
+        entry.innerHTML = `<span>${renderMarkdown(content)}</span>`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    // ── Result: final outcome card ──
+    if (type === 'result') {
+        // Remove status progress on completion
+        const statusDiv = container.querySelector('.deploy-agent-status');
+        if (statusDiv) {
+            const bar = statusDiv.querySelector('.deploy-agent-bar');
+            if (bar) bar.remove();
+        }
+
+        const resultDiv = document.createElement('div');
+
+        if (event.status === 'succeeded') {
+            const resources = event.provisioned_resources || [];
+            const outputs = event.outputs || {};
+            const attempt = event.attempt || 1;
+            const healed = event.healed || false;
+            const iterMsg = healed ? ` after ${attempt} iteration(s)` : '';
+            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
+            resultDiv.innerHTML = `
+                <div class="tmpl-deploy-header">✅ Deployment Succeeded${iterMsg}</div>
+                ${resources.length ? `
+                <div class="tmpl-deploy-resources">
+                    <h5>Provisioned Resources (${resources.length})</h5>
+                    ${resources.map(r => `
+                        <div class="tmpl-deploy-resource">
+                            <span class="tmpl-deploy-res-type">${escapeHtml(r.type)}</span>
+                            <span class="tmpl-deploy-res-name">${escapeHtml(r.name)}</span>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                ${Object.keys(outputs).length ? `
+                <div class="tmpl-deploy-outputs">
+                    <h5>Outputs</h5>
+                    ${Object.entries(outputs).map(([k, v]) => `
+                        <div class="tmpl-deploy-output">
+                            <span class="tmpl-deploy-out-key">${escapeHtml(k)}</span>
+                            <code class="tmpl-deploy-out-val">${escapeHtml(String(v))}</code>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+            `;
+        } else {
+            // needs_work — agent analysis is shown above, this is just the footer
+            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
+            resultDiv.innerHTML = `
+                <div class="tmpl-deploy-header">⚠️ Deployment Needs Attention</div>
+                <div class="tmpl-deploy-diag-msg">
+                    The deployment agent has analyzed the issue — see the analysis above.
+                    Consider re-running validation to fix the underlying template.
+                </div>
+                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+            `;
+        }
+        container.appendChild(resultDiv);
+        return;
+    }
+}
+
+/** Render deployment progress events — accumulates an iteration log.
+ *  @param {HTMLElement} container
+ *  @param {Object} event  NDJSON event
+ *  @param {'validate'|'deploy'} ctx  'validate' = dev iteration, 'deploy' = production deploy
+ */
+function _renderDeployProgress(container, event, ctx) {
+    if (!container) return;
+    ctx = ctx || 'deploy';
+    const isValidate = ctx === 'validate';
     container.style.display = 'block';
 
     const phase = event.phase || '';
     const detail = event.detail || '';
     const progress = event.progress || 0;
 
+    // Clear the initial loading message on first real event
+    const loadingMsg = container.querySelector('.compose-loading');
+    if (loadingMsg) loadingMsg.remove();
+
+    // Ensure we have a log container for iteration events
+    let logDiv = container.querySelector('.deploy-iteration-log');
+    if (!logDiv) {
+        logDiv = document.createElement('div');
+        logDiv.className = 'deploy-iteration-log';
+        container.prepend(logDiv);
+    }
+
+    // ── Final result (success or fail after all attempts) ──
     if (phase === 'complete' || phase === 'done') {
         const resources = event.provisioned_resources || [];
         const outputs = event.outputs || {};
-        container.innerHTML = `
-            <div class="tmpl-deploy-result ${event.status === 'succeeded' ? 'tmpl-deploy-success' : 'tmpl-deploy-fail'}">
+        const healHistory = event.heal_history || [];
+        const attempt = event.attempt || 1;
+
+        // Remove the progress bar if present
+        const bar = container.querySelector('.deploy-active-progress');
+        if (bar) bar.remove();
+
+        // Build final result card — framing depends on context
+        const resultDiv = document.createElement('div');
+        if (event.status === 'succeeded') {
+            const iterMsg = attempt > 1 ? ` after ${attempt} iterations` : '';
+            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
+            resultDiv.innerHTML = `
                 <div class="tmpl-deploy-header">
-                    ${event.status === 'succeeded' ? '✅ Deployment Succeeded' : '❌ Deployment Failed'}
+                    ${isValidate
+                        ? `✅ Template Verified${iterMsg}`
+                        : `✅ Deployment Succeeded`}
                 </div>
-                ${event.error ? `<div class="tmpl-deploy-error-msg">${escapeHtml(event.error)}</div>` : ''}
                 ${resources.length ? `
                 <div class="tmpl-deploy-resources">
                     <h5>Provisioned Resources (${resources.length})</h5>
@@ -2895,38 +3181,248 @@ function _renderDeployProgress(container, event) {
                     `).join('')}
                 </div>` : ''}
                 ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment ID: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
-            </div>
-        `;
-    } else if (phase === 'error') {
-        container.innerHTML = `
-            <div class="tmpl-deploy-result tmpl-deploy-fail">
-                <div class="tmpl-deploy-header">❌ Deployment Failed</div>
-                <div class="tmpl-deploy-error-msg">${escapeHtml(detail)}</div>
-            </div>
-        `;
-    } else {
-        // Progress update
-        const pct = Math.round(progress * 100);
-        const phaseIcons = {
-            starting: '🚀', resource_group: '📁', validating: '🔍',
-            validated: '✅', deploying: '⚙️', provisioning: '📦',
-        };
-        const icon = phaseIcons[phase] || '⏳';
-        container.innerHTML = `
-            <div class="tmpl-deploy-progress-bar">
-                <div class="tmpl-deploy-progress-fill" style="width: ${pct}%"></div>
-            </div>
-            <div class="tmpl-deploy-phase">${icon} ${escapeHtml(detail || phase)}</div>
-            ${event.resources ? `
-            <div class="tmpl-deploy-resource-list">
-                ${event.resources.map(r => `
-                    <span class="tmpl-deploy-res-chip tmpl-deploy-res-${r.state.toLowerCase()}">
-                        ${r.state === 'Succeeded' ? '✅' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
-                    </span>
-                `).join('')}
-            </div>` : ''}
-        `;
+            `;
+        } else {
+            // Failed — use amber "needs attention" framing, not red alarm
+            if (isValidate) {
+                resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
+                resultDiv.innerHTML = `
+                    <div class="tmpl-deploy-header">
+                        🔧 Template Needs More Work
+                    </div>
+                    <div class="tmpl-deploy-diag-msg">The template developer tried ${attempt} iteration(s) but couldn't resolve all issues. Review the diagnostics above and iterate further.</div>
+                    ${event.error ? `
+                    <details class="deploy-diag-details">
+                        <summary>📋 Last diagnostic</summary>
+                        <div class="deploy-diag-content">${escapeHtml(event.error)}</div>
+                    </details>` : ''}
+                    ${healHistory.length ? `
+                    <details class="deploy-heal-history">
+                        <summary>🔄 ${healHistory.length} iteration(s) attempted</summary>
+                        ${healHistory.map(h => `
+                            <div class="deploy-heal-entry">
+                                <span class="deploy-heal-attempt">Iteration ${h.attempt}:</span>
+                                <span class="deploy-heal-diag">${escapeHtml(h.error)}</span>
+                                <span class="deploy-heal-fix">→ ${escapeHtml(h.fix_summary)}</span>
+                            </div>
+                        `).join('')}
+                    </details>` : ''}
+                `;
+            } else {
+                // Production deploy — still show clearly but calmly
+                resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
+                resultDiv.innerHTML = `
+                    <div class="tmpl-deploy-header">
+                        ⚠️ Deployment Issue
+                    </div>
+                    <div class="tmpl-deploy-diag-msg">The deployment could not be completed. This template may need re-validation.</div>
+                    ${event.error ? `
+                    <details class="deploy-diag-details" open>
+                        <summary>📋 Details</summary>
+                        <div class="deploy-diag-content">${escapeHtml(event.error)}</div>
+                    </details>` : ''}
+                    ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment ID: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+                `;
+            }
+        }
+        container.appendChild(resultDiv);
+        return;
     }
+
+    // ── Starting event — first status entry ──
+    if (phase === 'starting') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-attempt';
+        entry.innerHTML = `<span class="deploy-log-icon">🚀</span> <strong>${escapeHtml(detail)}</strong>`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    // ── Iteration lifecycle events (append to log) ──
+    if (phase === 'attempt_start') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-attempt';
+        // Reframe: validation = "Iteration N", deploy = "Attempt N"
+        const label = isValidate
+            ? detail.replace(/Attempt/g, 'Iteration')
+            : detail;
+        entry.innerHTML = `<span class="deploy-log-icon">${isValidate ? '🔁' : '🔄'}</span> <strong>${escapeHtml(label)}</strong>`;
+        logDiv.appendChild(entry);
+        // Reset the active progress area
+        let activeP = container.querySelector('.deploy-active-progress');
+        if (activeP) activeP.remove();
+        return;
+    }
+
+    if (phase === 'healing') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-healing';
+        // Reframe: validation = "analyzing & adjusting", deploy = "healing"
+        const msg = isValidate
+            ? (detail.replace(/failed/gi, 'returned feedback').replace(/asking LLM to fix/gi, 'analyzing feedback & adjusting'))
+            : detail;
+        entry.innerHTML = `<span class="deploy-log-icon">🧠</span> ${escapeHtml(msg)}`;
+        logDiv.appendChild(entry);
+        if (event.error_summary) {
+            const errEntry = document.createElement('div');
+            errEntry.className = 'deploy-log-entry deploy-log-diagnostic';
+            errEntry.innerHTML = `<span class="deploy-log-icon">📋</span> <code>${escapeHtml(event.error_summary)}</code>`;
+            logDiv.appendChild(errEntry);
+        }
+        return;
+    }
+
+    if (phase === 'healed') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-healed';
+        const deepFlag = event.deep_healed ? ' (deep fix)' : '';
+        const msg = isValidate
+            ? (detail.replace(/LLM applied fix/gi, 'Applied fix').replace(/LLM/gi, 'Template developer'))
+            : detail;
+        entry.innerHTML = `<span class="deploy-log-icon">🔧</span> ${escapeHtml(msg)}${deepFlag}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    // ── Deep healing lifecycle events ──
+    if (phase === 'deep_heal_trigger') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal';
+        entry.innerHTML = `<span class="deploy-log-icon">🔬</span> <strong>Deep Analysis</strong> — examining underlying service templates…`;
+        if (event.service_ids && event.service_ids.length) {
+            entry.innerHTML += `<div class="deploy-deep-services">Services: ${event.service_ids.map(s => `<code>${escapeHtml(s)}</code>`).join(', ')}</div>`;
+        }
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_start') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal';
+        entry.innerHTML = `<span class="deploy-log-icon">🔍</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_identified') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-identified';
+        entry.innerHTML = `<span class="deploy-log-icon">🎯</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_fix' || phase === 'deep_heal_fix_error') {
+        const entry = document.createElement('div');
+        const isFail = phase === 'deep_heal_fix_error';
+        entry.className = `deploy-log-entry deploy-log-deep-heal ${isFail ? 'deploy-log-deep-retry' : ''}`;
+        const icon = isFail ? (isValidate ? '🔄' : '⚠️') : '🛠️';
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_validate' || phase === 'deep_heal_validate_fail') {
+        const entry = document.createElement('div');
+        const isFail = phase === 'deep_heal_validate_fail';
+        entry.className = `deploy-log-entry deploy-log-deep-heal ${isFail ? 'deploy-log-deep-retry' : ''}`;
+        const icon = isFail ? (isValidate ? '🔄' : '⚠️') : '🧪';
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_validated') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-success';
+        entry.innerHTML = `<span class="deploy-log-icon">✅</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_version' || phase === 'deep_heal_versioned') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal';
+        const icon = phase === 'deep_heal_versioned' ? '📦' : '💾';
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_recompose') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal';
+        entry.innerHTML = `<span class="deploy-log-icon">🔧</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_complete') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-success';
+        entry.innerHTML = `<span class="deploy-log-icon">🎉</span> <strong>${escapeHtml(detail)}</strong>`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'deep_heal_fail' || phase === 'deep_heal_fallback') {
+        const entry = document.createElement('div');
+        entry.className = `deploy-log-entry deploy-log-deep-heal ${isValidate ? 'deploy-log-deep-retry' : 'deploy-log-deep-error'}`;
+        const icon = phase === 'deep_heal_fail'
+            ? (isValidate ? '🔄' : '💥')
+            : '↩️';
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'error') {
+        // Don't render a separate error log entry — the final "complete" card will show the details.
+        // Just add a subtle status note in the log so there's no duplicate.
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-diagnostic';
+        entry.innerHTML = `<span class="deploy-log-icon">📋</span> Issue detected — see details below`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    if (phase === 'cleanup' || phase === 'cleanup_done' || phase === 'cleanup_warning') {
+        const entry = document.createElement('div');
+        entry.className = 'deploy-log-entry deploy-log-cleanup';
+        const icon = phase === 'cleanup_done' ? '✅' : (phase === 'cleanup_warning' ? '⚠️' : '🧹');
+        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
+        logDiv.appendChild(entry);
+        return;
+    }
+
+    // ── Normal progress updates (overwrite the active progress area) ──
+    let activeP = container.querySelector('.deploy-active-progress');
+    if (!activeP) {
+        activeP = document.createElement('div');
+        activeP.className = 'deploy-active-progress';
+        container.appendChild(activeP);
+    }
+
+    const pct = Math.round(progress * 100);
+    const phaseIcons = {
+        starting: '🚀', resource_group: '📁', validating: '🔍',
+        validated: '✅', deploying: '⚙️', provisioning: '📦',
+    };
+    const icon = phaseIcons[phase] || '⏳';
+    activeP.innerHTML = `
+        <div class="tmpl-deploy-progress-bar">
+            <div class="tmpl-deploy-progress-fill" style="width: ${pct}%"></div>
+        </div>
+        <div class="tmpl-deploy-phase">${icon} ${escapeHtml(detail || phase)}</div>
+        ${event.resources ? `
+        <div class="tmpl-deploy-resource-list">
+            ${event.resources.map(r => `
+                <span class="tmpl-deploy-res-chip tmpl-deploy-res-${r.state.toLowerCase()}">
+                    ${r.state === 'Succeeded' ? '✅' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
+                </span>
+            `).join('')}
+        </div>` : ''}
+    `;
 }
 
 /** Run tests on a template from the detail drawer */

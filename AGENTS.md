@@ -164,3 +164,27 @@ When responding to infrastructure requests, always:
 4. Include a summary of key design decisions
 5. Offer follow-up suggestions (e.g., "Want me to register this as an approved template?" or
    "Shall I run a cost estimate?")
+
+## Developer Preferences
+
+These are persistent preferences for how the agent should behave in this workspace.
+
+### Terminal Management
+- **NEVER leave terminals open.** Minimize terminal usage. Reuse a single terminal when possible.
+- If a terminal command is needed, run it and let it finish — do NOT spawn background terminals
+  that pile up.
+- For the server: start it as a **detached process** (using `Start-Process`) so it doesn't
+  tie up a terminal. The server runs fine detached with `PYTHONIOENCODING=utf-8`.
+- Periodically check for and kill orphan terminals/processes.
+
+### Server Management
+- Start command: load `.env`, set `PYTHONIOENCODING=utf-8`, then `Start-Process` with
+  `.\.venv\Scripts\python.exe web_start.py`.
+- VS Code terminals with many open tabs will kill long-running processes. Always use
+  `Start-Process` for the server, never a foreground terminal.
+- To stop: `Get-Process -Name python | Stop-Process -Force`
+- Server logs go to `server.log` / `server_err.log` (gitignored).
+
+### Code Style
+- Don't create markdown summary files after changes unless explicitly asked.
+- Don't announce tool names (e.g., don't say "I'll use multi_replace_string_in_file").
