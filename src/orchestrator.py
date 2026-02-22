@@ -560,9 +560,12 @@ async def analyze_template_feedback(
                 except Exception:
                     done_ev.set()
 
-            session.on_event(on_event)
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=60)
+            unsub = session.on(on_event)
+            try:
+                await session.send({"prompt": prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=60)
+            finally:
+                unsub()
 
             raw = "".join(chunks).strip()
             # Strip markdown fences if present
@@ -849,9 +852,12 @@ async def apply_template_code_edit(
             except Exception:
                 done_ev.set()
 
-        session.on_event(on_event)
-        await session.send({"prompt": prompt})
-        await asyncio.wait_for(done_ev.wait(), timeout=90)
+        unsub = session.on(on_event)
+        try:
+            await session.send({"prompt": prompt})
+            await asyncio.wait_for(done_ev.wait(), timeout=90)
+        finally:
+            unsub()
 
         raw = "".join(chunks).strip()
         # Strip markdown fences
@@ -1037,9 +1043,12 @@ async def check_revision_policy(
                 except Exception:
                     done_ev.set()
 
-            session.on_event(on_event)
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=30)
+            unsub = session.on(on_event)
+            try:
+                await session.send({"prompt": prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=30)
+            finally:
+                unsub()
 
             raw = "".join(chunks).strip()
             if raw.startswith("```"):
@@ -1212,9 +1221,12 @@ async def determine_services_from_prompt(
                 except Exception:
                     done_ev.set()
 
-            session.on_event(on_event)
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=60)
+            unsub = session.on(on_event)
+            try:
+                await session.send({"prompt": prompt})
+                await asyncio.wait_for(done_ev.wait(), timeout=60)
+            finally:
+                unsub()
 
             raw = "".join(chunks).strip()
             if raw.startswith("```"):
