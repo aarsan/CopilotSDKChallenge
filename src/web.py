@@ -219,15 +219,8 @@ def _ensure_parameter_defaults(template_json: str) -> str:
                     dv = "infraforge-demo.com"
                 elif "hostname" in plow:
                     dv = "app.infraforge-demo.com"
-                elif "resourcename" in plow or "name" in plow:
-                    import re as _re
-                    suffix = pname.rsplit("_", 1)[-1][:8] if "_" in pname else pname[:8]
-                    suffix = _re.sub(r"[^a-z0-9]", "", suffix.lower())
-                    dv = f"ifrg-{suffix}" if suffix else "ifrg-res"
                 else:
-                    import re as _re
-                    safe = _re.sub(r"[^a-zA-Z0-9-]", "-", pname)[:20]
-                    dv = f"if-{safe}"
+                    dv = f"infraforge-{pname}"
             pdef["defaultValue"] = dv
             patched = True
 
@@ -368,19 +361,13 @@ async def _copilot_heal_template(
         "corrected raw JSON — no markdown fences, no explanation.\n\n"
         "CRITICAL RULES (in priority order):\n\n"
         "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-        "   The PARAMETER VALUES above are the actual values deployed to Azure.\n"
-        "   If the error mentions ANY invalid name (resource name, host name,\n"
-        "   computer name, VM name, account name, etc.), find that value in the\n"
-        "   parameter list above, trace it to the parameter's defaultValue in\n"
-        "   the template, and fix the defaultValue.\n"
-        "   - Linux VM hostnames: max 64 chars, only alphanumeric and hyphens\n"
-        "     (NO underscores, dots, or special chars).\n"
+        "   - If the error mentions an invalid resource name, the name likely "
+        "     comes from a parameter defaultValue. Find that parameter and fix "
+        "     its defaultValue to comply with Azure naming rules.\n"
         "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
         "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
         "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
         "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
-        "   - General: keep names short (under 24 chars), lowercase alphanumeric\n"
-        "     with hyphens only.\n"
         "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
         "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
         "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
@@ -1015,19 +1002,8 @@ def _extract_param_values(template: dict) -> dict:
                 dv = "infraforge-demo.com"
             elif "hostname" in plow:
                 dv = "app.infraforge-demo.com"
-            elif "resourcename" in plow or "name" in plow:
-                # Resource names: short, alphanumeric + hyphens, no underscores
-                # Extract the service suffix (e.g. "virtualmachines" from
-                # "resourceName_virtualmachines") for a compact unique tag.
-                suffix = pname.rsplit("_", 1)[-1][:8] if "_" in pname else pname[:8]
-                import re as _re
-                suffix = _re.sub(r"[^a-z0-9]", "", suffix.lower())
-                dv = f"ifrg-{suffix}" if suffix else "ifrg-res"
             else:
-                # General fallback: sanitize to safe short value
-                import re as _re
-                safe = _re.sub(r"[^a-zA-Z0-9-]", "-", pname)[:20]
-                dv = f"if-{safe}"
+                dv = f"infraforge-{pname}"
         # Skip ARM expressions — they only work inside the template, not as
         # explicit parameter values.
         if isinstance(dv, str) and dv.startswith("["):
@@ -3049,11 +3025,25 @@ async def validate_template(template_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Template content is not valid JSON")
 
     # Build parameter values
-    final_params = _extract_param_values(tpl)
-    # Layer user overrides on top
-    for pname, pval in user_params.items():
-        if pname in tpl.get("parameters", {}):
-            final_params[pname] = pval
+    tpl_params = tpl.get("parameters", {})
+    final_params = {}
+    for pname, pdef in tpl_params.items():
+        if pname in user_params:
+            final_params[pname] = user_params[pname]
+        elif "defaultValue" in pdef:
+            final_params[pname] = pdef["defaultValue"]
+        else:
+            ptype = pdef.get("type", "string").lower()
+            if ptype == "string":
+                final_params[pname] = f"if-val-{pname[:20]}"
+            elif ptype == "int":
+                final_params[pname] = 1
+            elif ptype == "bool":
+                final_params[pname] = True
+            elif ptype == "array":
+                final_params[pname] = []
+            elif ptype == "object":
+                final_params[pname] = {}
 
     rg_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
     deployment_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
@@ -3214,11 +3204,24 @@ async def validate_template(template_id: str, request: Request):
                     deep_healed = True
                     current_tpl = fixed_composed
 
-                    new_params = _extract_param_values(current_tpl)
-                    # Layer user overrides on top
-                    for k, v in user_params.items():
-                        if k in current_tpl.get("parameters", {}):
-                            new_params[k] = v
+                    new_params = {}
+                    for pname, pdef in current_tpl.get("parameters", {}).items():
+                        if pname in user_params:
+                            new_params[pname] = user_params[pname]
+                        elif "defaultValue" in pdef:
+                            new_params[pname] = pdef["defaultValue"]
+                        else:
+                            ptype = pdef.get("type", "string").lower()
+                            if ptype == "string":
+                                new_params[pname] = f"if-val-{pname[:20]}"
+                            elif ptype == "int":
+                                new_params[pname] = 1
+                            elif ptype == "bool":
+                                new_params[pname] = True
+                            elif ptype == "array":
+                                new_params[pname] = []
+                            elif ptype == "object":
+                                new_params[pname] = {}
                     current_params = new_params
 
                     heal_history.append({
@@ -3298,11 +3301,24 @@ async def validate_template(template_id: str, request: Request):
                 "fix_summary": fix_summary,
             })
 
-            new_params = _extract_param_values(fixed_tpl)
-            # Layer user overrides on top
-            for k, v in user_params.items():
-                if k in fixed_tpl.get("parameters", {}):
-                    new_params[k] = v
+            new_params = {}
+            for pname, pdef in fixed_tpl.get("parameters", {}).items():
+                if pname in user_params:
+                    new_params[pname] = user_params[pname]
+                elif "defaultValue" in pdef:
+                    new_params[pname] = pdef["defaultValue"]
+                else:
+                    ptype = pdef.get("type", "string").lower()
+                    if ptype == "string":
+                        new_params[pname] = f"if-val-{pname[:20]}"
+                    elif ptype == "int":
+                        new_params[pname] = 1
+                    elif ptype == "bool":
+                        new_params[pname] = True
+                    elif ptype == "array":
+                        new_params[pname] = []
+                    elif ptype == "object":
+                        new_params[pname] = {}
 
             current_tpl = fixed_tpl
             current_params = new_params
@@ -4565,7 +4581,6 @@ async def revise_template(template_id: str, request: Request):
     """
     from src.database import (
         get_template_by_id, upsert_template, create_template_version,
-        get_template_versions,
         get_service, get_active_service_version,
     )
     from src.orchestrator import (
@@ -4618,147 +4633,103 @@ async def revise_template(template_id: str, request: Request):
     )
 
     if not feedback_result["should_recompose"]:
-        # ── No new services — apply a code-level revision via LLM ─
-        versions = await get_template_versions(template_id)
-        arm_content = ""
-        if versions:
-            arm_content = versions[0].get("arm_template", "")
-        if not arm_content:
-            arm_content = tmpl.get("content", "")
+        # ── Step 2b: Direct code edit path ────────────────────
+        if feedback_result.get("needs_code_edit"):
+            from src.orchestrator import apply_template_code_edit
 
-        if not arm_content:
-            return JSONResponse({
-                "status": "no_changes",
-                "policy_check": policy_result,
-                "message": "No template content found to revise.",
-            })
+            edit_result = await apply_template_code_edit(
+                tmpl,
+                feedback_result.get("edit_instruction", prompt),
+                prompt,
+                copilot_client=client,
+            )
 
-        # Ask the LLM to apply the user's requested change
-        revision_prompt = (
-            "You are an Azure ARM template expert. A user has requested a "
-            "change to their ARM template. Apply the change and return ONLY "
-            "the corrected raw JSON — no markdown fences, no explanation.\n\n"
-            f"--- USER REQUEST ---\n{prompt}\n--- END REQUEST ---\n\n"
-            f"--- CURRENT TEMPLATE ---\n{arm_content}\n--- END TEMPLATE ---\n\n"
-            "RULES:\n"
-            "- Apply the user's requested change precisely\n"
-            "- Keep ALL existing resources, parameters, and outputs unless the "
-            "  user explicitly asks to remove them\n"
-            "- Ensure every parameter has a defaultValue\n"
-            "- Keep location parameters as \"[resourceGroup().location]\" or "
-            "  \"[parameters('location')]\" unless told otherwise\n"
-            "- Return ONLY valid ARM JSON\n"
-        )
-
-        revised_content = None
-        if client:
-            try:
-                import asyncio as _aio
-                from src.model_router import Task, get_model_for_task
-                model = get_model_for_task(Task.CODING)
-
-                session = await client.create_session({
-                    "model": model,
-                    "streaming": True,
-                    "tools": [],
-                    "system_message": {
-                        "content": (
-                            "You are an ARM template editor. Apply user-requested "
-                            "changes to ARM templates. Return ONLY raw JSON."
-                        )
-                    },
+            if not edit_result["success"]:
+                return JSONResponse({
+                    "status": "edit_failed",
+                    "policy_check": policy_result,
+                    "analysis": feedback_result["analysis"],
+                    "message": f"Could not apply the edit: {edit_result['error']}",
                 })
 
-                chunks: list[str] = []
-                done_ev = _aio.Event()
+            # Parse to extract resource/param counts
+            edited_content = edit_result["content"]
+            try:
+                parsed = _json.loads(edited_content)
+                resource_count = len(parsed.get("resources", []))
+                param_count = len(parsed.get("parameters", {}))
+            except Exception:
+                resource_count = 0
+                param_count = 0
 
-                def on_event(ev):
-                    try:
-                        if ev.type.value == "assistant.message_delta":
-                            chunks.append(ev.data.delta_content or "")
-                        elif ev.type.value in ("assistant.message", "session.idle"):
-                            done_ev.set()
-                    except Exception:
-                        done_ev.set()
+            # Build param list for catalog entry
+            try:
+                parsed_params = _json.loads(edited_content).get("parameters", {})
+                param_list = [
+                    {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+                    for k, v in parsed_params.items()
+                ]
+            except Exception:
+                param_list = tmpl.get("parameters", [])
 
-                session.on_event(on_event)
-                await session.send({"prompt": revision_prompt})
-                await _aio.wait_for(done_ev.wait(), timeout=90)
+            # Save the edited template
+            catalog_entry = {
+                "id": template_id,
+                "name": tmpl.get("name", template_id),
+                "description": tmpl.get("description", ""),
+                "format": "arm",
+                "category": tmpl.get("category", "blueprint"),
+                "content": edited_content,
+                "tags": tmpl.get("tags", []),
+                "resources": tmpl.get("resources", []),
+                "parameters": param_list,
+                "outputs": tmpl.get("outputs", []),
+                "is_blueprint": tmpl.get("is_blueprint", False),
+                "service_ids": tmpl.get("service_ids", []),
+                "status": "draft",
+                "registered_by": tmpl.get("registered_by", "template-composer"),
+                "template_type": tmpl.get("template_type", ""),
+                "provides": tmpl.get("provides", []),
+                "requires": tmpl.get("requires", []),
+                "optional_refs": tmpl.get("optional_refs", []),
+            }
 
-                raw = "".join(chunks).strip()
-                if raw.startswith("```"):
-                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3].strip()
-                if raw.startswith("json"):
-                    raw = raw[4:].strip()
-
-                _json.loads(raw)  # validate JSON
-                revised_content = raw
-
+            try:
+                await upsert_template(catalog_entry)
+                ver = await create_template_version(
+                    template_id, edited_content,
+                    changelog=f"Edit: {prompt[:100]}",
+                    change_type="minor",
+                    created_by="revision-code-edit",
+                )
             except Exception as e:
-                logger.error(f"LLM code-level revision failed: {e}")
+                logger.error(f"Failed to save edited template: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
 
-        if not revised_content:
             return JSONResponse({
-                "status": "no_changes",
+                "status": "revised",
                 "policy_check": policy_result,
-                "message": "Could not apply the requested change. Try being more specific.",
+                "analysis": feedback_result["analysis"],
+                "actions_taken": [{
+                    "action": "code_edit",
+                    "service_id": "template",
+                    "detail": edit_result["changes_summary"],
+                }],
+                "template_id": template_id,
+                "resource_count": resource_count,
+                "parameter_count": param_count,
+                "services": tmpl.get("service_ids", []),
+                "version": ver,
+                "message": f"Template edited: {edit_result['changes_summary']}. Status reset to draft.",
             })
 
-        # Save revised template as new version
-        revised_tpl = _json.loads(revised_content)
-        revised_params = revised_tpl.get("parameters", {})
-        param_list = [
-            {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
-            for k, v in revised_params.items()
-        ]
-        revised_resources = [r.get("type", "") for r in revised_tpl.get("resources", []) if isinstance(r, dict)]
-
-        catalog_entry = {
-            "id": template_id,
-            "name": tmpl.get("name", template_id),
-            "description": tmpl.get("description", ""),
-            "format": "arm",
-            "category": tmpl.get("category", "blueprint"),
-            "content": revised_content,
-            "tags": tmpl.get("tags", []),
-            "resources": revised_resources,
-            "parameters": param_list,
-            "outputs": list(revised_tpl.get("outputs", {}).keys()),
-            "is_blueprint": tmpl.get("is_blueprint", False),
-            "service_ids": tmpl.get("service_ids", []),
-            "status": "draft",
-            "registered_by": tmpl.get("registered_by", "template-composer"),
-            "template_type": tmpl.get("template_type", "workload"),
-            "provides": tmpl.get("provides", []),
-            "requires": tmpl.get("requires", []),
-            "optional_refs": tmpl.get("optional_refs", []),
-        }
-
-        try:
-            await upsert_template(catalog_entry)
-            ver = await create_template_version(
-                template_id, revised_content,
-                changelog=f"Revision: {prompt[:100]}",
-                change_type="minor",
-                created_by="revision-orchestrator",
-            )
-        except Exception as e:
-            logger.error(f"Failed to save revised template: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-
         return JSONResponse({
-            "status": "revised",
+            "status": "no_changes",
             "policy_check": policy_result,
-            "analysis": feedback_result.get("analysis", "Applied code-level revision."),
-            "actions_taken": [{"action": "code_revision", "detail": prompt[:200]}],
-            "template_id": template_id,
-            "resource_count": len(revised_tpl.get("resources", [])),
-            "parameter_count": len(revised_params),
-            "services": tmpl.get("service_ids", []),
-            "version": ver,
-            "message": f"Template revised (code-level change). Status reset to draft.",
+            "analysis": feedback_result["analysis"],
+            "actions_taken": feedback_result["actions_taken"],
+            "message": "No new services identified from your request. "
+                       "Try being more specific about what resources you need.",
         })
 
     # ── Step 3: Recompose with updated service list ───────────
@@ -5498,15 +5469,13 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 "corrected raw JSON — no markdown fences, no explanation.\n\n"
                 "CRITICAL RULES (in priority order):\n\n"
                 "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-                "   If the error mentions ANY invalid name (resource name, host name,\n"
-                "   computer name, VM name, account name), find that value in the\n"
-                "   parameter values, trace it to the defaultValue, and fix it.\n"
-                "   - Linux VM hostnames: max 64 chars, alphanumeric + hyphens only.\n"
+                "   - If the error mentions an invalid resource name, the name likely "
+                "     comes from a parameter defaultValue. Find that parameter and fix "
+                "     its defaultValue to comply with Azure naming rules.\n"
                 "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
                 "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
                 "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
                 "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
-                "   - General: keep names short (under 24 chars), lowercase, hyphens only.\n"
                 "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
                 "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
                 "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
@@ -6902,16 +6871,13 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             "corrected raw JSON — no markdown fences, no explanation.\n\n"
             "CRITICAL RULES (in priority order):\n\n"
             "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-            "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-            "   If the error mentions ANY invalid name (resource name, host name,\n"
-            "   computer name, VM name, account name), find that value in the\n"
-            "   parameter values, trace it to the defaultValue, and fix it.\n"
-            "   - Linux VM hostnames: max 64 chars, alphanumeric + hyphens only.\n"
+            "   - If the error mentions an invalid resource name, the name likely "
+            "     comes from a parameter defaultValue. Find that parameter and fix "
+            "     its defaultValue to comply with Azure naming rules.\n"
             "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
             "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
             "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
             "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
-            "   - General: keep names short (under 24 chars), lowercase, hyphens only.\n"
             "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
             "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
             "or \"[parameters('location')]\" — NEVER hardcode a region.\n"

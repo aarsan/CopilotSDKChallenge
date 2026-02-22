@@ -2220,29 +2220,19 @@ function showTemplateDetail(templateId) {
             </button>
         </div>`;
     } else if (status === 'failed') {
-        const retrying = window._autoRetryInProgress === tmpl.id;
-        ctaHtml = retrying ? `
-        <div class="detail-section tmpl-test-cta">
-            <div class="tmpl-test-banner tmpl-test-pending">
-                🔧 <strong>Auto-healing in progress…</strong> InfraForge is fixing and re-testing the template automatically.
-            </div>
-        </div>` : `
+        ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ Auto-heal couldn't fully resolve the issues — expand the latest version below to see what failed.
+                ❌ Validation found issues — auto-heal will attempt to fix them, or describe changes below.
             </div>
-            <div class="tmpl-revision-input-group" style="margin-top:0.5rem;">
-                <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
-                    rows="2"
-                    placeholder="e.g. Use the resource group location instead of a location parameter…"
-                    onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
-                <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
-                    onclick="submitRevision('${escapeHtml(tmpl.id)}')">
-                    🚀 Submit Fix
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
+                    🔧 Auto-Heal
+                </button>
+                <button class="btn btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
+                    🧪 Re-validate
                 </button>
             </div>
-            <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
-            <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
         </div>`;
     } else if (status === 'approved') {
         ctaHtml = `
@@ -2385,8 +2375,7 @@ function showTemplateDetail(templateId) {
                     </div>
                 </div>` : ''}
 
-                <!-- Request Changes (hidden when failed — input is in the CTA above) -->
-                ${status !== 'failed' ? `
+                <!-- Request Changes -->
                 <div class="detail-section tmpl-revision-section">
                     <h4>📝 Request Changes</h4>
                     <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
@@ -2403,7 +2392,6 @@ function showTemplateDetail(templateId) {
                     <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
                     <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
                 </div>
-                ` : ''}
 
                 ${tmpl.content ? `
                 <div class="detail-section">
@@ -2443,16 +2431,6 @@ function showTemplateDetail(templateId) {
 
     // Load version history asynchronously
     _loadTemplateVersionHistory(templateId);
-
-    // Auto-retry validation for failed templates
-    if (status === 'failed' && !window._autoRetryInProgress) {
-        window._autoRetryInProgress = templateId;
-        setTimeout(() => {
-            runFullValidation(templateId).finally(() => {
-                window._autoRetryInProgress = null;
-            });
-        }, 500);
-    }
 }
 
 /** Infer human-readable change type from version metadata */
@@ -2519,15 +2497,6 @@ async function _loadTemplateVersionHistory(templateId) {
 
         // Stash version data for pipeline rendering
         container._versionData = versions;
-
-        // Auto-expand the latest version if template is in failed state
-        // so the user can immediately see what went wrong
-        if (versions.length && versions[0].status === 'failed') {
-            const firstItem = container.querySelector('.tmpl-ver-item');
-            if (firstItem) {
-                _toggleVersionPipeline(firstItem, 0);
-            }
-        }
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
@@ -2695,79 +2664,32 @@ function _renderVersionPipeline(v) {
         </div>`;
 }
 
-/** Full validation pipeline: structural tests → auto-heal loop → ARM validation */
+/** Full validation pipeline: structural tests → ARM validation (auto-chains) */
 async function runFullValidation(templateId, skipTests = false) {
     if (!skipTests) {
-        const MAX_HEAL = 3;
-        let structuralPassed = false;
-
-        for (let cycle = 0; cycle <= MAX_HEAL; cycle++) {
-            // ── Run structural tests ──
-            showToast(cycle === 0
-                ? '🧪 Running structural tests…'
-                : '🧪 Re-testing after auto-heal…', 'info');
-
-            try {
-                const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({}),
-                });
-                if (!res.ok) {
-                    const err = await res.json();
-                    throw new Error(err.detail || 'Test failed');
-                }
-                const data = await res.json();
-                const results = data.results || {};
-
-                if (results.all_passed) {
-                    showToast(`✅ All ${results.total} structural tests passed`, 'success');
-                    structuralPassed = true;
-                    break;
-                }
-
-                // Tests failed — try auto-heal if we have budget
-                if (cycle >= MAX_HEAL) {
-                    showToast(`❌ ${results.failed} of ${results.total} tests still failing after ${MAX_HEAL} auto-heal attempts`, 'error');
-                    break;
-                }
-
-                showToast(`🔧 Auto-healing (${results.failed} test${results.failed > 1 ? 's' : ''} failing)…`, 'info');
-
-                const healRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({}),
-                });
-
-                if (!healRes.ok) {
-                    showToast('❌ Auto-heal failed — see details below', 'error');
-                    break;
-                }
-
-                const healData = await healRes.json();
-
-                if (healData.status === 'no_issues') {
-                    showToast('❌ Auto-heal found no issues to fix but tests are failing', 'error');
-                    break;
-                }
-
-                if (healData.all_passed) {
-                    showToast(`✅ Auto-healed — all tests pass`, 'success');
-                    structuralPassed = true;
-                    break;
-                }
-
-                // Partial fix — loop will re-test with the healed template
-            } catch (err) {
-                showToast(`Test error: ${err.message}`, 'error');
-                break;
+        // Step 1: Run structural tests
+        showToast('🧪 Running structural tests…', 'info');
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Test failed');
             }
-        }
-
-        if (!structuralPassed) {
-            await loadAllData();
-            showTemplateDetail(templateId);
+            const data = await res.json();
+            const results = data.results || {};
+            if (!results.all_passed) {
+                showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+                await loadAllData();
+                showTemplateDetail(templateId);
+                return;
+            }
+            showToast(`✅ All ${results.total} structural tests passed`, 'success');
+        } catch (err) {
+            showToast(`Test error: ${err.message}`, 'error');
             return;
         }
     }
@@ -3097,13 +3019,21 @@ async function submitRevision(templateId) {
             return;
         }
 
+        if (revData.status === 'edit_failed') {
+            resultDiv.innerHTML = `
+                <div class="tmpl-revision-error">❌ ${escapeHtml(revData.message || 'Edit failed')}</div>
+                <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>`;
+            return;
+        }
+
         // Show success
         let actionsHtml = '';
         if (revData.actions_taken?.length) {
             actionsHtml = '<div class="tmpl-revision-actions"><strong>Changes made:</strong><ul>' +
                 revData.actions_taken.map(a => {
                     const icon = a.action === 'auto_onboarded' ? '🔧' :
-                                 a.action === 'added_from_catalog' ? '✅' : '❌';
+                                 a.action === 'added_from_catalog' ? '✅' :
+                                 a.action === 'code_edit' ? '✏️' : '❌';
                     return `<li>${icon} <strong>${escapeHtml(a.service_id.split('/').pop())}</strong> — ${escapeHtml(a.detail)}</li>`;
                 }).join('') + '</ul></div>';
         }
