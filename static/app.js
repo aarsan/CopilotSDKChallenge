@@ -2409,6 +2409,23 @@ function showTemplateDetail(templateId) {
             </div>
 
             <div class="detail-sidebar">
+                <!-- Template Version -->
+                <div class="detail-section comp-version-section">
+                    <div class="comp-template-ver">
+                        <span class="comp-ver-label">Template Version</span>
+                        <span class="comp-ver-num">${activeVer ? `v${activeVer}` : 'Draft'}</span>
+                        <span class="comp-ver-status comp-ver-status-${status}">${statusBadgeMap[status] || status}</span>
+                    </div>
+                </div>
+
+                <!-- Composed From — services + versions -->
+                <div class="detail-section comp-deps-section">
+                    <h4>🧩 Composed From</h4>
+                    <div id="tmpl-composition" class="comp-deps-list">
+                        <div class="compose-loading">Loading…</div>
+                    </div>
+                </div>
+
                 <div class="detail-section">
                     <h4>Format & Category</h4>
                     <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
@@ -2421,12 +2438,13 @@ function showTemplateDetail(templateId) {
                     <div class="detail-tags">${tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}</div>
                 </div>` : ''}
 
-                <!-- Version History — clickable pipeline view -->
-                <div class="detail-section">
-                    <h4>📋 Version History</h4>
-                    <p style="font-size:0.72rem; color:var(--text-muted); margin-bottom:0.5rem;">Click a version to see its lifecycle pipeline.</p>
-                    <div id="tmpl-version-history" class="tmpl-version-history">
-                        <div class="compose-loading">Loading versions…</div>
+                <!-- Version Log — collapsible -->
+                <div class="detail-section comp-verlog-section">
+                    <h4 class="comp-verlog-toggle" onclick="this.parentElement.classList.toggle('comp-verlog-open')">
+                        📋 Version Log <span class="comp-verlog-arrow">▸</span>
+                    </h4>
+                    <div id="tmpl-version-history" class="tmpl-version-history comp-verlog-body">
+                        <div class="compose-loading">Loading…</div>
                     </div>
                 </div>
             </div>
@@ -2435,7 +2453,8 @@ function showTemplateDetail(templateId) {
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
 
-    // Load version history asynchronously
+    // Load composition info and version history
+    _loadTemplateComposition(templateId);
     _loadTemplateVersionHistory(templateId);
 
     // Reconnect to active/completed validation if one exists
@@ -2489,6 +2508,44 @@ function _inferChangeType(createdBy, changelog) {
     return '';
 }
 
+/** Load composition info — which services compose this template, their versions, upgrade availability */
+async function _loadTemplateComposition(templateId) {
+    const container = document.getElementById('tmpl-composition');
+    if (!container) return;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`);
+        if (!res.ok) {
+            container.innerHTML = '<div class="compose-empty">No composition data</div>';
+            return;
+        }
+        const data = await res.json();
+        const components = data.components || [];
+
+        if (!components.length) {
+            container.innerHTML = '<div class="compose-empty">No services linked</div>';
+            return;
+        }
+
+        container.innerHTML = components.map(c => {
+            const shortName = c.name || c.service_id.split('/').pop();
+            const verDisplay = c.current_version ? `v${c.current_version}` : '—';
+            const upgradeHtml = c.upgrade_available
+                ? `<span class="comp-upgrade-badge" title="v${c.latest_version} available">⬆ v${c.latest_version}</span>`
+                : '';
+            const statusClass = c.status === 'approved' ? 'comp-dep-ok' : 'comp-dep-warn';
+
+            return `
+                <div class="comp-dep-item ${statusClass}">
+                    <div class="comp-dep-name">${escapeHtml(shortName)}</div>
+                    <div class="comp-dep-ver">${verDisplay} ${upgradeHtml}</div>
+                </div>`;
+        }).join('');
+    } catch (err) {
+        container.innerHTML = `<div class="compose-empty">Failed: ${err.message}</div>`;
+    }
+}
+
 /** Load and render version history for a template */
 async function _loadTemplateVersionHistory(templateId) {
     const container = document.getElementById('tmpl-version-history');
@@ -2510,33 +2567,35 @@ async function _loadTemplateVersionHistory(templateId) {
 
         const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '❌', approved: '✅' };
 
-        container.innerHTML = versions.map((v, idx) => {
+        // Sort versions: most recent first by created_at, then by version number descending
+        const sorted = [...versions].sort((a, b) => {
+            // By created_at descending
+            const aDate = a.created_at || '';
+            const bDate = b.created_at || '';
+            if (aDate !== bDate) return bDate.localeCompare(aDate);
+            // Fallback: by version number descending
+            return (b.version || 0) - (a.version || 0);
+        });
+
+        container.innerHTML = sorted.map((v, idx) => {
             const isActive = v.version === data.active_version;
             const semverDisplay = v.semver ? v.semver : `${v.version}.0.0`;
             const changeLabel = _inferChangeType(v.created_by, v.changelog);
+            const dateStr = v.created_at ? v.created_at.substring(0, 10) : '';
 
             return `
-                <div class="tmpl-ver-item ${isActive ? 'tmpl-ver-active' : ''} tmpl-ver-${v.status}"
-                     onclick="_toggleVersionPipeline(this, ${idx})" data-ver-idx="${idx}">
-                    <div class="tmpl-ver-header">
-                        <span class="tmpl-ver-num">${semverDisplay}</span>
-                        <span class="tmpl-ver-status">${statusIcons[v.status] || '❓'} ${v.status}</span>
-                        ${isActive ? '<span class="tmpl-ver-active-badge">Active</span>' : ''}
-                        ${changeLabel ? `<span class="tmpl-ver-change-type">${changeLabel}</span>` : ''}
-                        <span class="tmpl-ver-expand-icon">▸</span>
+                <div class="comp-verlog-item ${isActive ? 'comp-verlog-active' : ''} comp-verlog-${v.status}">
+                    <div class="comp-verlog-row">
+                        <span class="comp-verlog-ver">${semverDisplay}</span>
+                        <span class="comp-verlog-icon">${statusIcons[v.status] || '❓'}</span>
+                        ${isActive ? '<span class="comp-verlog-active-tag">Active</span>' : ''}
+                        ${changeLabel ? `<span class="comp-verlog-change">${changeLabel}</span>` : ''}
+                        <span class="comp-verlog-date">${dateStr}</span>
                     </div>
-                    ${v.changelog ? `<div class="tmpl-ver-changelog">${escapeHtml(v.changelog)}</div>` : ''}
-                    <div class="tmpl-ver-meta">
-                        ${v.created_at ? `<span>${v.created_at.substring(0, 16)}</span>` : ''}
-                        ${v.created_by ? `<span>By: ${escapeHtml(v.created_by)}</span>` : ''}
-                    </div>
-                    <div class="ver-pipeline-container" id="ver-pipeline-${idx}" style="display:none;"></div>
+                    ${v.changelog ? `<div class="comp-verlog-note">${escapeHtml(v.changelog)}</div>` : ''}
                 </div>
             `;
         }).join('');
-
-        // Stash version data for pipeline rendering
-        container._versionData = versions;
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
