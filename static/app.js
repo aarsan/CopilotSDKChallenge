@@ -2679,34 +2679,79 @@ function _renderVersionPipeline(v) {
         </div>`;
 }
 
-/** Full validation pipeline: structural tests → ARM validation (auto-chains) */
+/** Full validation pipeline: structural tests → auto-heal loop → ARM validation */
 async function runFullValidation(templateId, skipTests = false) {
     if (!skipTests) {
-        // Step 1: Run structural tests
-        showToast('🧪 Running structural tests…', 'info');
-        try {
-            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || 'Test failed');
+        const MAX_HEAL = 3;
+        let structuralPassed = false;
+
+        for (let cycle = 0; cycle <= MAX_HEAL; cycle++) {
+            // ── Run structural tests ──
+            showToast(cycle === 0
+                ? '🧪 Running structural tests…'
+                : '🧪 Re-testing after auto-heal…', 'info');
+
+            try {
+                const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Test failed');
+                }
+                const data = await res.json();
+                const results = data.results || {};
+
+                if (results.all_passed) {
+                    showToast(`✅ All ${results.total} structural tests passed`, 'success');
+                    structuralPassed = true;
+                    break;
+                }
+
+                // Tests failed — try auto-heal if we have budget
+                if (cycle >= MAX_HEAL) {
+                    showToast(`❌ ${results.failed} of ${results.total} tests still failing after ${MAX_HEAL} auto-heal attempts`, 'error');
+                    break;
+                }
+
+                showToast(`🔧 Auto-healing (${results.failed} test${results.failed > 1 ? 's' : ''} failing)…`, 'info');
+
+                const healRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+
+                if (!healRes.ok) {
+                    showToast('❌ Auto-heal failed — see details below', 'error');
+                    break;
+                }
+
+                const healData = await healRes.json();
+
+                if (healData.status === 'no_issues') {
+                    showToast('❌ Auto-heal found no issues to fix but tests are failing', 'error');
+                    break;
+                }
+
+                if (healData.all_passed) {
+                    showToast(`✅ Auto-healed — all tests pass`, 'success');
+                    structuralPassed = true;
+                    break;
+                }
+
+                // Partial fix — loop will re-test with the healed template
+            } catch (err) {
+                showToast(`Test error: ${err.message}`, 'error');
+                break;
             }
-            const data = await res.json();
-            const results = data.results || {};
-            if (!results.all_passed) {
-                showToast(`❌ ${results.failed} of ${results.total} tests failed — auto-healing…`, 'warning');
-                await loadAllData();
-                showTemplateDetail(templateId);
-                // Auto-trigger heal instead of requiring manual button click
-                autoHealTemplate(templateId);
-                return;
-            }
-            showToast(`✅ All ${results.total} structural tests passed`, 'success');
-        } catch (err) {
-            showToast(`Test error: ${err.message}`, 'error');
+        }
+
+        if (!structuralPassed) {
+            await loadAllData();
+            showTemplateDetail(templateId);
             return;
         }
     }
