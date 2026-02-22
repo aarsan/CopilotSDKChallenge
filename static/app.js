@@ -2187,7 +2187,7 @@ function showTemplateDetail(templateId) {
         deprecated: '⚠️ Deprecated',
     };
 
-    // ── Status-aware CTA — minimal, clear actions per lifecycle state ──
+    // ── Status-aware CTA ──
     let ctaHtml = '';
     if (status === 'draft') {
         ctaHtml = `
@@ -2311,113 +2311,120 @@ function showTemplateDetail(templateId) {
             <div id="tmpl-deploy-progress" style="display:none;"></div>
         </div>
 
-        <div class="detail-section">
-            <h4>Description</h4>
-            <p>${escapeHtml(tmpl.description || 'No description')}</p>
-        </div>
+        <div class="detail-layout">
+            <div class="detail-main">
+                <div class="detail-section">
+                    <h4>Description</h4>
+                    <p>${escapeHtml(tmpl.description || 'No description')}</p>
+                </div>
 
-        ${provides.length ? `
-        <div class="detail-section">
-            <h4>Creates (Provides)</h4>
-            <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${escapeHtml(p)}</span>`).join('')}</div>
-        </div>` : ''}
+                ${provides.length ? `
+                <div class="detail-section">
+                    <h4>Creates (Provides)</h4>
+                    <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${escapeHtml(p)}</span>`).join('')}</div>
+                </div>` : ''}
 
-        ${requires.length ? `
-        <div class="detail-section">
-            <h4>🔗 Infrastructure Dependencies</h4>
-            <div class="tmpl-dep-list">
-                ${requires.map(r => `
-                    <div class="tmpl-dep-item tmpl-dep-required">
-                        <strong>${_shortType(r.type || r)}</strong>
-                        <span>${escapeHtml(r.reason || '')}</span>
-                        <code>${escapeHtml(r.parameter || '')}</code>
+                ${requires.length ? `
+                <div class="detail-section">
+                    <h4>🔗 Infrastructure Dependencies</h4>
+                    <div class="tmpl-dep-list">
+                        ${requires.map(r => `
+                            <div class="tmpl-dep-item tmpl-dep-required">
+                                <strong>${_shortType(r.type || r)}</strong>
+                                <span>${escapeHtml(r.reason || '')}</span>
+                                <code>${escapeHtml(r.parameter || '')}</code>
+                            </div>
+                        `).join('')}
                     </div>
-                `).join('')}
-            </div>
-            <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
-        </div>` : ''}
+                    <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
+                </div>` : ''}
 
-        ${optionalRefs.length ? `
-        <div class="detail-section">
-            <h4>📎 Optional References</h4>
-            <div class="tmpl-dep-list">
-                ${optionalRefs.map(o => `
-                    <div class="tmpl-dep-item tmpl-dep-optional">
-                        <strong>${_shortType(o.type || o)}</strong>
-                        <span>${escapeHtml(o.reason || '')}</span>
+                ${optionalRefs.length ? `
+                <div class="detail-section">
+                    <h4>📎 Optional References</h4>
+                    <div class="tmpl-dep-list">
+                        ${optionalRefs.map(o => `
+                            <div class="tmpl-dep-item tmpl-dep-optional">
+                                <strong>${_shortType(o.type || o)}</strong>
+                                <span>${escapeHtml(o.reason || '')}</span>
+                            </div>
+                        `).join('')}
                     </div>
-                `).join('')}
-            </div>
-        </div>` : ''}
+                </div>` : ''}
 
-        <div class="detail-section">
-            <h4>Format & Category</h4>
-            <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
-            <span class="category-badge">${escapeHtml(tmpl.category || '')}</span>
-        </div>
+                ${(tmpl.service_ids && tmpl.service_ids.length) ? `
+                <div class="detail-section">
+                    <h4>Composed From Services</h4>
+                    <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
+                    ${status !== 'approved' ? `<a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
+                        🔄 Recompose from latest service versions
+                    </a>` : ''}
+                </div>` : ''}
 
-        ${(tmpl.tags && tmpl.tags.length) ? `
-        <div class="detail-section">
-            <h4>Tags</h4>
-            <div class="detail-tags">${tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}</div>
-        </div>` : ''}
-
-        ${(tmpl.service_ids && tmpl.service_ids.length) ? `
-        <div class="detail-section">
-            <h4>Composed From Services</h4>
-            <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
-            ${status !== 'approved' ? `<a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
-                🔄 Recompose from latest service versions
-            </a>` : ''}
-        </div>` : ''}
-
-        ${(tmpl.parameters && tmpl.parameters.length) ? `
-        <div class="detail-section">
-            <h4>Parameters</h4>
-            <div class="detail-params">
-                ${tmpl.parameters.map(p => `
-                    <div class="detail-param">
-                        <span class="param-name">${escapeHtml(p.name || p)}</span>
-                        ${p.type ? `<span class="param-type">${escapeHtml(p.type)}</span>` : ''}
-                        ${p.required ? '<span class="param-required">required</span>' : ''}
+                ${(tmpl.parameters && tmpl.parameters.length) ? `
+                <div class="detail-section">
+                    <h4>Parameters</h4>
+                    <div class="detail-params">
+                        ${tmpl.parameters.map(p => `
+                            <div class="detail-param">
+                                <span class="param-name">${escapeHtml(p.name || p)}</span>
+                                ${p.type ? `<span class="param-type">${escapeHtml(p.type)}</span>` : ''}
+                                ${p.required ? '<span class="param-required">required</span>' : ''}
+                            </div>
+                        `).join('')}
                     </div>
-                `).join('')}
-            </div>
-        </div>` : ''}
+                </div>` : ''}
 
-        <!-- Request Revision — Prompt-Driven Template Changes -->
-        <div class="detail-section tmpl-revision-section">
-            <h4>📝 Request Changes</h4>
-            <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
-            <div class="tmpl-revision-input-group">
-                <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
-                    rows="2"
-                    placeholder="e.g. Add a SQL database and Key Vault for secrets management…"
-                    onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
-                <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
-                    onclick="submitRevision('${escapeHtml(tmpl.id)}')">
-                    ✏️ Submit
-                </button>
+                <!-- Request Changes -->
+                <div class="detail-section tmpl-revision-section">
+                    <h4>📝 Request Changes</h4>
+                    <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
+                    <div class="tmpl-revision-input-group">
+                        <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
+                            rows="2"
+                            placeholder="e.g. Add a SQL database and Key Vault for secrets management…"
+                            onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
+                        <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
+                            onclick="submitRevision('${escapeHtml(tmpl.id)}')">
+                            ✏️ Submit
+                        </button>
+                    </div>
+                    <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
+                    <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
+                </div>
+
+                ${tmpl.content ? `
+                <div class="detail-section">
+                    <h4>Template Code</h4>
+                    <div class="detail-code-wrap">
+                        <pre><code>${escapeHtml(tmpl.content)}</code></pre>
+                    </div>
+                </div>` : ''}
             </div>
-            <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
-            <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
+
+            <div class="detail-sidebar">
+                <div class="detail-section">
+                    <h4>Format & Category</h4>
+                    <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
+                    <span class="category-badge">${escapeHtml(tmpl.category || '')}</span>
+                </div>
+
+                ${(tmpl.tags && tmpl.tags.length) ? `
+                <div class="detail-section">
+                    <h4>Tags</h4>
+                    <div class="detail-tags">${tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}</div>
+                </div>` : ''}
+
+                <!-- Version History — clickable pipeline view -->
+                <div class="detail-section">
+                    <h4>📋 Version History</h4>
+                    <p style="font-size:0.72rem; color:var(--text-muted); margin-bottom:0.5rem;">Click a version to see its lifecycle pipeline.</p>
+                    <div id="tmpl-version-history" class="tmpl-version-history">
+                        <div class="compose-loading">Loading versions…</div>
+                    </div>
+                </div>
+            </div>
         </div>
-
-        <!-- Version History -->
-        <div class="detail-section">
-            <h4>📋 Version History</h4>
-            <div id="tmpl-version-history" class="tmpl-version-history">
-                <div class="compose-loading">Loading versions…</div>
-            </div>
-        </div>
-
-        ${tmpl.content ? `
-        <div class="detail-section">
-            <h4>Template Code</h4>
-            <div class="detail-code-wrap">
-                <pre><code>${escapeHtml(tmpl.content)}</code></pre>
-            </div>
-        </div>` : ''}
     `;
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
@@ -2463,42 +2470,198 @@ async function _loadTemplateVersionHistory(templateId) {
 
         const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '❌', approved: '✅' };
 
-        container.innerHTML = versions.map(v => {
-            const testResults = v.test_results || {};
-            const tests = testResults.tests || [];
+        container.innerHTML = versions.map((v, idx) => {
             const isActive = v.version === data.active_version;
             const semverDisplay = v.semver ? v.semver : `${v.version}.0.0`;
             const changeLabel = _inferChangeType(v.created_by, v.changelog);
 
             return `
-                <div class="tmpl-ver-item ${isActive ? 'tmpl-ver-active' : ''} tmpl-ver-${v.status}">
+                <div class="tmpl-ver-item ${isActive ? 'tmpl-ver-active' : ''} tmpl-ver-${v.status}"
+                     onclick="_toggleVersionPipeline(this, ${idx})" data-ver-idx="${idx}">
                     <div class="tmpl-ver-header">
                         <span class="tmpl-ver-num">${semverDisplay}</span>
                         <span class="tmpl-ver-status">${statusIcons[v.status] || '❓'} ${v.status}</span>
                         ${isActive ? '<span class="tmpl-ver-active-badge">Active</span>' : ''}
                         ${changeLabel ? `<span class="tmpl-ver-change-type">${changeLabel}</span>` : ''}
+                        <span class="tmpl-ver-expand-icon">▸</span>
                     </div>
                     ${v.changelog ? `<div class="tmpl-ver-changelog">${escapeHtml(v.changelog)}</div>` : ''}
-                    ${tests.length ? `
-                    <div class="tmpl-ver-tests">
-                        ${tests.map(t => `
-                            <span class="tmpl-ver-test ${t.passed ? 'test-pass' : 'test-fail'}">
-                                ${t.passed ? '✅' : '❌'} ${escapeHtml(t.name)}
-                            </span>
-                        `).join('')}
-                    </div>` : ''}
-                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '✅ Validated' : '❌ Validation failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
                     <div class="tmpl-ver-meta">
                         ${v.created_at ? `<span>${v.created_at.substring(0, 16)}</span>` : ''}
-                        ${v.tested_at ? `<span>Tested: ${v.tested_at.substring(0, 16)}</span>` : ''}
                         ${v.created_by ? `<span>By: ${escapeHtml(v.created_by)}</span>` : ''}
                     </div>
+                    <div class="ver-pipeline-container" id="ver-pipeline-${idx}" style="display:none;"></div>
                 </div>
             `;
         }).join('');
+
+        // Stash version data for pipeline rendering
+        container._versionData = versions;
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
+}
+
+/** Toggle the pipeline visualization for a version item */
+function _toggleVersionPipeline(el, idx) {
+    const pipelineContainer = document.getElementById(`ver-pipeline-${idx}`);
+    if (!pipelineContainer) return;
+
+    const isExpanded = el.classList.contains('ver-expanded');
+
+    // Collapse all others first
+    document.querySelectorAll('.tmpl-ver-item.ver-expanded').forEach(item => {
+        item.classList.remove('ver-expanded');
+        const pc = item.querySelector('.ver-pipeline-container');
+        if (pc) pc.style.display = 'none';
+    });
+
+    if (isExpanded) return; // Was open, now closed
+
+    // Expand this one
+    el.classList.add('ver-expanded');
+    pipelineContainer.style.display = 'block';
+
+    // Render pipeline if not already done
+    if (!pipelineContainer.dataset.rendered) {
+        const container = document.getElementById('tmpl-version-history');
+        const versions = container?._versionData || [];
+        const v = versions[idx];
+        if (v) {
+            pipelineContainer.innerHTML = _renderVersionPipeline(v);
+            pipelineContainer.dataset.rendered = '1';
+        }
+    }
+}
+
+/** Render a visual pipeline for a version showing each lifecycle stage */
+function _renderVersionPipeline(v) {
+    const status = v.status || 'draft';
+    const testResults = v.test_results || {};
+    const tests = testResults.tests || [];
+    const valResults = v.validation_results || {};
+    const healHistory = valResults.heal_history || [];
+
+    // Determine which stages are completed, active, failed, or pending
+    // Pipeline: Compose → Structural Tests → Azure Validation → Published
+    const stages = [];
+
+    // Stage 1: Compose — always passed if version exists
+    stages.push({
+        label: 'Compose',
+        icon: '🔨',
+        status: 'passed',
+        time: v.created_at ? v.created_at.substring(0, 16) : null,
+    });
+
+    // Stage 2: Structural Tests
+    if (status === 'draft') {
+        stages.push({ label: 'Structural Tests', icon: '🧪', status: 'skipped', time: null });
+    } else if (tests.length && !testResults.all_passed) {
+        stages.push({ label: 'Structural Tests', icon: '🧪', status: 'failed', time: v.tested_at?.substring(0, 16) });
+    } else {
+        stages.push({ label: 'Structural Tests', icon: '🧪', status: 'passed', time: v.tested_at?.substring(0, 16) });
+    }
+
+    // Stage 3: Azure Validation
+    if (['draft', 'passed'].includes(status)) {
+        stages.push({ label: 'Azure Validation', icon: '☁️', status: status === 'passed' ? 'active' : 'skipped', time: null });
+    } else if (status === 'failed') {
+        stages.push({ label: 'Azure Validation', icon: '☁️', status: 'failed', time: v.validated_at?.substring(0, 16) });
+    } else {
+        stages.push({ label: 'Azure Validation', icon: '☁️', status: 'passed', time: v.validated_at?.substring(0, 16) });
+    }
+
+    // Stage 4: Published
+    if (status === 'approved') {
+        stages.push({ label: 'Published', icon: '🚀', status: 'passed', time: null });
+    } else if (status === 'validated') {
+        stages.push({ label: 'Published', icon: '🚀', status: 'active', time: null });
+    } else {
+        stages.push({ label: 'Published', icon: '🚀', status: 'skipped', time: null });
+    }
+
+    // Build stage nodes with connectors
+    let stagesHtml = '';
+    stages.forEach((s, i) => {
+        if (i > 0) {
+            const prevStatus = stages[i - 1].status;
+            const connStatus = prevStatus === 'passed' ? 'passed' : prevStatus === 'failed' ? 'failed' : '';
+            stagesHtml += `<div class="ver-stage-connector"><div class="connector-line ${connStatus ? 'connector-' + connStatus : ''}"></div></div>`;
+        }
+        stagesHtml += `
+            <div class="ver-stage-node">
+                <div class="ver-stage-icon stage-${s.status}">${s.icon}</div>
+                <div class="ver-stage-label">${s.label}</div>
+                ${s.time ? `<div class="ver-stage-time">${s.time}</div>` : ''}
+            </div>`;
+    });
+
+    // Build detail cards for failures or test results
+    let detailHtml = '';
+
+    // Test results detail
+    if (tests.length) {
+        const passedCount = tests.filter(t => t.passed).length;
+        const failedCount = tests.filter(t => !t.passed).length;
+        const isAllPassed = testResults.all_passed;
+        const detailType = isAllPassed ? 'detail-success' : 'detail-failed';
+
+        detailHtml += `
+            <div class="ver-pipeline-detail ${detailType}">
+                <div class="ver-detail-title">
+                    ${isAllPassed ? '✅' : '❌'} Structural Tests — ${passedCount} passed${failedCount ? `, ${failedCount} failed` : ''}
+                </div>
+                <div class="ver-detail-items">
+                    ${tests.map(t => `
+                        <div class="ver-detail-item">
+                            <span class="${t.passed ? 'test-pass' : 'test-fail'}">${t.passed ? '✅' : '❌'}</span>
+                            <strong>${escapeHtml(t.name)}</strong>
+                            ${t.message && !t.passed ? `<span class="ver-detail-msg">${escapeHtml(t.message)}</span>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            </div>`;
+    }
+
+    // Validation / heal history detail
+    if (v.validated_at || status === 'failed') {
+        const valPassed = valResults.validation_passed;
+        const deepHealed = valResults.deep_healed;
+        const detailType = valPassed ? 'detail-success' : 'detail-failed';
+        const region = valResults.region || '';
+        const rg = valResults.resource_group || '';
+
+        let valTitle = valPassed
+            ? (deepHealed ? '🔧 Azure Validation — Passed after self-healing' : '✅ Azure Validation — Passed')
+            : '❌ Azure Validation — Failed';
+
+        detailHtml += `
+            <div class="ver-pipeline-detail ${detailType}">
+                <div class="ver-detail-title">${valTitle}</div>
+                ${region || rg ? `<div class="ver-detail-meta">${region ? `Region: ${escapeHtml(region)}` : ''} ${rg ? `· RG: ${escapeHtml(rg)}` : ''}</div>` : ''}
+                ${healHistory.length ? `
+                <div class="ver-heal-history">
+                    <div class="ver-heal-title">🔄 Healing Steps (${healHistory.length})</div>
+                    ${healHistory.map((h, i) => `
+                        <div class="ver-heal-step">
+                            <div class="ver-heal-step-header">
+                                <span class="ver-heal-step-num">Step ${h.step || (i + 1)}</span>
+                                <span class="ver-heal-phase">${escapeHtml(h.phase || 'deploy')}</span>
+                            </div>
+                            <div class="ver-heal-error">❌ ${escapeHtml(h.error || 'Unknown error')}</div>
+                            <div class="ver-heal-fix">🔧 ${escapeHtml(h.fix_summary || 'Auto-fix applied')}</div>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+            </div>`;
+    }
+
+    return `
+        <div class="ver-pipeline" onclick="event.stopPropagation()">
+            <div class="ver-pipeline-stages">${stagesHtml}</div>
+            ${detailHtml || '<div class="ver-pipeline-detail detail-info"><div class="ver-detail-title">ℹ️ No detailed results yet — run validation to see the full pipeline.</div></div>'}
+        </div>`;
 }
 
 /** Full validation pipeline: structural tests → ARM validation (auto-chains) */
@@ -3738,7 +3901,11 @@ async function runTemplateTest(templateId) {
 }
 
 function closeTemplateDetail() {
-    document.getElementById('template-detail-drawer').classList.add('hidden');
+    const overlay = document.getElementById('template-detail-drawer');
+    overlay.classList.add('hidden');
+    // Scroll panel body to top for next open
+    const body = overlay.querySelector('.detail-panel-body');
+    if (body) body.scrollTop = 0;
 }
 
 // ── Design Mode Toggle ──────────────────────────────────────
