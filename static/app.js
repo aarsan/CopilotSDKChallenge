@@ -2223,8 +2223,12 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ Auto-heal couldn't fully resolve the issues. Use <strong>Request Revision</strong> below to describe what needs to change — validation will re-run automatically.
+                ❌ Auto-heal couldn't fully resolve the issues — expand the latest version below to see what failed.
             </div>
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('tmpl-revision-prompt')?.focus(); document.querySelector('.tmpl-revision-section')?.scrollIntoView({behavior:'smooth'})">
+                ✏️ Describe a Fix
+            </button>
+            <span class="tmpl-test-hint">Describe what needs to change and InfraForge will revise, re-test, and re-validate automatically.</span>
         </div>`;
     } else if (status === 'approved') {
         ctaHtml = `
@@ -2489,6 +2493,15 @@ async function _loadTemplateVersionHistory(templateId) {
 
         // Stash version data for pipeline rendering
         container._versionData = versions;
+
+        // Auto-expand the latest version if template is in failed state
+        // so the user can immediately see what went wrong
+        if (versions.length && versions[0].status === 'failed') {
+            const firstItem = container.querySelector('.tmpl-ver-item');
+            if (firstItem) {
+                _toggleVersionPipeline(firstItem, 0);
+            }
+        }
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
