@@ -3025,25 +3025,11 @@ async def validate_template(template_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Template content is not valid JSON")
 
     # Build parameter values
-    tpl_params = tpl.get("parameters", {})
-    final_params = {}
-    for pname, pdef in tpl_params.items():
-        if pname in user_params:
-            final_params[pname] = user_params[pname]
-        elif "defaultValue" in pdef:
-            final_params[pname] = pdef["defaultValue"]
-        else:
-            ptype = pdef.get("type", "string").lower()
-            if ptype == "string":
-                final_params[pname] = f"if-val-{pname[:20]}"
-            elif ptype == "int":
-                final_params[pname] = 1
-            elif ptype == "bool":
-                final_params[pname] = True
-            elif ptype == "array":
-                final_params[pname] = []
-            elif ptype == "object":
-                final_params[pname] = {}
+    final_params = _extract_param_values(tpl)
+    # Layer user overrides on top
+    for pname, pval in user_params.items():
+        if pname in tpl.get("parameters", {}):
+            final_params[pname] = pval
 
     rg_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
     deployment_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
