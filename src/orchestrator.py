@@ -505,17 +505,27 @@ async def analyze_template_feedback(
             f"--- KNOWN AZURE RESOURCE TYPES ---\n"
             f"{json.dumps(known_types)}\n"
             f"--- END KNOWN TYPES ---\n\n"
+            "The user's feedback can be one of TWO categories:\n"
+            "A) ADD SERVICES — they want NEW resource types added to the template\n"
+            "B) MODIFY EXISTING — they want to change, remove, reduce, reconfigure, or fix \n"
+            "   resources that ALREADY exist in the template (e.g. reduce 2 VNets to 1, \n"
+            "   change a SKU, remove a subnet, rename a resource, fix a config error)\n\n"
             "Based on the user's feedback, determine:\n"
-            "1. What does the user expect this template to do?\n"
-            "2. What is the template currently missing?\n"
-            "3. Which Azure resource types (from the known types list) should be added?\n\n"
+            "1. Is this category A (add new services) or B (modify existing code)?\n"
+            "2. If A: which Azure resource types should be added?\n"
+            "3. If B: describe the specific code change needed\n\n"
             "Return ONLY a JSON object with this exact structure:\n"
             "{\n"
-            '  "analysis": "One paragraph explaining the gap between what the user wants and what the template provides",\n'
+            '  "analysis": "One paragraph explaining what the user wants",\n'
+            '  "category": "add_services" or "modify_existing",\n'
             '  "missing_resource_types": ["Microsoft.Compute/virtualMachines", ...],\n'
-            '  "explanation_per_type": {"Microsoft.Compute/virtualMachines": "User wants a VM but the template only creates networking"}\n'
+            '  "explanation_per_type": {"Microsoft.Compute/virtualMachines": "..."},\n'
+            '  "needs_code_edit": true/false,\n'
+            '  "edit_instruction": "Specific instruction for what to change in the ARM template JSON"\n'
             "}\n\n"
             "RULES:\n"
+            "- For category A: populate missing_resource_types, set needs_code_edit=false\n"
+            "- For category B: set missing_resource_types=[], needs_code_edit=true, and write a clear edit_instruction\n"
             "- Only include resource types from the KNOWN AZURE RESOURCE TYPES list\n"
             "- Do NOT include resource types already in the template's current services\n"
             "- Return ONLY the raw JSON — no markdown fences, no extra text\n"
@@ -631,12 +641,19 @@ async def analyze_template_feedback(
     new_service_ids = list(current_services)
 
     if not missing_types:
-        await _emit("No missing resource types identified. The template may already cover your needs.")
+        needs_edit = analysis_result.get("needs_code_edit", False)
+        edit_instruction = analysis_result.get("edit_instruction", "")
+        if needs_edit:
+            await _emit("This is a modification to existing resources — will edit template code directly.")
+        else:
+            await _emit("No missing resource types identified. The template may already cover your needs.")
         return {
             "analysis": analysis_result.get("analysis", ""),
             "missing_services": [],
             "actions_taken": [],
             "should_recompose": False,
+            "needs_code_edit": needs_edit,
+            "edit_instruction": edit_instruction,
             "new_service_ids": current_services,
         }
 
@@ -703,6 +720,189 @@ async def analyze_template_feedback(
         "should_recompose": should_recompose,
         "new_service_ids": new_service_ids,
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# DIRECT TEMPLATE CODE EDITING — MODIFY EXISTING RESOURCES
+# ══════════════════════════════════════════════════════════════
+
+async def apply_template_code_edit(
+    template: dict,
+    edit_instruction: str,
+    user_message: str,
+    *,
+    copilot_client=None,
+) -> dict:
+    """Apply a direct code edit to an existing ARM template via the LLM.
+
+    Used when the user wants to modify existing resources (reduce, remove,
+    reconfigure, rename) rather than add new services.
+
+    Args:
+        template: The full template catalog entry (with content)
+        edit_instruction: Specific instruction from analyze_template_feedback
+        user_message: The original user request (for additional context)
+        copilot_client: Copilot SDK client for LLM editing
+
+    Returns:
+        {
+            "success": bool,
+            "content": str,             # Updated ARM JSON string
+            "changes_summary": str,     # Human-readable summary of changes
+            "error": str | None,
+        }
+    """
+    import asyncio
+
+    current_content = template.get("content", "")
+    if not current_content:
+        return {
+            "success": False,
+            "content": "",
+            "changes_summary": "",
+            "error": "Template has no content to edit",
+        }
+
+    # Ensure content is a string
+    if not isinstance(current_content, str):
+        current_content = json.dumps(current_content, indent=2)
+
+    prompt = (
+        "You are an ARM template editor. You will receive an existing ARM JSON template "
+        "and an instruction describing what to change. Apply the change precisely.\n\n"
+        f"--- USER REQUEST ---\n{user_message}\n--- END USER REQUEST ---\n\n"
+        f"--- EDIT INSTRUCTION ---\n{edit_instruction}\n--- END EDIT INSTRUCTION ---\n\n"
+        f"--- CURRENT ARM TEMPLATE ---\n{current_content}\n--- END TEMPLATE ---\n\n"
+        "Apply the requested change to the ARM template. Return a JSON object with:\n"
+        "{\n"
+        '  "arm_template": { ... the complete modified ARM JSON ... },\n'
+        '  "changes_summary": "Brief description of what was changed"\n'
+        "}\n\n"
+        "RULES:\n"
+        "- Return the COMPLETE ARM template, not just the changed parts\n"
+        "- Maintain valid ARM template structure ($schema, contentVersion, parameters, variables, resources, outputs)\n"
+        "- Keep all existing parameters, variables, and outputs that are still relevant\n"
+        "- Remove parameters/outputs that are no longer needed after the change\n"
+        "- Preserve resource tags, dependencies, and naming conventions\n"
+        "- Return ONLY the raw JSON — no markdown fences, no extra text\n"
+    )
+
+    if not copilot_client:
+        return {
+            "success": False,
+            "content": current_content,
+            "changes_summary": "",
+            "error": "No AI client available for code editing",
+        }
+
+    try:
+        from src.model_router import Task, get_model_for_task
+        model = get_model_for_task(Task.GENERATION)
+
+        session = await copilot_client.create_session({
+            "model": model,
+            "streaming": True,
+            "tools": [],
+            "system_message": {
+                "content": (
+                    "You are an ARM template editor. You modify existing Azure "
+                    "Resource Manager templates based on user instructions. "
+                    "Return ONLY raw JSON — no markdown, no commentary."
+                )
+            },
+        })
+
+        chunks: list[str] = []
+        done_ev = asyncio.Event()
+
+        def on_event(ev):
+            try:
+                if ev.type.value == "assistant.message_delta":
+                    chunks.append(ev.data.delta_content or "")
+                elif ev.type.value in ("assistant.message", "session.idle"):
+                    done_ev.set()
+            except Exception:
+                done_ev.set()
+
+        session.on_event(on_event)
+        await session.send({"prompt": prompt})
+        await asyncio.wait_for(done_ev.wait(), timeout=90)
+
+        raw = "".join(chunks).strip()
+        # Strip markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+
+        result = json.loads(raw)
+        arm_template = result.get("arm_template", result)
+        changes_summary = result.get("changes_summary", "Template modified per user request")
+
+        # If the LLM returned the arm_template directly (without wrapper)
+        if "$schema" in arm_template:
+            edited_content = json.dumps(arm_template, indent=2)
+        else:
+            edited_content = json.dumps(arm_template, indent=2)
+
+        return {
+            "success": True,
+            "content": edited_content,
+            "changes_summary": changes_summary,
+            "error": None,
+        }
+
+    except asyncio.TimeoutError:
+        logger.warning("LLM code edit timed out")
+        return {
+            "success": False,
+            "content": current_content,
+            "changes_summary": "",
+            "error": "AI editing timed out — try simplifying the request",
+        }
+    except json.JSONDecodeError as e:
+        logger.warning(f"LLM returned invalid JSON for code edit: {e}")
+        # Try to extract just the ARM template from raw response
+        try:
+            # Maybe the LLM returned the ARM template directly
+            if '"$schema"' in raw:
+                start = raw.index("{")
+                depth = 0
+                end = start
+                for i in range(start, len(raw)):
+                    if raw[i] == "{":
+                        depth += 1
+                    elif raw[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                arm_str = raw[start:end]
+                parsed = json.loads(arm_str)
+                return {
+                    "success": True,
+                    "content": json.dumps(parsed, indent=2),
+                    "changes_summary": "Template modified per user request",
+                    "error": None,
+                }
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "content": current_content,
+            "changes_summary": "",
+            "error": f"AI returned invalid template JSON: {e}",
+        }
+    except Exception as e:
+        logger.error(f"Code edit failed: {e}")
+        return {
+            "success": False,
+            "content": current_content,
+            "changes_summary": "",
+            "error": str(e),
+        }
 
 
 # ══════════════════════════════════════════════════════════════
