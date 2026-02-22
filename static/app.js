@@ -1089,10 +1089,16 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
         { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
     ];
 
+    // Distinguish governance approval from full onboarding
+    const displayStatus = (status === 'approved' && !activeVersion)
+        ? 'approved_not_onboarded' : status;
+    const displayLabel = displayStatus === 'approved_not_onboarded'
+        ? '📋 Catalog Approved' : (statusLabels[status] || status);
+
     body.innerHTML = `
         <div class="detail-meta">
             <span class="svc-id">${escapeHtml(svc.id)}</span>
-            <span class="status-badge ${status}">${statusLabels[status] || status}</span>
+            <span class="status-badge ${displayStatus}">${displayLabel}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
             ${activeVersion ? `<span class="version-badge version-active">Active: v${activeVersion}</span>` : ''}
@@ -1108,7 +1114,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
                     </div>
                 `).join('<span class="pipeline-arrow">→</span>')}
             </div>
-            <p class="pipeline-desc">All steps run automatically with AI-powered auto-healing (up to 5 attempts). Validated against organization governance standards &amp; policies.</p>
+            <p class="pipeline-desc">All steps run automatically with AI-powered auto-healing. Validated against organization governance standards &amp; policies.</p>
         </div>
 
         <div class="onboard-model-selector" id="model-selector-container">
@@ -1126,12 +1132,13 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
 }
 
 function _renderOnboardButton(svc, status, latestVersion) {
+    // Governance-approved AND has a validated version → fully onboarded
     if (status === 'approved' && latestVersion) {
         return `
         <div class="validation-card validation-succeeded">
             <div class="validation-header">
                 <span class="validation-icon">✅</span>
-                <span class="validation-title">Service Approved — v${latestVersion.version}</span>
+                <span class="validation-title">Service Onboarded — v${latestVersion.version}</span>
             </div>
             <div class="validation-detail">
                 This service has a validated ARM template and is approved for deployment.
@@ -1142,6 +1149,27 @@ function _renderOnboardButton(svc, status, latestVersion) {
                     🔄 Re-validate (New Version)
                 </button>
             </div>
+        </div>`;
+    }
+
+    // Governance-approved but no ARM template version yet → needs onboarding
+    if (status === 'approved' && !latestVersion) {
+        return `
+        <div class="validation-card validation-ready" id="validation-card">
+            <div class="validation-header">
+                <span class="validation-icon">🚀</span>
+                <span class="validation-title">One-Click Onboarding</span>
+            </div>
+            <div class="validation-detail">
+                <strong>${escapeHtml(svc.name)}</strong> is approved for use in the organization but doesn't
+                have an ARM template yet. Onboarding will auto-generate a validated, policy-compliant template.
+            </div>
+            <div class="validation-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                    🚀 Onboard Service
+                </button>
+            </div>
+            <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
@@ -1175,7 +1203,7 @@ function _renderOnboardButton(svc, status, latestVersion) {
             errorDetail = _renderStructuredError(parsed, { compact: false, showRaw: true });
         }
         if (!errorDetail) {
-            errorDetail = '<div class="validation-detail">The previous onboarding attempt failed. No error details available.</div>';
+            errorDetail = '<div class="validation-detail">The previous onboarding run failed. No error details available.</div>';
         }
 
         return `
@@ -1280,7 +1308,7 @@ function _renderVersionHistory(versions, activeVersion) {
         <div class="version-history">
             <div class="version-history-header">
                 <span>📦 Published Versions</span>
-                <span class="version-count">No versions yet (${totalCount} total attempt${totalCount === 1 ? '' : 's'})</span>
+                <span class="version-count">No versions yet (${totalCount} total run${totalCount === 1 ? '' : 's'})</span>
             </div>
         </div>`;
     } else {
@@ -1842,8 +1870,8 @@ function _handleValidationEvent(event) {
     if (event.detail && detailEl) {
         detailEl.textContent = event.detail;
     }
-    if (event.attempt && badge) {
-        badge.textContent = `Attempt ${event.attempt}${event.max_attempts ? ' / ' + event.max_attempts : ''}`;
+    if (event.step && badge) {
+        badge.textContent = event.step > 1 ? `Step ${event.step}` : 'Deploying…';
         badge.classList.add('visible');
     }
 
@@ -1950,8 +1978,8 @@ function _handleValidationEvent(event) {
         card.className = 'validation-card validation-succeeded';
         if (header) header.textContent = `Service Approved — v${event.version || '?'}`;
         if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
-        if (badge && event.total_attempts > 1) {
-            badge.textContent = `Passed on attempt ${event.total_attempts}`;
+        if (badge && event.issues_resolved > 0) {
+            badge.textContent = `Resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}`;
             badge.classList.add('badge-success');
         }
     } else if (event.type === 'error' && card) {
@@ -2165,27 +2193,27 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-pending">
-                📝 <strong>New Template</strong> — Run tests to verify this template before deploying.
+                📝 <strong>New Template</strong> — Validate to verify this template is ready.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
-                🧪 Run Tests
+            <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
+                🧪 Validate
             </button>
         </div>`;
     } else if (status === 'passed') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-validate">
-                ✅ <strong>Step 2:</strong> Structural tests passed. Now validate by deploying to a temporary resource group. Self-healing will fix any issues automatically.
+                ✅ Structural tests passed. Click to validate against Azure.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="showValidateForm('${escapeHtml(tmpl.id)}')">
-                🧪 Validate (Deploy Test)
+            <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
+                🧪 Validate
             </button>
         </div>`;
     } else if (status === 'validated') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-ready">
-                🧪 <strong>Step 3:</strong> Deploy test passed — template deployed successfully to Azure! Ready to publish.
+                ✅ <strong>Validated</strong> — Template verified against Azure. Ready to publish.
             </div>
             <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
                 🚀 Publish to Catalog
@@ -2195,14 +2223,14 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                🔄 This template needs attention — use <strong>Request Revision</strong> below to describe what's wrong, or re-run tests after changes.
+                🔄 Validation found issues — auto-heal will attempt to fix them, or use <strong>Request Revision</strong> below.
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
                     🔧 Auto-Heal
                 </button>
-                <button class="btn btn-sm" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
-                    🧪 Re-run Tests
+                <button class="btn btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
+                    🧪 Re-validate
                 </button>
             </div>
         </div>`;
@@ -2239,8 +2267,8 @@ function showTemplateDetail(templateId) {
 
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
-            <h4>🧪 Validation — Deploy Test</h4>
-            <p class="tmpl-validate-desc">Deploys this template to a temporary resource group to verify it works. If deployment fails, the self-healing engine will fix the template automatically. The temp RG is cleaned up afterward.</p>
+            <h4>🧪 Validation</h4>
+            <p class="tmpl-validate-desc">Validates this template by deploying to a temporary Azure resource group. Self-healing fixes issues automatically. The temp RG is cleaned up afterward.</p>
             <div id="tmpl-validate-params"></div>
             <div class="tmpl-validate-actions">
                 <select id="tmpl-validate-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
@@ -2252,7 +2280,7 @@ function showTemplateDetail(templateId) {
                     <option value="northeurope">North Europe</option>
                 </select>
                 <button class="btn btn-primary btn-sm" id="tmpl-validate-btn" onclick="runTemplateValidation('${escapeHtml(tmpl.id)}')">
-                    🧪 Run Deploy Test
+                    🧪 Run Validation
                 </button>
             </div>
             <div id="tmpl-validate-results" style="display:none;"></div>
@@ -2402,11 +2430,11 @@ function showTemplateDetail(templateId) {
             <button class="btn btn-sm btn-primary" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
                 🚀 Publish to Catalog
             </button>` : status === 'passed' ? `
-            <button class="btn btn-sm btn-primary" onclick="showValidateForm('${escapeHtml(tmpl.id)}')">
-                🔬 Validate Against Azure
+            <button class="btn btn-sm btn-primary" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
+                🧪 Validate
             </button>` : `
-            <button class="btn btn-sm btn-primary" onclick="runTemplateTest('${escapeHtml(tmpl.id)}')">
-                🧪 Run Tests
+            <button class="btn btn-sm btn-primary" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
+                🧪 Validate
             </button>`}
         </div>
     `;
@@ -2459,7 +2487,7 @@ async function _loadTemplateVersionHistory(templateId) {
                             </span>
                         `).join('')}
                     </div>` : ''}
-                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '🧪 Deploy tested' : '❌ Deploy test failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
+                    ${v.validated_at ? `<div class="tmpl-ver-validation">${v.status === 'validated' || v.status === 'approved' ? '✅ Validated' : '❌ Validation failed'} ${v.validated_at.substring(0, 16)}</div>` : ''}
                     <div class="tmpl-ver-meta">
                         ${v.created_at ? `<span>${v.created_at.substring(0, 16)}</span>` : ''}
                         ${v.tested_at ? `<span>Tested: ${v.tested_at.substring(0, 16)}</span>` : ''}
@@ -2471,6 +2499,50 @@ async function _loadTemplateVersionHistory(templateId) {
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
+}
+
+/** Full validation pipeline: structural tests → ARM validation (auto-chains) */
+async function runFullValidation(templateId, skipTests = false) {
+    if (!skipTests) {
+        // Step 1: Run structural tests
+        showToast('🧪 Running structural tests…', 'info');
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Test failed');
+            }
+            const data = await res.json();
+            const results = data.results || {};
+            if (!results.all_passed) {
+                showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+                await loadAllData();
+                showTemplateDetail(templateId);
+                return;
+            }
+            showToast(`✅ All ${results.total} structural tests passed`, 'success');
+        } catch (err) {
+            showToast(`Test error: ${err.message}`, 'error');
+            return;
+        }
+    }
+
+    // Step 2: Open detail and show validate form
+    await loadAllData();
+    showTemplateDetail(templateId);
+
+    // Let the DOM render before manipulating the validate form
+    await new Promise(r => setTimeout(r, 300));
+
+    showValidateForm(templateId);
+
+    // Step 3: Auto-trigger ARM validation
+    await new Promise(r => setTimeout(r, 200));
+    runTemplateValidation(templateId);
 }
 
 /** Show the validation form with parameter inputs */
@@ -2512,20 +2584,20 @@ function showValidateForm(templateId) {
     formSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-/** Run deploy-test validation (streaming NDJSON with self-healing) */
+/** Run ARM validation (streaming NDJSON with self-healing) */
 async function runTemplateValidation(templateId) {
     const btn = document.getElementById('tmpl-validate-btn');
     const resultsDiv = document.getElementById('tmpl-validate-results');
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '⏳ Deploying to temp RG…';
+        btn.innerHTML = '⏳ Validating…';
     }
     if (resultsDiv) {
         resultsDiv.style.display = 'block';
-        resultsDiv.innerHTML = '<div class="compose-loading">🧪 Starting deploy test… This may take 1-5 minutes.</div>';
+        resultsDiv.innerHTML = '<div class="compose-loading">🧪 Running validation… This may take 1-5 minutes.</div>';
     }
 
-    showToast('🧪 Running deploy-test validation…', 'info');
+    showToast('🧪 Running validation…', 'info');
 
     try {
         // Collect parameter values from form
@@ -2590,12 +2662,11 @@ async function runTemplateValidation(templateId) {
         }
 
         if (finalEvent && finalEvent.status === 'succeeded') {
-            const iterations = finalEvent.attempt || 1;
-            const iterMsg = iterations > 1 ? ` after ${iterations} iterations` : '';
-            showToast(`✅ Template verified${iterMsg}! Ready to publish.`, 'success');
+            const resolved = finalEvent.issues_resolved || 0;
+            const healMsg = resolved > 0 ? ` (resolved ${resolved} issue${resolved !== 1 ? 's' : ''})` : '';
+            showToast(`✅ Template verified${healMsg}! Ready to publish.`, 'success');
         } else if (finalEvent && finalEvent.status === 'failed') {
-            const iterations = finalEvent.attempt || 1;
-            showToast(`⚠️ Template could not be verified after ${iterations} iteration(s). Review the log for details.`, 'error');
+            showToast(`⚠️ Template could not be fully verified. Review the log for details.`, 'error');
         }
 
         // Refresh and reopen detail
@@ -2610,7 +2681,7 @@ async function runTemplateValidation(templateId) {
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '🧪 Run Deploy Test';
+            btn.innerHTML = '🧪 Run Validation';
         }
     }
 }
@@ -2792,16 +2863,17 @@ async function submitRevision(templateId) {
                     ✅ Template revised: <strong>${revData.resource_count}</strong> resources,
                     <strong>${revData.parameter_count}</strong> params from
                     <strong>${revData.services?.length || '?'}</strong> services.
-                    <br><em>Status reset to draft — run tests to validate.</em>
+                    <br><em>Starting validation…</em>
                 </div>
             </div>`;
 
         textarea.value = '';
-        showToast('✅ Template revised — reloading…', 'success');
+        showToast('✅ Template revised — starting validation…', 'success');
         setTimeout(async () => {
             await loadCatalog();
-            showTemplateDetail(templateId);
-        }, 2000);
+            // Auto-trigger full validation pipeline
+            runFullValidation(templateId);
+        }, 1500);
 
     } catch (err) {
         resultDiv.style.display = 'block';
@@ -3216,12 +3288,12 @@ function _renderDeployAgentEvent(container, event) {
         if (event.status === 'succeeded') {
             const resources = event.provisioned_resources || [];
             const outputs = event.outputs || {};
-            const attempt = event.attempt || 1;
             const healed = event.healed || false;
-            const iterMsg = healed ? ` after ${attempt} iteration(s)` : '';
+            const issuesResolved = event.issues_resolved || 0;
+            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''}` : '';
             resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
             resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">✅ Deployment Succeeded${iterMsg}</div>
+                <div class="tmpl-deploy-header">✅ Deployment Succeeded${healMsg}</div>
                 ${resources.length ? `
                 <div class="tmpl-deploy-resources">
                     <h5>Provisioned Resources (${resources.length})</h5>
@@ -3293,7 +3365,7 @@ function _renderDeployProgress(container, event, ctx) {
         const resources = event.provisioned_resources || [];
         const outputs = event.outputs || {};
         const healHistory = event.heal_history || [];
-        const attempt = event.attempt || 1;
+        const issuesResolved = event.issues_resolved || 0;
 
         // Remove the progress bar if present
         const bar = container.querySelector('.deploy-active-progress');
@@ -3302,12 +3374,12 @@ function _renderDeployProgress(container, event, ctx) {
         // Build final result card — framing depends on context
         const resultDiv = document.createElement('div');
         if (event.status === 'succeeded') {
-            const iterMsg = attempt > 1 ? ` after ${attempt} iterations` : '';
+            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''}` : '';
             resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
             resultDiv.innerHTML = `
                 <div class="tmpl-deploy-header">
                     ${isValidate
-                        ? `✅ Template Verified${iterMsg}`
+                        ? `✅ Template Verified${healMsg}`
                         : `✅ Deployment Succeeded`}
                 </div>
                 ${resources.length ? `
@@ -3340,7 +3412,7 @@ function _renderDeployProgress(container, event, ctx) {
                     <div class="tmpl-deploy-header">
                         🔧 Template Needs More Work
                     </div>
-                    <div class="tmpl-deploy-diag-msg">The template developer tried ${attempt} iteration(s) but couldn't resolve all issues. Review the diagnostics above and iterate further.</div>
+                    <div class="tmpl-deploy-diag-msg">The AI-powered analysis couldn't resolve all issues. Review the diagnostics below and iterate further.</div>
                     ${event.error ? `
                     <details class="deploy-diag-details">
                         <summary>📋 Last diagnostic</summary>
@@ -3348,10 +3420,10 @@ function _renderDeployProgress(container, event, ctx) {
                     </details>` : ''}
                     ${healHistory.length ? `
                     <details class="deploy-heal-history">
-                        <summary>🔄 ${healHistory.length} iteration(s) attempted</summary>
+                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} attempted</summary>
                         ${healHistory.map(h => `
                             <div class="deploy-heal-entry">
-                                <span class="deploy-heal-attempt">Iteration ${h.attempt}:</span>
+                                <span class="deploy-heal-attempt">Step ${h.step || '?'}:</span>
                                 <span class="deploy-heal-diag">${escapeHtml(h.error)}</span>
                                 <span class="deploy-heal-fix">→ ${escapeHtml(h.fix_summary)}</span>
                             </div>
@@ -3392,11 +3464,7 @@ function _renderDeployProgress(container, event, ctx) {
     if (phase === 'attempt_start') {
         const entry = document.createElement('div');
         entry.className = 'deploy-log-entry deploy-log-attempt';
-        // Reframe: validation = "Iteration N", deploy = "Attempt N"
-        const label = isValidate
-            ? detail.replace(/Attempt/g, 'Iteration')
-            : detail;
-        entry.innerHTML = `<span class="deploy-log-icon">${isValidate ? '🔁' : '🔄'}</span> <strong>${escapeHtml(label)}</strong>`;
+        entry.innerHTML = `<span class="deploy-log-icon">${isValidate ? '🔁' : '🔄'}</span> <strong>${escapeHtml(detail)}</strong>`;
         logDiv.appendChild(entry);
         // Reset the active progress area
         let activeP = container.querySelector('.deploy-active-progress');
@@ -3595,7 +3663,15 @@ async function autoHealTemplate(templateId) {
         if (data.status === 'no_issues') {
             showToast('ℹ️ No issues found — template looks fine', 'info');
         } else if (data.all_passed) {
-            showToast(`✅ Template auto-healed — all ${data.retest?.total || ''} tests pass!`, 'success');
+            showToast(`✅ Template auto-healed — all ${data.retest?.total || ''} tests pass! Starting validation…`, 'success');
+            // Auto-chain to ARM validation after successful heal
+            await loadAllData();
+            showTemplateDetail(templateId);
+            await new Promise(r => setTimeout(r, 300));
+            showValidateForm(templateId);
+            await new Promise(r => setTimeout(r, 200));
+            runTemplateValidation(templateId);
+            return;
         } else {
             showToast(`🔧 Partial fix — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. Try Request Revision for remaining issues.`, 'warning');
         }
@@ -3627,7 +3703,15 @@ async function runTemplateTest(templateId) {
         const results = data.results || {};
 
         if (results.all_passed) {
-            showToast(`✅ All ${results.total} tests passed — ready for ARM validation`, 'success');
+            showToast(`✅ All ${results.total} tests passed — starting validation…`, 'success');
+            // Auto-chain to ARM validation
+            await loadAllData();
+            showTemplateDetail(templateId);
+            await new Promise(r => setTimeout(r, 300));
+            showValidateForm(templateId);
+            await new Promise(r => setTimeout(r, 200));
+            runTemplateValidation(templateId);
+            return;
         } else {
             showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
         }
@@ -4307,11 +4391,16 @@ async function submitPromptCompose() {
             </div>`;
 
         textarea.value = '';
-        showToast('✅ Template created — reloading catalog…', 'success');
+        showToast('✅ Template created — starting validation…', 'success');
+        const createdTemplateId = data.template?.id || data.id;
         setTimeout(async () => {
             await loadCatalog();
             closeModal('modal-template-onboard');
-        }, 2000);
+            if (createdTemplateId) {
+                // Auto-trigger full validation (tests + ARM)
+                runFullValidation(createdTemplateId);
+            }
+        }, 1500);
 
     } catch (err) {
         resultDiv.style.display = 'block';
@@ -4406,13 +4495,19 @@ async function submitTemplateOnboarding(event) {
         _renderComposeTestResults(testData);
 
         if (testData.results?.all_passed) {
-            showToast(`✅ Template "${name}" created & passed structural tests — open it to validate against Azure`, 'success');
-            setTimeout(() => {
+            showToast(`✅ Template "${name}" created & tests passed — validating against Azure…`, 'success');
+            setTimeout(async () => {
                 closeModal('modal-template-onboard');
                 form.reset();
                 _composeSelections.clear();
-                loadAllData();
-            }, 2000);
+                await loadAllData();
+                // Auto-trigger ARM validation
+                showTemplateDetail(templateId);
+                await new Promise(r => setTimeout(r, 300));
+                showValidateForm(templateId);
+                await new Promise(r => setTimeout(r, 200));
+                runTemplateValidation(templateId);
+            }, 1500);
         } else {
             showToast(`⚠️ Template "${name}" created — ${testData.results?.failed || 0} test(s) need attention. Open the template to auto-heal.`, 'warning');
             await loadAllData();
