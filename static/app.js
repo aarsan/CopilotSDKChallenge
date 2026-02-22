@@ -2223,15 +2223,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ Validation found issues — auto-heal will attempt to fix them, or describe changes below.
-            </div>
-            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
-                    🔧 Auto-Heal
-                </button>
-                <button class="btn btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
-                    🧪 Re-validate
-                </button>
+                ❌ Auto-heal couldn't fully resolve the issues. Use <strong>Request Revision</strong> below to describe what needs to change — validation will re-run automatically.
             </div>
         </div>`;
     } else if (status === 'approved') {
@@ -2682,9 +2674,11 @@ async function runFullValidation(templateId, skipTests = false) {
             const data = await res.json();
             const results = data.results || {};
             if (!results.all_passed) {
-                showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+                showToast(`❌ ${results.failed} of ${results.total} tests failed — auto-healing…`, 'warning');
                 await loadAllData();
                 showTemplateDetail(templateId);
+                // Auto-trigger heal instead of requiring manual button click
+                autoHealTemplate(templateId);
                 return;
             }
             showToast(`✅ All ${results.total} structural tests passed`, 'success');
