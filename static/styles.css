@@ -5594,6 +5594,13 @@ body {
 
 /* Template test CTA banner */
 .tmpl-test-cta { margin-bottom: 0.5rem; }
+.tmpl-test-hint {
+    display: inline-block;
+    font-size: 0.75rem;
+    color: var(--text-secondary, #6b7280);
+    margin-left: 0.5rem;
+    vertical-align: middle;
+}
 .tmpl-test-banner {
     padding: 0.6rem 0.8rem;
     border-radius: 8px;
