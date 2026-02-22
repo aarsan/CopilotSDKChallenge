@@ -26,6 +26,10 @@ let currentTemplateTypeFilter = 'all';
 let serviceSearchQuery = '';
 let templateSearchQuery = '';
 
+// Active template validation tracker — persists across panel close/reopen
+// templateId → { running: bool, events: [], finalEvent: null, abortController: AbortController }
+const _activeTemplateValidations = {};
+
 // Governance Standards
 let allStandards = [];
 let standardsSearchQuery = '';
@@ -2051,6 +2055,7 @@ function renderTemplateTable(templates) {
         const status = tmpl.status || 'approved';
         const serviceIds = tmpl.service_ids || [];
         const isStandalone = ttype === 'foundation' || ttype === 'composite';
+        const isValidating = _activeTemplateValidations[tmpl.id]?.running;
 
         return `
         <div class="tmpl-card tmpl-card-${ttype}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
@@ -2063,6 +2068,7 @@ function renderTemplateTable(templates) {
                     </div>
                 </div>
                 <div class="tmpl-card-badges">
+                    ${isValidating ? '<span class="tmpl-validating-badge">🧪 Validating…</span>' : ''}
                     <span class="tmpl-type-badge tmpl-type-${ttype}">${typeLabels[ttype]}</span>
                     <span class="status-badge ${status}">${statusLabelsMap[status] || status}</span>
                 </div>
@@ -2431,6 +2437,40 @@ function showTemplateDetail(templateId) {
 
     // Load version history asynchronously
     _loadTemplateVersionHistory(templateId);
+
+    // Reconnect to active/completed validation if one exists
+    _reconnectTemplateValidation(templateId);
+}
+
+/** Replay cached validation events when re-opening a template detail panel */
+function _reconnectTemplateValidation(templateId) {
+    const tracker = _activeTemplateValidations[templateId];
+    if (!tracker || !tracker.events.length) return;
+
+    const resultsDiv = document.getElementById('tmpl-validate-results');
+    const btn = document.getElementById('tmpl-validate-btn');
+    if (!resultsDiv) return;
+
+    // Show the results area and replay all cached events
+    resultsDiv.style.display = 'block';
+    resultsDiv.innerHTML = '';
+    for (const event of tracker.events) {
+        _renderDeployProgress(resultsDiv, event, 'validate');
+    }
+
+    if (tracker.running) {
+        // Still running — update button to show in-progress
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '⏳ Validating…';
+        }
+    } else {
+        // Finished — show final state
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '🧪 Run Validation';
+        }
+    }
 }
 
 /** Infer human-readable change type from version metadata */
@@ -2762,6 +2802,15 @@ async function runTemplateValidation(templateId) {
 
     showToast('🧪 Running validation…', 'info');
 
+    // Initialize tracker
+    const tracker = {
+        running: true,
+        events: [],
+        finalEvent: null,
+        abortController: new AbortController(),
+    };
+    _activeTemplateValidations[templateId] = tracker;
+
     try {
         // Collect parameter values from form
         const inputs = document.querySelectorAll('.tmpl-validate-input');
@@ -2784,6 +2833,7 @@ async function runTemplateValidation(templateId) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ parameters, region }),
+            signal: tracker.abortController.signal,
         });
 
         if (!res.ok) {
@@ -2791,11 +2841,10 @@ async function runTemplateValidation(templateId) {
             throw new Error(err.detail || 'Validation failed');
         }
 
-        // Read NDJSON stream — reuse _renderDeployProgress for the iteration log
+        // Read NDJSON stream — render to current resultsDiv if visible
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let finalEvent = null;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -2809,8 +2858,13 @@ async function runTemplateValidation(templateId) {
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
-                    finalEvent = event;
-                    _renderDeployProgress(resultsDiv, event, 'validate');
+                    tracker.events.push(event);
+                    tracker.finalEvent = event;
+                    // Render to the live resultsDiv if still in DOM
+                    const liveDiv = document.getElementById('tmpl-validate-results');
+                    if (liveDiv) {
+                        _renderDeployProgress(liveDiv, event, 'validate');
+                    }
                 } catch (e) { /* skip malformed */ }
             }
         }
@@ -2819,16 +2873,20 @@ async function runTemplateValidation(templateId) {
         if (buffer.trim()) {
             try {
                 const event = JSON.parse(buffer);
-                finalEvent = event;
-                _renderDeployProgress(resultsDiv, event, 'validate');
+                tracker.events.push(event);
+                tracker.finalEvent = event;
+                const liveDiv = document.getElementById('tmpl-validate-results');
+                if (liveDiv) {
+                    _renderDeployProgress(liveDiv, event, 'validate');
+                }
             } catch (e) { /* skip */ }
         }
 
-        if (finalEvent && finalEvent.status === 'succeeded') {
-            const resolved = finalEvent.issues_resolved || 0;
+        if (tracker.finalEvent && tracker.finalEvent.status === 'succeeded') {
+            const resolved = tracker.finalEvent.issues_resolved || 0;
             const healMsg = resolved > 0 ? ` (resolved ${resolved} issue${resolved !== 1 ? 's' : ''})` : '';
             showToast(`✅ Template verified${healMsg}! Ready to publish.`, 'success');
-        } else if (finalEvent && finalEvent.status === 'failed') {
+        } else if (tracker.finalEvent && tracker.finalEvent.status === 'failed') {
             showToast(`⚠️ Template could not be fully verified. Review the log for details.`, 'error');
         }
 
@@ -2837,14 +2895,18 @@ async function runTemplateValidation(templateId) {
         showTemplateDetail(templateId);
 
     } catch (err) {
+        if (err.name === 'AbortError') return; // user navigated away intentionally
         showToast(`⚠️ Validation issue: ${err.message}`, 'error');
-        if (resultsDiv) {
-            resultsDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
+        const liveDiv = document.getElementById('tmpl-validate-results');
+        if (liveDiv) {
+            liveDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
         }
     } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '🧪 Run Validation';
+        tracker.running = false;
+        const liveBtn = document.getElementById('tmpl-validate-btn');
+        if (liveBtn) {
+            liveBtn.disabled = false;
+            liveBtn.innerHTML = '🧪 Run Validation';
         }
     }
 }

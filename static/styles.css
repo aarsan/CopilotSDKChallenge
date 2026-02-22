@@ -5039,6 +5039,23 @@ body {
 .tmpl-type-badge.type-composite   { background: rgba(59,130,246,0.12); color: #2563eb; }
 .tmpl-type-badge.type-unknown     { background: rgba(148,163,184,0.12); color: #64748b; }
 
+.tmpl-validating-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    animation: tmplValidatePulse 1.5s ease-in-out infinite;
+}
+@keyframes tmplValidatePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
 .tmpl-card-body {
     display: flex;
     flex-direction: column;
