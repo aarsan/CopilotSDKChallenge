@@ -173,7 +173,18 @@ Standards support multiple rule types in their JSON rule definition:
 | GET | `/api/catalog/templates` | List all templates |
 | POST | `/api/catalog/templates` | Register a template |
 | POST | `/api/catalog/templates/compose` | Compose template from approved services |
+| POST | `/api/catalog/templates/compose-from-prompt` | Compose from natural language |
 | DELETE | `/api/catalog/templates/{id}` | Remove a template |
+| GET | `/api/catalog/templates/{id}/composition` | Service dependencies with semver |
+| GET | `/api/catalog/templates/{id}/versions` | Version history |
+| POST | `/api/catalog/templates/{id}/test` | Run structural tests |
+| POST | `/api/catalog/templates/{id}/validate` | Full validation pipeline (NDJSON stream) |
+| POST | `/api/catalog/templates/{id}/publish` | Publish to catalog |
+| POST | `/api/catalog/templates/{id}/deploy` | Deploy to Azure via ARM SDK |
+| POST | `/api/catalog/templates/{id}/feedback` | Analyze user feedback for revision |
+| POST | `/api/catalog/templates/{id}/revise` | Apply revision (add services or code edit) |
+
+> **Full API reference:** See `docs/ARCHITECTURE.md` §4 for the complete list of 65+ endpoints.
 
 ## Service Approval Workflow (2-Gate)
 
@@ -200,22 +211,31 @@ Templates are composed from approved services — no manual IaC authoring requir
 
 ## File Structure
 
+> **Full project structure:** See `docs/ARCHITECTURE.md` §2 for the complete file tree.
+
 ```
 src/
-  web.py              — FastAPI app, all REST/WebSocket endpoints
-  database.py         — Azure SQL backend, schema, CRUD functions
+  web.py              — FastAPI app, all REST/WebSocket endpoints (~8800 lines)
+  database.py         — Azure SQL backend, schema, CRUD functions (~3500 lines)
+  orchestrator.py     — LLM orchestration: template analysis, composition, healing
+  model_router.py     — Task → LLM model routing (8 task types, 6 models)
+  template_engine.py  — ARM template composition and dependency wiring
   standards.py        — Organization standards engine (SQL-backed)
   standards_api.py    — REST API router for standards CRUD
   auth.py             — Entra ID authentication
-  config.py           — Environment configuration
-  tools/              — Copilot SDK tool definitions
-    arm_generator.py  — ARM template skeleton registry
+  azure_sync.py       — Azure Resource Provider sync engine
+  config.py           — Environment configuration, system message
+  tools/              — Copilot SDK tool definitions (26 tools)
+    arm_generator.py  — ARM template skeleton registry (~21 resource types)
+    deploy_engine.py  — ARM SDK deployment (azure-mgmt-resource)
+    service_catalog.py — Service approval tools (5 tools)
     ...
 static/
   index.html          — SPA shell
-  app.js              — Frontend JavaScript
-  styles.css          — UI styles
+  app.js              — Frontend JavaScript (~6200 lines)
+  styles.css          — UI styles (~7200 lines)
 docs/
+  ARCHITECTURE.md     — Architecture reference (this project's single source of truth)
   TECHNICAL.md        — This file
   README.md           — Project overview
 ```

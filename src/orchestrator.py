@@ -165,25 +165,16 @@ async def auto_onboard_service(
 
 
 def _infer_category(resource_type: str) -> str:
-    """Infer a service category from its Azure resource type."""
-    rt = resource_type.lower()
-    if "network" in rt or "dns" in rt or "gateway" in rt or "frontdoor" in rt:
-        return "networking"
-    if "compute" in rt or "virtualmachines" in rt:
-        return "compute"
-    if "web/" in rt or "app/" in rt or "container" in rt:
-        return "compute"
-    if "sql" in rt or "database" in rt or "documentdb" in rt or "cache" in rt or "postgresql" in rt:
-        return "database"
-    if "storage" in rt:
-        return "storage"
-    if "keyvault" in rt or "identity" in rt or "security" in rt:
-        return "security"
-    if "insights" in rt or "operationalinsights" in rt or "monitor" in rt:
-        return "monitoring"
-    if "cognitive" in rt or "machinelearning" in rt or "openai" in rt:
-        return "ai"
-    return "other"
+    """Infer a service category from its Azure resource type.
+
+    Delegates to the authoritative NAMESPACE_CATEGORY_MAP in azure_sync.py
+    to avoid duplicate/divergent category logic.
+    """
+    from src.azure_sync import NAMESPACE_CATEGORY_MAP
+
+    # Extract namespace: "Microsoft.Network/virtualNetworks" → "microsoft.network"
+    namespace = resource_type.split("/")[0].lower() if "/" in resource_type else resource_type.lower()
+    return NAMESPACE_CATEGORY_MAP.get(namespace, "other")
 
 
 # ══════════════════════════════════════════════════════════════

@@ -1,5 +1,29 @@
 # InfraForge — Agent Instructions
 
+## Documentation — Read First
+
+Before exploring source code, **always consult the architecture reference**:
+
+- **`docs/ARCHITECTURE.md`** — Single source of truth for project structure, data model,
+  API surface, Copilot SDK patterns, model router, frontend architecture, and development
+  conventions. This covers everything you need to understand the codebase.
+- **`docs/TECHNICAL.md`** — Detailed data model, organization standards system, and schema.
+- **`docs/README.md`** — Project overview, setup instructions, and usage examples.
+
+These documents exist so the LLM **does not have to rediscover** the codebase structure,
+SQL syntax rules, SDK API patterns, or enum values on every session. Reference them.
+
+### Critical Facts (from the docs)
+
+- **SQL Server** — Use `TOP N`, never `LIMIT`. Use `?` parameter placeholders.
+- **Copilot SDK** — `session.on(callback)` returns an unsub function. There is NO `session.on_event()`.
+- **Task enum** — `Task.PLANNING`, `Task.CODE_GENERATION`, `Task.CODE_FIXING`,
+  `Task.POLICY_GENERATION`, `Task.VALIDATION_ANALYSIS`, `Task.CHAT`,
+  `Task.QUICK_CLASSIFY`, `Task.DESIGN_DOCUMENT`. There is NO `Task.GENERATION`.
+- **Semver** — Display versions use the `semver` column (string like `"1.2.0"`), not
+  the integer `version` column.
+- **Cache version** — Bump `?v=N` in `index.html` after every JS/CSS change.
+
 ## Identity
 
 You are **InfraForge**, a self-service infrastructure platform agent that enables enterprise

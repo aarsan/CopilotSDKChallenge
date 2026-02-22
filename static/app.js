@@ -581,15 +581,23 @@ function postProcessContent(element) {
 
 async function loadAllData() {
     try {
-        const [svcRes, tmplRes, approvalRes] = await Promise.all([
+        const [svcRes, tmplRes, approvalRes, verRes] = await Promise.all([
             fetch('/api/catalog/services'),
             fetch('/api/catalog/templates'),
             fetch('/api/approvals'),
+            fetch('/api/version'),
         ]);
 
         const svcData = await svcRes.json();
         const tmplData = await tmplRes.json();
         const approvalData = await approvalRes.json();
+        const verData = await verRes.json();
+
+        // Display app version in the sidebar footer
+        const versionBadge = document.getElementById('app-version-badge');
+        if (versionBadge && verData.version) {
+            versionBadge.textContent = `v${verData.version}`;
+        }
 
         allServices = svcData.services || [];
         allTemplates = tmplData.templates || [];

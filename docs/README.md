@@ -217,7 +217,7 @@ You: Check if my resources comply — App Service in westus with no tags and pub
 - Provides cost transparency before resource creation
 
 ### What InfraForge Does NOT Do
-- **Does not deploy resources** — It generates templates for human review before deployment
+- **Does not deploy without confirmation** — ARM What-If preview is shown before deployment
 - **Does not store credentials** — All secrets are parameterized, never hardcoded
 - **Does not bypass approval gates** — Generated pipelines include manual approvals for production
 - **Does not guarantee cost accuracy** — Estimates are approximate; refer to Azure Pricing Calculator
@@ -254,31 +254,39 @@ CopilotSDKChallenge/
 │   │   ├── azure_devops_generator.py
 │   │   ├── cost_estimator.py
 │   │   ├── policy_checker.py
-│   │   └── save_output.py
+│   │   ├── save_output.py
+│   │   ├── deploy_engine.py     # ARM SDK deployment engine
+│   │   ├── design_document.py   # Approval-ready design docs
+│   │   ├── diagram_generator.py # Mermaid architecture diagrams
+│   │   ├── github_publisher.py  # GitHub repo/PR publishing
+│   │   ├── service_catalog.py   # Service approval tools
+│   │   ├── governance_tools.py  # Security standards, compliance, policies
+│   │   ├── arm_generator.py     # ARM skeleton registry
+│   │   └── static_policy_validator.py  # Static ARM template validation
 │   └── templates/
 │       ├── __init__.py
 │       ├── bicep_patterns.py     # Reference patterns for generation
 │       ├── terraform_patterns.py
 │       └── pipeline_patterns.py
 ├── catalog/                  # Approved template catalog (DB-backed)
-│   ├── bicep/                # Source Bicep files (content stored in DB)
-│   │   ├── app-service-linux.bicep
-│   │   ├── sql-database.bicep
-│   │   ├── key-vault.bicep
-│   │   ├── log-analytics.bicep
-│   │   ├── storage-account.bicep
-│   │   └── blueprints/
-│   │       └── three-tier-web.bicep
-│   ├── terraform/            # (extensible)
-│   └── pipelines/            # (extensible)
+│   └── bicep/                # Source Bicep files (content stored in DB)
+│       ├── app-service-linux.bicep
+│       ├── sql-database.bicep
+│       ├── key-vault.bicep
+│       ├── log-analytics.bicep
+│       ├── storage-account.bicep
+│       └── blueprints/
+│           └── three-tier-web.bicep
 ├── docs/
-│   └── README.md             # This file
+│   ├── ARCHITECTURE.md       # Architecture reference (LLM context)
+│   ├── README.md             # This file
+│   └── TECHNICAL.md          # Data model & standards system
 ├── output/                   # Generated files (gitignored)
-├── AGENTS.md                 # Agent custom instructions
+├── AGENTS.md                 # Agent instructions (references docs/)
 ├── mcp.json                  # MCP server configuration
 ├── requirements.txt          # Python dependencies
-├── start.py                  # Quick-start launcher
-├── test_agent.py             # Non-interactive test script
+├── start.py                  # CLI launcher
+├── web_start.py              # Web server launcher
 └── .gitignore
 ```
 
@@ -286,15 +294,11 @@ CopilotSDKChallenge/
 
 ## 🚢 Deployment
 
-InfraForge runs as a local CLI tool. For team-wide deployment:
+InfraForge is a **web application** (FastAPI on port 8080) with a CLI fallback.
+It deploys ARM templates directly to Azure via the SDK — no `az`, `terraform`, or
+`bicep` CLI dependencies on the deploy path.
 
 1. **Containerize** with Docker for consistent environments
-2. **Publish** as an internal PyPI package
-3. **Integrate** into developer onboarding workflows
-4. **Extend** with organization-specific template patterns
-
----
-
-## 📬 Feedback
-
-SDK feedback shared in the Copilot SDK Teams channel. See `/docs/sdk-feedback.md` for details.
+2. **Configure** Entra ID for corporate SSO (or run in demo mode)
+3. **Set** `AZURE_SQL_CONNECTION_STRING` for Azure SQL Database
+4. **Launch** with `python web_start.py`

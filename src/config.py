@@ -9,7 +9,7 @@ load_dotenv()
 
 # ── App Settings ──────────────────────────────────────────────
 APP_NAME = "InfraForge"
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.0.0"
 APP_DESCRIPTION = (
     "AI-powered Infrastructure-as-Code and CI/CD pipeline generator. "
     "Describe your infrastructure in plain English and get production-ready "
