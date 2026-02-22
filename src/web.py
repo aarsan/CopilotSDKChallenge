@@ -219,8 +219,15 @@ def _ensure_parameter_defaults(template_json: str) -> str:
                     dv = "infraforge-demo.com"
                 elif "hostname" in plow:
                     dv = "app.infraforge-demo.com"
+                elif "resourcename" in plow or "name" in plow:
+                    import re as _re
+                    suffix = pname.rsplit("_", 1)[-1][:8] if "_" in pname else pname[:8]
+                    suffix = _re.sub(r"[^a-z0-9]", "", suffix.lower())
+                    dv = f"ifrg-{suffix}" if suffix else "ifrg-res"
                 else:
-                    dv = f"infraforge-{pname}"
+                    import re as _re
+                    safe = _re.sub(r"[^a-zA-Z0-9-]", "-", pname)[:20]
+                    dv = f"if-{safe}"
             pdef["defaultValue"] = dv
             patched = True
 
@@ -1002,8 +1009,19 @@ def _extract_param_values(template: dict) -> dict:
                 dv = "infraforge-demo.com"
             elif "hostname" in plow:
                 dv = "app.infraforge-demo.com"
+            elif "resourcename" in plow or "name" in plow:
+                # Resource names: short, alphanumeric + hyphens, no underscores
+                # Extract the service suffix (e.g. "virtualmachines" from
+                # "resourceName_virtualmachines") for a compact unique tag.
+                suffix = pname.rsplit("_", 1)[-1][:8] if "_" in pname else pname[:8]
+                import re as _re
+                suffix = _re.sub(r"[^a-z0-9]", "", suffix.lower())
+                dv = f"ifrg-{suffix}" if suffix else "ifrg-res"
             else:
-                dv = f"infraforge-{pname}"
+                # General fallback: sanitize to safe short value
+                import re as _re
+                safe = _re.sub(r"[^a-zA-Z0-9-]", "-", pname)[:20]
+                dv = f"if-{safe}"
         # Skip ARM expressions — they only work inside the template, not as
         # explicit parameter values.
         if isinstance(dv, str) and dv.startswith("["):
