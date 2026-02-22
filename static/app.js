@@ -2225,10 +2225,18 @@ function showTemplateDetail(templateId) {
             <div class="tmpl-test-banner tmpl-test-failed">
                 ❌ Auto-heal couldn't fully resolve the issues — expand the latest version below to see what failed.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="document.getElementById('tmpl-revision-prompt')?.focus(); document.querySelector('.tmpl-revision-section')?.scrollIntoView({behavior:'smooth'})">
-                ✏️ Describe a Fix
-            </button>
-            <span class="tmpl-test-hint">Describe what needs to change and InfraForge will revise, re-test, and re-validate automatically.</span>
+            <div class="tmpl-revision-input-group" style="margin-top:0.5rem;">
+                <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
+                    rows="2"
+                    placeholder="e.g. Use the resource group location instead of a location parameter…"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
+                <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
+                    onclick="submitRevision('${escapeHtml(tmpl.id)}')">
+                    🚀 Submit Fix
+                </button>
+            </div>
+            <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
+            <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
         </div>`;
     } else if (status === 'approved') {
         ctaHtml = `
@@ -2371,7 +2379,8 @@ function showTemplateDetail(templateId) {
                     </div>
                 </div>` : ''}
 
-                <!-- Request Changes -->
+                <!-- Request Changes (hidden when failed — input is in the CTA above) -->
+                ${status !== 'failed' ? `
                 <div class="detail-section tmpl-revision-section">
                     <h4>📝 Request Changes</h4>
                     <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
@@ -2388,6 +2397,7 @@ function showTemplateDetail(templateId) {
                     <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
                     <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
                 </div>
+                ` : ''}
 
                 ${tmpl.content ? `
                 <div class="detail-section">
