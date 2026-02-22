@@ -393,6 +393,14 @@ body {
     box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
 }
 
+.app-version-badge {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+    letter-spacing: 0.03em;
+    font-family: var(--font-mono, 'Cascadia Code', monospace);
+}
+
 .status-dot.disconnected {
     background: var(--accent-red);
 }

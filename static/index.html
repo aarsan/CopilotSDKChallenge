@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=65">
+    <link rel="stylesheet" href="/static/styles.css?v=66">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -133,6 +133,7 @@
                 <div class="session-badge" id="session-badge">
                     <span class="status-dot connected"></span> Connected
                 </div>
+                <span class="app-version-badge" id="app-version-badge"></span>
                 <button class="btn btn-sm btn-secondary" onclick="doLogout()">Sign Out</button>
             </div>
         </aside>
@@ -905,7 +906,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=65"></script>
+    <script src="/static/app.js?v=66"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

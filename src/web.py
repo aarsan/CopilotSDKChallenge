@@ -1132,6 +1132,15 @@ async def root():
         return HTMLResponse(content=f.read())
 
 
+@app.get("/api/version")
+async def get_version():
+    """Return app version information."""
+    return JSONResponse({
+        "name": APP_NAME,
+        "version": APP_VERSION,
+    })
+
+
 @app.get("/onboarding-docs")
 async def onboarding_docs():
     """Serve the onboarding pipeline documentation page."""
