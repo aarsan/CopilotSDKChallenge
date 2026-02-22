@@ -6,7 +6,7 @@ All data stored in Azure SQL Database (org_standards + org_standards_history tab
 """
 
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from src.standards import (
@@ -21,6 +21,7 @@ from src.standards import (
     build_policy_generation_context,
     build_arm_generation_context,
 )
+from src.standards_import import import_standards_from_text
 
 logger = logging.getLogger("infraforge.standards_api")
 
@@ -43,6 +44,66 @@ async def list_categories():
     """Get all distinct standard categories."""
     categories = await get_standards_categories()
     return JSONResponse({"categories": categories})
+
+
+# ── Import standards from documentation ──────────────────────
+
+@router.post("/import")
+async def import_standards(request: Request):
+    """Import standards from organization documentation using AI extraction.
+
+    Body: { content: str, source_type?: "text"|"markdown", save?: bool }
+    - content: The standards documentation text
+    - source_type: Type of content (default: "text")
+    - save: If true, save extracted standards to the database (default: false — preview only)
+
+    Returns: { standards: [...], count: int, saved: bool }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    source_type = body.get("source_type", "text")
+    save = body.get("save", False)
+
+    # Get the Copilot client
+    from src.web import ensure_copilot_client
+    client = await ensure_copilot_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Copilot SDK not available — cannot perform AI extraction")
+
+    try:
+        extracted = await import_standards_from_text(
+            content=content,
+            source_type=source_type,
+            copilot_client=client,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    saved = False
+    if save and extracted:
+        created_by = body.get("created_by", "standards-import")
+        for std in extracted:
+            try:
+                await create_standard(std, created_by=created_by)
+            except Exception as e:
+                logger.warning(f"Failed to save imported standard '{std.get('id')}': {e}")
+        saved = True
+        logger.info(f"Standards import: saved {len(extracted)} standards to database")
+
+    return JSONResponse({
+        "standards": extracted,
+        "count": len(extracted),
+        "saved": saved,
+    })
 
 
 # ── Get a single standard ────────────────────────────────────

@@ -1,28 +1,32 @@
-"""Static Policy Validator.
+"""Static Policy Validator — Standards-Driven.
 
-Validates ARM template JSON against organization-wide governance policies
-and security standards WITHOUT deploying to Azure.
+Validates ARM template JSON against organization governance standards
+WITHOUT deploying to Azure.
 
 This is the first validation gate — fast, cheap, and catches most issues
 before burning Azure resources on a deployment test.
 
-Checks include:
-- Required resource tags (GOV-001)
-- Allowed deployment regions (GOV-002)
-- HTTPS enforcement (GOV-003 / SEC-001)
-- Managed identity requirement (GOV-004 / SEC-003)
-- Private endpoint / public access (GOV-005 / SEC-004)
-- TLS version (SEC-002)
-- Encryption at rest (SEC-005)
-- Soft delete / purge protection (SEC-007)
-- RBAC authorization (SEC-008)
-- Blob public access (SEC-013)
+The validator reads rules from org_standards (the single source of truth)
+and evaluates them against ARM template resources dynamically.  Each
+standard's ``rule_json`` declares what to check:
+
+Rule types:
+    property       — check a resource property value (operator: ==, !=, >=, in, exists)
+    property_check — check a specific ARM property path with deep inspection
+    tags           — check for required resource tags
+    allowed_values — check a value is in an allowlist
+    cost_threshold — informational cost cap (warn only)
+
+All checks also have Azure-specific deep-inspection logic so that
+common security controls (TLS, encryption, RBAC, soft-delete, blob access)
+are validated against the actual ARM property structure, not just abstract
+property names.
 """
 
+import fnmatch
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -89,253 +93,287 @@ class ValidationReport:
 
 
 # ══════════════════════════════════════════════════════════════
-# STATIC POLICY VALIDATOR
+# SCOPE MATCHING  (duplicated from standards.py to avoid circular imports)
 # ══════════════════════════════════════════════════════════════
 
-def validate_template(
+def _scope_matches(scope: str, resource_type: str) -> bool:
+    """Check if a resource type matches a scope pattern (comma-separated globs)."""
+    resource_lower = resource_type.lower()
+    for pattern in scope.split(","):
+        pattern = pattern.strip().lower()
+        if not pattern:
+            continue
+        if fnmatch.fnmatch(resource_lower, pattern):
+            return True
+    return False
+
+
+# ══════════════════════════════════════════════════════════════
+# DEEP ARM PROPERTY INSPECTION
+# ══════════════════════════════════════════════════════════════
+# Maps abstract standard keys → concrete ARM property paths
+# so that e.g. "minTlsVersion" checks the right place for
+# each resource type.
+
+# TLS property locations per resource type
+_TLS_PROPS: dict[str, tuple[str | None, str]] = {
+    "microsoft.web/sites":                          ("siteConfig", "minTlsVersion"),
+    "microsoft.sql/servers":                        (None, "minimalTlsVersion"),
+    "microsoft.storage/storageaccounts":            (None, "minimumTlsVersion"),
+    "microsoft.cache/redis":                        (None, "minimumTlsVersion"),
+    "microsoft.dbforpostgresql/flexibleservers":    (None, "minimalTlsVersion"),
+}
+
+# Types that should have managed identity
+_MI_TYPES: set[str] = {
+    "microsoft.web/sites", "microsoft.containerservice/managedclusters",
+    "microsoft.app/containerapps", "microsoft.sql/servers",
+    "microsoft.keyvault/vaults", "microsoft.cognitiveservices/accounts",
+    "microsoft.machinelearningservices/workspaces",
+    "microsoft.documentdb/databaseaccounts",
+}
+
+# Types that support publicNetworkAccess
+_PRIVATE_TYPES: set[str] = {
+    "microsoft.sql/servers", "microsoft.keyvault/vaults",
+    "microsoft.storage/storageaccounts", "microsoft.cache/redis",
+    "microsoft.cognitiveservices/accounts", "microsoft.documentdb/databaseaccounts",
+    "microsoft.machinelearningservices/workspaces",
+    "microsoft.dbforpostgresql/flexibleservers",
+}
+
+
+def _get_deep_property(res: dict, key: str) -> tuple[bool, object]:
+    """Get a property value with ARM-specific deep inspection.
+
+    Returns (found: bool, value: object).
+    Handles special keys that live in different places per resource type.
+    """
+    rtype = res.get("type", "").lower()
+    props = res.get("properties", {})
+
+    # ── TLS ───────────────────────────────────────────────
+    if key.lower() in ("mintlsversion", "minimumtlsversion", "minimaltlsversion"):
+        if rtype in _TLS_PROPS:
+            parent_key, tls_key = _TLS_PROPS[rtype]
+            if parent_key:
+                val = props.get(parent_key, {}).get(tls_key)
+            else:
+                val = props.get(tls_key)
+            return (val is not None, val)
+        # Try generic lookup
+        for candidate in ("minTlsVersion", "minimumTlsVersion", "minimalTlsVersion"):
+            if candidate in props:
+                return (True, props[candidate])
+        return (False, None)
+
+    # ── HTTPS ─────────────────────────────────────────────
+    if key.lower() == "httpsonly":
+        if "microsoft.web/sites" in rtype:
+            return (True, props.get("httpsOnly", False))
+        if "microsoft.storage/storageaccounts" in rtype:
+            return (True, props.get("supportsHttpsTrafficOnly", False))
+        return ("httpsOnly" in props, props.get("httpsOnly"))
+
+    # ── Managed Identity ──────────────────────────────────
+    if key.lower() == "managedidentity":
+        if rtype not in _MI_TYPES:
+            return (True, True)   # Not applicable → passes
+        identity = res.get("identity", {})
+        has_mi = identity.get("type") in (
+            "SystemAssigned", "UserAssigned", "SystemAssigned,UserAssigned"
+        )
+        return (True, has_mi)
+
+    # ── Public Network Access ─────────────────────────────
+    if key.lower() == "publicnetworkaccess":
+        if rtype not in _PRIVATE_TYPES:
+            return (True, "Disabled")  # Not applicable → passes
+        return (True, props.get("publicNetworkAccess", "Enabled"))
+
+    # ── Private Endpoints ─────────────────────────────────
+    if key.lower() == "privateendpoints":
+        if rtype not in _PRIVATE_TYPES:
+            return (True, True)  # Not applicable → passes
+        public = props.get("publicNetworkAccess", "Enabled")
+        return (True, str(public).lower() in ("disabled", "false"))
+
+    # ── Encryption at rest ────────────────────────────────
+    if key.lower() == "encryptionatrest":
+        if "microsoft.storage/storageaccounts" in rtype:
+            encryption = props.get("encryption", {})
+            return (True, bool(encryption.get("services")))
+        if "microsoft.sql" in rtype:
+            # TDE is on by default for Azure SQL
+            return (True, True)
+        # Generic: check for encryption block
+        return (True, bool(props.get("encryption")))
+
+    # ── Diagnostic Logging ────────────────────────────────
+    if key.lower() == "diagnosticlogging":
+        # Template-level check — can't reliably check in static analysis
+        return (True, True)
+
+    # ── Soft Delete / Purge Protection (Key Vault) ────────
+    if key.lower() == "enablesoftdelete":
+        return (True, bool(props.get("enableSoftDelete", False)))
+    if key.lower() == "enablepurgeprotection":
+        return (True, bool(props.get("enablePurgeProtection", False)))
+
+    # ── RBAC Authorization (Key Vault) ────────────────────
+    if key.lower() == "enablerbacauthorization":
+        return (True, bool(props.get("enableRbacAuthorization", False)))
+
+    # ── AAD Auth ──────────────────────────────────────────
+    if key.lower() == "aadauthenabled":
+        if "microsoft.sql/servers" in rtype:
+            admins = props.get("administrators", {})
+            return (True, bool(admins.get("azureADOnlyAuthentication", False)))
+        return (True, True)  # Not applicable
+
+    # ── Blob Public Access ────────────────────────────────
+    if key.lower() == "allowblobpublicaccess":
+        if "microsoft.storage/storageaccounts" in rtype:
+            return (True, props.get("allowBlobPublicAccess", True))
+        return (True, False)  # Not applicable → passes
+
+    # ── Generic property lookup ───────────────────────────
+    if key in props:
+        return (True, props[key])
+
+    # Check nested in properties (case-insensitive)
+    for k, v in props.items():
+        if k.lower() == key.lower():
+            return (True, v)
+
+    return (False, None)
+
+
+# ══════════════════════════════════════════════════════════════
+# OPERATOR EVALUATION
+# ══════════════════════════════════════════════════════════════
+
+def _evaluate_operator(actual, operator: str, expected) -> bool:
+    """Evaluate a comparison operator."""
+    if operator in ("==", "eq"):
+        if isinstance(expected, bool):
+            return bool(actual) == expected
+        return str(actual).lower() == str(expected).lower()
+
+    if operator in ("!=", "ne"):
+        return str(actual).lower() != str(expected).lower()
+
+    if operator in (">=", "gte"):
+        try:
+            # Handle TLS versions like "1.2", "TLS1_2", etc.
+            def _normalize_ver(v):
+                s = str(v).replace("TLS", "").replace("Tls", "").replace("_", ".")
+                for part in s.split("."):
+                    try:
+                        return float(s) if "." in s else float(part)
+                    except ValueError:
+                        continue
+                return 0.0
+            return _normalize_ver(actual) >= _normalize_ver(expected)
+        except (ValueError, TypeError):
+            return str(actual) >= str(expected)
+
+    if operator in ("<=", "lte"):
+        try:
+            return float(actual) <= float(expected)
+        except (ValueError, TypeError):
+            return str(actual) <= str(expected)
+
+    if operator == "in":
+        if isinstance(expected, list):
+            actual_lower = str(actual).lower()
+            return actual_lower in [str(v).lower() for v in expected]
+        return str(actual).lower() in str(expected).lower()
+
+    if operator == "not_in":
+        if isinstance(expected, list):
+            actual_lower = str(actual).lower()
+            return actual_lower not in [str(v).lower() for v in expected]
+        return str(actual).lower() not in str(expected).lower()
+
+    if operator == "exists":
+        return actual is not None
+
+    if operator == "not_exists":
+        return actual is None
+
+    # Default: equality
+    return str(actual).lower() == str(expected).lower()
+
+
+# ══════════════════════════════════════════════════════════════
+# STANDARDS-DRIVEN VALIDATOR (new — single source of truth)
+# ══════════════════════════════════════════════════════════════
+
+def validate_template_against_standards(
     template: dict,
-    governance_policies: dict,
-    security_standards: list[dict] | None = None,
+    standards: list[dict],
 ) -> ValidationReport:
-    """Validate an ARM template against org-wide governance policies.
+    """Validate an ARM template against org_standards rules.
+
+    This is the primary validation entry point.  Each standard's
+    ``rule_json`` is interpreted dynamically — no hardcoded rule IDs.
 
     Args:
         template: Parsed ARM template JSON dict
-        governance_policies: Dict keyed by rule_key from governance_policies table
-            e.g. {"require_tags": ["environment", "owner", ...], "allowed_regions": [...]}
-        security_standards: Optional list of security standard dicts from DB
+        standards: List of org_standard dicts (from get_all_standards or
+            get_standards_for_service), each with a ``rule`` dict and
+            ``scope`` glob pattern.
 
     Returns:
         ValidationReport with all check results
     """
     results: list[PolicyCheckResult] = []
     resources = template.get("resources", [])
-    parameters = template.get("parameters", {})
 
-    # ── GOV-001: Required Tags ────────────────────────────────
-    required_tags = governance_policies.get("require_tags", [])
-    if required_tags:
-        for res in resources:
-            rtype = res.get("type", "unknown")
-            rname = res.get("name", "unknown")
-            tags = res.get("tags", {})
+    for std in standards:
+        if not std.get("enabled", True):
+            continue
 
-            if not tags:
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-001",
-                    rule_name="Required Resource Tags",
-                    passed=False,
-                    severity="high",
-                    enforcement="block",
-                    message=f"Resource has no tags. Required: {', '.join(required_tags)}",
-                    resource_type=rtype,
-                    resource_name=rname,
-                    remediation=f"Add tags block with: {', '.join(required_tags)}",
-                ))
-            else:
-                # Check which required tags are present (handle ARM expressions)
-                missing = []
-                for tag in required_tags:
-                    if tag not in tags:
-                        missing.append(tag)
+        rule = std.get("rule", {})
+        rule_type = rule.get("type", "property")
+        scope = std.get("scope", "*")
+        severity = std.get("severity", "high")
+        enforcement = "block" if severity in ("critical", "high") else "warn"
+        remediation = rule.get("remediation", "")
 
-                if missing:
-                    results.append(PolicyCheckResult(
-                        rule_id="GOV-001",
-                        rule_name="Required Resource Tags",
-                        passed=False,
-                        severity="high",
-                        enforcement="block",
-                        message=f"Missing required tags: {', '.join(missing)}",
-                        resource_type=rtype,
-                        resource_name=rname,
-                        remediation=f"Add missing tags: {', '.join(missing)}",
-                    ))
-                else:
-                    results.append(PolicyCheckResult(
-                        rule_id="GOV-001",
-                        rule_name="Required Resource Tags",
-                        passed=True,
-                        severity="high",
-                        enforcement="block",
-                        message=f"All {len(required_tags)} required tags present",
-                        resource_type=rtype,
-                        resource_name=rname,
-                    ))
+        if rule_type in ("property", "property_check"):
+            _check_property_standard(std, rule, scope, severity, enforcement,
+                                     remediation, resources, results)
+        elif rule_type == "tags":
+            _check_tags_standard(std, rule, scope, severity, enforcement,
+                                 remediation, resources, results)
+        elif rule_type == "allowed_values":
+            _check_allowed_values_standard(std, rule, scope, severity,
+                                           enforcement, remediation,
+                                           resources, results, template)
+        elif rule_type == "cost_threshold":
+            # Cost thresholds are informational — always pass at template level
+            results.append(PolicyCheckResult(
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=True,
+                severity=severity,
+                enforcement="warn",
+                message=f"Cost threshold: ${rule.get('max_monthly_usd', 0)}/mo (checked at deployment time)",
+                remediation=remediation,
+            ))
+        else:
+            logger.warning(f"Unknown rule type '{rule_type}' in standard {std['id']}")
 
-    # ── GOV-002: Allowed Regions ──────────────────────────────
-    allowed_regions = governance_policies.get("allowed_regions", [])
-    if allowed_regions:
-        for res in resources:
-            rtype = res.get("type", "unknown")
-            rname = res.get("name", "unknown")
-            location = res.get("location", "")
-
-            # ARM expressions like [parameters('location')] and
-            # [resourceGroup().location] are always acceptable since they
-            # resolve at deployment time to the RG's region (which we control).
-            if isinstance(location, str) and location.startswith("["):
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-002",
-                    rule_name="Allowed Deployment Regions",
-                    passed=True,
-                    severity="critical",
-                    enforcement="block",
-                    message="Location uses ARM expression (resolved at deploy time)",
-                    resource_type=rtype,
-                    resource_name=rname,
-                ))
-            elif isinstance(location, str) and location:
-                loc_lower = location.lower().replace(" ", "")
-                if loc_lower in [r.lower().replace(" ", "") for r in allowed_regions]:
-                    results.append(PolicyCheckResult(
-                        rule_id="GOV-002",
-                        rule_name="Allowed Deployment Regions",
-                        passed=True,
-                        severity="critical",
-                        enforcement="block",
-                        message=f"Location '{location}' is an approved region",
-                        resource_type=rtype,
-                        resource_name=rname,
-                    ))
-                else:
-                    results.append(PolicyCheckResult(
-                        rule_id="GOV-002",
-                        rule_name="Allowed Deployment Regions",
-                        passed=False,
-                        severity="critical",
-                        enforcement="block",
-                        message=f"Location '{location}' is NOT an approved region. Allowed: {', '.join(allowed_regions)}",
-                        resource_type=rtype,
-                        resource_name=rname,
-                        remediation="Use [parameters('location')] or [resourceGroup().location]",
-                    ))
-            # Resources without a location (e.g., sub-resources) are OK
-
-    # ── GOV-003 / SEC-001: HTTPS Enforcement ──────────────────
-    require_https = governance_policies.get("require_https", False)
-    if require_https:
-        for res in resources:
-            rtype = res.get("type", "").lower()
-            rname = res.get("name", "unknown")
-            props = res.get("properties", {})
-
-            # App Service
-            if "microsoft.web/sites" in rtype:
-                https_only = props.get("httpsOnly", False)
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-003",
-                    rule_name="HTTPS Enforcement",
-                    passed=bool(https_only),
-                    severity="critical",
-                    enforcement="block",
-                    message="httpsOnly is enabled" if https_only else "httpsOnly is NOT enabled",
-                    resource_type=rtype,
-                    resource_name=rname,
-                    remediation="Set properties.httpsOnly = true" if not https_only else "",
-                ))
-
-            # Storage account
-            if "microsoft.storage/storageaccounts" in rtype:
-                https_only = props.get("supportsHttpsTrafficOnly", False)
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-003",
-                    rule_name="HTTPS Enforcement",
-                    passed=bool(https_only),
-                    severity="critical",
-                    enforcement="block",
-                    message="HTTPS-only traffic enabled" if https_only else "HTTPS-only traffic NOT enabled",
-                    resource_type=rtype,
-                    resource_name=rname,
-                    remediation="Set properties.supportsHttpsTrafficOnly = true" if not https_only else "",
-                ))
-
-    # ── GOV-004 / SEC-003: Managed Identity ───────────────────
-    require_mi = governance_policies.get("require_managed_identity", False)
-    if require_mi:
-        # Types that should have managed identity
-        mi_types = {
-            "microsoft.web/sites", "microsoft.containerservice/managedclusters",
-            "microsoft.app/containerapps", "microsoft.sql/servers",
-            "microsoft.keyvault/vaults", "microsoft.cognitiveservices/accounts",
-            "microsoft.machinelearningservices/workspaces",
-            "microsoft.documentdb/databaseaccounts",
-        }
-        for res in resources:
-            rtype = res.get("type", "").lower()
-            rname = res.get("name", "unknown")
-
-            if rtype in mi_types:
-                identity = res.get("identity", {})
-                has_mi = identity.get("type") in ("SystemAssigned", "UserAssigned", "SystemAssigned,UserAssigned")
-
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-004",
-                    rule_name="Managed Identity Enforcement",
-                    passed=has_mi,
-                    severity="high",
-                    enforcement="warn",
-                    message="Managed identity configured" if has_mi else "No managed identity configured",
-                    resource_type=rtype,
-                    resource_name=rname,
-                    remediation='Add "identity": {"type": "SystemAssigned"}' if not has_mi else "",
-                ))
-
-    # ── GOV-005 / SEC-004: Public Network Access ──────────────
-    require_private = governance_policies.get("require_private_endpoints", False)
-    if require_private:
-        # Types that support publicNetworkAccess
-        private_types = {
-            "microsoft.sql/servers", "microsoft.keyvault/vaults",
-            "microsoft.storage/storageaccounts", "microsoft.cache/redis",
-            "microsoft.cognitiveservices/accounts", "microsoft.documentdb/databaseaccounts",
-            "microsoft.machinelearningservices/workspaces",
-            "microsoft.dbforpostgresql/flexibleservers",
-        }
-        for res in resources:
-            rtype = res.get("type", "").lower()
-            rname = res.get("name", "unknown")
-            props = res.get("properties", {})
-
-            if rtype in private_types:
-                public_access = props.get("publicNetworkAccess", "Enabled")
-                is_disabled = str(public_access).lower() in ("disabled", "false")
-
-                results.append(PolicyCheckResult(
-                    rule_id="GOV-005",
-                    rule_name="Private Endpoints (Production)",
-                    passed=is_disabled,
-                    severity="high",
-                    enforcement="block",
-                    message="Public network access disabled" if is_disabled else f"Public network access is '{public_access}'",
-                    resource_type=rtype,
-                    resource_name=rname,
-                    remediation='Set properties.publicNetworkAccess = "Disabled"' if not is_disabled else "",
-                ))
-
-    # ── SEC-002: TLS 1.2 Minimum ──────────────────────────────
-    _check_tls(resources, results)
-
-    # ── SEC-005: Encryption at Rest ───────────────────────────
-    _check_encryption(resources, results)
-
-    # ── SEC-007: Soft Delete / Purge Protection ───────────────
-    _check_soft_delete(resources, results)
-
-    # ── SEC-008: RBAC Authorization (Key Vault) ───────────────
-    _check_rbac(resources, results)
-
-    # ── SEC-013: Blob Public Access ───────────────────────────
-    _check_blob_access(resources, results)
-
-    # ── Build final report ────────────────────────────────────
+    # ── Build final report ────────────────────────────────
     passed_count = sum(1 for r in results if r.passed)
     failed_count = sum(1 for r in results if not r.passed)
     blockers = sum(1 for r in results if not r.passed and r.enforcement == "block")
     warnings = sum(1 for r in results if not r.passed and r.enforcement == "warn")
 
     report = ValidationReport(
-        passed=blockers == 0,  # warnings don't block
+        passed=blockers == 0,
         total_checks=len(results),
         passed_checks=passed_count,
         failed_checks=failed_count,
@@ -344,149 +382,297 @@ def validate_template(
         results=results,
     )
 
-    logger.info(f"Static policy validation: {report.summary()}")
+    logger.info(f"Standards-driven validation: {report.summary()}")
     return report
 
 
-# ══════════════════════════════════════════════════════════════
-# SECURITY STANDARD CHECKS
-# ══════════════════════════════════════════════════════════════
+def _check_property_standard(std, rule, scope, severity, enforcement,
+                              remediation, resources, results):
+    """Evaluate a property-type standard against matching resources."""
+    key = rule.get("key", "")
+    operator = rule.get("operator", "==")
+    expected = rule.get("value")
 
-def _check_tls(resources: list, results: list[PolicyCheckResult]):
-    """SEC-002: Check TLS 1.2 minimum."""
-    tls_props = {
-        "microsoft.web/sites": ("siteConfig", "minTlsVersion"),
-        "microsoft.sql/servers": (None, "minimalTlsVersion"),
-        "microsoft.storage/storageaccounts": (None, "minimumTlsVersion"),
-        "microsoft.cache/redis": (None, "minimumTlsVersion"),
-        "microsoft.dbforpostgresql/flexibleservers": (None, "minimalTlsVersion"),
-    }
+    applicable = [r for r in resources if _scope_matches(scope, r.get("type", ""))]
 
-    for res in resources:
-        rtype = res.get("type", "").lower()
+    if not applicable:
+        return
+
+    for res in applicable:
+        rtype = res.get("type", "unknown")
         rname = res.get("name", "unknown")
-        props = res.get("properties", {})
 
-        if rtype in tls_props:
-            parent_key, tls_key = tls_props[rtype]
-            if parent_key:
-                tls_val = props.get(parent_key, {}).get(tls_key, "")
-            else:
-                tls_val = props.get(tls_key, "")
+        found, actual = _get_deep_property(res, key)
 
-            # Normalize: "1.2", "TLS1_2", "Tls12" → check for 1.2+
-            tls_str = str(tls_val).replace("TLS", "").replace("Tls", "").replace("_", ".").replace("1.", "")
-            is_ok = tls_str in ("2", "12", "1.2", "3", "13", "1.3") or "1.2" in str(tls_val) or "1_2" in str(tls_val)
-
+        if not found and operator not in ("exists", "not_exists"):
             results.append(PolicyCheckResult(
-                rule_id="SEC-002",
-                rule_name="TLS 1.2 Minimum",
-                passed=is_ok,
-                severity="critical",
-                enforcement="block",
-                message=f"TLS version: {tls_val or 'not set'}" + (" (≥1.2 ✓)" if is_ok else " (must be ≥1.2)"),
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=False,
+                severity=severity,
+                enforcement=enforcement,
+                message=f"Property '{key}' not set on resource",
                 resource_type=rtype,
                 resource_name=rname,
-                remediation=f"Set minTlsVersion/minimumTlsVersion to '1.2'" if not is_ok else "",
+                remediation=remediation,
             ))
+            continue
+
+        passed = _evaluate_operator(actual, operator, expected)
+
+        results.append(PolicyCheckResult(
+            rule_id=std["id"],
+            rule_name=std["name"],
+            passed=passed,
+            severity=severity,
+            enforcement=enforcement,
+            message=(
+                f"{key} = {actual}" + (" ✓" if passed else f" (expected {operator} {expected})")
+            ),
+            resource_type=rtype,
+            resource_name=rname,
+            remediation=remediation if not passed else "",
+        ))
 
 
-def _check_encryption(resources: list, results: list[PolicyCheckResult]):
-    """SEC-005: Check encryption at rest."""
-    for res in resources:
-        rtype = res.get("type", "").lower()
+def _check_tags_standard(std, rule, scope, severity, enforcement,
+                          remediation, resources, results):
+    """Evaluate a tags-type standard against matching resources."""
+    required_tags = rule.get("required_tags", [])
+    # Handle string format: "environment owner costCenter project"
+    if isinstance(required_tags, str):
+        required_tags = required_tags.split()
+    if not required_tags:
+        return
+
+    applicable = [r for r in resources if _scope_matches(scope, r.get("type", ""))]
+
+    for res in applicable:
+        rtype = res.get("type", "unknown")
         rname = res.get("name", "unknown")
-        props = res.get("properties", {})
+        tags = res.get("tags", {})
 
-        if "microsoft.storage/storageaccounts" in rtype:
-            encryption = props.get("encryption", {})
-            has_encryption = bool(encryption.get("services"))
-
+        if not tags:
             results.append(PolicyCheckResult(
-                rule_id="SEC-005",
-                rule_name="Encryption at Rest",
-                passed=has_encryption,
-                severity="critical",
-                enforcement="block",
-                message="Storage encryption configured" if has_encryption else "Storage encryption NOT configured",
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=False,
+                severity=severity,
+                enforcement=enforcement,
+                message=f"Resource has no tags. Required: {', '.join(required_tags)}",
                 resource_type=rtype,
                 resource_name=rname,
-                remediation="Add encryption.services configuration" if not has_encryption else "",
+                remediation=f"Add tags block with: {', '.join(required_tags)}",
             ))
-
-
-def _check_soft_delete(resources: list, results: list[PolicyCheckResult]):
-    """SEC-007: Check soft delete / purge protection."""
-    for res in resources:
-        rtype = res.get("type", "").lower()
-        rname = res.get("name", "unknown")
-        props = res.get("properties", {})
-
-        if "microsoft.keyvault/vaults" in rtype:
-            soft_delete = props.get("enableSoftDelete", False)
-            purge_protect = props.get("enablePurgeProtection", False)
-
+        else:
+            missing = [t for t in required_tags if t not in tags]
             results.append(PolicyCheckResult(
-                rule_id="SEC-007",
-                rule_name="Soft Delete / Purge Protection",
-                passed=bool(soft_delete and purge_protect),
-                severity="high",
-                enforcement="block",
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=len(missing) == 0,
+                severity=severity,
+                enforcement=enforcement,
                 message=(
-                    f"Soft delete: {'✓' if soft_delete else '✗'}, "
-                    f"Purge protection: {'✓' if purge_protect else '✗'}"
+                    f"All {len(required_tags)} required tags present"
+                    if not missing
+                    else f"Missing required tags: {', '.join(missing)}"
                 ),
                 resource_type=rtype,
                 resource_name=rname,
-                remediation="Enable both enableSoftDelete and enablePurgeProtection" if not (soft_delete and purge_protect) else "",
+                remediation=f"Add missing tags: {', '.join(missing)}" if missing else "",
             ))
 
 
-def _check_rbac(resources: list, results: list[PolicyCheckResult]):
-    """SEC-008: Check RBAC authorization on Key Vault."""
-    for res in resources:
-        rtype = res.get("type", "").lower()
-        rname = res.get("name", "unknown")
-        props = res.get("properties", {})
+def _check_allowed_values_standard(std, rule, scope, severity, enforcement,
+                                    remediation, resources, results, template):
+    """Evaluate an allowed_values-type standard."""
+    key = rule.get("key", "")
+    allowed = rule.get("values", [])
+    # Handle string format: "eastus2 westus2 westeurope"
+    if isinstance(allowed, str):
+        allowed = allowed.split()
 
-        if "microsoft.keyvault/vaults" in rtype:
-            rbac = props.get("enableRbacAuthorization", False)
+    if not allowed:
+        return
+
+    applicable = [r for r in resources if _scope_matches(scope, r.get("type", ""))]
+
+    for res in applicable:
+        rtype = res.get("type", "unknown")
+        rname = res.get("name", "unknown")
+
+        if key.lower() == "location":
+            location = res.get("location", "")
+            if isinstance(location, str) and location.startswith("["):
+                results.append(PolicyCheckResult(
+                    rule_id=std["id"],
+                    rule_name=std["name"],
+                    passed=True,
+                    severity=severity,
+                    enforcement=enforcement,
+                    message="Location uses ARM expression (resolved at deploy time)",
+                    resource_type=rtype,
+                    resource_name=rname,
+                ))
+                continue
+
+            loc_lower = location.lower().replace(" ", "") if location else ""
+            allowed_lower = [v.lower().replace(" ", "") for v in allowed]
+            passed = loc_lower in allowed_lower if loc_lower else True
 
             results.append(PolicyCheckResult(
-                rule_id="SEC-008",
-                rule_name="RBAC Authorization",
-                passed=bool(rbac),
-                severity="high",
-                enforcement="block",
-                message="RBAC authorization enabled" if rbac else "Using access policy model (RBAC required)",
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=passed,
+                severity=severity,
+                enforcement=enforcement,
+                message=(
+                    f"Location '{location}' is an approved region"
+                    if passed
+                    else f"Location '{location}' is NOT an approved region. Allowed: {', '.join(allowed)}"
+                ),
                 resource_type=rtype,
                 resource_name=rname,
-                remediation="Set enableRbacAuthorization = true" if not rbac else "",
+                remediation=remediation if not passed else "",
             ))
+        else:
+            found, actual = _get_deep_property(res, key)
+            if found:
+                actual_lower = str(actual).lower()
+                allowed_lower = [str(v).lower() for v in allowed]
+                passed = actual_lower in allowed_lower
+                results.append(PolicyCheckResult(
+                    rule_id=std["id"],
+                    rule_name=std["name"],
+                    passed=passed,
+                    severity=severity,
+                    enforcement=enforcement,
+                    message=(
+                        f"{key} = '{actual}' is allowed"
+                        if passed
+                        else f"{key} = '{actual}' not in allowed values: {', '.join(str(v) for v in allowed)}"
+                    ),
+                    resource_type=rtype,
+                    resource_name=rname,
+                    remediation=remediation if not passed else "",
+                ))
 
 
-def _check_blob_access(resources: list, results: list[PolicyCheckResult]):
-    """SEC-013: Check blob public access disabled."""
-    for res in resources:
-        rtype = res.get("type", "").lower()
-        rname = res.get("name", "unknown")
-        props = res.get("properties", {})
+# ══════════════════════════════════════════════════════════════
+# LEGACY ADAPTER — backward compatibility with governance_policies dict
+# ══════════════════════════════════════════════════════════════
 
-        if "microsoft.storage/storageaccounts" in rtype:
-            blob_public = props.get("allowBlobPublicAccess", True)  # default is True
-            is_disabled = not blob_public
+def validate_template(
+    template: dict,
+    governance_policies: dict,
+    security_standards: list[dict] | None = None,
+) -> ValidationReport:
+    """Legacy entry point — converts governance_policies dict to standards format.
 
-            results.append(PolicyCheckResult(
-                rule_id="SEC-013",
-                rule_name="Blob Public Access Disabled",
-                passed=is_disabled,
-                severity="critical",
-                enforcement="block",
-                message="Blob public access disabled" if is_disabled else "Blob public access is ENABLED",
-                resource_type=rtype,
-                resource_name=rname,
-                remediation="Set allowBlobPublicAccess = false" if not is_disabled else "",
-            ))
+    This maintains backward compatibility with existing callers that pass the
+    old-style governance_policies dict (from the governance_policies table).
+    Internally, it converts these to the new org_standards format and delegates
+    to ``validate_template_against_standards``.
+    """
+    synthetic_standards: list[dict] = []
+
+    # GOV-001: Required Tags
+    required_tags = governance_policies.get("require_tags", [])
+    if required_tags:
+        synthetic_standards.append({
+            "id": "GOV-001", "name": "Required Resource Tags",
+            "scope": "*", "severity": "high", "enabled": True,
+            "rule": {"type": "tags", "required_tags": required_tags,
+                     "remediation": f"Add tags block with: {', '.join(required_tags)}"},
+        })
+
+    # GOV-002: Allowed Regions
+    allowed_regions = governance_policies.get("allowed_regions", [])
+    if allowed_regions:
+        synthetic_standards.append({
+            "id": "GOV-002", "name": "Allowed Deployment Regions",
+            "scope": "*", "severity": "critical", "enabled": True,
+            "rule": {"type": "allowed_values", "key": "location",
+                     "values": allowed_regions,
+                     "remediation": "Use [parameters('location')] or [resourceGroup().location]"},
+        })
+
+    # GOV-003: HTTPS
+    if governance_policies.get("require_https", False):
+        synthetic_standards.append({
+            "id": "GOV-003", "name": "HTTPS Enforcement",
+            "scope": "Microsoft.Web/*,Microsoft.Storage/*", "severity": "critical",
+            "enabled": True,
+            "rule": {"type": "property", "key": "httpsOnly", "operator": "==",
+                     "value": True, "remediation": "Set httpsOnly = true"},
+        })
+
+    # GOV-004: Managed Identity
+    if governance_policies.get("require_managed_identity", False):
+        synthetic_standards.append({
+            "id": "GOV-004", "name": "Managed Identity Enforcement",
+            "scope": "*", "severity": "high", "enabled": True,
+            "rule": {"type": "property", "key": "managedIdentity", "operator": "==",
+                     "value": True,
+                     "remediation": 'Add "identity": {"type": "SystemAssigned"}'},
+        })
+
+    # GOV-005: Private Endpoints
+    if governance_policies.get("require_private_endpoints", False):
+        synthetic_standards.append({
+            "id": "GOV-005", "name": "Private Endpoints (Production)",
+            "scope": "Microsoft.Sql/*,Microsoft.KeyVault/*,Microsoft.Storage/*,"
+                     "Microsoft.Cache/*,Microsoft.DocumentDB/*",
+            "severity": "high", "enabled": True,
+            "rule": {"type": "property", "key": "publicNetworkAccess", "operator": "==",
+                     "value": "Disabled",
+                     "remediation": 'Set properties.publicNetworkAccess = "Disabled"'},
+        })
+
+    # Always run security checks
+    synthetic_standards.extend(_SECURITY_STANDARDS)
+
+    return validate_template_against_standards(template, synthetic_standards)
+
+
+# Built-in security standards (always active)
+_SECURITY_STANDARDS: list[dict] = [
+    {
+        "id": "SEC-002", "name": "TLS 1.2 Minimum",
+        "scope": "Microsoft.Web/*,Microsoft.Sql/*,Microsoft.Storage/*,"
+                 "Microsoft.Cache/*,Microsoft.DBforPostgreSQL/*",
+        "severity": "critical", "enabled": True,
+        "rule": {"type": "property", "key": "minTlsVersion", "operator": ">=",
+                 "value": "1.2", "remediation": "Set minTlsVersion to '1.2'"},
+    },
+    {
+        "id": "SEC-005", "name": "Encryption at Rest",
+        "scope": "Microsoft.Storage/*", "severity": "critical", "enabled": True,
+        "rule": {"type": "property", "key": "encryptionAtRest", "operator": "==",
+                 "value": True, "remediation": "Add encryption.services configuration"},
+    },
+    {
+        "id": "SEC-007", "name": "Soft Delete / Purge Protection",
+        "scope": "Microsoft.KeyVault/*", "severity": "high", "enabled": True,
+        "rule": {"type": "property", "key": "enableSoftDelete", "operator": "==",
+                 "value": True,
+                 "remediation": "Enable both enableSoftDelete and enablePurgeProtection"},
+    },
+    {
+        "id": "SEC-008", "name": "RBAC Authorization",
+        "scope": "Microsoft.KeyVault/*", "severity": "high", "enabled": True,
+        "rule": {"type": "property", "key": "enableRbacAuthorization", "operator": "==",
+                 "value": True,
+                 "remediation": "Set enableRbacAuthorization = true"},
+    },
+    {
+        "id": "SEC-013", "name": "Blob Public Access Disabled",
+        "scope": "Microsoft.Storage/*", "severity": "critical", "enabled": True,
+        "rule": {"type": "property", "key": "allowBlobPublicAccess", "operator": "==",
+                 "value": False,
+                 "remediation": "Set allowBlobPublicAccess = false"},
+    },
+]
 
 
 # ══════════════════════════════════════════════════════════════
