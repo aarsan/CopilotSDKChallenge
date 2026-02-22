@@ -1377,6 +1377,158 @@ body {
 .detail-main { min-width: 0; }
 .detail-sidebar { min-width: 0; }
 
+/* ── Composition Sidebar — template version + dependencies ── */
+.comp-version-section {
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-muted);
+}
+.comp-template-ver {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.comp-ver-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+.comp-ver-num {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.comp-ver-status {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+}
+.comp-ver-status-approved   { background: rgba(34,197,94,0.12); color: #16a34a; }
+.comp-ver-status-draft      { background: rgba(148,163,184,0.12); color: #94a3b8; }
+.comp-ver-status-passed     { background: rgba(245,158,11,0.12); color: #d97706; }
+.comp-ver-status-validated  { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.comp-ver-status-failed     { background: rgba(239,68,68,0.12); color: #ef4444; }
+
+/* Dependencies list */
+.comp-deps-section h4 { margin-bottom: 0.4rem; }
+.comp-deps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.comp-dep-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--border-muted);
+}
+.comp-dep-item.comp-dep-ok {
+    border-left-color: #16a34a;
+}
+.comp-dep-item.comp-dep-warn {
+    border-left-color: #d97706;
+}
+.comp-dep-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.comp-dep-ver {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.comp-upgrade-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(59,130,246,0.15);
+    color: #60a5fa;
+    cursor: default;
+}
+
+/* Version Log — collapsible */
+.comp-verlog-section .comp-verlog-body {
+    display: none;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.comp-verlog-section.comp-verlog-open .comp-verlog-body {
+    display: block;
+}
+.comp-verlog-toggle {
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+.comp-verlog-arrow {
+    transition: transform 0.2s;
+    font-size: 0.7rem;
+}
+.comp-verlog-section.comp-verlog-open .comp-verlog-arrow {
+    transform: rotate(90deg);
+}
+.comp-verlog-item {
+    padding: 0.3rem 0.5rem;
+    border-radius: 4px;
+    margin-bottom: 0.2rem;
+    background: var(--bg-secondary);
+}
+.comp-verlog-item.comp-verlog-active {
+    border-left: 3px solid #16a34a;
+}
+.comp-verlog-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+.comp-verlog-ver {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    min-width: 3.5rem;
+}
+.comp-verlog-icon {
+    font-size: 0.72rem;
+}
+.comp-verlog-active-tag {
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: rgba(34,197,94,0.2);
+    color: #16a34a;
+}
+.comp-verlog-change {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+}
+.comp-verlog-date {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+.comp-verlog-note {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+    padding-left: 0.2rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .detail-meta {
     display: flex;
     flex-wrap: wrap;

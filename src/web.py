@@ -2852,6 +2852,66 @@ async def recompose_blueprint(template_id: str):
     })
 
 
+# ── Template Composition Info ─────────────────────────────────
+
+@app.get("/api/catalog/templates/{template_id}/composition")
+async def get_template_composition(template_id: str):
+    """Get the services that compose this template, with version info.
+
+    Returns each service's name, current version in the template,
+    latest available version, and whether an upgrade is available.
+    """
+    from src.database import (
+        get_template_by_id, get_service, get_active_service_version,
+        get_service_versions,
+    )
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    service_ids = tmpl.get("service_ids", [])
+    components = []
+
+    for sid in service_ids:
+        svc = await get_service(sid)
+        if not svc:
+            components.append({
+                "service_id": sid,
+                "name": sid.split("/")[-1],
+                "category": "",
+                "status": "unknown",
+                "current_version": None,
+                "latest_version": None,
+                "upgrade_available": False,
+            })
+            continue
+
+        active = await get_active_service_version(sid)
+        active_ver = active.get("version") if active else None
+
+        # Get all versions to find the latest
+        all_versions = await get_service_versions(sid)
+        latest_ver = all_versions[0]["version"] if all_versions else active_ver
+
+        components.append({
+            "service_id": sid,
+            "name": svc.get("name", sid.split("/")[-1]),
+            "category": svc.get("category", ""),
+            "status": svc.get("status", ""),
+            "current_version": active_ver,
+            "latest_version": latest_ver,
+            "upgrade_available": latest_ver is not None and active_ver is not None and latest_ver > active_ver,
+        })
+
+    return JSONResponse({
+        "template_id": template_id,
+        "template_version": tmpl.get("active_version"),
+        "template_status": tmpl.get("status", "draft"),
+        "components": components,
+    })
+
+
 # ── Template Version Management ──────────────────────────────
 
 @app.get("/api/catalog/templates/{template_id}/versions")
