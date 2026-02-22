@@ -822,7 +822,7 @@ async def apply_template_code_edit(
 
     try:
         from src.model_router import Task, get_model_for_task
-        model = get_model_for_task(Task.GENERATION)
+        model = get_model_for_task(Task.CODE_GENERATION)
 
         session = await copilot_client.create_session({
             "model": model,
