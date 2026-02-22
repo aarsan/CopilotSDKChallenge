@@ -3204,24 +3204,11 @@ async def validate_template(template_id: str, request: Request):
                     deep_healed = True
                     current_tpl = fixed_composed
 
-                    new_params = {}
-                    for pname, pdef in current_tpl.get("parameters", {}).items():
-                        if pname in user_params:
-                            new_params[pname] = user_params[pname]
-                        elif "defaultValue" in pdef:
-                            new_params[pname] = pdef["defaultValue"]
-                        else:
-                            ptype = pdef.get("type", "string").lower()
-                            if ptype == "string":
-                                new_params[pname] = f"if-val-{pname[:20]}"
-                            elif ptype == "int":
-                                new_params[pname] = 1
-                            elif ptype == "bool":
-                                new_params[pname] = True
-                            elif ptype == "array":
-                                new_params[pname] = []
-                            elif ptype == "object":
-                                new_params[pname] = {}
+                    new_params = _extract_param_values(current_tpl)
+                    # Layer user overrides on top
+                    for k, v in user_params.items():
+                        if k in current_tpl.get("parameters", {}):
+                            new_params[k] = v
                     current_params = new_params
 
                     heal_history.append({
@@ -3301,24 +3288,11 @@ async def validate_template(template_id: str, request: Request):
                 "fix_summary": fix_summary,
             })
 
-            new_params = {}
-            for pname, pdef in fixed_tpl.get("parameters", {}).items():
-                if pname in user_params:
-                    new_params[pname] = user_params[pname]
-                elif "defaultValue" in pdef:
-                    new_params[pname] = pdef["defaultValue"]
-                else:
-                    ptype = pdef.get("type", "string").lower()
-                    if ptype == "string":
-                        new_params[pname] = f"if-val-{pname[:20]}"
-                    elif ptype == "int":
-                        new_params[pname] = 1
-                    elif ptype == "bool":
-                        new_params[pname] = True
-                    elif ptype == "array":
-                        new_params[pname] = []
-                    elif ptype == "object":
-                        new_params[pname] = {}
+            new_params = _extract_param_values(fixed_tpl)
+            # Layer user overrides on top
+            for k, v in user_params.items():
+                if k in fixed_tpl.get("parameters", {}):
+                    new_params[k] = v
 
             current_tpl = fixed_tpl
             current_params = new_params
