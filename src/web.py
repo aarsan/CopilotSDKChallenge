@@ -4555,6 +4555,7 @@ async def revise_template(template_id: str, request: Request):
     """
     from src.database import (
         get_template_by_id, upsert_template, create_template_version,
+        get_template_versions,
         get_service, get_active_service_version,
     )
     from src.orchestrator import (
@@ -4607,13 +4608,147 @@ async def revise_template(template_id: str, request: Request):
     )
 
     if not feedback_result["should_recompose"]:
+        # ── No new services — apply a code-level revision via LLM ─
+        versions = await get_template_versions(template_id)
+        arm_content = ""
+        if versions:
+            arm_content = versions[0].get("arm_template", "")
+        if not arm_content:
+            arm_content = tmpl.get("content", "")
+
+        if not arm_content:
+            return JSONResponse({
+                "status": "no_changes",
+                "policy_check": policy_result,
+                "message": "No template content found to revise.",
+            })
+
+        # Ask the LLM to apply the user's requested change
+        revision_prompt = (
+            "You are an Azure ARM template expert. A user has requested a "
+            "change to their ARM template. Apply the change and return ONLY "
+            "the corrected raw JSON — no markdown fences, no explanation.\n\n"
+            f"--- USER REQUEST ---\n{prompt}\n--- END REQUEST ---\n\n"
+            f"--- CURRENT TEMPLATE ---\n{arm_content}\n--- END TEMPLATE ---\n\n"
+            "RULES:\n"
+            "- Apply the user's requested change precisely\n"
+            "- Keep ALL existing resources, parameters, and outputs unless the "
+            "  user explicitly asks to remove them\n"
+            "- Ensure every parameter has a defaultValue\n"
+            "- Keep location parameters as \"[resourceGroup().location]\" or "
+            "  \"[parameters('location')]\" unless told otherwise\n"
+            "- Return ONLY valid ARM JSON\n"
+        )
+
+        revised_content = None
+        if client:
+            try:
+                import asyncio as _aio
+                from src.model_router import Task, get_model_for_task
+                model = get_model_for_task(Task.CODING)
+
+                session = await client.create_session({
+                    "model": model,
+                    "streaming": True,
+                    "tools": [],
+                    "system_message": {
+                        "content": (
+                            "You are an ARM template editor. Apply user-requested "
+                            "changes to ARM templates. Return ONLY raw JSON."
+                        )
+                    },
+                })
+
+                chunks: list[str] = []
+                done_ev = _aio.Event()
+
+                def on_event(ev):
+                    try:
+                        if ev.type.value == "assistant.message_delta":
+                            chunks.append(ev.data.delta_content or "")
+                        elif ev.type.value in ("assistant.message", "session.idle"):
+                            done_ev.set()
+                    except Exception:
+                        done_ev.set()
+
+                session.on_event(on_event)
+                await session.send({"prompt": revision_prompt})
+                await _aio.wait_for(done_ev.wait(), timeout=90)
+
+                raw = "".join(chunks).strip()
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                if raw.endswith("```"):
+                    raw = raw[:-3].strip()
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+
+                _json.loads(raw)  # validate JSON
+                revised_content = raw
+
+            except Exception as e:
+                logger.error(f"LLM code-level revision failed: {e}")
+
+        if not revised_content:
+            return JSONResponse({
+                "status": "no_changes",
+                "policy_check": policy_result,
+                "message": "Could not apply the requested change. Try being more specific.",
+            })
+
+        # Save revised template as new version
+        revised_tpl = _json.loads(revised_content)
+        revised_params = revised_tpl.get("parameters", {})
+        param_list = [
+            {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
+            for k, v in revised_params.items()
+        ]
+        revised_resources = [r.get("type", "") for r in revised_tpl.get("resources", []) if isinstance(r, dict)]
+
+        catalog_entry = {
+            "id": template_id,
+            "name": tmpl.get("name", template_id),
+            "description": tmpl.get("description", ""),
+            "format": "arm",
+            "category": tmpl.get("category", "blueprint"),
+            "content": revised_content,
+            "tags": tmpl.get("tags", []),
+            "resources": revised_resources,
+            "parameters": param_list,
+            "outputs": list(revised_tpl.get("outputs", {}).keys()),
+            "is_blueprint": tmpl.get("is_blueprint", False),
+            "service_ids": tmpl.get("service_ids", []),
+            "status": "draft",
+            "registered_by": tmpl.get("registered_by", "template-composer"),
+            "template_type": tmpl.get("template_type", "workload"),
+            "provides": tmpl.get("provides", []),
+            "requires": tmpl.get("requires", []),
+            "optional_refs": tmpl.get("optional_refs", []),
+        }
+
+        try:
+            await upsert_template(catalog_entry)
+            ver = await create_template_version(
+                template_id, revised_content,
+                changelog=f"Revision: {prompt[:100]}",
+                change_type="minor",
+                created_by="revision-orchestrator",
+            )
+        except Exception as e:
+            logger.error(f"Failed to save revised template: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
         return JSONResponse({
-            "status": "no_changes",
+            "status": "revised",
             "policy_check": policy_result,
-            "analysis": feedback_result["analysis"],
-            "actions_taken": feedback_result["actions_taken"],
-            "message": "No new services identified from your request. "
-                       "Try being more specific about what resources you need.",
+            "analysis": feedback_result.get("analysis", "Applied code-level revision."),
+            "actions_taken": [{"action": "code_revision", "detail": prompt[:200]}],
+            "template_id": template_id,
+            "resource_count": len(revised_tpl.get("resources", [])),
+            "parameter_count": len(revised_params),
+            "services": tmpl.get("service_ids", []),
+            "version": ver,
+            "message": f"Template revised (code-level change). Status reset to draft.",
         })
 
     # ── Step 3: Recompose with updated service list ───────────
