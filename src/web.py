@@ -6606,10 +6606,12 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         generate_arm_template_with_copilot,
     )
     from src.tools.static_policy_validator import (
-        validate_template, build_remediation_prompt,
+        validate_template, validate_template_against_standards,
+        build_remediation_prompt,
     )
     from src.standards import (
         get_standards_for_service,
+        get_all_standards,
         build_arm_generation_context,
         build_policy_generation_context,
     )
@@ -7672,7 +7674,11 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             # PHASE 4: HEALING LOOP (validation + auto-healing)
             # ═══════════════════════════════════════════════════
 
+            # Load org_standards as the single source of truth for validation.
+            # Falls back to legacy governance_policies dict if no org_standards exist.
+            org_standards = await get_all_standards(enabled_only=True)
             gov_policies = await get_governance_policies_as_dict()
+            use_standards_driven = len(org_standards) > 0
 
             for attempt in range(1, MAX_HEAL_ATTEMPTS + 1):
                 is_last = attempt == MAX_HEAL_ATTEMPTS
@@ -7714,11 +7720,14 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 # ── 3. Static Policy Check ────────────────────
                 yield json.dumps({
                     "type": "progress", "phase": "static_policy_check", "step": attempt,
-                    "detail": f"Running static policy validation against {len(gov_policies)} organization governance rules…",
+                    "detail": f"Running static policy validation against {len(org_standards) if use_standards_driven else len(gov_policies)} organization governance rules…",
                     "progress": att_base + 0.04,
                 }) + "\n"
 
-                report = validate_template(template_json, gov_policies)
+                if use_standards_driven:
+                    report = validate_template_against_standards(template_json, org_standards)
+                else:
+                    report = validate_template(template_json, gov_policies)
 
                 # Emit individual check results
                 for check in report.results:

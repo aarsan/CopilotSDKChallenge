@@ -247,7 +247,7 @@ function updatePageActions(page) {
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openTemplateOnboarding()">＋ Onboard Template</button>';
             break;
         case 'governance':
-            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button>';
+            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button> <button class="btn btn-sm btn-secondary" onclick="openImportStandardsModal()">📥 Import Standards</button>';
             break;
         case 'activity':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadDeploymentHistory(); loadActivity(true)" title="Refresh">⟳ Refresh</button>';
@@ -4882,6 +4882,167 @@ async function deleteStandard(standardId) {
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+
+// ── Standards Import ─────────────────────────────────────────
+
+let _importedStandards = [];
+
+function openImportStandardsModal() {
+    _importedStandards = [];
+    document.getElementById('import-standards-content').value = '';
+    document.getElementById('import-standards-preview').classList.add('hidden');
+    document.getElementById('import-standards-list').innerHTML = '';
+    document.getElementById('btn-extract-standards').classList.remove('hidden');
+    document.getElementById('btn-save-imported-standards').classList.add('hidden');
+    document.getElementById('btn-extract-standards').disabled = false;
+    document.getElementById('btn-extract-standards').textContent = '🤖 Extract Standards';
+    openModal('modal-import-standards');
+}
+
+async function extractStandards() {
+    const content = document.getElementById('import-standards-content').value.trim();
+    if (!content) {
+        showToast('Please paste your standards documentation first', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btn-extract-standards');
+    btn.disabled = true;
+    btn.textContent = '🔄 Extracting…';
+
+    try {
+        const res = await fetch('/api/standards/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, source_type: 'text', save: false }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Import failed');
+        }
+
+        const data = await res.json();
+        _importedStandards = data.standards || [];
+
+        if (_importedStandards.length === 0) {
+            showToast('No standards could be extracted from the document', 'error');
+            btn.disabled = false;
+            btn.textContent = '🤖 Extract Standards';
+            return;
+        }
+
+        // Render preview
+        _renderImportPreview(_importedStandards);
+        document.getElementById('import-standards-preview').classList.remove('hidden');
+        btn.classList.add('hidden');
+        document.getElementById('btn-save-imported-standards').classList.remove('hidden');
+        showToast(`Extracted ${_importedStandards.length} standard(s) — review and save`, 'success');
+    } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = '🤖 Extract Standards';
+    }
+}
+
+function _renderImportPreview(standards) {
+    const container = document.getElementById('import-standards-list');
+    const severityIcons = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+
+    container.innerHTML = standards.map((std, i) => {
+        const icon = severityIcons[std.severity] || '⚪';
+        const ruleType = std.rule?.type || 'property';
+        const ruleDesc = _describeRule(std.rule);
+        return `
+        <div class="import-std-card" style="padding: 0.75rem; margin-bottom: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                <strong style="font-size: 0.9rem;">${icon} ${escapeHtml(std.name)}</strong>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <span class="badge badge-${std.severity}" style="font-size: 0.7rem;">${std.severity}</span>
+                    <span class="badge" style="font-size: 0.7rem; background: var(--bg-hover);">${escapeHtml(std.category)}</span>
+                    <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
+                        <input type="checkbox" checked onchange="_toggleImportStd(${i}, this.checked)" /> Include
+                    </label>
+                </div>
+            </div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.25rem;">${escapeHtml(std.description || '')}</div>
+            <div style="font-size: 0.75rem; color: var(--text-tertiary);">
+                <span title="Rule type">📏 ${ruleType}</span> · <span title="Scope">🎯 ${escapeHtml(std.scope || '*')}</span> · <span title="ID">🏷️ ${escapeHtml(std.id)}</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 0.25rem;">${ruleDesc}</div>
+        </div>`;
+    }).join('');
+}
+
+function _describeRule(rule) {
+    if (!rule) return '';
+    switch (rule.type) {
+        case 'property':
+            return `Check: <code>${escapeHtml(rule.key || '?')}</code> ${escapeHtml(rule.operator || '==')} <code>${escapeHtml(String(rule.value ?? '?'))}</code>`;
+        case 'tags':
+            return `Required tags: <code>${(rule.required_tags || []).join(', ')}</code>`;
+        case 'allowed_values':
+            return `<code>${escapeHtml(rule.key || '?')}</code> must be one of: <code>${(rule.values || []).join(', ')}</code>`;
+        case 'cost_threshold':
+            return `Max monthly cost: $${rule.max_monthly_usd || 0}`;
+        default:
+            return JSON.stringify(rule).substring(0, 120);
+    }
+}
+
+function _toggleImportStd(index, checked) {
+    if (_importedStandards[index]) {
+        _importedStandards[index]._include = checked;
+    }
+}
+
+async function saveImportedStandards() {
+    const toSave = _importedStandards.filter((s, i) => s._include !== false);
+    if (toSave.length === 0) {
+        showToast('No standards selected to save', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btn-save-imported-standards');
+    btn.disabled = true;
+    btn.textContent = '💾 Saving…';
+
+    let saved = 0, failed = 0;
+    for (const std of toSave) {
+        try {
+            const body = {
+                id: std.id,
+                name: std.name,
+                description: std.description || '',
+                category: std.category,
+                severity: std.severity,
+                scope: std.scope || '*',
+                rule: std.rule || {},
+                enabled: true,
+                created_by: 'standards-import',
+            };
+            const res = await fetch('/api/standards', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (res.ok) saved++;
+            else failed++;
+        } catch {
+            failed++;
+        }
+    }
+
+    if (failed > 0) {
+        showToast(`Saved ${saved} standard(s), ${failed} failed (may already exist)`, 'warning');
+    } else {
+        showToast(`✅ Saved ${saved} standard(s) to your organization's governance catalog`, 'success');
+    }
+
+    closeModal('modal-import-standards');
+    await loadStandards();
 }
 
 

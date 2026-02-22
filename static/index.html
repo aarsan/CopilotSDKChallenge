@@ -869,7 +869,41 @@
         <div class="detail-drawer-body" id="detail-standard-body"></div>
     </div>
 
-    <script src="/static/app.js?v=56"></script>
+    <!-- ── Import Standards Modal ────────────────────────── -->
+    <div id="modal-import-standards" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-import-standards')">
+        <div class="modal-dialog modal-lg" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3>📥 Import Organization Standards</h3>
+                <button class="modal-close" onclick="closeModal('modal-import-standards')">×</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.9rem;">
+                    Paste your organization's security, compliance, or governance standards documentation below.
+                    InfraForge will use AI to extract actionable standards and convert them into enforceable rules.
+                </p>
+                <div class="form-group">
+                    <label>Standards Documentation <span class="required">*</span></label>
+                    <textarea id="import-standards-content" rows="12"
+                        placeholder="Paste your organization's standards documentation here...&#10;&#10;Examples:&#10;• All storage accounts must use TLS 1.2 or higher&#10;• Resources must be tagged with: environment, owner, costCenter, project&#10;• Only eastus and westus2 regions are approved for production&#10;• Key Vaults must have soft-delete and purge protection enabled&#10;• Public network access must be disabled for all data services&#10;• Managed identities must be used instead of service principal secrets"></textarea>
+                </div>
+                <div id="import-standards-preview" class="hidden" style="margin-top: 1rem;">
+                    <h4 style="margin-bottom: 0.5rem;">📋 Extracted Standards Preview</h4>
+                    <div id="import-standards-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modal-import-standards')">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btn-extract-standards" onclick="extractStandards()">
+                    🤖 Extract Standards
+                </button>
+                <button type="button" class="btn btn-primary hidden" id="btn-save-imported-standards" onclick="saveImportedStandards()">
+                    💾 Save All Standards
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=57"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
