@@ -578,11 +578,13 @@ async def analyze_template_feedback(
 
         except asyncio.TimeoutError:
             await _emit("LLM analysis timed out — falling back to heuristic", "warning")
+            logger.warning("analyze_template_feedback LLM timed out after 60s")
         except json.JSONDecodeError as e:
             await _emit(f"LLM returned invalid JSON — falling back to heuristic: {e}", "warning")
             logger.warning(f"LLM feedback response was: {raw[:500]}")
         except Exception as e:
             await _emit(f"LLM analysis failed: {e}", "warning")
+            logger.warning(f"analyze_template_feedback LLM exception: {type(e).__name__}: {e}")
 
     # ── Step 3: Fallback heuristic if LLM unavailable ─────────
     if not analysis_result:
@@ -590,49 +592,72 @@ async def analyze_template_feedback(
         msg_lower = user_message.lower()
         missing = []
 
-        # Simple keyword → resource type mapping
-        keyword_map = {
-            "vm": "Microsoft.Compute/virtualMachines",
-            "virtual machine": "Microsoft.Compute/virtualMachines",
-            "sql": "Microsoft.Sql/servers",
-            "database": "Microsoft.Sql/servers",
-            "key vault": "Microsoft.KeyVault/vaults",
-            "keyvault": "Microsoft.KeyVault/vaults",
-            "storage": "Microsoft.Storage/storageAccounts",
-            "app service": "Microsoft.Web/sites",
-            "web app": "Microsoft.Web/sites",
-            "aks": "Microsoft.ContainerService/managedClusters",
-            "kubernetes": "Microsoft.ContainerService/managedClusters",
-            "container app": "Microsoft.App/containerApps",
-            "redis": "Microsoft.Cache/redis",
-            "cosmos": "Microsoft.DocumentDB/databaseAccounts",
-            "cosmosdb": "Microsoft.DocumentDB/databaseAccounts",
-            "dns": "Microsoft.Network/dnsZones",
-            "front door": "Microsoft.Cdn/profiles",
-            "cdn": "Microsoft.Cdn/profiles",
-            "vnet": "Microsoft.Network/virtualNetworks",
-            "virtual network": "Microsoft.Network/virtualNetworks",
-            "nsg": "Microsoft.Network/networkSecurityGroups",
-            "load balancer": "Microsoft.Network/loadBalancers",
-            "application gateway": "Microsoft.Network/applicationGateways",
-            "container registry": "Microsoft.ContainerRegistry/registries",
-            "acr": "Microsoft.ContainerRegistry/registries",
-            "monitor": "Microsoft.Insights/components",
-            "application insights": "Microsoft.Insights/components",
-            "log analytics": "Microsoft.OperationalInsights/workspaces",
-            "postgresql": "Microsoft.DBforPostgreSQL/flexibleServers",
-            "postgres": "Microsoft.DBforPostgreSQL/flexibleServers",
-        }
+        # ── First: detect modification-style requests ─────────
+        # Words that signal the user wants to CHANGE existing resources,
+        # not add new ones.
+        modify_signals = [
+            "reduce", "remove", "delete", "change", "modify", "update",
+            "rename", "fix", "replace", "should be", "instead of",
+            "too many", "only need", "don't need", "do not need",
+            "shouldn't", "should not", "wrong", "incorrect",
+            "provisioning 2", "provisioning two", "has 2", "has two",
+            "2 vnet", "two vnet", "1 vnet", "one vnet",
+            "duplicate", "extra", "unwanted", "unnecessary",
+        ]
+        is_modification = any(sig in msg_lower for sig in modify_signals)
 
-        for keyword, rtype in keyword_map.items():
-            if keyword in msg_lower and rtype not in current_services and rtype not in missing:
-                missing.append(rtype)
+        if is_modification:
+            analysis_result = {
+                "analysis": f"Your request appears to modify existing resources in the template.",
+                "missing_resource_types": [],
+                "explanation_per_type": {},
+                "needs_code_edit": True,
+                "edit_instruction": user_message,
+            }
+        else:
+            # Simple keyword → resource type mapping
+            keyword_map = {
+                "vm": "Microsoft.Compute/virtualMachines",
+                "virtual machine": "Microsoft.Compute/virtualMachines",
+                "sql": "Microsoft.Sql/servers",
+                "database": "Microsoft.Sql/servers",
+                "key vault": "Microsoft.KeyVault/vaults",
+                "keyvault": "Microsoft.KeyVault/vaults",
+                "storage": "Microsoft.Storage/storageAccounts",
+                "app service": "Microsoft.Web/sites",
+                "web app": "Microsoft.Web/sites",
+                "aks": "Microsoft.ContainerService/managedClusters",
+                "kubernetes": "Microsoft.ContainerService/managedClusters",
+                "container app": "Microsoft.App/containerApps",
+                "redis": "Microsoft.Cache/redis",
+                "cosmos": "Microsoft.DocumentDB/databaseAccounts",
+                "cosmosdb": "Microsoft.DocumentDB/databaseAccounts",
+                "dns": "Microsoft.Network/dnsZones",
+                "front door": "Microsoft.Cdn/profiles",
+                "cdn": "Microsoft.Cdn/profiles",
+                "vnet": "Microsoft.Network/virtualNetworks",
+                "virtual network": "Microsoft.Network/virtualNetworks",
+                "nsg": "Microsoft.Network/networkSecurityGroups",
+                "load balancer": "Microsoft.Network/loadBalancers",
+                "application gateway": "Microsoft.Network/applicationGateways",
+                "container registry": "Microsoft.ContainerRegistry/registries",
+                "acr": "Microsoft.ContainerRegistry/registries",
+                "monitor": "Microsoft.Insights/components",
+                "application insights": "Microsoft.Insights/components",
+                "log analytics": "Microsoft.OperationalInsights/workspaces",
+                "postgresql": "Microsoft.DBforPostgreSQL/flexibleServers",
+                "postgres": "Microsoft.DBforPostgreSQL/flexibleServers",
+            }
 
-        analysis_result = {
-            "analysis": f"Based on keyword analysis of your feedback, identified {len(missing)} resource types that may be missing from the template.",
-            "missing_resource_types": missing,
-            "explanation_per_type": {rt: f"Detected '{rt.split('/')[-1]}' keyword in feedback" for rt in missing},
-        }
+            for keyword, rtype in keyword_map.items():
+                if keyword in msg_lower and rtype not in current_services and rtype not in missing:
+                    missing.append(rtype)
+
+            analysis_result = {
+                "analysis": f"Based on keyword analysis of your feedback, identified {len(missing)} resource types that may be missing from the template.",
+                "missing_resource_types": missing,
+                "explanation_per_type": {rt: f"Detected '{rt.split('/')[-1]}' keyword in feedback" for rt in missing},
+            }
 
     # ── Step 4: Act on each missing resource type ─────────────
     missing_types = analysis_result.get("missing_resource_types", [])
