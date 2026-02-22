@@ -2220,7 +2220,13 @@ function showTemplateDetail(templateId) {
             </button>
         </div>`;
     } else if (status === 'failed') {
-        ctaHtml = `
+        const retrying = window._autoRetryInProgress === tmpl.id;
+        ctaHtml = retrying ? `
+        <div class="detail-section tmpl-test-cta">
+            <div class="tmpl-test-banner tmpl-test-pending">
+                🔧 <strong>Auto-healing in progress…</strong> InfraForge is fixing and re-testing the template automatically.
+            </div>
+        </div>` : `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
                 ❌ Auto-heal couldn't fully resolve the issues — expand the latest version below to see what failed.
@@ -2437,6 +2443,16 @@ function showTemplateDetail(templateId) {
 
     // Load version history asynchronously
     _loadTemplateVersionHistory(templateId);
+
+    // Auto-retry validation for failed templates
+    if (status === 'failed' && !window._autoRetryInProgress) {
+        window._autoRetryInProgress = templateId;
+        setTimeout(() => {
+            runFullValidation(templateId).finally(() => {
+                window._autoRetryInProgress = null;
+            });
+        }, 500);
+    }
 }
 
 /** Infer human-readable change type from version metadata */
