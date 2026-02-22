@@ -1574,9 +1574,9 @@ async def get_latest_semver(template_id: str) -> Optional[str]:
     """Get the latest semver for a template from its version history."""
     backend = await get_backend()
     rows = await backend.execute(
-        """SELECT semver FROM template_versions
+        """SELECT TOP 1 semver FROM template_versions
            WHERE template_id = ? AND semver IS NOT NULL
-           ORDER BY version DESC LIMIT 1""",
+           ORDER BY version DESC""",
         (template_id,),
     )
     if rows and rows[0]["semver"]:
