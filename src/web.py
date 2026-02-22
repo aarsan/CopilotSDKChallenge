@@ -2863,12 +2863,15 @@ async def get_template_composition(template_id: str):
     """
     from src.database import (
         get_template_by_id, get_service, get_active_service_version,
-        get_service_versions,
+        get_service_versions, get_latest_semver,
     )
 
     tmpl = await get_template_by_id(template_id)
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    # Get proper semver for the template
+    template_semver = await get_latest_semver(template_id)
 
     service_ids = tmpl.get("service_ids", [])
     components = []
@@ -2888,25 +2891,37 @@ async def get_template_composition(template_id: str):
             continue
 
         active = await get_active_service_version(sid)
-        active_ver = active.get("version") if active else None
+        active_semver = active.get("semver") if active else None
+        active_int = active.get("version") if active else None
 
         # Get all versions to find the latest
         all_versions = await get_service_versions(sid)
-        latest_ver = all_versions[0]["version"] if all_versions else active_ver
+        latest_semver = all_versions[0].get("semver") if all_versions else active_semver
+        latest_int = all_versions[0].get("version") if all_versions else active_int
+
+        # Use semver if available, fall back to integer version
+        current_display = active_semver or (f"v{active_int}" if active_int else None)
+        latest_display = latest_semver or (f"v{latest_int}" if latest_int else None)
+
+        # Upgrade check: prefer integer comparison for reliability
+        upgrade_available = (
+            latest_int is not None and active_int is not None and latest_int > active_int
+        )
 
         components.append({
             "service_id": sid,
             "name": svc.get("name", sid.split("/")[-1]),
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
-            "current_version": active_ver,
-            "latest_version": latest_ver,
-            "upgrade_available": latest_ver is not None and active_ver is not None and latest_ver > active_ver,
+            "current_version": current_display,
+            "latest_version": latest_display,
+            "upgrade_available": upgrade_available,
         })
 
     return JSONResponse({
         "template_id": template_id,
         "template_version": tmpl.get("active_version"),
+        "template_semver": template_semver,
         "template_status": tmpl.get("status", "draft"),
         "components": components,
     })

@@ -2453,7 +2453,7 @@ function showTemplateDetail(templateId) {
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
 
-    // Load composition info and version history
+    // Load composition info (also updates template version display with semver)
     _loadTemplateComposition(templateId);
     _loadTemplateVersionHistory(templateId);
 
@@ -2529,9 +2529,9 @@ async function _loadTemplateComposition(templateId) {
 
         container.innerHTML = components.map(c => {
             const shortName = c.name || c.service_id.split('/').pop();
-            const verDisplay = c.current_version ? `v${c.current_version}` : '—';
+            const verDisplay = c.current_version || '—';
             const upgradeHtml = c.upgrade_available
-                ? `<span class="comp-upgrade-badge" title="v${c.latest_version} available">⬆ v${c.latest_version}</span>`
+                ? `<span class="comp-upgrade-badge" title="${c.latest_version} available">⬆ ${c.latest_version}</span>`
                 : '';
             const statusClass = c.status === 'approved' ? 'comp-dep-ok' : 'comp-dep-warn';
 
@@ -2541,6 +2541,14 @@ async function _loadTemplateComposition(templateId) {
                     <div class="comp-dep-ver">${verDisplay} ${upgradeHtml}</div>
                 </div>`;
         }).join('');
+        // Update the template version display with semver from the API
+        const semver = data.template_semver;
+        if (semver) {
+            const verNumEl = document.querySelector('.comp-ver-num');
+            if (verNumEl) verNumEl.textContent = semver;
+            const headerBadge = document.querySelector('.tmpl-ver-badge');
+            if (headerBadge) headerBadge.textContent = semver;
+        }
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed: ${err.message}</div>`;
     }
