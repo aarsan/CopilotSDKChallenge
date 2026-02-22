@@ -1301,47 +1301,81 @@ body {
     border: 1px solid var(--border-default);
 }
 
-/* ── Detail Drawer ────────────────────────────────────────── */
+/* ── Detail Panel (full-page overlay) ─────────────────────── */
 
-.detail-drawer {
+.detail-panel-overlay {
     position: fixed;
-    top: 0;
-    right: 0;
-    width: 720px;
-    height: 100vh;
-    background: var(--bg-secondary);
-    border-left: 1px solid var(--border-default);
-    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    inset: 0;
     z-index: 500;
+    background: var(--bg-primary);
     display: flex;
     flex-direction: column;
-    animation: drawerSlideIn 0.2s ease;
+    animation: panelFadeIn 0.2s ease;
 }
 
-@keyframes drawerSlideIn {
-    from { transform: translateX(100%); }
-    to   { transform: translateX(0); }
+@keyframes panelFadeIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
-.detail-drawer-header {
+.detail-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.detail-panel-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 1rem 1.25rem;
+    gap: 1rem;
+    padding: 0.75rem 2rem;
     border-bottom: 1px solid var(--border-default);
     flex-shrink: 0;
+    background: var(--bg-secondary);
 }
 
-.detail-drawer-header h3 {
-    font-size: 1rem;
+.detail-panel-header h3 {
+    font-size: 1.1rem;
     font-weight: 600;
+    margin: 0;
+    color: var(--text-primary);
 }
 
-.detail-drawer-body {
+.detail-back-btn {
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.detail-back-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
+}
+
+.detail-panel-body {
     flex: 1;
     overflow-y: auto;
-    padding: 1.25rem;
+    padding: 1.5rem 2rem 3rem;
 }
+
+/* Two-column layout inside the panel body */
+.detail-layout {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 2rem;
+    align-items: start;
+}
+.detail-main { min-width: 0; }
+.detail-sidebar { min-width: 0; }
 
 .detail-meta {
     display: flex;
@@ -2552,8 +2586,14 @@ body {
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .detail-drawer {
-        width: 100%;
+    .detail-panel-overlay {
+        /* Already full-screen, nothing to change */
+    }
+    .detail-layout {
+        grid-template-columns: 1fr;
+    }
+    .detail-panel-body {
+        padding: 1rem;
     }
 }
 
@@ -5317,6 +5357,239 @@ body {
     background: var(--accent-bg);
     color: var(--accent);
     font-weight: 600;
+}
+
+/* Make version items clickable */
+.tmpl-ver-item {
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+.tmpl-ver-item:hover {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.04);
+}
+.tmpl-ver-item.ver-expanded {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.06);
+}
+.tmpl-ver-expand-icon {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+}
+.tmpl-ver-item.ver-expanded .tmpl-ver-expand-icon {
+    transform: rotate(90deg);
+}
+.ver-pipeline-container {
+    margin-top: 0.5rem;
+}
+
+/* ── Version Pipeline Flow ────────────────────────────────── */
+
+.ver-pipeline {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.ver-pipeline-stages {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+}
+
+.ver-pipeline-stage {
+    display: flex;
+    align-items: flex-start;
+    flex-shrink: 0;
+}
+
+.ver-stage-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 110px;
+    text-align: center;
+}
+
+.ver-stage-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    border: 2px solid var(--border-default);
+    background: var(--bg-secondary);
+    position: relative;
+    z-index: 1;
+    transition: all 0.2s;
+}
+
+/* Stage status colors */
+.ver-stage-icon.stage-passed {
+    border-color: #16a34a;
+    background: rgba(34, 197, 94, 0.12);
+    color: #16a34a;
+}
+.ver-stage-icon.stage-active {
+    border-color: #3b82f6;
+    background: rgba(59, 130, 246, 0.12);
+    color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+.ver-stage-icon.stage-failed {
+    border-color: #dc2626;
+    background: rgba(239, 68, 68, 0.12);
+    color: #dc2626;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+}
+.ver-stage-icon.stage-skipped {
+    border-color: var(--border-subtle);
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.ver-stage-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-top: 0.4rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.ver-stage-time {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+}
+
+/* Connector line between stages */
+.ver-stage-connector {
+    display: flex;
+    align-items: center;
+    height: 40px;
+    padding: 0 0.15rem;
+}
+.ver-stage-connector .connector-line {
+    width: 32px;
+    height: 2px;
+    background: var(--border-default);
+    position: relative;
+}
+.ver-stage-connector .connector-line.connector-passed {
+    background: #16a34a;
+}
+.ver-stage-connector .connector-line.connector-failed {
+    background: #dc2626;
+}
+
+/* Pipeline detail card — expands below a failed/active stage */
+.ver-pipeline-detail {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+.ver-pipeline-detail.detail-failed {
+    background: rgba(239, 68, 68, 0.06);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    color: var(--text-primary);
+}
+.ver-pipeline-detail.detail-success {
+    background: rgba(34, 197, 94, 0.06);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    color: var(--text-primary);
+}
+.ver-pipeline-detail.detail-info {
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: var(--text-primary);
+}
+.ver-detail-title {
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+    font-size: 0.82rem;
+}
+.ver-detail-items {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.ver-detail-items .ver-detail-item,
+.ver-detail-items li {
+    padding: 0.25rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+}
+.ver-detail-items .ver-detail-item:last-child,
+.ver-detail-items li:last-child { border-bottom: none; }
+.ver-detail-items .test-icon { flex-shrink: 0; }
+.ver-detail-items .test-name { font-weight: 500; min-width: 120px; }
+.ver-detail-items .test-msg,
+.ver-detail-msg {
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    word-break: break-word;
+    display: block;
+    margin-top: 0.1rem;
+}
+.ver-detail-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-bottom: 0.3rem;
+}
+.ver-heal-history {
+    margin-top: 0.4rem;
+}
+.ver-heal-title {
+    font-weight: 600;
+    font-size: 0.78rem;
+    margin-bottom: 0.3rem;
+}
+.ver-heal-phase {
+    font-size: 0.68rem;
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--accent-blue);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    margin-left: 0.4rem;
+}
+.ver-heal-step-num {
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+
+/* Heal history steps */
+.ver-heal-step {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.ver-heal-step:last-child { border-bottom: none; }
+.ver-heal-step-header {
+    font-weight: 600;
+    font-size: 0.75rem;
+    margin-bottom: 0.2rem;
+}
+.ver-heal-error {
+    font-size: 0.72rem;
+    color: #dc2626;
+    margin-bottom: 0.15rem;
+    word-break: break-word;
+}
+.ver-heal-fix {
+    font-size: 0.72rem;
+    color: #16a34a;
+    word-break: break-word;
 }
 
 /* Template test CTA banner */
