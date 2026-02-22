@@ -6059,15 +6059,198 @@ details[open] > .tmpl-deploy-group-optional {
     margin-top: 0.4rem;
 }
 
-/* ── Deploy self-healing iteration log ─────────────────────── */
-.deploy-iteration-log {
+/* ── Validation Flowchart ──────────────────────────────────── */
+
+.vf-flowchart {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    margin-bottom: 0.5rem;
+    gap: 0.75rem;
 }
 
-.deploy-log-entry {
+/* ── Stage bar (horizontal pipeline header) ── */
+.vf-stage-bar {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+}
+
+.vf-stage {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    transition: color 0.2s;
+}
+
+.vf-stage-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--border-default);
+    border: 2px solid var(--border-default);
+    transition: all 0.3s;
+}
+
+.vf-stage-active .vf-stage-dot {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+    animation: vfPulse 1.5s infinite;
+}
+.vf-stage-active { color: var(--accent-blue); }
+
+.vf-stage-done .vf-stage-dot {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+}
+.vf-stage-done { color: var(--accent-green); }
+
+.vf-stage-error .vf-stage-dot {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+    box-shadow: 0 0 6px rgba(220, 38, 38, 0.3);
+}
+.vf-stage-error { color: var(--accent-red); }
+
+@keyframes vfPulse {
+    0%, 100% { box-shadow: 0 0 4px rgba(59, 130, 246, 0.3); }
+    50% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.6); }
+}
+
+.vf-stage-connector-h {
+    flex: 1;
+    height: 2px;
+    background: var(--border-default);
+    margin: 0 0.3rem;
+    min-width: 16px;
+}
+
+/* ── Header info (RG, region tags) ── */
+.vf-header-info {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+}
+
+.vf-tag {
+    font-size: 0.68rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+}
+.vf-tag-blueprint {
+    background: rgba(139, 92, 246, 0.1);
+    color: var(--accent-purple);
+    border-color: rgba(139, 92, 246, 0.2);
+}
+.vf-tag-service {
+    background: rgba(59, 130, 246, 0.08);
+    color: var(--accent-blue);
+    border-color: rgba(59, 130, 246, 0.2);
+}
+
+/* ── Timeline (vertical flow of attempt cards) ── */
+.vf-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-height: 500px;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+/* ── Timeline connector ── */
+.vf-timeline-connector {
+    display: flex;
+    justify-content: center;
+    padding: 0.15rem 0;
+}
+.vf-connector-line {
+    width: 2px;
+    height: 20px;
+    background: var(--border-default);
+    border-radius: 1px;
+}
+
+/* ── Attempt card ── */
+.vf-attempt-card {
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg-primary);
+    transition: border-color 0.2s;
+}
+
+.vf-attempt-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.vf-attempt-num {
+    font-weight: 600;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+}
+
+.vf-attempt-status {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.vf-status-running {
+    color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.1);
+}
+.vf-status-pulse {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    animation: vfPulse 1.5s infinite;
+}
+.vf-status-success {
+    color: var(--accent-green);
+    background: rgba(16, 185, 129, 0.1);
+}
+.vf-status-error {
+    color: var(--accent-red);
+    background: rgba(220, 38, 38, 0.08);
+}
+.vf-status-healed {
+    color: var(--accent-amber);
+    background: rgba(245, 158, 11, 0.1);
+}
+
+/* ── Attempt body & sub-steps ── */
+.vf-attempt-body {
+    padding: 0.5rem 0.75rem;
+}
+
+.vf-attempt-substeps {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.vf-substep {
     display: flex;
     align-items: flex-start;
     gap: 0.4rem;
@@ -6076,162 +6259,371 @@ details[open] > .tmpl-deploy-group-optional {
     border-radius: 6px;
     line-height: 1.4;
 }
+.vf-substep-icon { flex-shrink: 0; width: 1.2em; text-align: center; }
+.vf-substep-text { min-width: 0; word-break: break-word; }
 
-.deploy-log-icon {
-    flex-shrink: 0;
-    width: 1.2em;
-    text-align: center;
-}
-
-.deploy-log-attempt {
-    background: rgba(59, 130, 246, 0.06);
-    border-left: 3px solid var(--accent-blue);
+.vf-substep-deploy {
+    background: rgba(59, 130, 246, 0.05);
     color: var(--text-primary);
 }
-
-.deploy-log-healing {
-    background: rgba(168, 85, 247, 0.06);
-    border-left: 3px solid var(--accent-purple);
+.vf-substep-analyze {
+    background: rgba(139, 92, 246, 0.06);
     color: var(--accent-purple);
 }
-
-.deploy-log-error-detail {
-    background: rgba(220, 38, 38, 0.04);
-    padding-left: 1.6rem;
+.vf-substep-diagnostic {
+    background: rgba(217, 119, 6, 0.05);
+    padding-left: 2rem;
+    font-size: 0.72rem;
 }
-
-.deploy-log-error-detail code {
-    font-size: 0.7rem;
-    color: var(--accent-red);
-    word-break: break-word;
-}
-
-/* Diagnostic entry — amber/neutral, not red (used during validation iterations) */
-.deploy-log-diagnostic {
-    background: rgba(217, 119, 6, 0.06);
-    border-left: 3px solid #d97706;
-    padding-left: 1.6rem;
-}
-
-.deploy-log-diagnostic code {
+.vf-substep-diagnostic code {
     font-size: 0.7rem;
     color: #d97706;
     word-break: break-word;
 }
-
-/* Cleanup phase */
-.deploy-log-cleanup {
-    background: rgba(107, 114, 128, 0.06);
-    border-left: 3px solid var(--text-secondary);
-    color: var(--text-secondary);
-    font-style: italic;
+.vf-substep-error {
+    background: rgba(220, 38, 38, 0.05);
+    border-left: 3px solid var(--accent-red);
 }
-
-.deploy-log-healed {
+.vf-substep-fix {
     background: rgba(16, 185, 129, 0.06);
     border-left: 3px solid var(--accent-green);
     color: var(--accent-green);
 }
+.vf-substep-escalate {
+    background: rgba(245, 158, 11, 0.08);
+    border-left: 3px solid #d97706;
+    color: #d97706;
+    font-weight: 600;
+}
 
-.deploy-log-error {
-    background: rgba(220, 38, 38, 0.06);
-    border-left: 3px solid var(--accent-red);
+/* Error detail within substep */
+.vf-error-detail { min-width: 0; }
+.vf-error-msg {
+    font-size: 0.75rem;
     color: var(--accent-red);
+    word-break: break-word;
+    line-height: 1.4;
+}
+.vf-error-full { margin-top: 0.25rem; }
+.vf-error-full summary {
+    font-size: 0.68rem;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+.vf-error-full code {
+    font-size: 0.65rem;
+    display: block;
+    margin-top: 0.2rem;
+    color: var(--accent-red);
+    word-break: break-all;
+    white-space: pre-wrap;
 }
 
-.deploy-active-progress {
-    margin-top: 0.3rem;
+/* Dedup badges */
+.vf-dup-badge {
+    display: inline-block;
+    font-size: 0.62rem;
+    font-weight: 700;
+    background: rgba(245, 158, 11, 0.15);
+    color: #d97706;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    margin-left: 0.3rem;
+    vertical-align: middle;
 }
 
-/* Heal history accordion */
-.deploy-heal-history {
+.vf-deep-badge {
+    display: inline-block;
+    font-size: 0.62rem;
+    font-weight: 700;
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-purple);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    margin-left: 0.3rem;
+}
+
+/* ── Deep heal sub-flow ── */
+.vf-deep-heal-flow {
+    margin-top: 0.5rem;
+    border: 1px solid rgba(139, 92, 246, 0.25);
+    border-radius: 8px;
+    background: rgba(139, 92, 246, 0.03);
+    overflow: hidden;
+}
+.vf-deep-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(139, 92, 246, 0.08);
+    border-bottom: 1px solid rgba(139, 92, 246, 0.15);
+}
+.vf-deep-icon { font-size: 1rem; }
+.vf-deep-title {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--accent-purple);
+}
+.vf-deep-desc {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+.vf-deep-services {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+}
+.vf-deep-steps {
+    padding: 0.4rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+.vf-deep-step {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.4rem;
+    border-radius: 4px;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.35rem;
+    color: var(--text-secondary);
+}
+.vf-deep-step-icon { flex-shrink: 0; }
+.vf-deep-step-success {
+    color: var(--accent-green);
+    background: rgba(16, 185, 129, 0.06);
+}
+.vf-deep-step-error {
+    color: #d97706;
+    background: rgba(245, 158, 11, 0.06);
+}
+.vf-deep-heal-flow.vf-deep-success {
+    border-color: rgba(16, 185, 129, 0.3);
+}
+.vf-deep-heal-flow.vf-deep-failed {
+    border-color: rgba(220, 38, 38, 0.2);
+}
+
+/* ── Final result card ── */
+.vf-result {
+    border-radius: 10px;
+    padding: 1rem;
+    margin-top: 0.5rem;
+}
+.vf-result-success {
+    background: rgba(16, 185, 129, 0.06);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.vf-result-fail {
+    background: rgba(245, 158, 11, 0.05);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
+.vf-result-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+}
+.vf-result-icon { font-size: 1.1rem; }
+.vf-result-body { font-size: 0.78rem; color: var(--text-secondary); }
+.vf-result-body p { margin: 0 0 0.5rem; }
+.vf-result-section {
+    margin-top: 0.5rem;
+}
+.vf-result-label {
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    margin-bottom: 0.3rem;
+}
+.vf-resource-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.vf-resource-item {
+    display: flex;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    padding: 0.2rem 0;
+}
+.vf-resource-type {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+.vf-resource-name { font-weight: 500; }
+.vf-output-item {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    font-size: 0.75rem;
+    padding: 0.15rem 0;
+}
+.vf-output-key { font-weight: 600; }
+.vf-output-val {
+    font-size: 0.68rem;
+    color: var(--accent);
+    word-break: break-all;
+}
+.vf-result-meta {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+
+/* ── Error details / dedup / heal summary ── */
+.vf-error-details {
     margin: 0.5rem 0;
     font-size: 0.75rem;
 }
-
-.deploy-heal-history summary {
+.vf-error-details summary {
     cursor: pointer;
-    color: var(--accent-purple);
     font-weight: 600;
+    color: var(--text-secondary);
 }
-
-.deploy-heal-entry {
+.vf-error-details code {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.68rem;
+    color: var(--accent-red);
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+.vf-error-dedup {
+    margin: 0.5rem 0;
+    padding: 0.5rem 0.6rem;
+    background: rgba(245, 158, 11, 0.06);
+    border: 1px solid rgba(245, 158, 11, 0.15);
+    border-radius: 8px;
+}
+.vf-dedup-title {
+    font-weight: 700;
+    font-size: 0.75rem;
+    color: #d97706;
+    margin-bottom: 0.3rem;
+}
+.vf-dedup-list {
     display: flex;
     flex-direction: column;
-    gap: 0.1rem;
-    padding: 0.3rem 0;
-    border-bottom: 1px solid var(--border-subtle);
+    gap: 0.15rem;
+}
+.vf-dedup-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     font-size: 0.72rem;
+    padding: 0.15rem 0.3rem;
+    border-radius: 4px;
 }
-
-.deploy-heal-attempt {
+.vf-dedup-repeated {
+    background: rgba(245, 158, 11, 0.08);
+}
+.vf-dedup-code {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
     font-weight: 600;
-    color: var(--text-primary);
+}
+.vf-dedup-count {
+    color: var(--text-muted);
+    font-size: 0.65rem;
+}
+.vf-dedup-flag {
+    font-size: 0.62rem;
+    color: #d97706;
+    font-weight: 700;
 }
 
-.deploy-heal-error {
+.vf-heal-summary {
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+}
+.vf-heal-summary summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent-purple);
+}
+.vf-heal-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+}
+.vf-heal-entry {
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+}
+.vf-heal-num {
+    font-weight: 700;
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    margin-bottom: 0.1rem;
+}
+.vf-heal-error {
+    font-size: 0.7rem;
     color: var(--accent-red);
     word-break: break-word;
 }
-
-.deploy-heal-diag {
-    color: #d97706;
-    word-break: break-word;
-}
-
-.deploy-heal-fix {
+.vf-heal-fix {
+    font-size: 0.7rem;
     color: var(--accent-green);
-    font-style: italic;
+    word-break: break-word;
+    margin-top: 0.1rem;
 }
 
-/* ── Deep healing log entries ── */
-.deploy-log-deep-heal {
-    background: rgba(139, 92, 246, 0.06);
-    border-left: 3px solid var(--accent-purple);
+/* ── Live progress bar ── */
+.vf-live-progress {
+    min-height: 0;
+}
+.vf-progress-bar {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 0.3rem;
+}
+.vf-progress-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+.vf-progress-phase {
+    font-size: 0.75rem;
     color: var(--text-secondary);
 }
-
-.deploy-log-deep-heal .deploy-log-icon {
-    font-size: 0.85rem;
+.vf-resource-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
 }
-
-.deploy-log-deep-identified {
-    color: var(--accent-purple);
-    font-weight: 500;
+.vf-res-chip {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
 }
+.vf-res-succeeded { color: var(--accent-green); border-color: rgba(16, 185, 129, 0.2); }
+.vf-res-running { color: var(--accent-blue); border-color: rgba(59, 130, 246, 0.2); }
 
-.deploy-log-deep-success {
-    background: rgba(16, 185, 129, 0.08);
-    border-left-color: var(--accent-green);
-    color: var(--accent-green);
-    font-weight: 500;
-}
-
-.deploy-log-deep-error {
-    background: rgba(245, 158, 11, 0.06);
-    border-left-color: var(--accent-amber);
-    color: var(--accent-amber);
-}
-
-/* Retry/iteration (amber, not red — used in validation context) */
-.deploy-log-deep-retry {
-    background: rgba(245, 158, 11, 0.04);
-    border-left-color: #d97706;
-    color: #d97706;
-}
-
-.deploy-deep-services {
-    margin-top: 0.25rem;
+/* Cleanup line */
+.vf-cleanup {
     font-size: 0.72rem;
     color: var(--text-muted);
-}
-
-.deploy-deep-services code {
-    background: var(--bg-tertiary);
-    padding: 0.1rem 0.35rem;
-    border-radius: 3px;
-    font-size: 0.68rem;
-    margin: 0 0.15rem;
+    font-style: italic;
+    padding: 0.25rem 0.5rem;
 }
 
 /* ═══════════════════════════════════════════════════════════
