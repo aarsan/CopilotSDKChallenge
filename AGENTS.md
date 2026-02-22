@@ -185,6 +185,34 @@ These are persistent preferences for how the agent should behave in this workspa
 - To stop: `Get-Process -Name python | Stop-Process -Force`
 - Server logs go to `server.log` / `server_err.log` (gitignored).
 
+### Git Workflow
+- **Commit after every logical change.** Do NOT let uncommitted work pile up across sessions.
+- **Use conventional commits** with type prefixes:
+  - `fix:` — Bug fixes (something was broken, now it's not)
+  - `feat:` — New features or enhancements
+  - `refactor:` — Code restructuring with no behavior change
+  - `chore:` — Build, config, dependency, or housekeeping changes
+  - `docs:` — Documentation-only changes
+- **Branch per change.** Create a branch before starting work:
+  - `fix/<short-description>` for bug fixes (e.g., `fix/onboard-button-status`)
+  - `feat/<short-description>` for features (e.g., `feat/goal-driven-resolution`)
+  - `refactor/<short-description>` for refactors
+  - `chore/<short-description>` for housekeeping
+- **Merge to main** after verifying the change works. Use `git merge --no-ff` to preserve
+  branch history, or fast-forward if it's a single commit.
+- **Write descriptive commit messages.** First line is the conventional type + summary
+  (≤72 chars). Body explains *what* and *why*, not *how*. Example:
+  ```
+  fix: distinguish governance approval from onboarding in service detail
+
+  Services that are catalog-approved but haven't been onboarded were
+  showing a green "Approved" badge alongside the "Onboard" button.
+  Added a new display status (approved_not_onboarded) with a blue badge
+  and explicit messaging that the service needs ARM template generation.
+  ```
+- **Never commit secrets, logs, or build artifacts.** Respect `.gitignore`.
+- **Check `git status` before ending a session.** All work must be committed.
+
 ### Code Style
 - Don't create markdown summary files after changes unless explicitly asked.
 - Don't announce tool names (e.g., don't say "I'll use multi_replace_string_in_file").
