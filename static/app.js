@@ -3524,294 +3524,459 @@ function _renderDeployProgress(container, event, ctx) {
     const detail = event.detail || '';
     const progress = event.progress || 0;
 
-    // Clear the initial loading message on first real event
-    const loadingMsg = container.querySelector('.compose-loading');
-    if (loadingMsg) loadingMsg.remove();
+    // ── Initialize flowchart state on first event ──
+    if (!container._vfState) {
+        container.innerHTML = '';
+        container._vfState = {
+            attempts: [],          // { step, status, events[], error, fix, deepHeal? }
+            currentAttempt: null,
+            seenErrors: {},        // error_code → count (dedup tracking)
+            deepHealActive: false,
+            finalResult: null,
+        };
 
-    // Ensure we have a log container for iteration events
-    let logDiv = container.querySelector('.deploy-iteration-log');
-    if (!logDiv) {
-        logDiv = document.createElement('div');
-        logDiv.className = 'deploy-iteration-log';
-        container.prepend(logDiv);
+        // Create the flowchart container structure
+        const flowchart = document.createElement('div');
+        flowchart.className = 'vf-flowchart';
+
+        // Header stage bar
+        flowchart.innerHTML = `
+            <div class="vf-stage-bar">
+                <div class="vf-stage vf-stage-active" data-vf-stage="deploy">
+                    <div class="vf-stage-dot"></div>
+                    <span>Deploy</span>
+                </div>
+                <div class="vf-stage-connector-h"></div>
+                <div class="vf-stage" data-vf-stage="analyze">
+                    <div class="vf-stage-dot"></div>
+                    <span>Analyze</span>
+                </div>
+                <div class="vf-stage-connector-h"></div>
+                <div class="vf-stage" data-vf-stage="fix">
+                    <div class="vf-stage-dot"></div>
+                    <span>Fix</span>
+                </div>
+                <div class="vf-stage-connector-h"></div>
+                <div class="vf-stage" data-vf-stage="verify">
+                    <div class="vf-stage-dot"></div>
+                    <span>Verify</span>
+                </div>
+            </div>
+            <div class="vf-timeline"></div>
+            <div class="vf-live-progress"></div>
+        `;
+        container.appendChild(flowchart);
     }
 
-    // ── Final result (success or fail after all attempts) ──
+    const state = container._vfState;
+    const flowchart = container.querySelector('.vf-flowchart');
+    const timeline = flowchart.querySelector('.vf-timeline');
+    const liveProgress = flowchart.querySelector('.vf-live-progress');
+
+    // ── Helper: update the stage bar ──
+    function _setActiveStage(stageName, status) {
+        flowchart.querySelectorAll('.vf-stage').forEach(s => {
+            const sn = s.dataset.vfStage;
+            s.classList.remove('vf-stage-active', 'vf-stage-done', 'vf-stage-error');
+            if (sn === stageName) {
+                s.classList.add(status === 'error' ? 'vf-stage-error' : 'vf-stage-active');
+            }
+        });
+        // Mark all stages before current as done
+        const order = ['deploy', 'analyze', 'fix', 'verify'];
+        const idx = order.indexOf(stageName);
+        if (idx > 0) {
+            for (let i = 0; i < idx; i++) {
+                const prev = flowchart.querySelector(`[data-vf-stage="${order[i]}"]`);
+                if (prev) { prev.classList.remove('vf-stage-active'); prev.classList.add('vf-stage-done'); }
+            }
+        }
+    }
+
+    // ── Helper: classify error for dedup ──
+    function _errorKey(errMsg) {
+        if (!errMsg) return null;
+        // Extract Azure error code pattern
+        const codeMatch = errMsg.match(/\(([A-Za-z]+)\)/);
+        if (codeMatch) return codeMatch[1];
+        // Fallback: first 60 chars normalized
+        return errMsg.substring(0, 60).replace(/[^a-zA-Z]/g, '').toLowerCase();
+    }
+
+    // ── Helper: create an attempt card in the timeline ──
+    function _createAttemptCard(attempt) {
+        const card = document.createElement('div');
+        card.className = 'vf-attempt-card';
+        card.id = `vf-attempt-${attempt.step}`;
+
+        const isFirst = attempt.step === 1;
+        const label = isFirst ? 'Initial Deployment' : `Re-deploy #${attempt.step - 1}`;
+
+        card.innerHTML = `
+            <div class="vf-attempt-header">
+                <div class="vf-attempt-num">${label}</div>
+                <div class="vf-attempt-status vf-status-running">
+                    <span class="vf-status-pulse"></span> Running
+                </div>
+            </div>
+            <div class="vf-attempt-body">
+                <div class="vf-attempt-substeps"></div>
+            </div>
+        `;
+
+        // Add timeline connector if not first
+        if (!isFirst) {
+            const conn = document.createElement('div');
+            conn.className = 'vf-timeline-connector';
+            const connLine = document.createElement('div');
+            connLine.className = 'vf-connector-line';
+            conn.appendChild(connLine);
+            timeline.appendChild(conn);
+        }
+
+        timeline.appendChild(card);
+        return card;
+    }
+
+    // ── Helper: add a sub-step inside an attempt card ──
+    function _addSubStep(card, icon, text, cssClass) {
+        const substeps = card.querySelector('.vf-attempt-substeps');
+        const step = document.createElement('div');
+        step.className = `vf-substep ${cssClass || ''}`;
+        step.innerHTML = `<span class="vf-substep-icon">${icon}</span><span class="vf-substep-text">${text}</span>`;
+        substeps.appendChild(step);
+        return step;
+    }
+
+    // ── Helper: finalize attempt card status ──
+    function _finalizeAttempt(card, status) {
+        const statusEl = card.querySelector('.vf-attempt-status');
+        if (!statusEl) return;
+        statusEl.className = `vf-attempt-status vf-status-${status}`;
+        const labels = { success: '✅ Passed', error: '❌ Failed', healed: '🔧 Fixed' };
+        statusEl.innerHTML = labels[status] || status;
+    }
+
+    // ── PHASE HANDLERS ──
+
+    // Starting
+    if (phase === 'starting') {
+        _setActiveStage('deploy');
+        const rg = event.resource_group || '';
+        const region = event.region || '';
+        const headerInfo = document.createElement('div');
+        headerInfo.className = 'vf-header-info';
+        headerInfo.innerHTML = `
+            <div class="vf-target-info">
+                ${rg ? `<span class="vf-tag">RG: ${escapeHtml(rg)}</span>` : ''}
+                ${region ? `<span class="vf-tag">Region: ${escapeHtml(region)}</span>` : ''}
+                ${event.is_blueprint ? '<span class="vf-tag vf-tag-blueprint">Blueprint</span>' : ''}
+            </div>
+        `;
+        timeline.before(headerInfo);
+        return;
+    }
+
+    // New attempt step
+    if (phase === 'step' || phase === 'attempt_start') {
+        const step = event.step || (state.attempts.length + 1);
+        const attempt = { step, status: 'running', events: [], error: null, fix: null };
+        state.attempts.push(attempt);
+        state.currentAttempt = attempt;
+        _setActiveStage('deploy');
+        const card = _createAttemptCard(attempt);
+        _addSubStep(card, '🚀', escapeHtml(detail || 'Deploying to Azure…'), 'vf-substep-deploy');
+        // Scroll to bottom
+        timeline.scrollTop = timeline.scrollHeight;
+        return;
+    }
+
+    // Error event
+    if (phase === 'error') {
+        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
+        if (!card) return;
+
+        _setActiveStage('analyze', 'error');
+
+        const errMsg = event.error || detail || '';
+        const errKey = _errorKey(errMsg);
+
+        // Track dedup
+        if (errKey) {
+            state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
+        }
+
+        if (state.currentAttempt) state.currentAttempt.error = errMsg;
+
+        // Show error in the card
+        const dupCount = errKey ? state.seenErrors[errKey] : 0;
+        const dupBadge = dupCount > 1 ? `<span class="vf-dup-badge" title="This error has occurred ${dupCount} times">×${dupCount}</span>` : '';
+
+        const errStep = _addSubStep(card, '❌', '', 'vf-substep-error');
+        errStep.innerHTML = `
+            <span class="vf-substep-icon">❌</span>
+            <div class="vf-error-detail">
+                <div class="vf-error-msg">${escapeHtml(errMsg.substring(0, 250))}${errMsg.length > 250 ? '…' : ''} ${dupBadge}</div>
+                ${errMsg.length > 250 ? `<details class="vf-error-full"><summary>Full error</summary><code>${escapeHtml(errMsg)}</code></details>` : ''}
+            </div>
+        `;
+        return;
+    }
+
+    // Healing (LLM analyzing)
+    if (phase === 'healing') {
+        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
+        if (!card) return;
+
+        _setActiveStage('analyze');
+        _finalizeAttempt(card, 'error');
+
+        const isRepeated = event.repeated_error;
+        const healMsg = isRepeated
+            ? `⚠️ Same error class '${escapeHtml(event.error_code || '')}' recurring — escalating strategy…`
+            : (isValidate ? 'Analyzing Azure feedback…' : (detail || 'Analyzing error…'));
+        _addSubStep(card, '🧠', healMsg, isRepeated ? 'vf-substep-analyze vf-substep-escalate' : 'vf-substep-analyze');
+
+        if (event.error_summary) {
+            const errKey = _errorKey(event.error_summary);
+            if (errKey) {
+                state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
+            }
+            if (state.currentAttempt) state.currentAttempt.error = event.error_summary;
+
+            const dupCount = errKey ? state.seenErrors[errKey] : 0;
+            const dupBadge = dupCount > 1 ? `<span class="vf-dup-badge" title="Seen ${dupCount} times">×${dupCount} same class</span>` : '';
+            _addSubStep(card, '📋', `<code>${escapeHtml(event.error_summary.substring(0, 200))}</code> ${dupBadge}`, 'vf-substep-diagnostic');
+        }
+        return;
+    }
+
+    // Healed (fix applied)
+    if (phase === 'healed') {
+        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
+        if (!card) return;
+
+        _setActiveStage('fix');
+
+        const fixMsg = event.fix_summary || detail || 'Fix applied';
+        if (state.currentAttempt) state.currentAttempt.fix = fixMsg;
+
+        const deepFlag = event.deep_healed ? '<span class="vf-deep-badge">Deep Fix</span>' : '';
+        _addSubStep(card, '🔧', `${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-substep-fix');
+        _finalizeAttempt(card, 'healed');
+
+        timeline.scrollTop = timeline.scrollHeight;
+        return;
+    }
+
+    // ── Deep healing events — render as a sub-flow inside the current attempt ──
+    if (phase.startsWith('deep_heal_')) {
+        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
+        if (!card) return;
+
+        if (phase === 'deep_heal_trigger') {
+            state.deepHealActive = true;
+            _setActiveStage('analyze');
+
+            // Create a deep heal sub-flow card
+            const dhContainer = document.createElement('div');
+            dhContainer.className = 'vf-deep-heal-flow';
+            dhContainer.id = 'vf-deep-heal-active';
+            dhContainer.innerHTML = `
+                <div class="vf-deep-header">
+                    <span class="vf-deep-icon">🔬</span>
+                    <span class="vf-deep-title">Deep Analysis</span>
+                    <span class="vf-deep-desc">Examining underlying service templates</span>
+                </div>
+                ${event.service_ids?.length ? `
+                <div class="vf-deep-services">
+                    ${event.service_ids.map(s => `<span class="vf-tag vf-tag-service">${escapeHtml(s.split('/').pop())}</span>`).join('')}
+                </div>` : ''}
+                <div class="vf-deep-steps"></div>
+            `;
+            card.querySelector('.vf-attempt-body').appendChild(dhContainer);
+            return;
+        }
+
+        const dhFlow = document.getElementById('vf-deep-heal-active');
+        const dhSteps = dhFlow?.querySelector('.vf-deep-steps');
+        if (!dhSteps) return;
+
+        const deepIcons = {
+            deep_heal_start: '🔍', deep_heal_identified: '🎯',
+            deep_heal_fix: '🛠️', deep_heal_fix_error: '⚠️',
+            deep_heal_validate: '🧪', deep_heal_validate_fail: '🔄',
+            deep_heal_validated: '✅', deep_heal_version: '💾',
+            deep_heal_versioned: '📦', deep_heal_promoted: '🏷️',
+            deep_heal_recompose: '🔧', deep_heal_complete: '🎉',
+            deep_heal_fail: '❌', deep_heal_fallback: '↩️',
+        };
+        const icon = deepIcons[phase] || '•';
+        const isSuccess = phase === 'deep_heal_complete' || phase === 'deep_heal_validated';
+        const isFail = phase === 'deep_heal_fail' || phase === 'deep_heal_fix_error' || phase === 'deep_heal_validate_fail';
+        const cssClass = isSuccess ? 'vf-deep-step-success' : (isFail ? 'vf-deep-step-error' : '');
+
+        const step = document.createElement('div');
+        step.className = `vf-deep-step ${cssClass}`;
+        step.innerHTML = `<span class="vf-deep-step-icon">${icon}</span> ${escapeHtml(detail)}`;
+        dhSteps.appendChild(step);
+
+        if (phase === 'deep_heal_complete') {
+            dhFlow.classList.add('vf-deep-success');
+            state.deepHealActive = false;
+        } else if (phase === 'deep_heal_fail') {
+            dhFlow.classList.add('vf-deep-failed');
+            state.deepHealActive = false;
+        }
+
+        timeline.scrollTop = timeline.scrollHeight;
+        return;
+    }
+
+    // ── Final result (success or failure) ──
     if (phase === 'complete' || phase === 'done') {
         const resources = event.provisioned_resources || [];
         const outputs = event.outputs || {};
         const healHistory = event.heal_history || [];
         const issuesResolved = event.issues_resolved || 0;
 
-        // Remove the progress bar if present
-        const bar = container.querySelector('.deploy-active-progress');
-        if (bar) bar.remove();
+        // Remove live progress
+        liveProgress.innerHTML = '';
 
-        // Build final result card — framing depends on context
+        // Update stage bar — all stages done or final state
+        if (event.status === 'succeeded') {
+            _setActiveStage('verify');
+            flowchart.querySelectorAll('.vf-stage').forEach(s => {
+                s.classList.remove('vf-stage-active', 'vf-stage-error');
+                s.classList.add('vf-stage-done');
+            });
+        } else {
+            _setActiveStage('verify', 'error');
+        }
+
+        // Finalize last attempt card
+        const lastCard = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
+        if (lastCard) {
+            _finalizeAttempt(lastCard, event.status === 'succeeded' ? 'success' : 'error');
+        }
+
+        // Build final result card
         const resultDiv = document.createElement('div');
         if (event.status === 'succeeded') {
-            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''}` : '';
-            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
+            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} via self-healing` : '';
+            resultDiv.className = 'vf-result vf-result-success';
             resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">
-                    ${isValidate
-                        ? `✅ Template Verified${healMsg}`
-                        : `✅ Deployment Succeeded`}
+                <div class="vf-result-header">
+                    <span class="vf-result-icon">✅</span>
+                    <span>${isValidate ? `Template Verified${healMsg}` : 'Deployment Succeeded'}</span>
                 </div>
                 ${resources.length ? `
-                <div class="tmpl-deploy-resources">
-                    <h5>Provisioned Resources (${resources.length})</h5>
-                    ${resources.map(r => `
-                        <div class="tmpl-deploy-resource">
-                            <span class="tmpl-deploy-res-type">${escapeHtml(r.type)}</span>
-                            <span class="tmpl-deploy-res-name">${escapeHtml(r.name)}</span>
-                        </div>
-                    `).join('')}
-                </div>` : ''}
-                ${Object.keys(outputs).length ? `
-                <div class="tmpl-deploy-outputs">
-                    <h5>Outputs</h5>
-                    ${Object.entries(outputs).map(([k, v]) => `
-                        <div class="tmpl-deploy-output">
-                            <span class="tmpl-deploy-out-key">${escapeHtml(k)}</span>
-                            <code class="tmpl-deploy-out-val">${escapeHtml(String(v))}</code>
-                        </div>
-                    `).join('')}
-                </div>` : ''}
-                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment ID: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
-            `;
-        } else {
-            // Failed — use amber "needs attention" framing, not red alarm
-            if (isValidate) {
-                resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
-                resultDiv.innerHTML = `
-                    <div class="tmpl-deploy-header">
-                        🔧 Template Needs More Work
-                    </div>
-                    <div class="tmpl-deploy-diag-msg">The AI-powered analysis couldn't resolve all issues. Review the diagnostics below and iterate further.</div>
-                    ${event.error ? `
-                    <details class="deploy-diag-details">
-                        <summary>📋 Last diagnostic</summary>
-                        <div class="deploy-diag-content">${escapeHtml(event.error)}</div>
-                    </details>` : ''}
-                    ${healHistory.length ? `
-                    <details class="deploy-heal-history">
-                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} attempted</summary>
-                        ${healHistory.map(h => `
-                            <div class="deploy-heal-entry">
-                                <span class="deploy-heal-attempt">Step ${h.step || '?'}:</span>
-                                <span class="deploy-heal-diag">${escapeHtml(h.error)}</span>
-                                <span class="deploy-heal-fix">→ ${escapeHtml(h.fix_summary)}</span>
+                <div class="vf-result-section">
+                    <div class="vf-result-label">Resources Provisioned (${resources.length})</div>
+                    <div class="vf-resource-list">
+                        ${resources.map(r => `
+                            <div class="vf-resource-item">
+                                <span class="vf-resource-type">${escapeHtml(r.type)}</span>
+                                <span class="vf-resource-name">${escapeHtml(r.name)}</span>
                             </div>
                         `).join('')}
-                    </details>` : ''}
-                `;
-            } else {
-                // Production deploy — still show clearly but calmly
-                resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
-                resultDiv.innerHTML = `
-                    <div class="tmpl-deploy-header">
-                        ⚠️ Deployment Issue
                     </div>
-                    <div class="tmpl-deploy-diag-msg">The deployment could not be completed. This template may need re-validation.</div>
+                </div>` : ''}
+                ${Object.keys(outputs).length ? `
+                <div class="vf-result-section">
+                    <div class="vf-result-label">Outputs</div>
+                    ${Object.entries(outputs).map(([k, v]) => `
+                        <div class="vf-output-item">
+                            <span class="vf-output-key">${escapeHtml(k)}</span>
+                            <code class="vf-output-val">${escapeHtml(String(v))}</code>
+                        </div>
+                    `).join('')}
+                </div>` : ''}
+                ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+            `;
+        } else {
+            // Build dedup summary of errors seen
+            const uniqueErrors = Object.entries(state.seenErrors);
+            const dedupHtml = uniqueErrors.length > 1 ? `
+                <div class="vf-error-dedup">
+                    <div class="vf-dedup-title">Error Pattern Analysis</div>
+                    <div class="vf-dedup-list">
+                        ${uniqueErrors.map(([code, count]) => `
+                            <div class="vf-dedup-item ${count > 1 ? 'vf-dedup-repeated' : ''}">
+                                <span class="vf-dedup-code">${escapeHtml(code)}</span>
+                                <span class="vf-dedup-count">${count}×</span>
+                                ${count > 1 ? '<span class="vf-dedup-flag">⚠️ Repeated</span>' : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>` : '';
+
+            resultDiv.className = 'vf-result vf-result-fail';
+            resultDiv.innerHTML = `
+                <div class="vf-result-header">
+                    <span class="vf-result-icon">${isValidate ? '🔧' : '⚠️'}</span>
+                    <span>${isValidate ? 'Template Needs More Work' : 'Deployment Issue'}</span>
+                </div>
+                <div class="vf-result-body">
+                    ${isValidate
+                        ? '<p>The self-healing pipeline couldn\'t resolve all issues. Review the flow above for details.</p>'
+                        : '<p>The deployment could not be completed. This template may need re-validation.</p>'}
                     ${event.error ? `
-                    <details class="deploy-diag-details" open>
-                        <summary>📋 Details</summary>
-                        <div class="deploy-diag-content">${escapeHtml(event.error)}</div>
+                    <details class="vf-error-details" open>
+                        <summary>Last diagnostic</summary>
+                        <code>${escapeHtml(event.error)}</code>
                     </details>` : ''}
-                    ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment ID: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
-                `;
-            }
+                    ${dedupHtml}
+                    ${healHistory.length ? `
+                    <details class="vf-heal-summary">
+                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} attempted</summary>
+                        <div class="vf-heal-list">
+                            ${healHistory.map(h => `
+                                <div class="vf-heal-entry">
+                                    <div class="vf-heal-num">Step ${h.step || '?'}</div>
+                                    <div class="vf-heal-error">❌ ${escapeHtml(h.error || '')}</div>
+                                    <div class="vf-heal-fix">🔧 ${escapeHtml(h.fix_summary || '')}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </details>` : ''}
+                </div>
+                ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+            `;
         }
-        container.appendChild(resultDiv);
+        timeline.appendChild(resultDiv);
+        timeline.scrollTop = timeline.scrollHeight;
+
+        state.finalResult = event;
         return;
     }
 
-    // ── Starting event — first status entry ──
-    if (phase === 'starting') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-attempt';
-        entry.innerHTML = `<span class="deploy-log-icon">🚀</span> <strong>${escapeHtml(detail)}</strong>`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    // ── Iteration lifecycle events (append to log) ──
-    if (phase === 'attempt_start') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-attempt';
-        entry.innerHTML = `<span class="deploy-log-icon">${isValidate ? '🔁' : '🔄'}</span> <strong>${escapeHtml(detail)}</strong>`;
-        logDiv.appendChild(entry);
-        // Reset the active progress area
-        let activeP = container.querySelector('.deploy-active-progress');
-        if (activeP) activeP.remove();
-        return;
-    }
-
-    if (phase === 'healing') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-healing';
-        // Reframe: validation = "analyzing & adjusting", deploy = "healing"
-        const msg = isValidate
-            ? (detail.replace(/failed/gi, 'returned feedback').replace(/asking LLM to fix/gi, 'analyzing feedback & adjusting'))
-            : detail;
-        entry.innerHTML = `<span class="deploy-log-icon">🧠</span> ${escapeHtml(msg)}`;
-        logDiv.appendChild(entry);
-        if (event.error_summary) {
-            const errEntry = document.createElement('div');
-            errEntry.className = 'deploy-log-entry deploy-log-diagnostic';
-            errEntry.innerHTML = `<span class="deploy-log-icon">📋</span> <code>${escapeHtml(event.error_summary)}</code>`;
-            logDiv.appendChild(errEntry);
-        }
-        return;
-    }
-
-    if (phase === 'healed') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-healed';
-        const deepFlag = event.deep_healed ? ' (deep fix)' : '';
-        const msg = isValidate
-            ? (detail.replace(/LLM applied fix/gi, 'Applied fix').replace(/LLM/gi, 'Template developer'))
-            : detail;
-        entry.innerHTML = `<span class="deploy-log-icon">🔧</span> ${escapeHtml(msg)}${deepFlag}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    // ── Deep healing lifecycle events ──
-    if (phase === 'deep_heal_trigger') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal';
-        entry.innerHTML = `<span class="deploy-log-icon">🔬</span> <strong>Deep Analysis</strong> — examining underlying service templates…`;
-        if (event.service_ids && event.service_ids.length) {
-            entry.innerHTML += `<div class="deploy-deep-services">Services: ${event.service_ids.map(s => `<code>${escapeHtml(s)}</code>`).join(', ')}</div>`;
-        }
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_start') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal';
-        entry.innerHTML = `<span class="deploy-log-icon">🔍</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_identified') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-identified';
-        entry.innerHTML = `<span class="deploy-log-icon">🎯</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_fix' || phase === 'deep_heal_fix_error') {
-        const entry = document.createElement('div');
-        const isFail = phase === 'deep_heal_fix_error';
-        entry.className = `deploy-log-entry deploy-log-deep-heal ${isFail ? 'deploy-log-deep-retry' : ''}`;
-        const icon = isFail ? (isValidate ? '🔄' : '⚠️') : '🛠️';
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_validate' || phase === 'deep_heal_validate_fail') {
-        const entry = document.createElement('div');
-        const isFail = phase === 'deep_heal_validate_fail';
-        entry.className = `deploy-log-entry deploy-log-deep-heal ${isFail ? 'deploy-log-deep-retry' : ''}`;
-        const icon = isFail ? (isValidate ? '🔄' : '⚠️') : '🧪';
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_validated') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-success';
-        entry.innerHTML = `<span class="deploy-log-icon">✅</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_version' || phase === 'deep_heal_versioned') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal';
-        const icon = phase === 'deep_heal_versioned' ? '📦' : '💾';
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_recompose') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal';
-        entry.innerHTML = `<span class="deploy-log-icon">🔧</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_complete') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-deep-heal deploy-log-deep-success';
-        entry.innerHTML = `<span class="deploy-log-icon">🎉</span> <strong>${escapeHtml(detail)}</strong>`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'deep_heal_fail' || phase === 'deep_heal_fallback') {
-        const entry = document.createElement('div');
-        entry.className = `deploy-log-entry deploy-log-deep-heal ${isValidate ? 'deploy-log-deep-retry' : 'deploy-log-deep-error'}`;
-        const icon = phase === 'deep_heal_fail'
-            ? (isValidate ? '🔄' : '💥')
-            : '↩️';
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    if (phase === 'error') {
-        // Don't render a separate error log entry — the final "complete" card will show the details.
-        // Just add a subtle status note in the log so there's no duplicate.
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-diagnostic';
-        entry.innerHTML = `<span class="deploy-log-icon">📋</span> Issue detected — see details below`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
+    // ── Cleanup events ──
     if (phase === 'cleanup' || phase === 'cleanup_done' || phase === 'cleanup_warning') {
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-log-cleanup';
+        const cleanupEl = document.createElement('div');
         const icon = phase === 'cleanup_done' ? '✅' : (phase === 'cleanup_warning' ? '⚠️' : '🧹');
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(detail)}`;
-        logDiv.appendChild(entry);
+        cleanupEl.className = 'vf-cleanup';
+        cleanupEl.innerHTML = `${icon} ${escapeHtml(detail)}`;
+        timeline.appendChild(cleanupEl);
         return;
     }
 
-    // ── Normal progress updates (overwrite the active progress area) ──
-    let activeP = container.querySelector('.deploy-active-progress');
-    if (!activeP) {
-        activeP = document.createElement('div');
-        activeP.className = 'deploy-active-progress';
-        container.appendChild(activeP);
-    }
-
+    // ── Live progress (overwrite — resource provisioning, validating, etc) ──
     const pct = Math.round(progress * 100);
     const phaseIcons = {
         starting: '🚀', resource_group: '📁', validating: '🔍',
         validated: '✅', deploying: '⚙️', provisioning: '📦',
     };
     const icon = phaseIcons[phase] || '⏳';
-    activeP.innerHTML = `
-        <div class="tmpl-deploy-progress-bar">
-            <div class="tmpl-deploy-progress-fill" style="width: ${pct}%"></div>
+    liveProgress.innerHTML = `
+        <div class="vf-progress-bar">
+            <div class="vf-progress-fill" style="width: ${pct}%"></div>
         </div>
-        <div class="tmpl-deploy-phase">${icon} ${escapeHtml(detail || phase)}</div>
+        <div class="vf-progress-phase">${icon} ${escapeHtml(detail || phase)}</div>
         ${event.resources ? `
-        <div class="tmpl-deploy-resource-list">
+        <div class="vf-resource-chips">
             ${event.resources.map(r => `
-                <span class="tmpl-deploy-res-chip tmpl-deploy-res-${r.state.toLowerCase()}">
+                <span class="vf-res-chip vf-res-${r.state.toLowerCase()}">
                     ${r.state === 'Succeeded' ? '✅' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
                 </span>
             `).join('')}

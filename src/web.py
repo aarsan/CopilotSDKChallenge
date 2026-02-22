@@ -3245,11 +3245,31 @@ async def validate_template(template_id: str, request: Request):
                 }) + "\n"
 
             # ── SHALLOW HEAL ──
-            yield json.dumps({
-                "phase": "healing",
-                "detail": "Azure returned feedback — analyzing error and adjusting template…",
-                "error_summary": error_msg[:300],
-            }) + "\n"
+            # Check for repeated error patterns — escalate strategy if same error class recurs
+            import re as _re_heal
+            _err_code_match = _re_heal.search(r'\(([A-Za-z]+)\)', error_msg)
+            _err_code = _err_code_match.group(1) if _err_code_match else None
+            _prev_err_codes = []
+            for _h in heal_history:
+                _m = _re_heal.search(r'\(([A-Za-z]+)\)', _h.get("error", ""))
+                if _m: _prev_err_codes.append(_m.group(1))
+            _same_error_count = _prev_err_codes.count(_err_code) if _err_code else 0
+
+            if _same_error_count >= 2:
+                yield json.dumps({
+                    "phase": "healing",
+                    "detail": f"Same error class '{_err_code}' detected {_same_error_count + 1} times — escalating strategy…",
+                    "error_summary": error_msg[:300],
+                    "repeated_error": True,
+                    "error_code": _err_code,
+                    "occurrence": _same_error_count + 1,
+                }) + "\n"
+            else:
+                yield json.dumps({
+                    "phase": "healing",
+                    "detail": "Azure returned feedback — analyzing error and adjusting template…",
+                    "error_summary": error_msg[:300],
+                }) + "\n"
 
             pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
             try:
