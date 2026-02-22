@@ -879,6 +879,7 @@ async def _deep_heal_composed_template(
             template_id,
             composed_json,
             changelog=f"Deep-healed: fixed {culprit_sid}, recomposed",
+            change_type="patch",
             created_by="deep-healer",
         )
         # Also update the catalog_templates content
@@ -2002,7 +2003,7 @@ async def compose_template_from_services(request: Request):
         ver = await create_template_version(
             template_id, content_str,
             changelog="Initial composition",
-            semver="1.0.0",
+            change_type="initial",
         )
     except Exception as e:
         logger.error(f"Failed to save composed template: {e}")
@@ -2481,7 +2482,8 @@ async def auto_heal_template(template_id: str):
         new_ver = await create_template_version(
             template_id, fixed_arm,
             changelog="Auto-healed: fixed structural test failures",
-            semver=None,
+            change_type="patch",
+            created_by="auto-healer",
         )
     except Exception as e:
         logger.error(f"Failed to save healed template {template_id}: {e}")
@@ -2627,25 +2629,32 @@ async def recompose_blueprint(template_id: str):
 
     # ── Gather current ARM templates for each service ─────────
     service_templates: list[dict] = []
+    service_version_details: list[dict] = []  # Track versions for verbosity
     for sid in svc_ids:
         svc = await get_service(sid)
         if not svc:
             raise HTTPException(status_code=404, detail=f"Service '{sid}' not found")
 
         tpl_dict = None
+        version_info = {"service_id": sid, "name": svc.get("name", sid), "source": "builtin"}
         active = await get_active_service_version(sid)
         if active and active.get("arm_template"):
             try:
                 tpl_dict = _json.loads(active["arm_template"])
+                version_info["source"] = "catalog"
+                version_info["version"] = active.get("version")
+                version_info["semver"] = active.get("semver")
             except Exception:
                 pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
+            version_info["source"] = "builtin"
         if not tpl_dict:
             raise HTTPException(
                 status_code=400, detail=f"No ARM template available for '{sid}'",
             )
 
+        service_version_details.append(version_info)
         service_templates.append({
             "svc": svc,
             "template": tpl_dict,
@@ -2819,6 +2828,7 @@ async def recompose_blueprint(template_id: str):
         ver = await create_template_version(
             template_id, content_str,
             changelog="Recomposed from current service templates",
+            change_type="major",
             created_by="recomposer",
         )
     except Exception as e:
@@ -2836,6 +2846,7 @@ async def recompose_blueprint(template_id: str):
         "resource_count": len(combined_resources),
         "parameter_count": len(combined_params),
         "services_recomposed": svc_ids,
+        "service_versions": service_version_details,
         "version": ver,
         "message": f"Blueprint recomposed from {len(svc_ids)} services with latest templates",
     })
@@ -3839,6 +3850,7 @@ async def deploy_template(template_id: str, request: Request):
                                 f"(iteration {attempt}): "
                                 f"{heal_history[-1]['fix_summary'][:200]}"
                             ),
+                            change_type="patch",
                             created_by="deployment-agent",
                         )
                         await update_template_version_status(
@@ -4464,6 +4476,7 @@ async def template_feedback(template_id: str, request: Request):
         ver = await create_template_version(
             template_id, content_str,
             changelog=f"Feedback recompose: {message[:100]}",
+            change_type="minor",
             created_by="feedback-orchestrator",
         )
     except Exception as e:
@@ -4745,6 +4758,7 @@ async def revise_template(template_id: str, request: Request):
         ver = await create_template_version(
             template_id, content_str,
             changelog=f"Revision: {prompt[:100]}",
+            change_type="minor",
             created_by="revision-orchestrator",
         )
     except Exception as e:
@@ -5009,7 +5023,7 @@ async def compose_template_from_prompt(request: Request):
         ver = await create_template_version(
             template_id, content_str,
             changelog=f"Prompt compose: {prompt[:100]}",
-            semver="1.0.0",
+            change_type="initial",
         )
     except Exception as e:
         logger.error(f"Failed to save prompt-composed template: {e}")

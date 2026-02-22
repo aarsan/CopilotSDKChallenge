@@ -1539,15 +1539,65 @@ async def delete_template(template_id: str) -> bool:
 # TEMPLATE VERSIONS
 # ══════════════════════════════════════════════════════════════
 
+
+def compute_next_semver(
+    current_semver: Optional[str],
+    change_type: str = "minor",
+) -> str:
+    """Compute the next semantic version based on change type.
+
+    change_type values:
+        "major"  — breaking / full recompose  (1.0.0 → 2.0.0)
+        "minor"  — revision / feature change  (1.0.0 → 1.1.0)
+        "patch"  — auto-heal / bugfix         (1.0.0 → 1.0.1)
+        "initial" — first version             (always 1.0.0)
+    """
+    if change_type == "initial" or not current_semver:
+        return "1.0.0"
+
+    parts = current_semver.split(".")
+    try:
+        major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+    except (IndexError, ValueError):
+        return "1.0.0"
+
+    if change_type == "major":
+        return f"{major + 1}.0.0"
+    elif change_type == "minor":
+        return f"{major}.{minor + 1}.0"
+    elif change_type == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    return f"{major}.{minor + 1}.0"
+
+
+async def get_latest_semver(template_id: str) -> Optional[str]:
+    """Get the latest semver for a template from its version history."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        """SELECT semver FROM template_versions
+           WHERE template_id = ? AND semver IS NOT NULL
+           ORDER BY version DESC LIMIT 1""",
+        (template_id,),
+    )
+    if rows and rows[0]["semver"]:
+        return rows[0]["semver"]
+    return None
+
+
 async def create_template_version(
     template_id: str,
     arm_template: str,
     *,
     changelog: str = "",
     semver: Optional[str] = None,
+    change_type: str = "minor",
     created_by: str = "template-composer",
 ) -> dict:
-    """Create a new version of a template. Auto-increments version number."""
+    """Create a new version of a template. Auto-increments version number.
+
+    If semver is not provided, it is auto-computed from the latest version
+    using change_type: "initial", "major", "minor", or "patch".
+    """
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1557,6 +1607,11 @@ async def create_template_version(
         (template_id,),
     )
     next_ver = (rows[0]["max_ver"] if rows else 0) + 1
+
+    # Auto-compute semver if not explicitly provided
+    if not semver:
+        current_semver = await get_latest_semver(template_id)
+        semver = compute_next_semver(current_semver, change_type)
 
     await backend.execute_write(
         """

@@ -2187,13 +2187,13 @@ function showTemplateDetail(templateId) {
         deprecated: '⚠️ Deprecated',
     };
 
-    // Determine which CTA to show based on lifecycle state
+    // ── Status-aware CTA — minimal, clear actions per lifecycle state ──
     let ctaHtml = '';
     if (status === 'draft') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-pending">
-                📝 <strong>New Template</strong> — Validate to verify this template is ready.
+                📝 <strong>New Template</strong> — Run validation to verify this template meets structural and Azure requirements.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
                 🧪 Validate
@@ -2203,17 +2203,17 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-validate">
-                ✅ Structural tests passed. Click to validate against Azure.
+                ✅ Structural tests passed. Validate against Azure to confirm deployment readiness.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
-                🧪 Validate
+                🧪 Validate Against Azure
             </button>
         </div>`;
     } else if (status === 'validated') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-ready">
-                ✅ <strong>Validated</strong> — Template verified against Azure. Ready to publish.
+                ✅ <strong>Validated</strong> — Template verified against Azure. Ready to publish to the catalog.
             </div>
             <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
                 🚀 Publish to Catalog
@@ -2223,7 +2223,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                🔄 Validation found issues — auto-heal will attempt to fix them, or use <strong>Request Revision</strong> below.
+                ❌ Validation found issues — auto-heal will attempt to fix them, or describe changes below.
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
@@ -2244,8 +2244,8 @@ function showTemplateDetail(templateId) {
                 <button class="btn btn-primary btn-sm" onclick="showDeployForm('${escapeHtml(tmpl.id)}')">
                     🚀 Deploy to Azure
                 </button>
-                <button class="btn btn-sm" onclick="navigateToChat('Use the template \\'${escapeHtml(tmpl.name)}\\' to generate infrastructure for my project')">
-                    💬 Use in Designer
+                <button class="btn btn-sm" onclick="document.getElementById('tmpl-revision-prompt')?.focus(); document.querySelector('.tmpl-revision-section')?.scrollIntoView({behavior:'smooth'})">
+                    📝 Request Changes
                 </button>
             </div>
         </div>`;
@@ -2366,9 +2366,9 @@ function showTemplateDetail(templateId) {
         <div class="detail-section">
             <h4>Composed From Services</h4>
             <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
-            <button class="btn btn-sm" style="margin-top:8px" onclick="recomposeBlueprint('${escapeHtml(tmpl.id)}')">
-                🔄 Recompose from Latest
-            </button>
+            ${status !== 'approved' ? `<a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
+                🔄 Recompose from latest service versions
+            </a>` : ''}
         </div>` : ''}
 
         ${(tmpl.parameters && tmpl.parameters.length) ? `
@@ -2387,8 +2387,8 @@ function showTemplateDetail(templateId) {
 
         <!-- Request Revision — Prompt-Driven Template Changes -->
         <div class="detail-section tmpl-revision-section">
-            <h4>📝 Request Revision</h4>
-            <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Your request is checked against org policies first.</p>
+            <h4>📝 Request Changes</h4>
+            <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
             <div class="tmpl-revision-input-group">
                 <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
                     rows="2"
@@ -2396,7 +2396,7 @@ function showTemplateDetail(templateId) {
                     onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
                 <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
                     onclick="submitRevision('${escapeHtml(tmpl.id)}')">
-                    ✏️ Request Revision
+                    ✏️ Submit
                 </button>
             </div>
             <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
@@ -2418,31 +2418,28 @@ function showTemplateDetail(templateId) {
                 <pre><code>${escapeHtml(tmpl.content)}</code></pre>
             </div>
         </div>` : ''}
-
-        <div class="detail-actions">
-            ${status === 'approved' ? `
-            <button class="btn btn-sm btn-primary" onclick="showDeployForm('${escapeHtml(tmpl.id)}')">
-                🚀 Deploy to Azure
-            </button>
-            <button class="btn btn-sm" onclick="navigateToChat('Use the template \\'${escapeHtml(tmpl.name)}\\' to generate infrastructure for my project')">
-                💬 Use in Designer
-            </button>` : status === 'validated' ? `
-            <button class="btn btn-sm btn-primary" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
-                🚀 Publish to Catalog
-            </button>` : status === 'passed' ? `
-            <button class="btn btn-sm btn-primary" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
-                🧪 Validate
-            </button>` : `
-            <button class="btn btn-sm btn-primary" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
-                🧪 Validate
-            </button>`}
-        </div>
     `;
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
 
     // Load version history asynchronously
     _loadTemplateVersionHistory(templateId);
+}
+
+/** Infer human-readable change type from version metadata */
+function _inferChangeType(createdBy, changelog) {
+    if (!createdBy && !changelog) return '';
+    const by = (createdBy || '').toLowerCase();
+    const cl = (changelog || '').toLowerCase();
+    if (by.includes('auto-heal') || by.includes('deployment-agent') || by.includes('deep-heal') || cl.includes('auto-heal'))
+        return '🔧 Patch';
+    if (by.includes('recompos') || cl.includes('recompos'))
+        return '🔄 Major';
+    if (by.includes('revision') || by.includes('feedback') || cl.includes('revision') || cl.includes('feedback'))
+        return '✏️ Minor';
+    if (cl.includes('initial') || cl.includes('prompt compose'))
+        return '🆕 Initial';
+    return '';
 }
 
 /** Load and render version history for a template */
@@ -2470,13 +2467,16 @@ async function _loadTemplateVersionHistory(templateId) {
             const testResults = v.test_results || {};
             const tests = testResults.tests || [];
             const isActive = v.version === data.active_version;
+            const semverDisplay = v.semver ? v.semver : `${v.version}.0.0`;
+            const changeLabel = _inferChangeType(v.created_by, v.changelog);
 
             return `
                 <div class="tmpl-ver-item ${isActive ? 'tmpl-ver-active' : ''} tmpl-ver-${v.status}">
                     <div class="tmpl-ver-header">
-                        <span class="tmpl-ver-num">v${v.version}${v.semver ? ` (${v.semver})` : ''}</span>
+                        <span class="tmpl-ver-num">${semverDisplay}</span>
                         <span class="tmpl-ver-status">${statusIcons[v.status] || '❓'} ${v.status}</span>
                         ${isActive ? '<span class="tmpl-ver-active-badge">Active</span>' : ''}
+                        ${changeLabel ? `<span class="tmpl-ver-change-type">${changeLabel}</span>` : ''}
                     </div>
                     ${v.changelog ? `<div class="tmpl-ver-changelog">${escapeHtml(v.changelog)}</div>` : ''}
                     ${tests.length ? `
@@ -2729,9 +2729,9 @@ function _renderValidationResults(container, data, passed) {
 
 /** Recompose a blueprint from its latest service templates */
 async function recomposeBlueprint(templateId) {
-    if (!confirm('Recompose this blueprint from the latest service templates? This will create a new version.')) return;
+    if (!confirm('Recompose this blueprint from the latest service templates?\n\nThis pulls the current version of each underlying service template, re-merges them, and creates a new major version.')) return;
 
-    showToast('🔄 Recomposing blueprint…', 'info');
+    showToast('🔄 Pulling latest service template versions…', 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/recompose`, {
@@ -2745,13 +2745,25 @@ async function recomposeBlueprint(templateId) {
             return;
         }
 
-        showToast(
-            `✅ Recomposed! ${data.resource_count} resources, ${data.parameter_count} params from ${data.services_recomposed?.length || '?'} services`,
-            'success'
-        );
+        // Build verbose flow summary
+        const ver = data.version || {};
+        const semver = ver.semver || '?';
+        const svcVersions = data.service_versions || [];
+        let detail = `✅ Recomposed → v${semver}\n`;
+        detail += `${data.resource_count} resources, ${data.parameter_count} params\n`;
+        if (svcVersions.length) {
+            detail += `\nService templates used:\n`;
+            for (const sv of svcVersions) {
+                const svVer = sv.semver || (sv.version ? `v${sv.version}` : 'latest');
+                detail += `  • ${sv.name || sv.service_id} (${svVer}, ${sv.source})\n`;
+            }
+        }
+
+        showToast(detail, 'success', 8000);
 
         // Refresh the detail view
-        await showTemplateDetail(templateId);
+        await loadAllData();
+        showTemplateDetail(templateId);
     } catch (err) {
         showToast(`❌ Recompose error: ${err.message}`, 'error');
     }
@@ -2860,7 +2872,8 @@ async function submitRevision(templateId) {
                 <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
                 ${actionsHtml}
                 <div class="tmpl-revision-summary">
-                    ✅ Template revised: <strong>${revData.resource_count}</strong> resources,
+                    ✅ Template revised → <strong>v${revData.version?.semver || '?'}</strong>:
+                    <strong>${revData.resource_count}</strong> resources,
                     <strong>${revData.parameter_count}</strong> params from
                     <strong>${revData.services?.length || '?'}</strong> services.
                     <br><em>Starting validation…</em>
@@ -2868,7 +2881,7 @@ async function submitRevision(templateId) {
             </div>`;
 
         textarea.value = '';
-        showToast('✅ Template revised — starting validation…', 'success');
+        showToast(`✅ Revised → v${revData.version?.semver || '?'} — starting validation…`, 'success');
         setTimeout(async () => {
             await loadCatalog();
             // Auto-trigger full validation pipeline
@@ -4205,12 +4218,14 @@ function closeModalOnOverlay(event, id) {
     }
 }
 
-function showToast(message, type = 'success') {
+function showToast(message, type = 'success', duration = 3000) {
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
+    // Support multi-line messages with whitespace preservation
+    toast.style.whiteSpace = 'pre-line';
     toast.textContent = message;
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
+    setTimeout(() => toast.remove(), duration);
 }
 
 async function submitGovernanceUpdate(event) {
