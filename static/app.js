@@ -3191,9 +3191,8 @@ async function executeRemediationPlan(templateId) {
     const execSection = document.querySelector('.remed-execute-section');
     if (!execSection) return;
 
-    // Replace the button with the pipeline container
-    execSection.innerHTML = `<div class="remed-pipeline" id="remed-pipeline"></div>`;
-    const pipeline = document.getElementById('remed-pipeline');
+    execSection.innerHTML = `<div class="ado-pipeline" id="ado-pipeline"></div>`;
+    const pipeline = document.getElementById('ado-pipeline');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/execute`, {
@@ -3206,179 +3205,282 @@ async function executeRemediationPlan(templateId) {
             throw new Error(err.detail || 'Execution failed');
         }
 
-        // Read NDJSON stream
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let pipelineState = null;
+        let state = null;
 
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
-
             const lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete last line
-
+            buffer = lines.pop();
             for (const line of lines) {
                 if (!line.trim()) continue;
                 try {
-                    const event = JSON.parse(line);
-                    pipelineState = _handlePipelineEvent(pipeline, event, pipelineState);
-                } catch { /* skip malformed lines */ }
+                    state = _adoHandleEvent(pipeline, JSON.parse(line), state);
+                } catch { /* skip malformed */ }
             }
         }
-
-        // Process any remaining buffer
         if (buffer.trim()) {
-            try {
-                const event = JSON.parse(buffer);
-                pipelineState = _handlePipelineEvent(pipeline, event, pipelineState);
-            } catch { /* skip */ }
+            try { state = _adoHandleEvent(pipeline, JSON.parse(buffer), state); } catch {}
         }
-
     } catch (err) {
         pipeline.innerHTML = `
-            <div class="remed-pipe-error">
-                <span class="remed-pipe-error-icon">❌</span>
-                <span>Execution failed: ${escapeHtml(err.message)}</span>
+            <div class="ado-error">
+                <span class="ado-error-icon">❌</span>
+                <span>Pipeline failed: ${escapeHtml(err.message)}</span>
             </div>`;
     }
 }
 
-/** Handle a single pipeline NDJSON event and update the visualization */
-function _handlePipelineEvent(container, event, state) {
-    if (!state) state = { nodes: [], nodeEls: {}, logCounts: {} };
+/* ── ADO Pipeline State Machine ── */
+function _adoHandleEvent(container, event, state) {
+    if (!state) state = { jobs: [], elements: {}, stepLogs: {}, expanded: {} };
 
     switch (event.type) {
-        case 'pipeline_init':
-            state.nodes = event.nodes || [];
-            container.innerHTML = _renderPipelineDAG(state.nodes);
-            // Cache node elements
-            for (const node of state.nodes) {
-                state.nodeEls[node.id] = document.getElementById(`pipe-node-${node.id}`);
-                state.logCounts[node.id] = 0;
-                for (const sub of (node.sub_nodes || [])) {
-                    state.nodeEls[sub.id] = document.getElementById(`pipe-sub-${sub.id}`);
+        case 'pipeline_init': {
+            state.jobs = event.jobs || [];
+            container.innerHTML = _adoRenderPipeline(state.jobs, event);
+            // Cache DOM refs
+            for (const job of state.jobs) {
+                state.elements[job.id] = document.getElementById(`ado-job-${job.id}`);
+                for (const step of job.steps) {
+                    state.elements[step.id] = document.getElementById(`ado-step-${step.id}`);
+                    state.stepLogs[step.id] = [];
                 }
             }
             break;
+        }
 
-        case 'node_status': {
-            const el = state.nodeEls[event.node_id];
+        case 'step_start': {
+            const el = state.elements[event.step_id];
             if (!el) break;
-            // Remove old status classes and add new
-            el.classList.remove('pipe-pending', 'pipe-running', 'pipe-success', 'pipe-failed');
-            el.classList.add(`pipe-${event.status}`);
-            // Update status indicator
-            const indicator = el.querySelector('.pipe-node-status');
-            if (indicator) indicator.textContent = _pipelineStatusIcon(event.status);
-            // If failed, show error
-            if (event.status === 'failed' && event.error) {
-                const logArea = el.querySelector('.pipe-node-logs');
-                if (logArea) {
-                    logArea.innerHTML += `<div class="pipe-log pipe-log-error">❌ ${escapeHtml(event.error)}</div>`;
-                    logArea.scrollTop = logArea.scrollHeight;
-                }
+            el.classList.remove('ado-step-pending');
+            el.classList.add('ado-step-running');
+            el.querySelector('.ado-step-icon').innerHTML = _adoStepIcon('running');
+            // Also mark job as running if not already
+            const jobEl = state.elements[event.job_id];
+            if (jobEl && !jobEl.classList.contains('ado-job-running')) {
+                jobEl.classList.remove('ado-job-pending');
+                jobEl.classList.add('ado-job-running');
+                const badge = jobEl.querySelector('.ado-job-status-badge');
+                if (badge) { badge.textContent = 'Running'; badge.className = 'ado-job-status-badge ado-badge-running'; }
             }
-            // If success and has result, show summary
+            // Auto-expand the running step
+            _adoExpandStep(state, event.step_id, true);
+            break;
+        }
+
+        case 'step_log': {
+            if (!state.stepLogs[event.step_id]) state.stepLogs[event.step_id] = [];
+            state.stepLogs[event.step_id].push(event);
+            const el = state.elements[event.step_id];
+            if (!el) break;
+            const logArea = el.querySelector('.ado-step-logs');
+            if (!logArea) break;
+            const level = event.level || 'info';
+            const ts = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '';
+            logArea.innerHTML += `<div class="ado-log ado-log-${level}"><span class="ado-log-ts">${ts}</span>${escapeHtml(event.message)}</div>`;
+            logArea.scrollTop = logArea.scrollHeight;
+            // Update step counter badge
+            const countBadge = el.querySelector('.ado-step-log-count');
+            if (countBadge) countBadge.textContent = state.stepLogs[event.step_id].length;
+            break;
+        }
+
+        case 'step_end': {
+            const el = state.elements[event.step_id];
+            if (!el) break;
+            el.classList.remove('ado-step-running', 'ado-step-pending');
+            el.classList.add(`ado-step-${event.status}`);
+            el.querySelector('.ado-step-icon').innerHTML = _adoStepIcon(event.status);
+            // Show duration
+            const dur = el.querySelector('.ado-step-duration');
+            if (dur && event.duration_ms != null) {
+                dur.textContent = _adoFormatDuration(event.duration_ms);
+                dur.classList.remove('hidden');
+            }
+            // Collapse completed step, unless it failed
+            if (event.status === 'success') {
+                _adoExpandStep(state, event.step_id, false);
+            }
+            break;
+        }
+
+        case 'job_end': {
+            const el = state.elements[event.job_id];
+            if (!el) break;
+            el.classList.remove('ado-job-running', 'ado-job-pending');
+            el.classList.add(`ado-job-${event.status}`);
+            const badge = el.querySelector('.ado-job-status-badge');
+            if (badge) {
+                badge.textContent = event.status === 'success' ? 'Succeeded' : 'Failed';
+                badge.className = `ado-job-status-badge ado-badge-${event.status}`;
+            }
+            // Duration
+            const dur = el.querySelector('.ado-job-duration');
+            if (dur && event.duration_ms) {
+                dur.textContent = _adoFormatDuration(event.duration_ms);
+                dur.classList.remove('hidden');
+            }
+            // Result summary
             if (event.status === 'success' && event.result) {
                 const r = event.result;
-                const summary = el.querySelector('.pipe-node-result');
+                const summary = el.querySelector('.ado-job-result');
                 if (summary) {
+                    summary.innerHTML = `<span class="ado-job-result-ver">v${escapeHtml(r.new_semver || '')}</span>
+                        <span class="ado-job-result-changes">${r.changes_made?.length || 0} change(s) applied</span>`;
                     summary.classList.remove('hidden');
-                    summary.innerHTML = `✅ v${escapeHtml(r.new_semver || '')} — ${r.changes_made?.length || 0} change(s)`;
                 }
             }
-            break;
-        }
-
-        case 'sub_node_status': {
-            const el = state.nodeEls[event.sub_id];
-            if (!el) break;
-            el.classList.remove('pipe-sub-pending', 'pipe-sub-running', 'pipe-sub-success', 'pipe-sub-failed');
-            el.classList.add(`pipe-sub-${event.status}`);
-            const icon = el.querySelector('.pipe-sub-icon');
-            if (icon) icon.textContent = _pipelineStatusIcon(event.status);
-            break;
-        }
-
-        case 'log': {
-            const nodeEl = state.nodeEls[event.node_id];
-            if (!nodeEl) break;
-            const logArea = nodeEl.querySelector('.pipe-node-logs');
-            if (!logArea) break;
-            state.logCounts[event.node_id] = (state.logCounts[event.node_id] || 0) + 1;
-            const level = event.level || 'info';
-            logArea.innerHTML += `<div class="pipe-log pipe-log-${level}">${escapeHtml(event.message)}</div>`;
-            logArea.scrollTop = logArea.scrollHeight;
+            if (event.status === 'failed' && event.error) {
+                const summary = el.querySelector('.ado-job-result');
+                if (summary) {
+                    summary.innerHTML = `<span class="ado-job-result-error">❌ ${escapeHtml(event.error)}</span>`;
+                    summary.classList.remove('hidden');
+                }
+            }
             break;
         }
 
         case 'pipeline_done': {
-            // Add completion banner and re-scan button
             const allOk = event.all_success;
+            const dur = event.duration_ms ? ` in ${_adoFormatDuration(event.duration_ms)}` : '';
             const banner = document.createElement('div');
-            banner.className = `remed-pipe-done ${allOk ? 'remed-pipe-done-ok' : 'remed-pipe-done-partial'}`;
+            banner.className = `ado-pipeline-done ${allOk ? 'ado-done-ok' : 'ado-done-partial'}`;
             banner.innerHTML = `
-                <span class="remed-pipe-done-icon">${allOk ? '✅' : '⚠️'}</span>
-                <span class="remed-pipe-done-text">${allOk ? 'All templates updated successfully' : 'Some templates failed — check logs above'}</span>
-                <button class="btn btn-sm scan-rescan-btn" onclick="runComplianceScan('${escapeHtml(event.template_id)}')">🔄 Re-scan</button>
+                <div class="ado-done-header">
+                    <span class="ado-done-icon">${allOk ? '✅' : '⚠️'}</span>
+                    <span class="ado-done-title">${allOk ? 'Pipeline succeeded' : 'Pipeline completed with errors'}${dur}</span>
+                </div>
+                <div class="ado-done-actions">
+                    <button class="btn btn-sm scan-rescan-btn" onclick="runComplianceScan('${escapeHtml(event.template_id)}')">Re-scan compliance</button>
+                </div>
             `;
             container.appendChild(banner);
             break;
         }
     }
-
     return state;
 }
 
-/** Render the initial pipeline DAG with all nodes in pending state */
-function _renderPipelineDAG(nodes) {
-    let html = '';
-    for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i];
-        const isLast = i === nodes.length - 1;
+/* ── ADO Pipeline Render ── */
+function _adoRenderPipeline(jobs, initEvent) {
+    const parallel = jobs.length > 1;
+    const title = initEvent.template_name || initEvent.template_id || 'Pipeline';
+
+    let html = `
+    <div class="ado-pipeline-header">
+        <div class="ado-pipeline-title">
+            <span class="ado-pipeline-icon">⚙️</span>
+            <span>Compliance Remediation</span>
+            <span class="ado-pipeline-name">${escapeHtml(title)}</span>
+        </div>
+        <div class="ado-pipeline-meta">
+            ${parallel ? `<span class="ado-parallel-badge">⚡ ${jobs.length} parallel jobs</span>` : `<span class="ado-parallel-badge">1 job</span>`}
+        </div>
+    </div>
+    <div class="ado-jobs-container ${parallel ? 'ado-jobs-parallel' : 'ado-jobs-single'}">`;
+
+    for (const job of jobs) {
+        html += `
+        <div class="ado-job ado-job-pending" id="ado-job-${job.id}">
+            <div class="ado-job-header">
+                <div class="ado-job-title">
+                    <span class="ado-job-icon">📦</span>
+                    <span class="ado-job-name">${escapeHtml(job.label)}</span>
+                </div>
+                <div class="ado-job-badges">
+                    <span class="ado-job-status-badge ado-badge-pending">Pending</span>
+                    <span class="ado-job-duration hidden"></span>
+                </div>
+            </div>
+            <div class="ado-job-version-bar">
+                <span class="ado-ver-from">v${escapeHtml(job.current_semver || '?')}</span>
+                <span class="ado-ver-arrow">→</span>
+                <span class="ado-ver-to">v${escapeHtml(job.projected_semver || '?')}</span>
+                <span class="ado-ver-type">${escapeHtml(job.change_type || 'patch')}</span>
+                <span class="ado-ver-fixes">${job.step_count} fix${job.step_count !== 1 ? 'es' : ''}</span>
+            </div>
+            <div class="ado-steps-timeline">`;
+
+        for (let s = 0; s < job.steps.length; s++) {
+            const step = job.steps[s];
+            const isLast = s === job.steps.length - 1;
+            html += `
+                <div class="ado-step ado-step-pending" id="ado-step-${step.id}">
+                    <div class="ado-step-connector ${isLast ? 'ado-step-connector-last' : ''}">
+                        <div class="ado-step-line-top ${s === 0 ? 'hidden' : ''}"></div>
+                        <div class="ado-step-icon">${_adoStepIcon('pending')}</div>
+                        <div class="ado-step-line-bottom ${isLast ? 'hidden' : ''}"></div>
+                    </div>
+                    <div class="ado-step-content">
+                        <div class="ado-step-header" onclick="_adoToggleStep(this)">
+                            <span class="ado-step-label">${escapeHtml(step.label)}</span>
+                            <span class="ado-step-detail">${escapeHtml(step.detail || '')}</span>
+                            <span class="ado-step-log-count hidden">0</span>
+                            <span class="ado-step-duration hidden"></span>
+                            <span class="ado-step-chevron">▸</span>
+                        </div>
+                        <div class="ado-step-logs hidden"></div>
+                    </div>
+                </div>`;
+        }
 
         html += `
-        <div class="pipe-node pipe-pending" id="pipe-node-${node.id}">
-            <div class="pipe-node-header">
-                <span class="pipe-node-status">${_pipelineStatusIcon('pending')}</span>
-                <span class="pipe-node-label">${escapeHtml(node.label)}</span>
-                <span class="pipe-node-steps">${node.step_count} step${node.step_count !== 1 ? 's' : ''}</span>
             </div>
-            <div class="pipe-node-subs">
-                ${(node.sub_nodes || []).map(sub => `
-                    <div class="pipe-sub pipe-sub-pending" id="pipe-sub-${sub.id}">
-                        <span class="pipe-sub-icon">${_pipelineStatusIcon('pending')}</span>
-                        <span class="pipe-sub-label">${escapeHtml(sub.label)}</span>
-                    </div>
-                `).join('')}
-            </div>
-            <div class="pipe-node-logs"></div>
-            <div class="pipe-node-result hidden"></div>
+            <div class="ado-job-result hidden"></div>
         </div>`;
-
-        if (!isLast) {
-            html += `<div class="pipe-arrow">
-                <svg width="24" height="28" viewBox="0 0 24 28">
-                    <line x1="12" y1="0" x2="12" y2="20" stroke="var(--border-muted)" stroke-width="2"/>
-                    <polygon points="6,18 12,26 18,18" fill="var(--border-muted)"/>
-                </svg>
-            </div>`;
-        }
     }
+
+    html += `</div>`;
     return html;
 }
 
-function _pipelineStatusIcon(status) {
+function _adoStepIcon(status) {
     switch (status) {
-        case 'pending': return '○';
-        case 'running': return '◉';
-        case 'success': return '✅';
-        case 'failed': return '❌';
-        default: return '○';
+        case 'pending':  return '<span class="ado-icon ado-icon-pending">○</span>';
+        case 'running':  return '<span class="ado-icon ado-icon-running"><span class="ado-spinner"></span></span>';
+        case 'success':  return '<span class="ado-icon ado-icon-success">✓</span>';
+        case 'failed':   return '<span class="ado-icon ado-icon-failed">✗</span>';
+        case 'skipped':  return '<span class="ado-icon ado-icon-skipped">⊘</span>';
+        default:         return '<span class="ado-icon ado-icon-pending">○</span>';
     }
+}
+
+function _adoFormatDuration(ms) {
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.round((ms % 60000) / 1000);
+    return `${mins}m ${secs}s`;
+}
+
+function _adoToggleStep(headerEl) {
+    const stepEl = headerEl.closest('.ado-step');
+    if (!stepEl) return;
+    const logs = stepEl.querySelector('.ado-step-logs');
+    const chevron = stepEl.querySelector('.ado-step-chevron');
+    if (!logs) return;
+    const isExpanded = !logs.classList.contains('hidden');
+    logs.classList.toggle('hidden', isExpanded);
+    if (chevron) chevron.textContent = isExpanded ? '▸' : '▾';
+    stepEl.classList.toggle('ado-step-expanded', !isExpanded);
+}
+
+function _adoExpandStep(state, stepId, expand) {
+    const el = state.elements[stepId];
+    if (!el) return;
+    const logs = el.querySelector('.ado-step-logs');
+    const chevron = el.querySelector('.ado-step-chevron');
+    const countBadge = el.querySelector('.ado-step-log-count');
+    if (!logs) return;
+    logs.classList.toggle('hidden', !expand);
+    if (chevron) chevron.textContent = expand ? '▾' : '▸';
+    el.classList.toggle('ado-step-expanded', expand);
+    if (expand && countBadge) countBadge.classList.remove('hidden');
 }
 
 function _renderRemediationResults(data) {

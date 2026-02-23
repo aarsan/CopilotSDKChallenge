@@ -7098,261 +7098,501 @@ body {
     animation: scanFadeIn 0.35s ease;
 }
 
-/* Arrow between nodes */
-.pipe-arrow {
+/* ═══════════════════════════════════════════════════════════
+   ADO-style Pipeline UI
+   ═══════════════════════════════════════════════════════════ */
+
+.ado-pipeline {
     display: flex;
-    justify-content: center;
-    height: 28px;
-    flex-shrink: 0;
-}
-
-/* ── Pipeline Node (template box) ── */
-
-.pipe-node {
-    width: 100%;
-    border-radius: 10px;
-    border: 2px solid var(--border-muted);
-    background: var(--surface-secondary);
-    overflow: hidden;
-    transition: border-color 0.3s ease, box-shadow 0.3s ease;
-}
-
-.pipe-node.pipe-pending {
-    border-color: var(--border-muted);
-    opacity: 0.7;
-}
-
-.pipe-node.pipe-running {
-    border-color: var(--accent-blue);
-    opacity: 1;
-    box-shadow: 0 0 12px rgba(56, 139, 253, 0.2);
-    animation: pipeNodePulse 2s ease-in-out infinite;
-}
-
-.pipe-node.pipe-success {
-    border-color: #3fb950;
-    opacity: 1;
-    background: color-mix(in srgb, #3fb950 4%, var(--surface-secondary));
-}
-
-.pipe-node.pipe-failed {
-    border-color: #f85149;
-    opacity: 1;
-    background: color-mix(in srgb, #f85149 4%, var(--surface-secondary));
-}
-
-@keyframes pipeNodePulse {
-    0%, 100% { box-shadow: 0 0 8px rgba(56, 139, 253, 0.15); }
-    50% { box-shadow: 0 0 18px rgba(56, 139, 253, 0.35); }
-}
-
-/* Node header */
-.pipe-node-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.6rem 0.85rem;
-    border-bottom: 1px solid var(--border-muted);
-    background: color-mix(in srgb, var(--surface-tertiary) 60%, transparent);
-}
-
-.pipe-node-status {
-    font-size: 1rem;
-    line-height: 1;
-    transition: all 0.2s;
-}
-
-.pipe-node.pipe-running .pipe-node-status {
-    color: var(--accent-blue);
-    animation: pipeStatusSpin 1.5s linear infinite;
-}
-
-@keyframes pipeStatusSpin {
-    0% { transform: rotate(0deg); }
-    50% { transform: rotate(180deg); }
-    100% { transform: rotate(360deg); }
-}
-
-.pipe-node-label {
-    font-weight: 700;
-    font-size: 0.88rem;
-    color: var(--text-primary);
-    flex: 1;
-}
-
-.pipe-node-steps {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    background: var(--surface-primary);
-    padding: 0.15rem 0.45rem;
-    border-radius: 6px;
-    font-weight: 500;
-}
-
-/* Sub-nodes (Load → AI → Parse → Save) */
-.pipe-node-subs {
-    display: flex;
+    flex-direction: column;
     gap: 0;
-    padding: 0.4rem 0.85rem;
-    border-bottom: 1px solid var(--border-muted);
-    background: color-mix(in srgb, var(--surface-primary) 40%, transparent);
+    animation: scanFadeIn 0.35s ease;
 }
 
-.pipe-sub {
+/* Pipeline header */
+.ado-pipeline-header {
     display: flex;
     align-items: center;
-    gap: 0.3rem;
-    flex: 1;
-    padding: 0.3rem 0.2rem;
-    position: relative;
-    transition: all 0.2s;
-}
-
-/* Arrow connectors between sub-nodes */
-.pipe-sub:not(:last-child)::after {
-    content: '→';
-    position: absolute;
-    right: -0.15rem;
-    font-size: 0.7rem;
-    color: var(--text-muted);
-}
-
-.pipe-sub-icon {
-    font-size: 0.72rem;
-    line-height: 1;
-    flex-shrink: 0;
-    transition: all 0.2s;
-}
-
-.pipe-sub-label {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-}
-
-.pipe-sub.pipe-sub-pending {
-    opacity: 0.5;
-}
-
-.pipe-sub.pipe-sub-running {
-    opacity: 1;
-}
-
-.pipe-sub.pipe-sub-running .pipe-sub-icon {
-    color: var(--accent-blue);
-    animation: pipeSubPulse 1s ease-in-out infinite;
-}
-
-.pipe-sub.pipe-sub-running .pipe-sub-label {
-    color: var(--accent-blue);
-    font-weight: 600;
-}
-
-@keyframes pipeSubPulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-}
-
-.pipe-sub.pipe-sub-success {
-    opacity: 1;
-}
-
-.pipe-sub.pipe-sub-success .pipe-sub-label {
-    color: #3fb950;
-}
-
-.pipe-sub.pipe-sub-failed .pipe-sub-label {
-    color: #f85149;
-}
-
-/* Log area inside nodes */
-.pipe-node-logs {
-    max-height: 120px;
-    overflow-y: auto;
-    padding: 0;
-    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
-    font-size: 0.68rem;
-    line-height: 1.55;
-    scroll-behavior: smooth;
-}
-
-.pipe-node-logs:empty {
-    display: none;
-}
-
-.pipe-log {
-    padding: 0.2rem 0.85rem;
-    color: var(--text-muted);
-    border-bottom: 1px solid color-mix(in srgb, var(--border-muted) 30%, transparent);
-}
-
-.pipe-log:last-child {
+    justify-content: space-between;
+    padding: 0.6rem 0.9rem;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-muted);
+    border-radius: 8px 8px 0 0;
     border-bottom: none;
 }
 
-.pipe-log-error {
-    color: #f85149;
-    background: color-mix(in srgb, #f85149 6%, transparent);
+.ado-pipeline-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: var(--text-primary);
 }
 
-.pipe-log-info {
+.ado-pipeline-icon { font-size: 1rem; }
+.ado-pipeline-name {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.ado-pipeline-meta { display: flex; gap: 0.5rem; align-items: center; }
+
+.ado-parallel-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+    color: var(--accent-blue);
+    letter-spacing: 0.02em;
+}
+
+/* Jobs container */
+.ado-jobs-container {
+    display: flex;
+    border: 1px solid var(--border-muted);
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+}
+
+.ado-jobs-single { flex-direction: column; }
+
+.ado-jobs-parallel {
+    flex-direction: row;
+    gap: 0;
+}
+
+.ado-jobs-parallel .ado-job:not(:last-child) {
+    border-right: 1px solid var(--border-muted);
+}
+
+.ado-jobs-single .ado-job:not(:last-child) {
+    border-bottom: 1px solid var(--border-muted);
+}
+
+/* Job card */
+.ado-job {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-secondary);
+    transition: background 0.3s ease;
+}
+
+.ado-job.ado-job-running {
+    background: color-mix(in srgb, var(--accent-blue) 3%, var(--surface-secondary));
+}
+
+.ado-job.ado-job-success {
+    background: color-mix(in srgb, #3fb950 3%, var(--surface-secondary));
+}
+
+.ado-job.ado-job-failed {
+    background: color-mix(in srgb, #f85149 3%, var(--surface-secondary));
+}
+
+/* Job header */
+.ado-job-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 0.85rem;
+    border-bottom: 1px solid var(--border-muted);
+    background: color-mix(in srgb, var(--surface-tertiary) 50%, transparent);
+}
+
+.ado-job-title {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.ado-job-icon { font-size: 0.85rem; }
+.ado-job-name {
+    font-weight: 700;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.ado-job-badges {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.ado-job-status-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    transition: all 0.3s ease;
+}
+
+.ado-badge-pending {
+    background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+    color: var(--text-muted);
+}
+
+.ado-badge-running {
+    background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+    color: var(--accent-blue);
+    animation: adoBadgePulse 1.5s ease-in-out infinite;
+}
+
+.ado-badge-success {
+    background: color-mix(in srgb, #3fb950 15%, transparent);
+    color: #3fb950;
+}
+
+.ado-badge-failed {
+    background: color-mix(in srgb, #f85149 15%, transparent);
+    color: #f85149;
+}
+
+@keyframes adoBadgePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.ado-job-duration {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+}
+
+/* Version bar */
+.ado-job-version-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.85rem;
+    border-bottom: 1px solid var(--border-muted);
+    font-size: 0.7rem;
+    background: color-mix(in srgb, var(--surface-primary) 50%, transparent);
+}
+
+.ado-ver-from {
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    font-weight: 600;
     color: var(--text-secondary);
 }
 
-/* Result badge */
-.pipe-node-result {
-    padding: 0.4rem 0.85rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #3fb950;
-    background: color-mix(in srgb, #3fb950 6%, transparent);
-    border-top: 1px solid color-mix(in srgb, #3fb950 15%, transparent);
+.ado-ver-arrow { color: var(--text-muted); font-size: 0.65rem; }
+
+.ado-ver-to {
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    font-weight: 700;
+    color: var(--accent-blue);
 }
 
-.pipe-node-result.hidden {
-    display: none;
+.ado-ver-type {
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+    color: var(--accent-blue);
+}
+
+.ado-ver-fixes {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+/* Steps timeline */
+.ado-steps-timeline {
+    display: flex;
+    flex-direction: column;
+    padding: 0.4rem 0;
+}
+
+.ado-step {
+    display: flex;
+    min-height: 28px;
+    transition: background 0.2s ease;
+}
+
+.ado-step.ado-step-expanded {
+    background: color-mix(in srgb, var(--surface-primary) 60%, transparent);
+}
+
+/* Connector column (line + icon) */
+.ado-step-connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 36px;
+    flex-shrink: 0;
+    padding: 0 0.85rem;
+}
+
+.ado-step-line-top,
+.ado-step-line-bottom {
+    width: 2px;
+    flex: 1;
+    background: var(--border-muted);
+    transition: background 0.3s ease;
+}
+
+.ado-step.ado-step-success .ado-step-line-top,
+.ado-step.ado-step-success .ado-step-line-bottom {
+    background: #3fb950;
+}
+
+.ado-step.ado-step-running .ado-step-line-top {
+    background: var(--accent-blue);
+}
+
+.ado-step-line-top.hidden,
+.ado-step-line-bottom.hidden {
+    visibility: hidden;
+}
+
+/* Step icon */
+.ado-step-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.ado-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    font-size: 0.6rem;
+    font-weight: 800;
+    line-height: 1;
+    transition: all 0.3s ease;
+}
+
+.ado-icon-pending {
+    color: var(--text-muted);
+    border: 2px solid var(--border-muted);
+    font-size: 0.5rem;
+}
+
+.ado-icon-running {
+    color: var(--accent-blue);
+}
+
+.ado-icon-success {
+    background: #3fb950;
+    color: #fff;
+}
+
+.ado-icon-failed {
+    background: #f85149;
+    color: #fff;
+}
+
+.ado-icon-skipped {
+    color: var(--text-muted);
+    border: 2px solid var(--border-muted);
+}
+
+/* Spinner for running */
+.ado-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid color-mix(in srgb, var(--accent-blue) 25%, transparent);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: adoSpin 0.8s linear infinite;
+}
+
+@keyframes adoSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* Step content */
+.ado-step-content {
+    flex: 1;
+    min-width: 0;
+    padding-right: 0.85rem;
+}
+
+.ado-step-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ado-step-header:hover {
+    background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+    border-radius: 4px;
+}
+
+.ado-step-label {
+    font-weight: 700;
+    font-size: 0.76rem;
+    color: var(--text-primary);
+}
+
+.ado-step-detail {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ado-step-log-count {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0.08rem 0.3rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+    color: var(--accent-blue);
+    min-width: 16px;
+    text-align: center;
+}
+
+.ado-step-log-count.hidden { display: none; }
+
+.ado-step-duration {
+    font-size: 0.62rem;
+    font-weight: 600;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    color: var(--text-muted);
+}
+
+.ado-step-duration.hidden { display: none; }
+
+.ado-step-chevron {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 12px;
+    text-align: center;
+    transition: transform 0.2s ease;
+}
+
+/* Step logs (expandable) */
+.ado-step-logs {
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.65rem;
+    line-height: 1.55;
+    scroll-behavior: smooth;
+    border-left: 2px solid var(--border-muted);
+    margin: 0.15rem 0 0.3rem 0;
+    padding-left: 0.5rem;
+}
+
+.ado-step-logs.hidden { display: none; }
+
+.ado-log {
+    padding: 0.12rem 0.4rem;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+}
+
+.ado-log-ts {
+    color: var(--text-muted);
+    font-size: 0.58rem;
+    flex-shrink: 0;
+    opacity: 0.7;
+}
+
+.ado-log-info { color: var(--text-secondary); }
+.ado-log-error {
+    color: #f85149;
+    background: color-mix(in srgb, #f85149 5%, transparent);
+    border-radius: 3px;
+}
+
+/* Job result */
+.ado-job-result {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.85rem;
+    border-top: 1px solid var(--border-muted);
+    font-size: 0.75rem;
+}
+
+.ado-job-result.hidden { display: none; }
+
+.ado-job-result-ver {
+    font-weight: 700;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    color: #3fb950;
+}
+
+.ado-job-result-changes {
+    color: var(--text-secondary);
+}
+
+.ado-job-result-error {
+    color: #f85149;
+    font-weight: 600;
 }
 
 /* Pipeline done banner */
-.remed-pipe-done {
+.ado-pipeline-done {
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    width: 100%;
-    margin-top: 0.75rem;
-    padding: 0.7rem 1rem;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+    padding: 0.65rem 0.9rem;
     border-radius: 8px;
     border: 1px solid var(--border-muted);
-    background: var(--surface-secondary);
 }
 
-.remed-pipe-done-ok {
+.ado-done-ok {
     border-color: rgba(63, 185, 80, 0.3);
     background: color-mix(in srgb, #3fb950 5%, var(--surface-secondary));
 }
 
-.remed-pipe-done-partial {
+.ado-done-partial {
     border-color: rgba(210, 153, 34, 0.3);
     background: color-mix(in srgb, #d29922 5%, var(--surface-secondary));
 }
 
-.remed-pipe-done-icon {
-    font-size: 1.1rem;
-    flex-shrink: 0;
-}
-
-.remed-pipe-done-text {
-    flex: 1;
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.remed-pipe-error {
+.ado-done-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.8rem 1rem;
+}
+
+.ado-done-icon { font-size: 1rem; flex-shrink: 0; }
+.ado-done-title {
+    font-weight: 700;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.ado-done-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.ado-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
     border-radius: 8px;
     background: color-mix(in srgb, #f85149 8%, var(--surface-secondary));
     border: 1px solid rgba(248, 81, 73, 0.3);
@@ -7361,9 +7601,7 @@ body {
     font-weight: 600;
 }
 
-.remed-pipe-error-icon {
-    font-size: 1rem;
-}
+.ado-error-icon { font-size: 1rem; }
 
 /* ── Template Test Results ──────────────────────────────────── */
 .test-summary {
