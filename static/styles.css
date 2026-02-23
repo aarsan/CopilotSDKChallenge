@@ -4872,6 +4872,18 @@ body {
     align-items: center;
     gap: 0.5rem;
     min-width: 0;
+    cursor: pointer;
+}
+
+.std-card-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+}
+
+.std-card-body {
+    cursor: pointer;
 }
 
 .std-severity-icon {
@@ -4961,6 +4973,16 @@ body {
 
 .std-card-rule code {
     color: var(--accent-cyan);
+}
+
+.std-card-remediation {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* ── Standard Detail Drawer ──────────────────────────────── */
@@ -5073,6 +5095,332 @@ body {
     font-size: 0.75rem;
     color: var(--text-muted);
     padding: 0.5rem;
+}
+
+/* ── Governance Summary Bar ──────────────────────────────── */
+
+.gov-summary {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.gov-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    min-width: 70px;
+}
+
+.gov-stat-num {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1;
+}
+
+.gov-stat-enabled { color: var(--accent-green); }
+.gov-stat-disabled { color: var(--text-muted); }
+.gov-stat-critical { color: #f85149; }
+.gov-stat-high { color: #f0883e; }
+.gov-stat-medium { color: #d29922; }
+.gov-stat-low { color: #3fb950; }
+
+.gov-stat-label {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.2rem;
+    white-space: nowrap;
+}
+
+.gov-stat-sep {
+    width: 1px;
+    height: 36px;
+    background: var(--border-muted);
+    margin: 0 0.25rem;
+}
+
+/* ── Standard Card Toggle ────────────────────────────────── */
+
+.std-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.std-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.std-toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--border-muted);
+    border-radius: 20px;
+    transition: background 0.2s;
+}
+
+.std-toggle-slider::before {
+    content: "";
+    position: absolute;
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text-primary);
+    border-radius: 50%;
+    transition: transform 0.2s;
+}
+
+.std-toggle input:checked + .std-toggle-slider {
+    background: var(--accent-green);
+}
+
+.std-toggle input:checked + .std-toggle-slider::before {
+    transform: translateX(16px);
+}
+
+/* ── Import Standards Enhancements ───────────────────────── */
+
+.import-intro {
+    margin-bottom: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+.import-source-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid var(--border-primary);
+    margin-bottom: 1rem;
+}
+
+.import-tab {
+    padding: 0.5rem 1rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.import-tab:hover { color: var(--text-primary); }
+
+.import-tab.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+
+.import-source-content.hidden { display: none; }
+
+.import-upload-zone {
+    border: 2px dashed var(--border-muted);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+    text-align: center;
+    transition: border-color 0.2s, background 0.2s;
+    cursor: pointer;
+}
+
+.import-upload-zone:hover,
+.import-upload-zone.drag-over {
+    border-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.05);
+}
+
+.import-upload-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.import-upload-text {
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+}
+
+.import-upload-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.import-file-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+}
+
+.import-file-info.hidden { display: none; }
+
+.import-file-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--accent-blue);
+    flex: 1;
+}
+
+.import-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.import-preview-header h4 {
+    margin: 0;
+    font-size: 0.88rem;
+}
+
+.import-preview-actions {
+    display: flex;
+    gap: 0.35rem;
+}
+
+/* ── Import Preview Card ─────────────────────────────────── */
+
+.import-std-card {
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    transition: border-color 0.15s;
+}
+
+.import-std-card:hover {
+    border-color: var(--accent-blue);
+}
+
+.import-std-card.excluded {
+    opacity: 0.45;
+}
+
+.import-std-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.25rem;
+}
+
+.import-std-name {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.import-std-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.import-std-desc {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+    line-height: 1.4;
+}
+
+.import-std-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.import-std-rule {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+.import-std-rule code {
+    color: var(--accent-cyan);
+}
+
+/* ── Remediation Section in Detail ───────────────────────── */
+
+.std-remediation {
+    background: rgba(63, 185, 80, 0.06);
+    border: 1px solid rgba(63, 185, 80, 0.2);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+}
+
+.std-remediation-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent-green);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.3rem;
+}
+
+.std-remediation-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* ── Rule Visualization ──────────────────────────────────── */
+
+.std-rule-visual {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.std-rule-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.std-rule-label {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    min-width: 65px;
+    text-align: right;
+}
+
+.std-rule-value {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--accent-cyan);
+    background: var(--bg-primary);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-muted);
 }
 
 /* ── Standard Detail Actions ─────────────────────────────── */
