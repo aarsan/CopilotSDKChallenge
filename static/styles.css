@@ -1537,6 +1537,57 @@ body {
     text-overflow: ellipsis;
 }
 
+/* Version log action buttons */
+.comp-verlog-actions {
+    display: flex;
+    gap: 0.3rem;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.comp-verlog-btn {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-muted);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+
+.comp-verlog-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.comp-verlog-btn-deploy {
+    border-color: #10b981;
+    color: #10b981;
+}
+
+.comp-verlog-btn-deploy:hover {
+    background: color-mix(in srgb, #10b981 12%, transparent);
+    border-color: #059669;
+    color: #059669;
+}
+
+/* Active/Historical meta badges in template viewer */
+.tmpl-meta-active {
+    background: color-mix(in srgb, #10b981 15%, transparent) !important;
+    border-color: #10b981 !important;
+    color: #10b981 !important;
+}
+
+.tmpl-meta-historical {
+    background: color-mix(in srgb, #f59e0b 12%, transparent) !important;
+    border-color: #f59e0b !important;
+    color: #f59e0b !important;
+}
+
 .detail-meta {
     display: flex;
     flex-wrap: wrap;

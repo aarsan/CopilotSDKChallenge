@@ -3711,7 +3711,7 @@ async def get_template_composition(template_id: str):
 
 @app.get("/api/catalog/templates/{template_id}/versions")
 async def list_template_versions(template_id: str):
-    """List all versions of a template."""
+    """List all versions of a template (arm_template stripped for performance)."""
     from src.database import get_template_by_id, get_template_versions
 
     tmpl = await get_template_by_id(template_id)
@@ -3720,12 +3720,40 @@ async def list_template_versions(template_id: str):
 
     versions = await get_template_versions(template_id)
 
+    # Strip arm_template from list to keep payload small
+    versions_summary = []
+    for v in versions:
+        vs = {k: val for k, val in v.items() if k != "arm_template"}
+        vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+        versions_summary.append(vs)
+
     return JSONResponse({
         "template_id": template_id,
         "template_name": tmpl.get("name", ""),
         "active_version": tmpl.get("active_version"),
         "status": tmpl.get("status", "draft"),
-        "versions": versions,
+        "versions": versions_summary,
+    })
+
+
+@app.get("/api/catalog/templates/{template_id}/versions/{version}")
+async def get_catalog_template_version(template_id: str, version: int):
+    """Get a single version of a catalog template including full ARM content."""
+    from src.database import get_template_by_id, get_template_version
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    ver = await get_template_version(template_id, version)
+    if not ver:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found")
+
+    return JSONResponse({
+        **ver,
+        "template_id": template_id,
+        "template_name": tmpl.get("name", ""),
+        "active_version": tmpl.get("active_version"),
     })
 
 
@@ -4495,13 +4523,15 @@ async def deploy_template(template_id: str, request: Request):
 
     region = body.get("region", "eastus2")
     user_params = body.get("parameters", {})
+    deploy_version = body.get("version")  # optional: deploy a specific version
 
-    # Get the active (approved) version's ARM template
+    # Get the ARM template — specific version or active (approved) version
     arm_content = tmpl.get("content", "")
     versions = await get_template_versions(template_id)
     active_ver = tmpl.get("active_version")
+    target_ver = deploy_version if deploy_version else active_ver
     for v in versions:
-        if v["version"] == active_ver and v.get("arm_template"):
+        if v["version"] == target_ver and v.get("arm_template"):
             arm_content = v["arm_template"]
             break
 

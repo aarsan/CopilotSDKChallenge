@@ -1530,6 +1530,78 @@ function downloadTemplateBlob(content, filename) {
     showToast('Template downloaded', 'success');
 }
 
+// ── Catalog Template Version Viewer ─────────────────────────
+
+async function viewCatalogTemplateVersion(templateId, version) {
+    const modal = document.getElementById('modal-template-viewer');
+    const title = document.getElementById('template-viewer-title');
+    const meta = document.getElementById('template-viewer-meta');
+    const code = document.getElementById('template-viewer-code');
+
+    title.textContent = `ARM Template — Loading…`;
+    meta.innerHTML = '<span class="template-meta-badge">Loading…</span>';
+    code.querySelector('code').textContent = 'Loading template…';
+    _currentTemplateContent = '';
+    _currentTemplateFilename = `${templateId.replace(/[^a-zA-Z0-9_-]/g, '_')}_v${version}.json`;
+    _currentTemplateServiceId = templateId;
+    _currentTemplateVersion = version;
+
+    // Reset modification UI
+    const modifyPrompt = document.getElementById('template-modify-prompt');
+    const modifyProgress = document.getElementById('template-modify-progress');
+    const modifyBtn = document.getElementById('template-modify-btn');
+    if (modifyPrompt) modifyPrompt.value = '';
+    if (modifyProgress) { modifyProgress.classList.add('hidden'); modifyProgress.innerHTML = ''; }
+    if (modifyBtn) { modifyBtn.disabled = false; modifyBtn.textContent = '🚀 Apply'; }
+
+    modal.classList.remove('hidden');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/versions/${version}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        const template = data.arm_template || '';
+
+        let formatted;
+        try { formatted = JSON.stringify(JSON.parse(template), null, 2); } catch { formatted = template; }
+
+        _currentTemplateContent = formatted;
+        code.querySelector('code').innerHTML = _highlightJSON(formatted);
+
+        const sizeKB = (formatted.length / 1024).toFixed(1);
+        const semver = data.semver || `${version}.0.0`;
+        const isActive = data.version === data.active_version;
+        const dateStr = data.created_at ? data.created_at.substring(0, 10) : '—';
+
+        const metaBadges = [
+            `<span class="template-meta-badge">📦 ${escapeHtml(data.template_name || templateId)}</span>`,
+            `<span class="template-meta-badge">v${semver}</span>`,
+            `<span class="template-meta-badge">${sizeKB} KB</span>`,
+            `<span class="template-meta-badge">📅 ${dateStr}</span>`,
+            isActive ? '<span class="template-meta-badge tmpl-meta-active">✅ Active</span>' : `<span class="template-meta-badge tmpl-meta-historical">📜 Historical</span>`,
+        ];
+
+        const templateHash = template ? (() => { try { const p = JSON.parse(template); return p.metadata?._generator?.templateHash || ''; } catch { return ''; } })() : '';
+        if (templateHash) metaBadges.push(`<span class="template-meta-badge" title="Content hash">🔑 ${templateHash}</span>`);
+
+        title.textContent = `ARM Template — v${semver}`;
+        meta.innerHTML = metaBadges.join('\n');
+    } catch (err) {
+        code.querySelector('code').textContent = `Error loading template: ${err.message}`;
+    }
+}
+
+async function deployCatalogTemplateVersion(templateId, version, semver) {
+    if (!confirm(`Deploy version ${semver || version} of this template?`)) return;
+    // Navigate to the template detail and pre-fill deploy section with version
+    window._deploySpecificVersion = version;
+    await showTemplateDetail(templateId);
+    // Scroll to deploy section if visible
+    const deployBtn = document.getElementById('tmpl-deploy-btn');
+    if (deployBtn) deployBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    showToast(`Deploy section loaded for version ${semver || version}. Fill in resource group and deploy.`, 'info');
+}
+
 async function submitTemplateModification() {
     const promptEl = document.getElementById('template-modify-prompt');
     const progressEl = document.getElementById('template-modify-progress');
@@ -2577,6 +2649,8 @@ async function _loadTemplateVersionHistory(templateId) {
             const semverDisplay = v.semver ? v.semver : `${v.version}.0.0`;
             const changeLabel = _inferChangeType(v.created_by, v.changelog);
             const dateStr = v.created_at ? v.created_at.substring(0, 10) : '';
+            const hasTemplate = (v.template_size_bytes || 0) > 0;
+            const tid = escapeHtml(templateId);
 
             return `
                 <div class="comp-verlog-item ${isActive ? 'comp-verlog-active' : ''} comp-verlog-${v.status}">
@@ -2586,6 +2660,10 @@ async function _loadTemplateVersionHistory(templateId) {
                         ${isActive ? '<span class="comp-verlog-active-tag">Active</span>' : ''}
                         ${changeLabel ? `<span class="comp-verlog-change">${changeLabel}</span>` : ''}
                         <span class="comp-verlog-date">${dateStr}</span>
+                        <span class="comp-verlog-actions">
+                            ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-view" onclick="viewCatalogTemplateVersion('${tid}', ${v.version})" title="View ARM template">👁 View</button>` : ''}
+                            ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-deploy" onclick="deployCatalogTemplateVersion('${tid}', ${v.version}, '${semverDisplay}')" title="Deploy this version">🚀 Deploy</button>` : ''}
+                        </span>
                     </div>
                     ${v.changelog ? `<div class="comp-verlog-note">${escapeHtml(v.changelog)}</div>` : ''}
                 </div>
@@ -3767,10 +3845,17 @@ async function deployTemplate(templateId) {
         const regionSelect = document.getElementById('tmpl-deploy-region');
         const region = regionSelect ? regionSelect.value : 'eastus2';
 
+        // Check if a specific version was requested
+        const deployVersion = window._deploySpecificVersion || null;
+        window._deploySpecificVersion = null; // clear after use
+
+        const deployBody = { resource_group: resourceGroup, region, parameters };
+        if (deployVersion) deployBody.version = deployVersion;
+
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/deploy`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ resource_group: resourceGroup, region, parameters }),
+            body: JSON.stringify(deployBody),
         });
 
         if (!res.ok) {
