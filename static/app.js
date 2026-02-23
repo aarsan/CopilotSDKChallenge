@@ -2353,40 +2353,11 @@ function showTemplateDetail(templateId) {
                     <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
                 </div>` : ''}
 
-                ${optionalRefs.length ? `
+                ${(tmpl.service_ids && tmpl.service_ids.length && status !== 'approved') ? `
                 <div class="detail-section">
-                    <h4>📎 Optional References</h4>
-                    <div class="tmpl-dep-list">
-                        ${optionalRefs.map(o => `
-                            <div class="tmpl-dep-item tmpl-dep-optional">
-                                <strong>${_shortType(o.type || o)}</strong>
-                                <span>${escapeHtml(o.reason || '')}</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>` : ''}
-
-                ${(tmpl.service_ids && tmpl.service_ids.length) ? `
-                <div class="detail-section">
-                    <h4>Composed From Services</h4>
-                    <div class="detail-tags">${tmpl.service_ids.map(s => `<span class="region-tag">${escapeHtml(s)}</span>`).join('')}</div>
-                    ${status !== 'approved' ? `<a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
+                    <a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
                         🔄 Recompose from latest service versions
-                    </a>` : ''}
-                </div>` : ''}
-
-                ${(tmpl.parameters && tmpl.parameters.length) ? `
-                <div class="detail-section">
-                    <h4>Parameters</h4>
-                    <div class="detail-params">
-                        ${tmpl.parameters.map(p => `
-                            <div class="detail-param">
-                                <span class="param-name">${escapeHtml(p.name || p)}</span>
-                                ${p.type ? `<span class="param-type">${escapeHtml(p.type)}</span>` : ''}
-                                ${p.required ? '<span class="param-required">required</span>' : ''}
-                            </div>
-                        `).join('')}
-                    </div>
+                    </a>
                 </div>` : ''}
 
                 <!-- Request Changes -->
