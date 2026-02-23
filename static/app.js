@@ -5036,7 +5036,6 @@ async function loadStandards() {
         const data = await res.json();
         allStandards = data.standards || [];
         _updateGovernanceSummary();
-        _buildStandardsCategoryFilters();
         _renderStandardsList();
     } catch (err) {
         console.error('Failed to load standards:', err);
@@ -5046,38 +5045,327 @@ async function loadStandards() {
 }
 
 function _updateGovernanceSummary() {
-    const total = allStandards.length;
-    const enabled = allStandards.filter(s => s.enabled).length;
-    const disabled = total - enabled;
-    const critical = allStandards.filter(s => s.severity === 'critical').length;
-    const high = allStandards.filter(s => s.severity === 'high').length;
-    const medium = allStandards.filter(s => s.severity === 'medium').length;
-    const low = allStandards.filter(s => s.severity === 'low').length;
-
-    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-    el('gov-total', total);
-    el('gov-enabled', enabled);
-    el('gov-disabled', disabled);
-    el('gov-critical', critical);
-    el('gov-high', high);
-    el('gov-medium', medium);
-    el('gov-low', low);
+    _renderCompletenessBoard();
 }
 
-function _buildStandardsCategoryFilters() {
-    const categories = [...new Set(allStandards.map(s => s.category))].sort();
-    const container = document.getElementById('standards-category-filters');
+// ── Governance Completeness Dashboard ───────────────────────
+
+const GOV_CATEGORIES = [
+    {
+        id: 'naming',
+        icon: '🏷️',
+        name: 'Naming Conventions',
+        desc: 'Resource naming patterns for consistency across your organization',
+        prompt: `Our organization requires the following naming conventions for Azure resources:
+
+- All resources must follow the pattern: {env}-{app}-{resourcetype}-{region}-{instance}
+- Environment abbreviations: prod, stg, dev, test, sandbox
+- Resource type abbreviations: rg (Resource Group), vnet (Virtual Network), snet (Subnet), pip (Public IP), nsg (Network Security Group), vm (Virtual Machine), sql (SQL Server), sqldb (SQL Database), st (Storage Account), kv (Key Vault), acr (Container Registry), aks (AKS Cluster), app (App Service), func (Function App), apim (API Management), agw (Application Gateway), law (Log Analytics Workspace)
+- Region abbreviations: eus (East US), eus2 (East US 2), wus2 (West US 2), weu (West Europe)
+- Instance numbers: 001, 002, etc.
+- Examples: prod-myapp-sql-eus2-001, dev-portal-vm-wus2-001, prod-billing-kv-eus2-001
+- Resource groups: {env}-{app}-rg-{region} (e.g. prod-myapp-rg-eus2)
+- All names must be lowercase, alphanumeric with hyphens only (no underscores)`,
+    },
+    {
+        id: 'security',
+        icon: '🔒',
+        name: 'Security Standards',
+        desc: 'Baseline security requirements for all infrastructure',
+        prompt: `Our organization's security standards require:
+
+- All secrets, keys, and certificates must be stored in Azure Key Vault — never hardcoded
+- Service principal secrets are prohibited; use managed identities for all service-to-service auth
+- All storage accounts must deny public blob access (allowBlobPublicAccess = false)
+- Key Vaults must have soft-delete enabled with 90-day retention and purge protection
+- RBAC authorization must be used for Key Vault access (no access policies)
+- All SQL databases must have Transparent Data Encryption (TDE) enabled
+- Azure Defender / Microsoft Defender for Cloud must be enabled for all subscriptions
+- Just-in-time (JIT) VM access must be enabled for all virtual machines
+- All resources must have resource locks (CanNotDelete) in production environments`,
+    },
+    {
+        id: 'encryption',
+        icon: '🔐',
+        name: 'Encryption Standards',
+        desc: 'Data protection through encryption at rest and in transit',
+        prompt: `Our encryption standards require:
+
+- TLS 1.2 minimum for all services — TLS 1.0 and 1.1 must be disabled
+- HTTPS must be enforced on all web-facing resources (httpsOnly = true)
+- All data stores must use encryption at rest (TDE for SQL, SSE for Storage, etc.)
+- Customer-managed keys (CMK) required for production workloads storing sensitive data
+- Storage accounts must use Microsoft-managed keys at minimum, CMK preferred
+- SSL/TLS certificates must be managed through Key Vault with auto-renewal
+- Database connections must use encrypted connections only`,
+    },
+    {
+        id: 'identity',
+        icon: '👤',
+        name: 'Identity & Access',
+        desc: 'Authentication, authorization, and access management rules',
+        prompt: `Our identity and access management standards require:
+
+- Managed identities (system or user-assigned) must be used for all Azure service authentication
+- Azure AD authentication must be enabled for all services that support it (SQL, PostgreSQL, Redis, etc.)
+- Local/SQL authentication must be disabled on databases in production
+- Multi-factor authentication (MFA) must be enforced for all user accounts
+- Privileged Identity Management (PIM) must be used for elevated access
+- Service principals, if unavoidable, must have credentials rotated every 90 days
+- Role-Based Access Control (RBAC) must follow least-privilege principle
+- No Contributor or Owner roles at subscription level without PIM`,
+    },
+    {
+        id: 'network',
+        icon: '🌐',
+        name: 'Network Security',
+        desc: 'Network isolation, private endpoints, and traffic rules',
+        prompt: `Our network security standards require:
+
+- Public network access must be disabled for all data services (publicNetworkAccess = Disabled)
+- Private endpoints required for all PaaS services in production (SQL, Storage, Key Vault, etc.)
+- All VNets must use Network Security Groups (NSGs) on every subnet
+- NSG flow logs must be enabled and sent to Log Analytics
+- No resources may have public IP addresses unless explicitly approved
+- Application Gateway or Azure Front Door with WAF must front all public-facing applications
+- VNet peering must be used instead of VPN for intra-region connectivity
+- DNS must use Azure Private DNS Zones for private endpoint resolution`,
+    },
+    {
+        id: 'tagging',
+        icon: '📎',
+        name: 'Resource Tagging',
+        desc: 'Mandatory tags for cost tracking, ownership, and governance',
+        prompt: `Our resource tagging standards require:
+
+- All Azure resources must have the following mandatory tags:
+  - environment: (prod, staging, dev, test, sandbox)
+  - owner: (email of the resource owner)
+  - costCenter: (finance cost center code)
+  - project: (project or application name)
+  - dataClassification: (public, internal, confidential, restricted)
+  - createdBy: (deploying identity or pipeline)
+  - createdDate: (ISO 8601 date of creation)
+- Optional but recommended tags:
+  - team: (team name)
+  - expiryDate: (for temporary/dev resources)
+  - supportContact: (on-call team or email)
+- Tag values must follow casing conventions: lowercase for environment, email format for owner
+- Resources without mandatory tags must be flagged and remediated within 48 hours`,
+    },
+    {
+        id: 'compliance',
+        icon: '📋',
+        name: 'Regulatory Compliance',
+        desc: 'HIPAA, SOC 2, PCI-DSS, GDPR, and other framework requirements',
+        prompt: `Our regulatory compliance standards include:
+
+HIPAA (for healthcare/PHI data):
+- PHI data stores must use customer-managed encryption keys
+- Access to PHI must be logged and auditable for 7 years
+- PHI data must not traverse public networks
+- Business Associate Agreements (BAAs) must be in place with all vendors
+
+SOC 2:
+- All changes must go through approved CI/CD pipelines (no manual portal changes)
+- Access reviews must be conducted quarterly
+- Incident response procedures must be documented and tested annually
+- All production access must be logged and monitored
+
+Data Residency:
+- Customer data must remain within approved geographic regions
+- Cross-region replication for DR must use approved region pairs only`,
+    },
+    {
+        id: 'monitoring',
+        icon: '📡',
+        name: 'Monitoring & Logging',
+        desc: 'Observability, diagnostic logging, and alerting requirements',
+        prompt: `Our monitoring and logging standards require:
+
+- All resources must have diagnostic settings enabled
+- Diagnostic logs must be sent to a central Log Analytics workspace
+- Activity logs must be retained for at least 365 days
+- Azure Monitor alerts must be configured for: CPU > 90%, memory > 85%, disk > 90%
+- Application Insights must be enabled for all web applications
+- Custom metrics must be emitted for business-critical KPIs
+- Availability tests (ping tests) must be configured for all public endpoints
+- Action groups must be configured to notify the on-call team via email and Teams
+- Log-based alerts must be created for security events (failed logins, privilege escalation)`,
+    },
+    {
+        id: 'geography',
+        icon: '🌍',
+        name: 'Region & Geography',
+        desc: 'Approved deployment regions and data residency rules',
+        prompt: `Our geographic deployment standards require:
+
+- Approved Azure regions for production: East US 2, West US 2, West Europe
+- Approved regions for dev/test: East US 2, West US 2
+- Disaster recovery must use paired regions (East US 2 ↔ West US 2)
+- Data sovereignty: EU customer data must remain in West Europe or North Europe
+- New region approvals require security review and 2-week lead time
+- All resources must specify location explicitly (no default/inherited location)`,
+    },
+    {
+        id: 'cost',
+        icon: '💰',
+        name: 'Cost Management',
+        desc: 'Budget thresholds, SKU restrictions, and cost optimization',
+        prompt: `Our cost management standards require:
+
+- Monthly cost per project must not exceed $5,000 without VP approval
+- Dev/test resources must use B-series or D-series VMs (no premium SKUs)
+- Auto-shutdown must be enabled for all dev/test VMs (7 PM local time)
+- Reserved instances must be used for production workloads with predictable usage
+- Storage must use appropriate tiers (Hot for active, Cool for infrequent, Archive for retention)
+- Orphaned resources (unattached disks, unused IPs) must be cleaned up within 7 days
+- Cost alerts must be set at 80% and 100% of budget
+- Spot VMs should be considered for batch/fault-tolerant workloads`,
+    },
+    {
+        id: 'availability',
+        icon: '🛡️',
+        name: 'Availability & DR',
+        desc: 'High availability, backup, disaster recovery, and SLA requirements',
+        prompt: `Our availability and disaster recovery standards require:
+
+- Production workloads must use availability zones where supported
+- All databases must have automated backups with at least 30-day retention
+- Point-in-time restore must be enabled for all SQL databases
+- Geo-redundant backup (GRS) required for production storage accounts
+- RTO (Recovery Time Objective): 4 hours for critical, 24 hours for standard
+- RPO (Recovery Point Objective): 1 hour for critical, 24 hours for standard
+- DR failover must be tested at least annually
+- Azure Site Recovery must be configured for critical VM workloads
+- Load balancers must use zone-redundant frontend IPs`,
+    },
+];
+
+function _renderCompletenessBoard() {
+    const container = document.getElementById('gov-completeness');
     if (!container) return;
-    container.innerHTML = `<button class="filter-pill ${currentStandardsCategoryFilter === 'all' ? 'active' : ''}" onclick="filterStandards('all')">All</button>` +
-        categories.map(c =>
-            `<button class="filter-pill ${currentStandardsCategoryFilter === c ? 'active' : ''}" onclick="filterStandards('${escapeHtml(c)}')">${escapeHtml(c)}</button>`
-        ).join('');
+
+    // Count standards per category
+    const catCounts = {};
+    const catEnabled = {};
+    for (const std of allStandards) {
+        const cat = std.category;
+        catCounts[cat] = (catCounts[cat] || 0) + 1;
+        if (std.enabled) catEnabled[cat] = (catEnabled[cat] || 0) + 1;
+    }
+
+    const configured = GOV_CATEGORIES.filter(c => (catCounts[c.id] || 0) > 0).length;
+    const total = GOV_CATEGORIES.length;
+    const pct = total > 0 ? Math.round((configured / total) * 100) : 0;
+
+    // Progress header
+    let html = `
+    <div class="gov-completeness-header">
+        <div class="gov-completeness-title">
+            <h3>Governance Completeness</h3>
+            <span class="gov-completeness-pct ${pct === 100 ? 'gov-complete' : pct >= 50 ? 'gov-partial' : 'gov-low'}">${pct}%</span>
+        </div>
+        <div class="gov-completeness-bar">
+            <div class="gov-completeness-fill" style="width: ${pct}%"></div>
+        </div>
+        <div class="gov-completeness-subtitle">
+            ${configured} of ${total} standard categories configured · ${allStandards.length} total standards (${allStandards.filter(s => s.enabled).length} enabled)
+        </div>
+    </div>
+    <div class="gov-category-grid">`;
+
+    for (const cat of GOV_CATEGORIES) {
+        const count = catCounts[cat.id] || 0;
+        const enabled = catEnabled[cat.id] || 0;
+        const isConfigured = count > 0;
+
+        if (isConfigured) {
+            html += `
+            <div class="gov-cat-card gov-cat-configured" onclick="filterStandards('${cat.id}')">
+                <div class="gov-cat-icon">${cat.icon}</div>
+                <div class="gov-cat-info">
+                    <div class="gov-cat-name">${cat.name}</div>
+                    <div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>
+                </div>
+                <div class="gov-cat-status gov-cat-ok">✓</div>
+            </div>`;
+        } else {
+            html += `
+            <div class="gov-cat-card gov-cat-missing">
+                <div class="gov-cat-icon">${cat.icon}</div>
+                <div class="gov-cat-info">
+                    <div class="gov-cat-name">${cat.name}</div>
+                    <div class="gov-cat-desc">${cat.desc}</div>
+                </div>
+                <div class="gov-cat-actions">
+                    <button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); generateStandardsForCategory('${cat.id}')" title="AI will generate standards for this category">🤖 Generate</button>
+                    <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); importStandardsForCategory('${cat.id}')" title="Paste your existing policies for this category">📥 Import</button>
+                </div>
+            </div>`;
+        }
+    }
+
+    // Any extra categories not in GOV_CATEGORIES
+    const knownIds = new Set(GOV_CATEGORIES.map(c => c.id));
+    const extraCats = Object.keys(catCounts).filter(c => !knownIds.has(c));
+    for (const catId of extraCats) {
+        const count = catCounts[catId] || 0;
+        const enabled = catEnabled[catId] || 0;
+        html += `
+        <div class="gov-cat-card gov-cat-configured" onclick="filterStandards('${catId}')">
+            <div class="gov-cat-icon">📄</div>
+            <div class="gov-cat-info">
+                <div class="gov-cat-name">${catId.charAt(0).toUpperCase() + catId.slice(1).replace(/_/g, ' ')}</div>
+                <div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>
+            </div>
+            <div class="gov-cat-status gov-cat-ok">✓</div>
+        </div>`;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function generateStandardsForCategory(categoryId) {
+    const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
+    if (!cat) return;
+
+    // Open the import modal pre-filled with the category prompt
+    openImportStandardsModal();
+    // Switch to paste tab and fill in the prompt
+    switchImportTab('paste');
+    const textarea = document.getElementById('import-standards-content');
+    if (textarea) {
+        textarea.value = cat.prompt;
+    }
+    // Auto-extract after a brief delay so the modal is visible
+    setTimeout(() => extractStandards(), 300);
+}
+
+function importStandardsForCategory(categoryId) {
+    const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
+    if (!cat) return;
+
+    openImportStandardsModal();
+    switchImportTab('paste');
+    const textarea = document.getElementById('import-standards-content');
+    if (textarea) {
+        textarea.value = '';
+        textarea.placeholder = `Paste your organization's ${cat.name.toLowerCase()} here...\n\nFor example:\n${cat.prompt.split('\n').slice(0, 5).join('\n')}`;
+        textarea.focus();
+    }
 }
 
 function filterStandards(category) {
     currentStandardsCategoryFilter = category;
-    _buildStandardsCategoryFilters();
+    _renderCompletenessBoard();
     _renderStandardsList();
+    // Scroll to the standards list
+    const list = document.getElementById('standards-list');
+    if (list && category !== 'all') {
+        list.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 
 function filterStandardsBySeverity(severity) {
