@@ -2999,14 +2999,38 @@ function _renderRemediationPlan(templateId, data) {
                 <span class="remed-plan-count">${steps.length} step${steps.length > 1 ? 's' : ''}</span>
             </div>
             <p class="remed-plan-summary">${escapeHtml(data.summary)}</p>
-        </div>
-        <div class="remed-steps">`;
+        </div>`;
+
+    // Template version summary bar
+    const tvInfo = data.template_versions || {};
+    const templateIds = Object.keys(tvInfo);
+    if (templateIds.length > 0) {
+        html += `<div class="remed-version-bar">`;
+        for (const tid of templateIds) {
+            const vi = tvInfo[tid];
+            const changeLabel = { minor: 'Minor', patch: 'Patch', major: 'Major' };
+            html += `
+            <div class="remed-version-card">
+                <span class="remed-ver-name">${escapeHtml(tid)}</span>
+                <span class="remed-ver-arrow">
+                    <span class="remed-ver-current">${escapeHtml(vi.current_semver)}</span>
+                    →
+                    <span class="remed-ver-next">${escapeHtml(vi.projected_semver)}</span>
+                </span>
+                <span class="remed-ver-type remed-ver-type-${vi.change_type}">${changeLabel[vi.change_type] || vi.change_type}</span>
+            </div>`;
+        }
+        html += `</div>`;
+    }
+
+    html += `<div class="remed-steps">`;
 
     const sevIcons = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
     const sevColors = { critical: 'remed-sev-critical', high: 'remed-sev-high', medium: 'remed-sev-medium', low: 'remed-sev-low' };
 
     for (const step of steps) {
         const sev = (step.severity || 'medium').toLowerCase();
+        const stepVer = tvInfo[step.template_id] || {};
         html += `
         <div class="remed-step ${sevColors[sev] || ''}">
             <div class="remed-step-num">${step.step || '·'}</div>
@@ -3018,6 +3042,7 @@ function _renderRemediationPlan(templateId, data) {
                 <div class="remed-step-detail">${escapeHtml(step.detail || '')}</div>
                 <div class="remed-step-meta">
                     <span class="remed-step-tmpl">📄 ${escapeHtml(step.template_name || step.template_id || '')}</span>
+                    ${stepVer.projected_semver ? `<span class="remed-step-ver">v${escapeHtml(step.current_semver || '')} → v${escapeHtml(step.projected_semver || '')}</span>` : ''}
                     ${(step.standards_addressed || []).map(s => `<span class="remed-step-std">${escapeHtml(s)}</span>`).join('')}
                 </div>
             </div>

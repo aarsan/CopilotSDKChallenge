@@ -6614,6 +6614,80 @@ body {
     line-height: 1.45;
 }
 
+/* Version summary bar */
+.remed-version-bar {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding: 0.6rem 1rem;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+    border-top: none;
+}
+
+.remed-version-card {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--surface-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-muted);
+    font-size: 0.78rem;
+}
+
+.remed-ver-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.remed-ver-arrow {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.remed-ver-current {
+    color: var(--text-muted);
+}
+
+.remed-ver-next {
+    font-weight: 700;
+    color: var(--accent-blue);
+}
+
+.remed-ver-type {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+}
+
+.remed-ver-type-patch {
+    background: rgba(63, 185, 80, 0.15);
+    color: #3fb950;
+}
+
+.remed-ver-type-minor {
+    background: rgba(88, 166, 255, 0.15);
+    color: #58a6ff;
+}
+
+.remed-ver-type-major {
+    background: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+}
+
 /* Steps list */
 .remed-steps {
     border: 1px solid var(--border-primary);
@@ -6711,6 +6785,17 @@ body {
 .remed-step-tmpl {
     font-size: 0.68rem;
     color: var(--text-muted);
+}
+
+.remed-step-ver {
+    font-size: 0.65rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.1);
+    padding: 0.1rem 0.4rem;
+    border-radius: 6px;
+    border: 1px solid rgba(88, 166, 255, 0.2);
 }
 
 .remed-step-std {

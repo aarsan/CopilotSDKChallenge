@@ -2616,7 +2616,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     from src.model_router import Task, get_model_for_task
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
-        get_all_templates,
+        get_all_templates, get_latest_semver, compute_next_semver,
     )
 
     body = await request.json()
@@ -2651,20 +2651,41 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     if not violations_summary:
         return JSONResponse({"plan": [], "summary": "No violations to remediate — template is fully compliant.", "violation_count": 0})
 
-    # Gather ARM content for each template mentioned in violations
+    # Gather ARM content + version info for each template mentioned in violations
     template_ids = list({v["template_id"] for v in violations_summary})
     arm_snippets = {}
+    template_version_info = {}  # tid -> {current_version, current_semver, ...}
+
     for tid in template_ids:
+        versions = await get_template_versions(tid)
+        current_semver = await get_latest_semver(tid)
+        current_ver_num = versions[0]["version"] if versions else 0
+
+        # Determine change_type based on severity of violations for this template
+        tid_violations = [v for v in violations_summary if v["template_id"] == tid]
+        has_critical = any(v["severity"] == "critical" for v in tid_violations)
+        if has_critical:
+            change_type = "minor"  # critical compliance = minor bump
+        else:
+            change_type = "patch"  # high/medium/low = patch
+
+        projected_semver = compute_next_semver(current_semver, change_type)
+
+        template_version_info[tid] = {
+            "current_version": current_ver_num,
+            "current_semver": current_semver or "1.0.0",
+            "change_type": change_type,
+            "projected_semver": projected_semver,
+            "projected_version": current_ver_num + 1,
+        }
+
         if tid == template_id:
-            # Main template — get from latest version
-            versions = await get_template_versions(tid)
             if versions:
                 ver = await get_template_version(tid, versions[0]["version"])
                 arm_snippets[tid] = ver.get("arm_template", "") if ver else ""
             if not arm_snippets.get(tid):
                 arm_snippets[tid] = tmpl.get("content", "")
         else:
-            # Dependency template
             dep = await get_template_by_id(tid)
             arm_snippets[tid] = dep.get("content", "") if dep else ""
 
@@ -2768,10 +2789,22 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             "violation_count": len(violations_summary),
         }, status_code=500)
 
+    # Enrich steps with version info
+    steps = plan.get("steps", [])
+    for step in steps:
+        tid = step.get("template_id", template_id)
+        vinfo = template_version_info.get(tid, {})
+        step["current_semver"] = vinfo.get("current_semver", "")
+        step["projected_semver"] = vinfo.get("projected_semver", "")
+        step["change_type"] = vinfo.get("change_type", "patch")
+        step["current_version"] = vinfo.get("current_version", 0)
+        step["projected_version"] = vinfo.get("projected_version", 1)
+
     return JSONResponse({
-        "plan": plan.get("steps", []),
+        "plan": steps,
         "summary": plan.get("summary", ""),
         "violation_count": len(violations_summary),
+        "template_versions": template_version_info,
     })
 
 
@@ -2786,7 +2819,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     from src.model_router import Task, get_model_for_task
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
-        create_template_version,
+        create_template_version, get_backend,
     )
 
     body = await request.json()
@@ -2974,12 +3007,15 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         ) or "Compliance remediation applied"
         changelog = f"Compliance remediation: {changes_desc}"
 
+        # Determine change_type from plan steps
+        step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
+
         # Create new version
         new_ver = await create_template_version(
             tid,
             fixed_content,
             changelog=changelog,
-            change_type="patch",
+            change_type=step_change_type,
             created_by="compliance-remediation",
         )
 
