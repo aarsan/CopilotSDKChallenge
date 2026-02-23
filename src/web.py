@@ -2875,10 +2875,26 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             "violation_count": len(violations_summary),
         }, status_code=500)
 
-    # Enrich steps with version info
+    # Enrich steps with version info + normalize template_ids
     steps = plan.get("steps", [])
+    valid_template_ids = set(template_version_info.keys())
     for step in steps:
         tid = step.get("template_id", template_id)
+        # Normalize: if the LLM returned a name or invalid ID, map to the parent
+        if tid not in valid_template_ids:
+            # Try to find a match by name or partial match
+            matched = False
+            for vtid, vinfo in template_version_info.items():
+                tname = vinfo.get("template_name", "")
+                if tname and (tname.lower() == tid.lower() or vtid.lower() in tid.lower()):
+                    step["template_id"] = vtid
+                    tid = vtid
+                    matched = True
+                    break
+            if not matched:
+                step["template_id"] = template_id
+                tid = template_id
+
         vinfo = template_version_info.get(tid, {})
         step["current_semver"] = vinfo.get("current_semver", "")
         step["projected_semver"] = vinfo.get("projected_semver", "")
@@ -2933,6 +2949,30 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     backend = await get_backend()
     model = get_model_for_task(Task.CODE_GENERATION)
 
+    # Pre-load dependency templates for validation
+    dep_service_ids = tmpl.get("service_ids", []) or []
+    known_templates = {template_id: tmpl}
+    if dep_service_ids:
+        for sid in dep_service_ids:
+            dep = await get_template_by_id(sid)
+            if dep:
+                known_templates[sid] = dep
+    valid_ids = set(known_templates.keys())
+
+    # Normalize step template_ids — LLM may return names or wrong IDs
+    for step in plan_steps:
+        tid = step.get("template_id", template_id)
+        if tid not in valid_ids:
+            matched = False
+            for kid, ktmpl in known_templates.items():
+                kname = ktmpl.get("name", "")
+                if kname and (kname.lower() == tid.lower() or kid.lower() in tid.lower()):
+                    step["template_id"] = kid
+                    matched = True
+                    break
+            if not matched:
+                step["template_id"] = template_id
+
     # Group steps by template_id
     steps_by_template: dict[str, list] = {}
     for step in plan_steps:
@@ -2977,19 +3017,30 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             await asyncio.sleep(0)
 
             try:
-                if tid == template_id:
-                    versions = await get_template_versions(tid)
-                    current_arm = ""
-                    ver_num = None
-                    if versions:
-                        ver = await get_template_version(tid, versions[0]["version"])
-                        current_arm = ver.get("arm_template", "") if ver else ""
-                        ver_num = versions[0]["version"]
+                current_arm = ""
+                ver_num = None
+
+                # Try loading from version history first, fall back to catalog content
+                versions = await get_template_versions(tid)
+                if versions:
+                    ver = await get_template_version(tid, versions[0]["version"])
+                    current_arm = ver.get("arm_template", "") if ver else ""
+                    ver_num = versions[0]["version"]
+
+                # Fall back to catalog_templates.content
+                if not current_arm:
+                    src_tmpl = known_templates.get(tid) or await get_template_by_id(tid)
+                    current_arm = src_tmpl.get("content", "") if src_tmpl else ""
+
+                # Last resort for deps: use the parent composed template
+                if not current_arm and tid != template_id:
+                    yield json.dumps({"type": "log", "node_id": node_id, "message": f"No standalone ARM for {tid}, using parent template", "level": "info"}) + "\n"
+                    parent_versions = await get_template_versions(template_id)
+                    if parent_versions:
+                        parent_ver = await get_template_version(template_id, parent_versions[0]["version"])
+                        current_arm = parent_ver.get("arm_template", "") if parent_ver else ""
                     if not current_arm:
                         current_arm = tmpl.get("content", "")
-                else:
-                    dep_tmpl = await get_template_by_id(tid)
-                    current_arm = dep_tmpl.get("content", "") if dep_tmpl else ""
 
                 if not current_arm:
                     yield json.dumps({"type": "log", "node_id": node_id, "message": "No ARM content found", "level": "error"}) + "\n"
@@ -3000,7 +3051,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                     continue
 
                 arm_size = len(current_arm)
-                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Loaded template ({arm_size:,} bytes)" + (f" from version {ver_num}" if tid == template_id and ver_num else "")}) + "\n"
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Loaded template ({arm_size:,} bytes)" + (f" from version {ver_num}" if ver_num else "")}) + "\n"
                 yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-load", "status": "success"}) + "\n"
                 await asyncio.sleep(0)
 
