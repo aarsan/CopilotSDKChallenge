@@ -5097,55 +5097,146 @@ body {
     padding: 0.5rem;
 }
 
-/* ── Governance Summary Bar ──────────────────────────────── */
+/* ── Governance Completeness Dashboard ────────────────────── */
 
-.gov-summary {
-    display: flex;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-    flex-wrap: wrap;
-    align-items: center;
+.gov-completeness-header {
+    margin-bottom: 1.5rem;
 }
 
-.gov-stat {
+.gov-completeness-title {
     display: flex;
-    flex-direction: column;
     align-items: center;
-    background: var(--surface-secondary);
-    border: 1px solid var(--border-primary);
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    min-width: 70px;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
 }
 
-.gov-stat-num {
+.gov-completeness-title h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gov-completeness-pct {
     font-size: 1.4rem;
     font-weight: 700;
-    color: var(--text-primary);
     line-height: 1;
 }
+.gov-completeness-pct.gov-complete { color: var(--accent-green); }
+.gov-completeness-pct.gov-partial  { color: #d29922; }
+.gov-completeness-pct.gov-low      { color: #f85149; }
 
-.gov-stat-enabled { color: var(--accent-green); }
-.gov-stat-disabled { color: var(--text-muted); }
-.gov-stat-critical { color: #f85149; }
-.gov-stat-high { color: #f0883e; }
-.gov-stat-medium { color: #d29922; }
-.gov-stat-low { color: #3fb950; }
-
-.gov-stat-label {
-    font-size: 0.65rem;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-top: 0.2rem;
-    white-space: nowrap;
+.gov-completeness-bar {
+    height: 6px;
+    background: var(--border-muted);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.4rem;
 }
 
-.gov-stat-sep {
-    width: 1px;
-    height: 36px;
-    background: var(--border-muted);
-    margin: 0 0.25rem;
+.gov-completeness-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-green), #3fb950);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+    min-width: 2px;
+}
+
+.gov-completeness-subtitle {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* ── Category Grid ───────────────────────────────────────── */
+
+.gov-category-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.gov-cat-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-primary);
+    background: var(--surface-secondary);
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+
+.gov-cat-card.gov-cat-configured {
+    cursor: pointer;
+}
+
+.gov-cat-card.gov-cat-configured:hover {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 0 1px var(--accent-green);
+    transform: translateY(-1px);
+}
+
+.gov-cat-card.gov-cat-missing {
+    border-style: dashed;
+    border-color: var(--border-muted);
+    background: var(--surface-primary);
+}
+
+.gov-cat-icon {
+    font-size: 1.5rem;
+    flex-shrink: 0;
+    width: 2rem;
+    text-align: center;
+}
+
+.gov-cat-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.gov-cat-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.gov-cat-count {
+    font-size: 0.72rem;
+    color: var(--accent-green);
+    margin-top: 0.15rem;
+}
+
+.gov-cat-desc {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+    line-height: 1.3;
+}
+
+.gov-cat-status {
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.gov-cat-status.gov-cat-ok {
+    color: var(--accent-green);
+    font-weight: 700;
+}
+
+.gov-cat-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.gov-cat-actions .btn-xs {
+    font-size: 0.68rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 6px;
+    white-space: nowrap;
 }
 
 /* ── Standard Card Toggle ────────────────────────────────── */
