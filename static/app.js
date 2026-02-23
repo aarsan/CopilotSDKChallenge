@@ -5280,30 +5280,21 @@ function _renderCompletenessBoard() {
         const enabled = catEnabled[cat.id] || 0;
         const isConfigured = count > 0;
 
-        if (isConfigured) {
-            html += `
-            <div class="gov-cat-card gov-cat-configured" onclick="filterStandards('${cat.id}')">
-                <div class="gov-cat-icon">${cat.icon}</div>
-                <div class="gov-cat-info">
-                    <div class="gov-cat-name">${cat.name}</div>
-                    <div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>
-                </div>
-                <div class="gov-cat-status gov-cat-ok">✓</div>
-            </div>`;
-        } else {
-            html += `
-            <div class="gov-cat-card gov-cat-missing">
-                <div class="gov-cat-icon">${cat.icon}</div>
-                <div class="gov-cat-info">
-                    <div class="gov-cat-name">${cat.name}</div>
-                    <div class="gov-cat-desc">${cat.desc}</div>
-                </div>
-                <div class="gov-cat-actions">
-                    <button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); generateStandardsForCategory('${cat.id}')" title="AI will generate standards for this category">🤖 Generate</button>
-                    <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); importStandardsForCategory('${cat.id}')" title="Paste your existing policies for this category">📥 Import</button>
-                </div>
-            </div>`;
-        }
+        html += `
+        <div class="gov-cat-card ${isConfigured ? 'gov-cat-configured' : 'gov-cat-missing'}" onclick="openCategoryDetail('${cat.id}')">
+            <div class="gov-cat-icon">${cat.icon}</div>
+            <div class="gov-cat-info">
+                <div class="gov-cat-name">${cat.name}</div>
+                ${isConfigured
+                    ? `<div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>`
+                    : `<div class="gov-cat-desc">${cat.desc}</div>`
+                }
+            </div>
+            ${isConfigured
+                ? `<div class="gov-cat-status gov-cat-ok">✓</div>`
+                : `<div class="gov-cat-status gov-cat-gap">○</div>`
+            }
+        </div>`;
     }
 
     // Any extra categories not in GOV_CATEGORIES
@@ -5313,7 +5304,7 @@ function _renderCompletenessBoard() {
         const count = catCounts[catId] || 0;
         const enabled = catEnabled[catId] || 0;
         html += `
-        <div class="gov-cat-card gov-cat-configured" onclick="filterStandards('${catId}')">
+        <div class="gov-cat-card gov-cat-configured" onclick="openCategoryDetail('${catId}')">
             <div class="gov-cat-icon">📄</div>
             <div class="gov-cat-info">
                 <div class="gov-cat-name">${catId.charAt(0).toUpperCase() + catId.slice(1).replace(/_/g, ' ')}</div>
@@ -5327,26 +5318,166 @@ function _renderCompletenessBoard() {
     container.innerHTML = html;
 }
 
-function generateStandardsForCategory(categoryId) {
+function openCategoryDetail(categoryId) {
+    const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
+    const titleEl = document.getElementById('category-detail-title');
+    const bodyEl = document.getElementById('category-detail-body');
+    if (!bodyEl) return;
+
+    // Category info
+    const catName = cat ? cat.name : categoryId.charAt(0).toUpperCase() + categoryId.slice(1).replace(/_/g, ' ');
+    const catIcon = cat ? cat.icon : '📄';
+    const catDesc = cat ? cat.desc : '';
+
+    if (titleEl) titleEl.textContent = `${catIcon} ${catName}`;
+
+    // Find existing standards for this category
+    const catStandards = allStandards.filter(s => s.category === categoryId);
+    const enabled = catStandards.filter(s => s.enabled);
+    const disabled = catStandards.filter(s => !s.enabled);
+
+    let html = '';
+
+    // ── Description
+    if (catDesc) {
+        html += `<p class="cat-detail-desc">${escapeHtml(catDesc)}</p>`;
+    }
+
+    // ── Existing standards
+    if (catStandards.length > 0) {
+        html += `
+        <div class="cat-detail-section">
+            <h4>Current Standards <span class="cat-detail-count">${enabled.length} active · ${disabled.length} disabled</span></h4>
+            <div class="cat-detail-standards">`;
+
+        for (const std of catStandards) {
+            const sevIcon = std.severity === 'critical' ? '🔴' : std.severity === 'high' ? '🟠' : std.severity === 'medium' ? '🟡' : '🟢';
+            const ruleDesc = _describeRule(std.rule);
+            html += `
+            <div class="cat-std-row ${std.enabled ? '' : 'cat-std-disabled'}">
+                <label class="std-toggle cat-std-toggle">
+                    <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${std.id}', this.checked); setTimeout(() => openCategoryDetail('${categoryId}'), 500)">
+                    <span class="std-toggle-slider"></span>
+                </label>
+                <div class="cat-std-info">
+                    <div class="cat-std-name">${sevIcon} ${escapeHtml(std.name)}</div>
+                    ${ruleDesc ? `<div class="cat-std-rule">${ruleDesc}</div>` : ''}
+                </div>
+                <button class="btn btn-xs btn-ghost" onclick="closeCategoryDetail(); setTimeout(() => showStandardDetail('${std.id}'), 200)" title="View full details">View</button>
+            </div>`;
+        }
+
+        html += `</div></div>`;
+    } else {
+        html += `
+        <div class="cat-detail-empty">
+            <span class="cat-detail-empty-icon">📭</span>
+            <p>No standards configured for ${escapeHtml(catName)} yet.</p>
+            <p class="cat-detail-empty-hint">Generate a starter set using AI, or import your existing policies.</p>
+        </div>`;
+    }
+
+    // ── Generation section (only for known categories with prompts)
+    if (cat && cat.prompt) {
+        const promptLines = cat.prompt.trim().split('\n').filter(l => l.trim());
+        // Extract bullet points from the prompt for the preview
+        const bullets = promptLines.filter(l => l.trim().startsWith('-')).map(l => l.trim().replace(/^-\s*/, ''));
+
+        html += `
+        <div class="cat-detail-section cat-detail-generate">
+            <h4>🤖 AI Generation</h4>
+            <p class="cat-gen-explain">${catStandards.length > 0
+                ? 'Generate additional standards to supplement your existing rules. The AI will create enforceable policies based on the template below.'
+                : 'InfraForge can generate a starter set of standards for this category. Review the template below and customize it to match your organization, then generate.'}</p>
+
+            <div class="cat-gen-preview">
+                <div class="cat-gen-preview-header">
+                    <span>Generation template</span>
+                    <button class="btn btn-xs btn-ghost" onclick="document.getElementById('cat-gen-prompt').classList.toggle('hidden'); this.textContent = this.textContent.includes('Edit') ? '▼ Collapse' : '✏️ Edit template'">✏️ Edit template</button>
+                </div>
+                <ul class="cat-gen-bullets">
+                    ${bullets.slice(0, 6).map(b => `<li>${escapeHtml(b)}</li>`).join('')}
+                    ${bullets.length > 6 ? `<li class="cat-gen-more">… and ${bullets.length - 6} more rules</li>` : ''}
+                </ul>
+                <textarea id="cat-gen-prompt" class="cat-gen-textarea hidden" rows="10">${escapeHtml(cat.prompt)}</textarea>
+            </div>
+
+            <div class="cat-gen-options">
+                <label class="cat-gen-option">
+                    <input type="checkbox" id="cat-gen-opt-critical" checked>
+                    <span>Include critical severity rules</span>
+                </label>
+                <label class="cat-gen-option">
+                    <input type="checkbox" id="cat-gen-opt-high" checked>
+                    <span>Include high severity rules</span>
+                </label>
+                <label class="cat-gen-option">
+                    <input type="checkbox" id="cat-gen-opt-medium" checked>
+                    <span>Include medium severity rules</span>
+                </label>
+                <label class="cat-gen-option">
+                    <input type="checkbox" id="cat-gen-opt-remediation" checked>
+                    <span>Include remediation guidance</span>
+                </label>
+            </div>
+        </div>`;
+    }
+
+    // ── Footer actions
+    html += `
+    <div class="cat-detail-footer">
+        ${cat && cat.prompt ? `<button class="btn btn-primary" onclick="generateFromCategoryDetail('${categoryId}')">🤖 Generate Standards</button>` : ''}
+        <button class="btn btn-secondary" onclick="importStandardsForCategory('${categoryId}')">📥 Import Policies</button>
+        ${catStandards.length > 0 ? `<button class="btn btn-ghost" onclick="closeCategoryDetail(); filterStandards('${categoryId}')">📋 View All in List</button>` : ''}
+    </div>`;
+
+    bodyEl.innerHTML = html;
+    document.getElementById('category-detail-overlay').classList.remove('hidden');
+}
+
+function closeCategoryDetail() {
+    document.getElementById('category-detail-overlay').classList.add('hidden');
+}
+
+function generateFromCategoryDetail(categoryId) {
     const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
     if (!cat) return;
 
-    // Open the import modal pre-filled with the category prompt
+    // Get the (possibly edited) prompt from the textarea
+    const promptEl = document.getElementById('cat-gen-prompt');
+    let prompt = promptEl ? promptEl.value : cat.prompt;
+
+    // Append severity/option instructions
+    const opts = [];
+    if (!document.getElementById('cat-gen-opt-critical')?.checked) opts.push('Do NOT include critical severity rules.');
+    if (!document.getElementById('cat-gen-opt-high')?.checked) opts.push('Do NOT include high severity rules.');
+    if (!document.getElementById('cat-gen-opt-medium')?.checked) opts.push('Only include critical and high severity rules.');
+    if (document.getElementById('cat-gen-opt-remediation')?.checked) opts.push('Include remediation guidance for each rule.');
+
+    if (opts.length > 0) {
+        prompt += '\n\nAdditional instructions:\n' + opts.map(o => '- ' + o).join('\n');
+    }
+
+    // Close category detail, open import modal with prompt
+    closeCategoryDetail();
     openImportStandardsModal();
-    // Switch to paste tab and fill in the prompt
     switchImportTab('paste');
     const textarea = document.getElementById('import-standards-content');
     if (textarea) {
-        textarea.value = cat.prompt;
+        textarea.value = prompt;
     }
-    // Auto-extract after a brief delay so the modal is visible
     setTimeout(() => extractStandards(), 300);
+}
+
+function generateStandardsForCategory(categoryId) {
+    openCategoryDetail(categoryId);
 }
 
 function importStandardsForCategory(categoryId) {
     const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
     if (!cat) return;
 
+    closeCategoryDetail();
     openImportStandardsModal();
     switchImportTab('paste');
     const textarea = document.getElementById('import-standards-content');

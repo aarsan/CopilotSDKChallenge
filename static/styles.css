@@ -5239,6 +5239,216 @@ body {
     white-space: nowrap;
 }
 
+.gov-cat-status.gov-cat-gap {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    opacity: 0.4;
+}
+
+/* ── Category Detail Panel ───────────────────────────────── */
+
+.cat-detail-desc {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin: 0 0 1.25rem;
+}
+
+.cat-detail-section {
+    margin-bottom: 1.5rem;
+}
+
+.cat-detail-section h4 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cat-detail-count {
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.cat-detail-standards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.cat-std-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    transition: border-color 0.15s;
+}
+
+.cat-std-row:hover {
+    border-color: var(--accent-blue);
+}
+
+.cat-std-row.cat-std-disabled {
+    opacity: 0.5;
+}
+
+.cat-std-toggle {
+    flex-shrink: 0;
+}
+
+.cat-std-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.cat-std-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.cat-std-rule {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+}
+
+.cat-std-rule code {
+    background: var(--surface-tertiary);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.68rem;
+}
+
+/* Empty state */
+.cat-detail-empty {
+    text-align: center;
+    padding: 1.5rem 1rem;
+    color: var(--text-muted);
+}
+
+.cat-detail-empty-icon {
+    font-size: 2rem;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+.cat-detail-empty p {
+    margin: 0.25rem 0;
+    font-size: 0.85rem;
+}
+
+.cat-detail-empty-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* Generation section */
+.cat-detail-generate {
+    border-top: 1px solid var(--border-muted);
+    padding-top: 1.25rem;
+}
+
+.cat-gen-explain {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 0.75rem;
+}
+
+.cat-gen-preview {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.cat-gen-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.cat-gen-bullets {
+    margin: 0;
+    padding-left: 1.25rem;
+    list-style: disc;
+}
+
+.cat-gen-bullets li {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.cat-gen-bullets .cat-gen-more {
+    color: var(--text-muted);
+    font-style: italic;
+    list-style: none;
+    margin-left: -1.25rem;
+    margin-top: 0.25rem;
+}
+
+.cat-gen-textarea {
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.6rem;
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+    background: var(--surface-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.cat-gen-textarea:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+}
+
+.cat-gen-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+}
+
+.cat-gen-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.cat-gen-option input[type="checkbox"] {
+    accent-color: var(--accent-blue);
+}
+
+/* Footer */
+.cat-detail-footer {
+    display: flex;
+    gap: 0.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-muted);
+    flex-wrap: wrap;
+}
+
 /* ── Standard Card Toggle ────────────────────────────────── */
 
 .std-toggle {
