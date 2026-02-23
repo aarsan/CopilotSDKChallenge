@@ -36,7 +36,7 @@ Each standard must be converted into this exact schema:
   "id": "STD-<SHORT-CODE>",
   "name": "<Human-readable standard name>",
   "description": "<Full description of what this standard enforces>",
-  "category": "<one of: encryption, identity, network, monitoring, tagging, region, cost, security, compliance, general>",
+  "category": "<one of: encryption, identity, network, monitoring, tagging, naming, region, geography, cost, security, compliance, compute, data_protection, operations, general>",
   "severity": "<one of: critical, high, medium, low>",
   "scope": "<comma-separated Azure resource type globs, e.g. 'Microsoft.Storage/*,Microsoft.Sql/*' or '*' for all>",
   "enabled": true,
@@ -73,6 +73,10 @@ Rule type schemas:
 
 4. cost_threshold — Monthly cost cap (informational)
    {"type": "cost_threshold", "max_monthly_usd": 500, "remediation": "..."}
+
+5. naming_convention — Resource naming pattern (category: naming)
+   {"type": "naming_convention", "pattern": "<naming pattern using placeholders like {env}, {app}, {resourcetype}, {region}, {instance}>", "examples": ["prod-myapp-sql-eastus-001"], "remediation": "..."}
+   Use this for any naming standard. Common placeholders: {env}, {app}, {resourcetype}, {region}, {instance}, {org}, {project}, {team}
 
 CRITICAL RULES:
 - Output ONLY a JSON array of standard objects — no markdown, no explanation
@@ -237,7 +241,9 @@ def _normalize_standard(std: dict, index: int) -> Optional[dict]:
     # Validate category
     valid_categories = {
         "encryption", "identity", "network", "monitoring",
-        "tagging", "region", "cost", "security", "compliance", "general",
+        "tagging", "region", "cost", "security", "compliance",
+        "naming", "geography", "compute", "data_protection",
+        "operations", "general",
     }
     category = std.get("category", "general").lower()
     if category not in valid_categories:
@@ -254,7 +260,7 @@ def _normalize_standard(std: dict, index: int) -> Optional[dict]:
     if not isinstance(rule, dict):
         rule = {}
     rule_type = rule.get("type", "property")
-    valid_types = {"property", "property_check", "tags", "allowed_values", "cost_threshold"}
+    valid_types = {"property", "property_check", "tags", "allowed_values", "cost_threshold", "naming_convention"}
     if rule_type not in valid_types:
         rule["type"] = "property"
 

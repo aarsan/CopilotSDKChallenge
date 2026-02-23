@@ -5035,6 +5035,7 @@ async function loadStandards() {
         if (!res.ok) throw new Error('Failed to load standards');
         const data = await res.json();
         allStandards = data.standards || [];
+        _updateGovernanceSummary();
         _buildStandardsCategoryFilters();
         _renderStandardsList();
     } catch (err) {
@@ -5042,6 +5043,25 @@ async function loadStandards() {
         document.getElementById('standards-list').innerHTML =
             `<div class="compose-empty">Failed to load standards: ${err.message}</div>`;
     }
+}
+
+function _updateGovernanceSummary() {
+    const total = allStandards.length;
+    const enabled = allStandards.filter(s => s.enabled).length;
+    const disabled = total - enabled;
+    const critical = allStandards.filter(s => s.severity === 'critical').length;
+    const high = allStandards.filter(s => s.severity === 'high').length;
+    const medium = allStandards.filter(s => s.severity === 'medium').length;
+    const low = allStandards.filter(s => s.severity === 'low').length;
+
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    el('gov-total', total);
+    el('gov-enabled', enabled);
+    el('gov-disabled', disabled);
+    el('gov-critical', critical);
+    el('gov-high', high);
+    el('gov-medium', medium);
+    el('gov-low', low);
 }
 
 function _buildStandardsCategoryFilters() {
@@ -5134,26 +5154,38 @@ function _renderStandardsList() {
             rulePreview = `${rule.key || '?'} ∈ {${(rule.values || []).join(', ')}}`;
         } else if (ruleType === 'cost_threshold') {
             rulePreview = `Max $${rule.max_monthly_usd || 0}/month`;
+        } else if (ruleType === 'naming_convention') {
+            rulePreview = `Pattern: ${rule.pattern || '?'}`;
         }
 
+        const remediationHint = rule.remediation ? `<div class="std-card-remediation" title="${escapeHtml(rule.remediation)}">💡 ${escapeHtml(rule.remediation)}</div>` : '';
+
         return `
-        <div class="std-card ${enabledClass}" onclick="showStandardDetail('${escapeHtml(std.id)}')">
+        <div class="std-card ${enabledClass}">
             <div class="std-card-header">
-                <div class="std-card-title">
+                <div class="std-card-title" onclick="showStandardDetail('${escapeHtml(std.id)}')">
                     <span class="std-severity-icon">${severityIcon}</span>
                     <div class="std-name-block">
                         <span class="std-name">${escapeHtml(std.name)}</span>
                         <span class="std-id">${escapeHtml(std.id)}</span>
                     </div>
                 </div>
-                <div class="std-card-badges">
-                    <span class="category-badge">${escapeHtml(std.category)}</span>
-                    <span class="std-scope-badge" title="Scope: ${escapeHtml(std.scope)}">${escapeHtml(std.scope === '*' ? 'All Services' : std.scope)}</span>
-                    ${!std.enabled ? '<span class="std-disabled-badge">Disabled</span>' : ''}
+                <div class="std-card-right">
+                    <div class="std-card-badges">
+                        <span class="category-badge">${escapeHtml(std.category)}</span>
+                        <span class="std-scope-badge" title="Scope: ${escapeHtml(std.scope)}">${escapeHtml(std.scope === '*' ? 'All Services' : std.scope)}</span>
+                    </div>
+                    <label class="std-toggle" onclick="event.stopPropagation()" title="${std.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
+                        <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${escapeHtml(std.id)}', this.checked)" />
+                        <span class="std-toggle-slider"></span>
+                    </label>
                 </div>
             </div>
-            <div class="std-card-desc">${escapeHtml(std.description || '')}</div>
-            <div class="std-card-rule"><code>${escapeHtml(rulePreview)}</code></div>
+            <div class="std-card-body" onclick="showStandardDetail('${escapeHtml(std.id)}')">
+                <div class="std-card-desc">${escapeHtml(std.description || '')}</div>
+                <div class="std-card-rule"><code>${escapeHtml(rulePreview)}</code></div>
+                ${remediationHint}
+            </div>
         </div>`;
     }).join('');
 }
@@ -5201,6 +5233,57 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
         std.severity === 'high' ? '🟠' :
         std.severity === 'medium' ? '🟡' : '🟢';
 
+    const rule = std.rule || {};
+    const ruleType = rule.type || 'property';
+
+    // Build human-readable rule visualization
+    let ruleVisualHtml = '';
+    if (ruleType === 'property') {
+        ruleVisualHtml = `
+            <div class="std-rule-visual">
+                <div class="std-rule-row"><span class="std-rule-label">Type</span><span class="std-rule-value">Property Check</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Property</span><span class="std-rule-value">${escapeHtml(rule.key || '?')}</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Operator</span><span class="std-rule-value">${escapeHtml(rule.operator || '==')}</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Expected</span><span class="std-rule-value">${escapeHtml(String(rule.value ?? '?'))}</span></div>
+            </div>`;
+    } else if (ruleType === 'tags') {
+        ruleVisualHtml = `
+            <div class="std-rule-visual">
+                <div class="std-rule-row"><span class="std-rule-label">Type</span><span class="std-rule-value">Required Tags</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Tags</span><span class="std-rule-value">${escapeHtml((rule.required_tags || []).join(', '))}</span></div>
+            </div>`;
+    } else if (ruleType === 'allowed_values') {
+        ruleVisualHtml = `
+            <div class="std-rule-visual">
+                <div class="std-rule-row"><span class="std-rule-label">Type</span><span class="std-rule-value">Allowed Values</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Property</span><span class="std-rule-value">${escapeHtml(rule.key || '?')}</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Allowed</span><span class="std-rule-value">${escapeHtml((rule.values || []).join(', '))}</span></div>
+            </div>`;
+    } else if (ruleType === 'cost_threshold') {
+        ruleVisualHtml = `
+            <div class="std-rule-visual">
+                <div class="std-rule-row"><span class="std-rule-label">Type</span><span class="std-rule-value">Cost Threshold</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Max Cost</span><span class="std-rule-value">$${rule.max_monthly_usd || 0}/month</span></div>
+            </div>`;
+    } else if (ruleType === 'naming_convention') {
+        ruleVisualHtml = `
+            <div class="std-rule-visual">
+                <div class="std-rule-row"><span class="std-rule-label">Type</span><span class="std-rule-value">Naming Convention</span></div>
+                <div class="std-rule-row"><span class="std-rule-label">Pattern</span><span class="std-rule-value">${escapeHtml(rule.pattern || '?')}</span></div>
+                ${rule.examples ? `<div class="std-rule-row"><span class="std-rule-label">Examples</span><span class="std-rule-value">${escapeHtml(rule.examples.join(', '))}</span></div>` : ''}
+            </div>`;
+    }
+
+    // Remediation guidance
+    const remediationHtml = rule.remediation ? `
+    <div class="std-detail-section">
+        <h4>Remediation Guidance</h4>
+        <div class="std-remediation">
+            <div class="std-remediation-label">💡 How to fix violations</div>
+            <div class="std-remediation-text">${escapeHtml(rule.remediation)}</div>
+        </div>
+    </div>` : '';
+
     return `
     <div class="std-detail-section">
         <div class="std-detail-meta">
@@ -5213,9 +5296,15 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
     </div>
 
     <div class="std-detail-section">
-        <h4>Rule Definition</h4>
-        <pre class="std-rule-json"><code>${escapeHtml(ruleJson)}</code></pre>
+        <h4>Rule</h4>
+        ${ruleVisualHtml}
+        <details style="margin-top: 0.5rem;">
+            <summary style="font-size: 0.72rem; color: var(--text-muted); cursor: pointer;">Show raw JSON</summary>
+            <pre class="std-rule-json" style="margin-top: 0.35rem;"><code>${escapeHtml(ruleJson)}</code></pre>
+        </details>
     </div>
+
+    ${remediationHtml}
 
     <div class="std-detail-section">
         <h4>Version History</h4>
@@ -5230,6 +5319,26 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
 
 function closeStandardDetail() {
     document.getElementById('standard-detail-drawer').classList.add('hidden');
+}
+
+async function toggleStandard(standardId, enabled) {
+    try {
+        const res = await fetch(`/api/standards/${encodeURIComponent(standardId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled, change_reason: enabled ? 'Re-enabled' : 'Disabled' }),
+        });
+        if (!res.ok) throw new Error('Failed to toggle standard');
+        // Update local state
+        const std = allStandards.find(s => s.id === standardId);
+        if (std) std.enabled = enabled;
+        _updateGovernanceSummary();
+        showToast(`${standardId} ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+        showToast(err.message, 'error');
+        // Revert toggle in UI
+        await loadStandards();
+    }
 }
 
 function openAddStandardModal() {
@@ -5351,9 +5460,13 @@ async function deleteStandard(standardId) {
 // ── Standards Import ─────────────────────────────────────────
 
 let _importedStandards = [];
+let _importActiveTab = 'paste';
+let _importFileContent = '';
 
 function openImportStandardsModal() {
     _importedStandards = [];
+    _importFileContent = '';
+    _importActiveTab = 'paste';
     document.getElementById('import-standards-content').value = '';
     document.getElementById('import-standards-preview').classList.add('hidden');
     document.getElementById('import-standards-list').innerHTML = '';
@@ -5361,13 +5474,78 @@ function openImportStandardsModal() {
     document.getElementById('btn-save-imported-standards').classList.add('hidden');
     document.getElementById('btn-extract-standards').disabled = false;
     document.getElementById('btn-extract-standards').textContent = '🤖 Extract Standards';
+    // Reset file upload
+    const fileInfo = document.getElementById('import-file-info');
+    if (fileInfo) fileInfo.classList.add('hidden');
+    const fileInput = document.getElementById('import-file-input');
+    if (fileInput) fileInput.value = '';
+    // Reset tabs
+    switchImportTab('paste');
     openModal('modal-import-standards');
 }
 
+function switchImportTab(tab) {
+    _importActiveTab = tab;
+    document.querySelectorAll('.import-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.import-source-content').forEach(c => c.classList.add('hidden'));
+    const tabBtn = document.getElementById(`import-tab-${tab}`);
+    const content = document.getElementById(`import-source-${tab}`);
+    if (tabBtn) tabBtn.classList.add('active');
+    if (content) content.classList.remove('hidden');
+}
+
+function handleImportFileDrop(event) {
+    event.preventDefault();
+    event.target.closest('.import-upload-zone').classList.remove('drag-over');
+    const file = event.dataTransfer?.files?.[0];
+    if (file) _processImportFile(file);
+}
+
+function handleImportFileSelect(event) {
+    const file = event.target.files?.[0];
+    if (file) _processImportFile(file);
+}
+
+async function _processImportFile(file) {
+    const maxSize = 5 * 1024 * 1024; // 5MB
+    if (file.size > maxSize) {
+        showToast('File too large (max 5MB)', 'error');
+        return;
+    }
+
+    try {
+        const text = await file.text();
+        _importFileContent = text;
+        document.getElementById('import-file-name').textContent = `📄 ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        document.getElementById('import-file-info').classList.remove('hidden');
+        showToast(`Loaded ${file.name}`);
+    } catch (err) {
+        showToast(`Failed to read file: ${err.message}`, 'error');
+    }
+}
+
+function clearImportFile() {
+    _importFileContent = '';
+    document.getElementById('import-file-info').classList.add('hidden');
+    document.getElementById('import-file-input').value = '';
+}
+
+function selectAllImports(checked) {
+    _importedStandards.forEach(s => s._include = checked);
+    _renderImportPreview(_importedStandards);
+}
+
 async function extractStandards() {
-    const content = document.getElementById('import-standards-content').value.trim();
+    // Get content from active tab
+    let content = '';
+    if (_importActiveTab === 'paste') {
+        content = document.getElementById('import-standards-content').value.trim();
+    } else {
+        content = _importFileContent.trim();
+    }
+
     if (!content) {
-        showToast('Please paste your standards documentation first', 'error');
+        showToast(_importActiveTab === 'paste' ? 'Please paste your standards documentation first' : 'Please upload a file first', 'error');
         return;
     }
 
@@ -5379,7 +5557,7 @@ async function extractStandards() {
         const res = await fetch('/api/standards/import', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, source_type: 'text', save: false }),
+            body: JSON.stringify({ content, source_type: _importActiveTab === 'file' ? 'markdown' : 'text', save: false }),
         });
 
         if (!res.ok) {
@@ -5389,6 +5567,7 @@ async function extractStandards() {
 
         const data = await res.json();
         _importedStandards = data.standards || [];
+        _importedStandards.forEach(s => s._include = true);
 
         if (_importedStandards.length === 0) {
             showToast('No standards could be extracted from the document', 'error');
@@ -5400,6 +5579,8 @@ async function extractStandards() {
         // Render preview
         _renderImportPreview(_importedStandards);
         document.getElementById('import-standards-preview').classList.remove('hidden');
+        const countEl = document.getElementById('import-count');
+        if (countEl) countEl.textContent = _importedStandards.length;
         btn.classList.add('hidden');
         document.getElementById('btn-save-imported-standards').classList.remove('hidden');
         showToast(`Extracted ${_importedStandards.length} standard(s) — review and save`, 'success');
@@ -5418,23 +5599,27 @@ function _renderImportPreview(standards) {
         const icon = severityIcons[std.severity] || '⚪';
         const ruleType = std.rule?.type || 'property';
         const ruleDesc = _describeRule(std.rule);
+        const included = std._include !== false;
         return `
-        <div class="import-std-card" style="padding: 0.75rem; margin-bottom: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
-                <strong style="font-size: 0.9rem;">${icon} ${escapeHtml(std.name)}</strong>
-                <div style="display: flex; gap: 0.5rem; align-items: center;">
-                    <span class="badge badge-${std.severity}" style="font-size: 0.7rem;">${std.severity}</span>
-                    <span class="badge" style="font-size: 0.7rem; background: var(--bg-hover);">${escapeHtml(std.category)}</span>
-                    <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
-                        <input type="checkbox" checked onchange="_toggleImportStd(${i}, this.checked)" /> Include
+        <div class="import-std-card ${included ? '' : 'excluded'}">
+            <div class="import-std-header">
+                <span class="import-std-name">${icon} ${escapeHtml(std.name)}</span>
+                <div class="import-std-controls">
+                    <span class="badge badge-${std.severity}" style="font-size: 0.68rem;">${std.severity}</span>
+                    <span class="category-badge" style="font-size: 0.68rem;">${escapeHtml(std.category)}</span>
+                    <label class="std-toggle" title="${included ? 'Included' : 'Excluded'}">
+                        <input type="checkbox" ${included ? 'checked' : ''} onchange="_toggleImportStd(${i}, this.checked)" />
+                        <span class="std-toggle-slider"></span>
                     </label>
                 </div>
             </div>
-            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.25rem;">${escapeHtml(std.description || '')}</div>
-            <div style="font-size: 0.75rem; color: var(--text-tertiary);">
-                <span title="Rule type">📏 ${ruleType}</span> · <span title="Scope">🎯 ${escapeHtml(std.scope || '*')}</span> · <span title="ID">🏷️ ${escapeHtml(std.id)}</span>
+            <div class="import-std-desc">${escapeHtml(std.description || '')}</div>
+            <div class="import-std-meta">
+                <span title="Rule type">📏 ${ruleType}</span>
+                <span title="Scope">🎯 ${escapeHtml(std.scope || '*')}</span>
+                <span title="ID">🏷️ ${escapeHtml(std.id)}</span>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 0.25rem;">${ruleDesc}</div>
+            <div class="import-std-rule">${ruleDesc}</div>
         </div>`;
     }).join('');
 }
@@ -5450,6 +5635,8 @@ function _describeRule(rule) {
             return `<code>${escapeHtml(rule.key || '?')}</code> must be one of: <code>${(rule.values || []).join(', ')}</code>`;
         case 'cost_threshold':
             return `Max monthly cost: $${rule.max_monthly_usd || 0}`;
+        case 'naming_convention':
+            return `Naming pattern: <code>${escapeHtml(rule.pattern || '?')}</code>${rule.examples ? ` (e.g. ${rule.examples.map(e => `<code>${escapeHtml(e)}</code>`).join(', ')})` : ''}`;
         default:
             return JSON.stringify(rule).substring(0, 120);
     }
@@ -5458,6 +5645,11 @@ function _describeRule(rule) {
 function _toggleImportStd(index, checked) {
     if (_importedStandards[index]) {
         _importedStandards[index]._include = checked;
+        _renderImportPreview(_importedStandards);
+        // Update count
+        const selected = _importedStandards.filter(s => s._include !== false).length;
+        const countEl = document.getElementById('import-count');
+        if (countEl) countEl.textContent = `${selected}/${_importedStandards.length}`;
     }
 }
 
