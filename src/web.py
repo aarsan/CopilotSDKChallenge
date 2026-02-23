@@ -2651,8 +2651,43 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     if not violations_summary:
         return JSONResponse({"plan": [], "summary": "No violations to remediate — template is fully compliant.", "violation_count": 0})
 
+    # ── Gather dependency info for composed templates ──
+    dep_service_ids = tmpl.get("service_ids", []) or []
+    all_tmpls_map = {}
+    if dep_service_ids:
+        all_tmpls_list = await get_all_templates()
+        all_tmpls_map = {t["id"]: t for t in all_tmpls_list}
+
+    # Build resource→service mapping from dependency templates
+    resource_to_service = {}  # resource_type -> service template id
+    for sid in dep_service_ids:
+        dep = all_tmpls_map.get(sid)
+        if dep:
+            dep_resources = dep.get("resources", [])
+            if isinstance(dep_resources, list):
+                for r in dep_resources:
+                    rtype = r if isinstance(r, str) else (r.get("type", "") if isinstance(r, dict) else "")
+                    if rtype:
+                        resource_to_service[rtype.lower()] = sid
+            # Also try to extract resource types from the ARM content
+            dep_content = dep.get("content", "")
+            if dep_content:
+                try:
+                    dep_arm = json.loads(dep_content)
+                    for res in dep_arm.get("resources", []):
+                        if isinstance(res, dict) and res.get("type"):
+                            resource_to_service[res["type"].lower()] = sid
+                except Exception:
+                    pass
+
     # Gather ARM content + version info for each template mentioned in violations
+    # AND all dependency templates
     template_ids = list({v["template_id"] for v in violations_summary})
+    # Ensure all dependency templates are included
+    for sid in dep_service_ids:
+        if sid not in template_ids:
+            template_ids.append(sid)
+
     arm_snippets = {}
     template_version_info = {}  # tid -> {current_version, current_semver, ...}
 
@@ -2663,20 +2698,43 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
         # Determine change_type based on severity of violations for this template
         tid_violations = [v for v in violations_summary if v["template_id"] == tid]
+        # Also count violations whose resources belong to this service template
+        if tid in dep_service_ids:
+            for v in violations_summary:
+                rt = v.get("resource_type", "").lower()
+                if resource_to_service.get(rt) == tid and v not in tid_violations:
+                    tid_violations.append(v)
+
         has_critical = any(v["severity"] == "critical" for v in tid_violations)
-        if has_critical:
+        has_violations = len(tid_violations) > 0
+
+        if not has_violations:
+            change_type = "none"
+            projected_semver = current_semver or "1.0.0"
+        elif has_critical:
             change_type = "minor"  # critical compliance = minor bump
         else:
             change_type = "patch"  # high/medium/low = patch
 
-        projected_semver = compute_next_semver(current_semver, change_type)
+        if change_type != "none":
+            projected_semver = compute_next_semver(current_semver, change_type)
+
+        dep_name = ""
+        if tid in all_tmpls_map:
+            dep_name = all_tmpls_map[tid].get("name", tid)
+        elif tid == template_id:
+            dep_name = tmpl.get("name", tid)
 
         template_version_info[tid] = {
             "current_version": current_ver_num,
             "current_semver": current_semver or "1.0.0",
             "change_type": change_type,
             "projected_semver": projected_semver,
-            "projected_version": current_ver_num + 1,
+            "projected_version": current_ver_num + 1 if change_type != "none" else current_ver_num,
+            "template_name": dep_name,
+            "is_dependency": tid != template_id,
+            "violation_count": len(tid_violations),
+            "resource_types": [rt for rt, sid in resource_to_service.items() if sid == tid],
         }
 
         if tid == template_id:
@@ -2686,15 +2744,33 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             if not arm_snippets.get(tid):
                 arm_snippets[tid] = tmpl.get("content", "")
         else:
-            dep = await get_template_by_id(tid)
+            dep = all_tmpls_map.get(tid) or await get_template_by_id(tid)
             arm_snippets[tid] = dep.get("content", "") if dep else ""
+
+    # Build resource ownership context for the LLM
+    resource_ownership_text = ""
+    if dep_service_ids:
+        resource_ownership_text = "\nRESOURCE OWNERSHIP (which service template owns which resources):\n"
+        for sid in dep_service_ids:
+            vinfo = template_version_info.get(sid, {})
+            owned_types = vinfo.get("resource_types", [])
+            if owned_types:
+                resource_ownership_text += f"  - {vinfo.get('template_name', sid)} ({sid}): {', '.join(owned_types)}\n"
+        resource_ownership_text += (
+            f"  - {tmpl.get('name', template_id)} ({template_id}): composed parent — "
+            "changes to resources should target the service template that owns them.\n"
+        )
 
     # Build planning prompt
     violations_text = ""
     for v in violations_summary:
+        # Annotate with owning service template if known
+        rt = v.get("resource_type", "").lower()
+        owner_sid = resource_to_service.get(rt)
+        owner_label = f" [owned by: {owner_sid}]" if owner_sid else ""
         violations_text += (
             f"  - [{v['severity'].upper()}] {v['standard']} on {v['resource_type']} "
-            f"({v['resource_name']}): {v['detail']}"
+            f"({v['resource_name']}){owner_label}: {v['detail']}"
         )
         if v.get("remediation"):
             violations_text += f" → Remediation: {v['remediation']}"
@@ -2710,6 +2786,10 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         "You are an Azure infrastructure compliance expert. Analyze the following "
         "compliance violations and produce a structured remediation plan.\n\n"
         f"VIOLATIONS ({len(violations_summary)} total):\n{violations_text}\n"
+    )
+    if resource_ownership_text:
+        prompt += resource_ownership_text + "\n"
+    prompt += (
         f"CURRENT ARM TEMPLATES:\n{templates_text}\n"
         "Generate a JSON remediation plan. Return ONLY valid JSON with this structure:\n"
         "{\n"
@@ -2717,7 +2797,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         '  "steps": [\n'
         "    {\n"
         '      "step": 1,\n'
-        '      "template_id": "which template to modify",\n'
+        '      "template_id": "which template to modify (use the owning service template ID, not the composed parent)",\n'
         '      "template_name": "human-readable name",\n'
         '      "action": "Brief description of the change",\n'
         '      "detail": "Specific technical detail of what to modify in the ARM JSON",\n'
@@ -2733,6 +2813,12 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         "- Each step should be independently actionable\n"
         "- Reference actual resource names and property paths\n"
     )
+    if resource_ownership_text:
+        prompt += (
+            "- IMPORTANT: When a resource belongs to a service template (marked with [owned by: ...]),\n"
+            "  set template_id to the owning service template, NOT the composed parent.\n"
+            "  The composed template's ARM is assembled from the service templates.\n"
+        )
 
     client = await ensure_copilot_client()
     if not client:

@@ -3079,25 +3079,66 @@ function _renderRemediationPlan(templateId, data) {
             <p class="remed-plan-summary">${escapeHtml(data.summary)}</p>
         </div>`;
 
-    // Template version summary bar
+    // Template version summary bar — show parent + dependencies
     const tvInfo = data.template_versions || {};
     const templateIds = Object.keys(tvInfo);
     if (templateIds.length > 0) {
+        // Separate parent from dependencies
+        const parent = templateIds.find(tid => !tvInfo[tid].is_dependency);
+        const deps = templateIds.filter(tid => tvInfo[tid].is_dependency);
+        const changeLabels = { minor: 'Minor', patch: 'Patch', major: 'Major', none: '—' };
+
         html += `<div class="remed-version-bar">`;
-        for (const tid of templateIds) {
-            const vi = tvInfo[tid];
-            const changeLabel = { minor: 'Minor', patch: 'Patch', major: 'Major' };
+
+        // Parent template card
+        if (parent) {
+            const vi = tvInfo[parent];
             html += `
-            <div class="remed-version-card">
-                <span class="remed-ver-name">${escapeHtml(tid)}</span>
+            <div class="remed-version-card remed-ver-parent">
+                <span class="remed-ver-name">${escapeHtml(vi.template_name || parent)}</span>
                 <span class="remed-ver-arrow">
                     <span class="remed-ver-current">${escapeHtml(vi.current_semver)}</span>
                     →
                     <span class="remed-ver-next">${escapeHtml(vi.projected_semver)}</span>
                 </span>
-                <span class="remed-ver-type remed-ver-type-${vi.change_type}">${changeLabel[vi.change_type] || vi.change_type}</span>
+                <span class="remed-ver-type remed-ver-type-${vi.change_type}">${changeLabels[vi.change_type] || vi.change_type}</span>
             </div>`;
         }
+
+        // Dependency cards
+        if (deps.length > 0) {
+            html += `<div class="remed-ver-deps">
+                <div class="remed-ver-deps-label">Underlying Service Templates</div>
+                <div class="remed-ver-deps-grid">`;
+            for (const tid of deps) {
+                const vi = tvInfo[tid];
+                const hasViolations = (vi.violation_count || 0) > 0;
+                const resourceTypes = (vi.resource_types || []).map(r => {
+                    const parts = r.split('/');
+                    return parts[parts.length - 1];
+                });
+                html += `
+                <div class="remed-version-card remed-ver-dep ${hasViolations ? 'remed-ver-dep-affected' : 'remed-ver-dep-clean'}">
+                    <div class="remed-ver-dep-header">
+                        <span class="remed-ver-name">${escapeHtml(vi.template_name || tid)}</span>
+                        ${hasViolations
+                            ? `<span class="remed-ver-type remed-ver-type-${vi.change_type}">${changeLabels[vi.change_type] || vi.change_type}</span>`
+                            : '<span class="remed-ver-clean-badge">✅ Clean</span>'}
+                    </div>
+                    ${hasViolations ? `
+                    <div class="remed-ver-arrow">
+                        <span class="remed-ver-current">${escapeHtml(vi.current_semver)}</span>
+                        →
+                        <span class="remed-ver-next">${escapeHtml(vi.projected_semver)}</span>
+                    </div>
+                    <div class="remed-ver-dep-reason">${vi.violation_count} violation${vi.violation_count !== 1 ? 's' : ''} to fix</div>`
+                    : `<div class="remed-ver-dep-ver">${escapeHtml(vi.current_semver)}</div>`}
+                    ${resourceTypes.length > 0 ? `<div class="remed-ver-dep-resources">${resourceTypes.map(r => `<span class="remed-ver-dep-rt">${escapeHtml(r)}</span>`).join('')}</div>` : ''}
+                </div>`;
+            }
+            html += `</div></div>`;
+        }
+
         html += `</div>`;
     }
 
