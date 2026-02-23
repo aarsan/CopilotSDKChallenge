@@ -6537,6 +6537,327 @@ body {
     font-family: inherit;
 }
 
+/* ── Compliance Remediation Plan ────────────────────────────── */
+
+.scan-remediate-section {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border-muted);
+}
+
+.scan-remediate-btn {
+    background: linear-gradient(135deg, #6f42c1, #8b5cf6);
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+.scan-remediate-btn:hover {
+    background: linear-gradient(135deg, #8b5cf6, #a78bfa);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+}
+
+.remed-empty {
+    padding: 0.75rem 1rem;
+    background: rgba(63, 185, 80, 0.1);
+    border: 1px solid rgba(63, 185, 80, 0.3);
+    border-radius: 8px;
+    color: #3fb950;
+    font-size: 0.85rem;
+    margin-top: 0.75rem;
+}
+
+.remed-plan {
+    margin-top: 1rem;
+    animation: scanFadeIn 0.4s ease;
+}
+
+.remed-plan-header {
+    padding: 1rem 1.25rem;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px 12px 0 0;
+}
+
+.remed-plan-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+.remed-plan-title h4 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.remed-plan-icon {
+    font-size: 1.1rem;
+}
+
+.remed-plan-count {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: var(--surface-tertiary);
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.remed-plan-summary {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+/* Steps list */
+.remed-steps {
+    border: 1px solid var(--border-primary);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    overflow: hidden;
+}
+
+.remed-step {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-muted);
+    transition: background 0.15s;
+}
+
+.remed-step:last-child {
+    border-bottom: none;
+}
+
+.remed-step:hover {
+    background: var(--surface-secondary);
+}
+
+.remed-step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin-top: 0.1rem;
+}
+
+.remed-sev-critical .remed-step-num {
+    background: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.3);
+}
+.remed-sev-high .remed-step-num {
+    background: rgba(240, 136, 62, 0.15);
+    color: #f0883e;
+    border: 1px solid rgba(240, 136, 62, 0.3);
+}
+.remed-sev-medium .remed-step-num {
+    background: rgba(210, 153, 34, 0.15);
+    color: #d29922;
+    border: 1px solid rgba(210, 153, 34, 0.3);
+}
+.remed-sev-low .remed-step-num {
+    background: rgba(63, 185, 80, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.remed-step-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.remed-step-action {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+}
+
+.remed-step-sev {
+    font-size: 0.72rem;
+    flex-shrink: 0;
+}
+
+.remed-step-detail {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+    line-height: 1.45;
+    font-family: var(--font-mono);
+    word-break: break-word;
+}
+
+.remed-step-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.35rem;
+}
+
+.remed-step-tmpl {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+
+.remed-step-std {
+    font-size: 0.65rem;
+    background: var(--surface-tertiary);
+    color: var(--text-muted);
+    padding: 0.1rem 0.4rem;
+    border-radius: 6px;
+}
+
+/* Execute section */
+.remed-execute-section {
+    margin-top: 1rem;
+    text-align: center;
+}
+
+.remed-execute-btn {
+    background: linear-gradient(135deg, #2ea043, #3fb950);
+    color: #fff;
+    border: none;
+    font-weight: 700;
+    font-size: 0.9rem;
+    padding: 0.65rem 1.5rem;
+    border-radius: 8px;
+    transition: all 0.2s;
+    cursor: pointer;
+}
+
+.remed-execute-btn:hover {
+    background: linear-gradient(135deg, #3fb950, #56d364);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(46, 160, 67, 0.4);
+}
+
+.remed-execute-warn {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.4rem;
+}
+
+/* Execution results */
+.remed-results {
+    margin-top: 0.75rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-primary);
+    overflow: hidden;
+    animation: scanFadeIn 0.35s ease;
+}
+
+.remed-results-ok {
+    border-color: rgba(63, 185, 80, 0.3);
+}
+
+.remed-results-partial {
+    border-color: rgba(210, 153, 34, 0.3);
+}
+
+.remed-results-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--surface-secondary);
+    border-bottom: 1px solid var(--border-muted);
+}
+
+.remed-results-header h4 {
+    margin: 0;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.remed-results-icon {
+    font-size: 1rem;
+}
+
+.remed-results-list {
+    padding: 0.25rem 0;
+}
+
+.remed-result {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border-muted);
+}
+
+.remed-result:last-child {
+    border-bottom: none;
+}
+
+.remed-result-icon {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+
+.remed-result-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.remed-result-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.remed-result-detail {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+}
+
+.remed-result-detail strong {
+    color: var(--accent-blue);
+}
+
+.remed-result-changelog {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+    font-style: italic;
+}
+
+.remed-result-error {
+    font-size: 0.78rem;
+    color: #f85149;
+    margin-top: 0.15rem;
+}
+
+.scan-rescan-btn {
+    margin: 0.75rem 1rem;
+    background: var(--surface-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-primary);
+    font-weight: 600;
+    transition: all 0.15s;
+}
+
+.scan-rescan-btn:hover {
+    background: var(--surface-secondary);
+    border-color: var(--accent-blue);
+    color: var(--text-primary);
+}
+
 /* ── Template Test Results ──────────────────────────────────── */
 .test-summary {
     display: flex;

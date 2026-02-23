@@ -2760,9 +2760,13 @@ function _renderVersionPipeline(v) {
 
 // ── Compliance Scan ─────────────────────────────────────────
 
+let _lastScanData = null;
+
 async function runComplianceScan(templateId) {
     const resultsEl = document.getElementById('tmpl-scan-results');
     if (!resultsEl) return;
+
+    _lastScanData = null;
 
     // Show loading
     resultsEl.innerHTML = `
@@ -2782,6 +2786,7 @@ async function runComplianceScan(templateId) {
             throw new Error(err.detail || 'Scan failed');
         }
         const data = await res.json();
+        _lastScanData = data;
         resultsEl.innerHTML = _renderComplianceScanReport(data);
     } catch (err) {
         resultsEl.innerHTML = `<div class="scan-error">❌ Scan failed: ${escapeHtml(err.message)}</div>`;
@@ -2934,6 +2939,183 @@ function _renderComplianceScanReport(data) {
     }
 
     html += `</div>`;
+
+    // Remediate button (only if there are violations)
+    if (data.violations > 0) {
+        html += `
+        <div class="scan-remediate-section">
+            <button class="btn btn-sm scan-remediate-btn" onclick="runComplianceRemediation('${escapeHtml(data.template_id)}')">
+                🔧 Generate Remediation Plan
+            </button>
+            <div id="scan-remediation-results"></div>
+        </div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+/* ── Compliance Remediation (Plan → Execute) ──────────────── */
+
+async function runComplianceRemediation(templateId) {
+    const resultsEl = document.getElementById('scan-remediation-results');
+    if (!resultsEl || !_lastScanData) return;
+
+    resultsEl.innerHTML = `
+    <div class="scan-loading">
+        <div class="scan-loading-spinner"></div>
+        <span>Analyzing ${_lastScanData.violations} violations and generating remediation plan…</span>
+    </div>`;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scan_data: _lastScanData }),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Plan generation failed');
+        }
+        const data = await res.json();
+        resultsEl.innerHTML = _renderRemediationPlan(templateId, data);
+    } catch (err) {
+        resultsEl.innerHTML = `<div class="scan-error">❌ Plan failed: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function _renderRemediationPlan(templateId, data) {
+    const steps = data.plan || [];
+    if (steps.length === 0) {
+        return `<div class="remed-empty">✅ ${escapeHtml(data.summary || 'No remediation needed')}</div>`;
+    }
+
+    let html = `
+    <div class="remed-plan">
+        <div class="remed-plan-header">
+            <div class="remed-plan-title">
+                <span class="remed-plan-icon">📋</span>
+                <h4>Remediation Plan</h4>
+                <span class="remed-plan-count">${steps.length} step${steps.length > 1 ? 's' : ''}</span>
+            </div>
+            <p class="remed-plan-summary">${escapeHtml(data.summary)}</p>
+        </div>
+        <div class="remed-steps">`;
+
+    const sevIcons = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+    const sevColors = { critical: 'remed-sev-critical', high: 'remed-sev-high', medium: 'remed-sev-medium', low: 'remed-sev-low' };
+
+    for (const step of steps) {
+        const sev = (step.severity || 'medium').toLowerCase();
+        html += `
+        <div class="remed-step ${sevColors[sev] || ''}">
+            <div class="remed-step-num">${step.step || '·'}</div>
+            <div class="remed-step-body">
+                <div class="remed-step-action">
+                    <span class="remed-step-sev">${sevIcons[sev] || '⚪'}</span>
+                    ${escapeHtml(step.action || '')}
+                </div>
+                <div class="remed-step-detail">${escapeHtml(step.detail || '')}</div>
+                <div class="remed-step-meta">
+                    <span class="remed-step-tmpl">📄 ${escapeHtml(step.template_name || step.template_id || '')}</span>
+                    ${(step.standards_addressed || []).map(s => `<span class="remed-step-std">${escapeHtml(s)}</span>`).join('')}
+                </div>
+            </div>
+        </div>`;
+    }
+
+    html += `
+        </div>
+        <div class="remed-execute-section">
+            <button class="btn remed-execute-btn" onclick="executeRemediationPlan('${escapeHtml(templateId)}')">
+                ⚡ Execute Plan & Update Templates
+            </button>
+            <div class="remed-execute-warn">This will create new template versions with compliance fixes applied.</div>
+        </div>
+    </div>`;
+
+    // Stash the plan for execution
+    window._lastRemediationPlan = data.plan;
+
+    return html;
+}
+
+async function executeRemediationPlan(templateId) {
+    const planSteps = window._lastRemediationPlan;
+    if (!planSteps || !_lastScanData) return;
+
+    const execSection = document.querySelector('.remed-execute-section');
+    if (execSection) {
+        execSection.innerHTML = `
+        <div class="scan-loading">
+            <div class="scan-loading-spinner"></div>
+            <span>Applying remediation to templates — this may take a minute…</span>
+        </div>`;
+    }
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan: planSteps, scan_data: _lastScanData }),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Execution failed');
+        }
+        const data = await res.json();
+        if (execSection) {
+            execSection.innerHTML = _renderRemediationResults(data);
+        }
+    } catch (err) {
+        if (execSection) {
+            execSection.innerHTML = `<div class="scan-error">❌ Execution failed: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+}
+
+function _renderRemediationResults(data) {
+    const results = data.results || [];
+    const allOk = data.all_success;
+
+    let html = `
+    <div class="remed-results ${allOk ? 'remed-results-ok' : 'remed-results-partial'}">
+        <div class="remed-results-header">
+            <span class="remed-results-icon">${allOk ? '✅' : '⚠️'}</span>
+            <h4>${allOk ? 'All Templates Updated' : 'Partial Success'}</h4>
+        </div>
+        <div class="remed-results-list">`;
+
+    for (const r of results) {
+        if (r.success) {
+            html += `
+            <div class="remed-result remed-result-ok">
+                <span class="remed-result-icon">✅</span>
+                <div class="remed-result-body">
+                    <div class="remed-result-name">${escapeHtml(r.template_name || r.template_id)}</div>
+                    <div class="remed-result-detail">
+                        New version <strong>v${r.new_version}</strong> (${escapeHtml(r.new_semver || '')})
+                    </div>
+                    <div class="remed-result-changelog">${escapeHtml(r.changelog || '')}</div>
+                </div>
+            </div>`;
+        } else {
+            html += `
+            <div class="remed-result remed-result-fail">
+                <span class="remed-result-icon">❌</span>
+                <div class="remed-result-body">
+                    <div class="remed-result-name">${escapeHtml(r.template_name || r.template_id)}</div>
+                    <div class="remed-result-error">${escapeHtml(r.error || 'Unknown error')}</div>
+                </div>
+            </div>`;
+        }
+    }
+
+    html += `
+        </div>
+        <button class="btn btn-sm scan-rescan-btn" onclick="runComplianceScan('${escapeHtml(data.template_id)}')">🔄 Re-scan for Compliance</button>
+    </div>`;
+
     return html;
 }
 
