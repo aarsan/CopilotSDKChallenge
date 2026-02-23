@@ -5350,6 +5350,98 @@ body {
     color: var(--text-muted);
 }
 
+/* Standards table */
+.cat-std-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.cat-std-table thead th {
+    text-align: left;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.cat-std-table tbody tr {
+    border-bottom: 1px solid var(--border-muted);
+    transition: background 0.1s;
+}
+
+.cat-std-table tbody tr:hover {
+    background: var(--surface-secondary);
+}
+
+.cat-std-table tbody tr.cat-std-disabled {
+    opacity: 0.45;
+}
+
+.cat-std-table td {
+    padding: 0.55rem 0.5rem;
+    vertical-align: middle;
+}
+
+.cat-std-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.cat-std-scope {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 0.1rem;
+}
+
+.cat-std-sev {
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.cat-std-rule {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    max-width: 280px;
+}
+
+.cat-std-rule code {
+    background: var(--surface-tertiary);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.68rem;
+}
+
+/* Modification prompt */
+.cat-detail-modify {
+    border-top: 1px solid var(--border-muted);
+    padding-top: 1rem;
+}
+
+.cat-modify-textarea {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.82rem;
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    resize: vertical;
+    line-height: 1.5;
+    margin-bottom: 0.75rem;
+    font-family: inherit;
+}
+
+.cat-modify-textarea:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+}
+
 /* Generation section */
 .cat-detail-generate {
     border-top: 1px solid var(--border-muted);
@@ -5444,9 +5536,13 @@ body {
 .cat-detail-footer {
     display: flex;
     gap: 0.5rem;
+    padding-top: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.cat-detail-generate + .cat-detail-footer {
     padding-top: 1.25rem;
     border-top: 1px solid var(--border-muted);
-    flex-wrap: wrap;
 }
 
 /* ── Standard Card Toggle ────────────────────────────────── */

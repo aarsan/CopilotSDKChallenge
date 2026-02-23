@@ -5347,93 +5347,124 @@ function openCategoryDetail(categoryId) {
         html += `<p class="cat-detail-desc">${escapeHtml(catDesc)}</p>`;
     }
 
-    // ── Existing standards
     if (catStandards.length > 0) {
+        // ═══════════════════════════════════════════════════
+        // CONFIGURED MODE — table + modification prompt
+        // ═══════════════════════════════════════════════════
+
         html += `
         <div class="cat-detail-section">
-            <h4>Current Standards <span class="cat-detail-count">${enabled.length} active · ${disabled.length} disabled</span></h4>
-            <div class="cat-detail-standards">`;
+            <h4>Standards <span class="cat-detail-count">${enabled.length} active · ${disabled.length} disabled</span></h4>
+            <table class="cat-std-table">
+                <thead>
+                    <tr>
+                        <th style="width:40px"></th>
+                        <th>Standard</th>
+                        <th>Severity</th>
+                        <th>Rule</th>
+                        <th style="width:50px"></th>
+                    </tr>
+                </thead>
+                <tbody>`;
 
         for (const std of catStandards) {
             const sevIcon = std.severity === 'critical' ? '🔴' : std.severity === 'high' ? '🟠' : std.severity === 'medium' ? '🟡' : '🟢';
+            const sevLabel = std.severity.charAt(0).toUpperCase() + std.severity.slice(1);
             const ruleDesc = _describeRule(std.rule);
+            const scope = std.scope === '*' ? 'All services' : std.scope;
             html += `
-            <div class="cat-std-row ${std.enabled ? '' : 'cat-std-disabled'}">
-                <label class="std-toggle cat-std-toggle">
-                    <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${std.id}', this.checked); setTimeout(() => openCategoryDetail('${categoryId}'), 500)">
-                    <span class="std-toggle-slider"></span>
-                </label>
-                <div class="cat-std-info">
-                    <div class="cat-std-name">${sevIcon} ${escapeHtml(std.name)}</div>
-                    ${ruleDesc ? `<div class="cat-std-rule">${ruleDesc}</div>` : ''}
-                </div>
-                <button class="btn btn-xs btn-ghost" onclick="closeCategoryDetail(); setTimeout(() => showStandardDetail('${std.id}'), 200)" title="View full details">View</button>
-            </div>`;
+                <tr class="${std.enabled ? '' : 'cat-std-disabled'}">
+                    <td>
+                        <label class="std-toggle cat-std-toggle">
+                            <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${std.id}', this.checked); setTimeout(() => openCategoryDetail('${categoryId}'), 500)">
+                            <span class="std-toggle-slider"></span>
+                        </label>
+                    </td>
+                    <td>
+                        <div class="cat-std-name">${escapeHtml(std.name)}</div>
+                        <div class="cat-std-scope">${escapeHtml(scope)}</div>
+                    </td>
+                    <td><span class="cat-std-sev">${sevIcon} ${sevLabel}</span></td>
+                    <td><div class="cat-std-rule">${ruleDesc || '—'}</div></td>
+                    <td><button class="btn btn-xs btn-ghost" onclick="closeCategoryDetail(); setTimeout(() => showStandardDetail('${std.id}'), 200)" title="View full details">⋯</button></td>
+                </tr>`;
         }
 
-        html += `</div></div>`;
+        html += `</tbody></table></div>`;
+
+        // ── Modification prompt
+        html += `
+        <div class="cat-detail-section cat-detail-modify">
+            <h4>✏️ Modify Standards</h4>
+            <p class="cat-gen-explain">Describe changes you'd like — add new rules, adjust thresholds, change severity, or refine scope. The AI will generate updated standards.</p>
+            <textarea id="cat-modify-prompt" class="cat-modify-textarea" rows="3" placeholder="e.g. Add a rule requiring all resource names to include the cost center code…"></textarea>
+            <div class="cat-detail-footer">
+                <button class="btn btn-primary" onclick="modifyStandardsForCategory('${categoryId}')">🤖 Apply Changes</button>
+                <button class="btn btn-secondary" onclick="importStandardsForCategory('${categoryId}')">📥 Import More</button>
+            </div>
+        </div>`;
     } else {
+        // ═══════════════════════════════════════════════════
+        // UNCONFIGURED MODE — empty state + generation
+        // ═══════════════════════════════════════════════════
+
         html += `
         <div class="cat-detail-empty">
             <span class="cat-detail-empty-icon">📭</span>
             <p>No standards configured for ${escapeHtml(catName)} yet.</p>
             <p class="cat-detail-empty-hint">Generate a starter set using AI, or import your existing policies.</p>
         </div>`;
-    }
 
-    // ── Generation section (only for known categories with prompts)
-    if (cat && cat.prompt) {
-        const promptLines = cat.prompt.trim().split('\n').filter(l => l.trim());
-        // Extract bullet points from the prompt for the preview
-        const bullets = promptLines.filter(l => l.trim().startsWith('-')).map(l => l.trim().replace(/^-\s*/, ''));
+        // ── Generation section
+        if (cat && cat.prompt) {
+            const promptLines = cat.prompt.trim().split('\n').filter(l => l.trim());
+            const bullets = promptLines.filter(l => l.trim().startsWith('-')).map(l => l.trim().replace(/^-\s*/, ''));
 
-        html += `
-        <div class="cat-detail-section cat-detail-generate">
-            <h4>🤖 AI Generation</h4>
-            <p class="cat-gen-explain">${catStandards.length > 0
-                ? 'Generate additional standards to supplement your existing rules. The AI will create enforceable policies based on the template below.'
-                : 'InfraForge can generate a starter set of standards for this category. Review the template below and customize it to match your organization, then generate.'}</p>
+            html += `
+            <div class="cat-detail-section cat-detail-generate">
+                <h4>🤖 AI Generation</h4>
+                <p class="cat-gen-explain">InfraForge can generate a starter set of standards for this category. Review the template below and customize it to match your organization, then generate.</p>
 
-            <div class="cat-gen-preview">
-                <div class="cat-gen-preview-header">
-                    <span>Generation template</span>
-                    <button class="btn btn-xs btn-ghost" onclick="document.getElementById('cat-gen-prompt').classList.toggle('hidden'); this.textContent = this.textContent.includes('Edit') ? '▼ Collapse' : '✏️ Edit template'">✏️ Edit template</button>
+                <div class="cat-gen-preview">
+                    <div class="cat-gen-preview-header">
+                        <span>Generation template</span>
+                        <button class="btn btn-xs btn-ghost" onclick="document.getElementById('cat-gen-prompt').classList.toggle('hidden'); this.textContent = this.textContent.includes('Edit') ? '▼ Collapse' : '✏️ Edit template'">✏️ Edit template</button>
+                    </div>
+                    <ul class="cat-gen-bullets">
+                        ${bullets.slice(0, 6).map(b => `<li>${escapeHtml(b)}</li>`).join('')}
+                        ${bullets.length > 6 ? `<li class="cat-gen-more">… and ${bullets.length - 6} more rules</li>` : ''}
+                    </ul>
+                    <textarea id="cat-gen-prompt" class="cat-gen-textarea hidden" rows="10">${escapeHtml(cat.prompt)}</textarea>
                 </div>
-                <ul class="cat-gen-bullets">
-                    ${bullets.slice(0, 6).map(b => `<li>${escapeHtml(b)}</li>`).join('')}
-                    ${bullets.length > 6 ? `<li class="cat-gen-more">… and ${bullets.length - 6} more rules</li>` : ''}
-                </ul>
-                <textarea id="cat-gen-prompt" class="cat-gen-textarea hidden" rows="10">${escapeHtml(cat.prompt)}</textarea>
-            </div>
 
-            <div class="cat-gen-options">
-                <label class="cat-gen-option">
-                    <input type="checkbox" id="cat-gen-opt-critical" checked>
-                    <span>Include critical severity rules</span>
-                </label>
-                <label class="cat-gen-option">
-                    <input type="checkbox" id="cat-gen-opt-high" checked>
-                    <span>Include high severity rules</span>
-                </label>
-                <label class="cat-gen-option">
-                    <input type="checkbox" id="cat-gen-opt-medium" checked>
-                    <span>Include medium severity rules</span>
-                </label>
-                <label class="cat-gen-option">
-                    <input type="checkbox" id="cat-gen-opt-remediation" checked>
-                    <span>Include remediation guidance</span>
-                </label>
-            </div>
+                <div class="cat-gen-options">
+                    <label class="cat-gen-option">
+                        <input type="checkbox" id="cat-gen-opt-critical" checked>
+                        <span>Include critical severity rules</span>
+                    </label>
+                    <label class="cat-gen-option">
+                        <input type="checkbox" id="cat-gen-opt-high" checked>
+                        <span>Include high severity rules</span>
+                    </label>
+                    <label class="cat-gen-option">
+                        <input type="checkbox" id="cat-gen-opt-medium" checked>
+                        <span>Include medium severity rules</span>
+                    </label>
+                    <label class="cat-gen-option">
+                        <input type="checkbox" id="cat-gen-opt-remediation" checked>
+                        <span>Include remediation guidance</span>
+                    </label>
+                </div>
+            </div>`;
+        }
+
+        // ── Footer
+        html += `
+        <div class="cat-detail-footer">
+            ${cat && cat.prompt ? `<button class="btn btn-primary" onclick="generateFromCategoryDetail('${categoryId}')">🤖 Generate Standards</button>` : ''}
+            <button class="btn btn-secondary" onclick="importStandardsForCategory('${categoryId}')">📥 Import Policies</button>
         </div>`;
     }
-
-    // ── Footer actions
-    html += `
-    <div class="cat-detail-footer">
-        ${cat && cat.prompt ? `<button class="btn btn-primary" onclick="generateFromCategoryDetail('${categoryId}')">🤖 Generate Standards</button>` : ''}
-        <button class="btn btn-secondary" onclick="importStandardsForCategory('${categoryId}')">📥 Import Policies</button>
-        ${catStandards.length > 0 ? `<button class="btn btn-ghost" onclick="closeCategoryDetail(); filterStandards('${categoryId}')">📋 View All in List</button>` : ''}
-    </div>`;
 
     bodyEl.innerHTML = html;
     document.getElementById('category-detail-overlay').classList.remove('hidden');
@@ -5475,6 +5506,45 @@ function generateFromCategoryDetail(categoryId) {
 
 function generateStandardsForCategory(categoryId) {
     openCategoryDetail(categoryId);
+}
+
+function modifyStandardsForCategory(categoryId) {
+    const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
+    const promptEl = document.getElementById('cat-modify-prompt');
+    const userRequest = promptEl ? promptEl.value.trim() : '';
+
+    if (!userRequest) {
+        showToast('Describe the changes you want to make', 'error');
+        if (promptEl) promptEl.focus();
+        return;
+    }
+
+    // Build context: existing standards + user's modification request
+    const catStandards = allStandards.filter(s => s.category === categoryId);
+    const existingSummary = catStandards.map(s => {
+        const rule = s.rule || {};
+        return `- ${s.name} (${s.severity}, ${s.enabled ? 'enabled' : 'disabled'}): ${JSON.stringify(rule)}`;
+    }).join('\n');
+
+    const catName = cat ? cat.name : categoryId;
+    const prompt = `Category: ${catName}
+
+Existing standards in this category:
+${existingSummary}
+
+Requested changes:
+${userRequest}
+
+Please generate the updated or new standards based on the changes requested above. Keep existing standards that were not mentioned. Output all standards for this category.`;
+
+    closeCategoryDetail();
+    openImportStandardsModal();
+    switchImportTab('paste');
+    const textarea = document.getElementById('import-standards-content');
+    if (textarea) {
+        textarea.value = prompt;
+    }
+    setTimeout(() => extractStandards(), 300);
 }
 
 function importStandardsForCategory(categoryId) {
