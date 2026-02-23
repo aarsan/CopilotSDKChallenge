@@ -2279,6 +2279,14 @@ function showTemplateDetail(templateId) {
 
         ${ctaHtml}
 
+        <!-- Compliance Scan -->
+        <div class="detail-section tmpl-scan-section">
+            <button class="btn btn-sm tmpl-scan-btn" onclick="runComplianceScan('${escapeHtml(tmpl.id)}')">
+                🛡️ Scan for Compliance
+            </button>
+            <div id="tmpl-scan-results"></div>
+        </div>
+
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
             <h4>🧪 Validation</h4>
@@ -2748,6 +2756,185 @@ function _renderVersionPipeline(v) {
             <div class="ver-pipeline-stages">${stagesHtml}</div>
             ${detailHtml || '<div class="ver-pipeline-detail detail-info"><div class="ver-detail-title">ℹ️ No detailed results yet — run validation to see the full pipeline.</div></div>'}
         </div>`;
+}
+
+// ── Compliance Scan ─────────────────────────────────────────
+
+async function runComplianceScan(templateId) {
+    const resultsEl = document.getElementById('tmpl-scan-results');
+    if (!resultsEl) return;
+
+    // Show loading
+    resultsEl.innerHTML = `
+    <div class="scan-loading">
+        <div class="scan-loading-spinner"></div>
+        <span>Scanning template against ${allStandards.length} organization standards…</span>
+    </div>`;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-scan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Scan failed');
+        }
+        const data = await res.json();
+        resultsEl.innerHTML = _renderComplianceScanReport(data);
+    } catch (err) {
+        resultsEl.innerHTML = `<div class="scan-error">❌ Scan failed: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function _renderComplianceScanReport(data) {
+    const score = data.score;
+    const total = data.total_checks;
+    const passed = data.total_passed;
+    const violations = data.violations;
+    const sev = data.severity_breakdown;
+
+    // Score color
+    const scoreClass = score >= 90 ? 'scan-score-great' : score >= 70 ? 'scan-score-ok' : score >= 50 ? 'scan-score-warn' : 'scan-score-bad';
+
+    // Score ring SVG
+    const circumference = 2 * Math.PI * 42;
+    const offset = circumference - (score / 100) * circumference;
+
+    let html = `
+    <div class="scan-report">
+        <div class="scan-header">
+            <div class="scan-score-ring ${scoreClass}">
+                <svg viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="42" class="scan-ring-bg" />
+                    <circle cx="50" cy="50" r="42" class="scan-ring-fill" stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" />
+                </svg>
+                <div class="scan-score-text">
+                    <span class="scan-score-num">${score}</span>
+                    <span class="scan-score-pct">%</span>
+                </div>
+            </div>
+            <div class="scan-header-info">
+                <h4>Compliance Score</h4>
+                <div class="scan-header-stats">
+                    <span class="scan-stat">${passed} <em>passed</em></span>
+                    <span class="scan-stat scan-stat-fail">${violations} <em>violations</em></span>
+                    <span class="scan-stat">${total} <em>checks</em></span>
+                </div>
+                <div class="scan-meta">
+                    ${data.templates_scanned} template${data.templates_scanned > 1 ? 's' : ''} scanned · ${data.standards_count} standards loaded
+                </div>
+            </div>
+        </div>
+
+        <div class="scan-severity-bar">`;
+
+    // Severity breakdown chips
+    const sevOrder = ['critical', 'high', 'medium', 'low'];
+    const sevIcons = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+    for (const s of sevOrder) {
+        const info = sev[s] || { total: 0, passed: 0 };
+        if (info.total === 0) continue;
+        const failed = info.total - info.passed;
+        html += `
+        <div class="scan-sev-chip scan-sev-${s} ${failed > 0 ? 'scan-sev-fail' : 'scan-sev-pass'}">
+            ${sevIcons[s]} <strong>${failed > 0 ? failed + ' fail' : '✓'}</strong> <span>${s}</span>
+        </div>`;
+    }
+
+    html += `</div>`;
+
+    // Per-template results
+    for (const tmplResult of data.results) {
+        if (tmplResult.error) {
+            html += `
+            <div class="scan-tmpl-block">
+                <div class="scan-tmpl-header">
+                    <span class="scan-tmpl-name">${tmplResult.is_dependency ? '🔗 ' : ''}${escapeHtml(tmplResult.template_name)}</span>
+                    <span class="scan-tmpl-error">⚠️ ${escapeHtml(tmplResult.error)}</span>
+                </div>
+            </div>`;
+            continue;
+        }
+
+        const resources = tmplResult.resources || [];
+        const hasFindings = resources.some(r => r.findings && r.findings.length > 0);
+
+        if (!hasFindings) {
+            html += `
+            <div class="scan-tmpl-block">
+                <div class="scan-tmpl-header">
+                    <span class="scan-tmpl-name">${tmplResult.is_dependency ? '🔗 ' : '📄 '}${escapeHtml(tmplResult.template_name)}</span>
+                    <span class="scan-tmpl-badge scan-tmpl-na">No standards apply</span>
+                </div>
+            </div>`;
+            continue;
+        }
+
+        html += `
+        <div class="scan-tmpl-block">
+            <div class="scan-tmpl-header">
+                <span class="scan-tmpl-name">${tmplResult.is_dependency ? '🔗 ' : '📄 '}${escapeHtml(tmplResult.template_name)}</span>
+            </div>`;
+
+        for (const res of resources) {
+            if (!res.findings || res.findings.length === 0) continue;
+
+            const resPassCount = res.findings.filter(f => f.passed).length;
+            const resFailCount = res.findings.length - resPassCount;
+            const resAllPassed = resFailCount === 0;
+
+            html += `
+            <div class="scan-resource ${resAllPassed ? 'scan-res-ok' : 'scan-res-fail'}">
+                <div class="scan-res-header" onclick="this.parentElement.classList.toggle('scan-res-expanded')">
+                    <span class="scan-res-status">${resAllPassed ? '✅' : '❌'}</span>
+                    <span class="scan-res-type">${escapeHtml(res.resource_type)}</span>
+                    <span class="scan-res-name">${escapeHtml(res.resource_name)}</span>
+                    <span class="scan-res-counts">
+                        ${resPassCount > 0 ? `<span class="scan-cnt-pass">${resPassCount} ✓</span>` : ''}
+                        ${resFailCount > 0 ? `<span class="scan-cnt-fail">${resFailCount} ✗</span>` : ''}
+                    </span>
+                    <span class="scan-res-chevron">▶</span>
+                </div>
+                <div class="scan-res-findings">
+                    <table class="scan-findings-table">
+                        <thead>
+                            <tr><th>Status</th><th>Standard</th><th>Severity</th><th>Detail</th></tr>
+                        </thead>
+                        <tbody>`;
+
+            // Sort: failures first, then by severity
+            const sevPriority = { critical: 0, high: 1, medium: 2, low: 3 };
+            const sorted = [...res.findings].sort((a, b) => {
+                if (a.passed !== b.passed) return a.passed ? 1 : -1;
+                return (sevPriority[a.severity] || 9) - (sevPriority[b.severity] || 9);
+            });
+
+            for (const f of sorted) {
+                html += `
+                    <tr class="${f.passed ? 'scan-f-pass' : 'scan-f-fail'}">
+                        <td>${f.passed ? '✅' : '❌'}</td>
+                        <td>
+                            <div class="scan-f-name">${escapeHtml(f.standard_name)}</div>
+                            <div class="scan-f-cat">${escapeHtml(f.category)}</div>
+                        </td>
+                        <td><span class="scan-f-sev scan-f-sev-${f.severity}">${sevIcons[f.severity] || '⚪'} ${f.severity}</span></td>
+                        <td>
+                            <div class="scan-f-detail">${escapeHtml(f.detail)}</div>
+                            ${!f.passed && f.remediation ? `<div class="scan-f-remediation">💡 ${escapeHtml(f.remediation)}</div>` : ''}
+                        </td>
+                    </tr>`;
+            }
+
+            html += `</tbody></table></div></div>`;
+        }
+
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    return html;
 }
 
 /** Full validation pipeline: structural tests → ARM validation (auto-chains) */

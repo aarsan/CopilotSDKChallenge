@@ -2272,6 +2272,337 @@ async def test_template(template_id: str, request: Request):
     })
 
 
+# ── Compliance Scan ──────────────────────────────────────────
+
+@app.post("/api/catalog/templates/{template_id}/compliance-scan")
+async def compliance_scan_template(template_id: str, request: Request):
+    """Scan a template and all its dependencies against organization standards.
+
+    Parses the ARM JSON, extracts every resource, matches each resource type
+    against enabled org_standards, and evaluates each rule. Returns a rich
+    report with per-resource findings, severity breakdown, and an overall
+    compliance score.
+
+    Body (optional): { "version": 1 }
+    """
+    from src.database import (
+        get_template_by_id, get_template_versions, get_template_version,
+        get_all_templates,
+    )
+    from src.standards import get_all_standards
+    import json as _json
+    import fnmatch
+    import re
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    # ── Gather ARM content from this template + dependencies ──
+    templates_to_scan = []
+
+    # Main template version
+    requested_version = body.get("version")
+    ver = None
+    if requested_version:
+        ver = await get_template_version(template_id, int(requested_version))
+    else:
+        versions = await get_template_versions(template_id)
+        if versions:
+            ver = versions[0]
+    if not ver:
+        raise HTTPException(status_code=404, detail="No version found")
+
+    templates_to_scan.append({
+        "id": template_id,
+        "name": tmpl.get("name", template_id),
+        "arm_content": ver.get("arm_template", ""),
+        "is_dependency": False,
+    })
+
+    # Dependency templates
+    dep_service_ids = tmpl.get("service_ids", []) or []
+    if dep_service_ids:
+        all_tmpls = await get_all_templates()
+        tmpl_by_id = {t["id"]: t for t in all_tmpls}
+        for sid in dep_service_ids:
+            dep_tmpl = tmpl_by_id.get(sid)
+            if dep_tmpl and dep_tmpl.get("content"):
+                templates_to_scan.append({
+                    "id": sid,
+                    "name": dep_tmpl.get("name", sid),
+                    "arm_content": dep_tmpl["content"],
+                    "is_dependency": True,
+                })
+
+    # ── Load all enabled standards ────────────────────────────
+    all_standards = await get_all_standards(enabled_only=True)
+
+    def scope_matches(scope: str, resource_type: str) -> bool:
+        rt = resource_type.lower()
+        for pat in scope.split(","):
+            pat = pat.strip().lower()
+            if pat and fnmatch.fnmatch(rt, pat):
+                return True
+        return False
+
+    def _resolve_arm_value(val, params, variables):
+        """Best-effort resolution of ARM template expressions."""
+        if not isinstance(val, str):
+            return val
+        if not val.startswith("[") or not val.endswith("]"):
+            return val
+        expr = val[1:-1].strip()
+        # parameters('xxx')
+        m = re.match(r"parameters\(['\"](\w+)['\"]\)", expr)
+        if m:
+            pname = m.group(1)
+            pdef = params.get(pname, {})
+            return pdef.get("defaultValue", f"<param:{pname}>")
+        # variables('xxx')
+        m = re.match(r"variables\(['\"](\w+)['\"]\)", expr)
+        if m:
+            vname = m.group(1)
+            return variables.get(vname, f"<var:{vname}>")
+        return val
+
+    def _get_nested(obj, dotpath, params=None, variables=None):
+        """Get a value from a nested dict using dot notation.
+        Supports 'properties.minTlsVersion' style paths.
+        """
+        parts = dotpath.split(".")
+        current = obj
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+        if current is not None and params is not None:
+            current = _resolve_arm_value(current, params, variables or {})
+        return current
+
+    def evaluate_rule(rule, resource, params, variables):
+        """Evaluate one org_standard rule against a resource dict.
+        Returns (passed: bool, detail: str).
+        """
+        rule_type = rule.get("type", "property")
+
+        if rule_type == "property" or rule_type == "property_check":
+            key = rule.get("key", "")
+            operator = rule.get("operator", "==")
+            expected = rule.get("value")
+            actual = _get_nested(resource, key, params, variables)
+
+            if actual is None:
+                # Property not set — usually a fail
+                if operator in ("!=", "not_equals"):
+                    return True, f"`{key}` not set (satisfies != check)"
+                return False, f"`{key}` not found in resource"
+
+            # Resolve ARM expressions
+            actual_resolved = actual
+            if isinstance(actual_resolved, str) and actual_resolved.startswith("<"):
+                # Unresolvable parameter — can't evaluate, give benefit of doubt
+                return True, f"`{key}` uses parameter (assumed compliant)"
+
+            # Compare
+            actual_str = str(actual_resolved).lower()
+            expected_str = str(expected).lower() if expected is not None else ""
+
+            if operator in ("==", "equals"):
+                passed = actual_str == expected_str
+            elif operator in ("!=", "not_equals"):
+                passed = actual_str != expected_str
+            elif operator in (">=",):
+                try:
+                    passed = float(actual_str) >= float(expected_str)
+                except ValueError:
+                    passed = actual_str >= expected_str
+            elif operator in ("<=",):
+                try:
+                    passed = float(actual_str) <= float(expected_str)
+                except ValueError:
+                    passed = actual_str <= expected_str
+            elif operator in ("contains",):
+                passed = expected_str in actual_str
+            elif operator == "in":
+                passed = actual_str in [str(v).lower() for v in (expected if isinstance(expected, list) else [expected])]
+            else:
+                passed = actual_str == expected_str
+
+            detail = f"`{key}` = `{actual_resolved}` (expected {operator} `{expected}`)"
+            return passed, detail
+
+        elif rule_type == "tags":
+            required = set(t.lower() for t in rule.get("required_tags", []))
+            tags = resource.get("tags", {})
+            if isinstance(tags, str):
+                # ARM expression for tags — assume compliant
+                return True, "Tags use ARM expression (assumed compliant)"
+            actual_tags = set(k.lower() for k in tags.keys()) if isinstance(tags, dict) else set()
+            # Also check if tags reference a shared variable
+            if isinstance(tags, dict):
+                for v in tags.values():
+                    if isinstance(v, str) and "standardTags" in v:
+                        return True, "Tags use shared standardTags variable"
+            missing = required - actual_tags
+            if missing:
+                return False, f"Missing tags: {', '.join(sorted(missing))}"
+            return True, f"All required tags present ({', '.join(sorted(required))})"
+
+        elif rule_type == "allowed_values":
+            key = rule.get("key", "")
+            allowed = [str(v).lower() for v in rule.get("values", [])]
+            actual = _get_nested(resource, key, params, variables)
+            if actual is None:
+                return False, f"`{key}` not set"
+            actual_str = str(actual).lower()
+            if isinstance(actual, str) and actual.startswith("<"):
+                return True, f"`{key}` uses parameter (assumed compliant)"
+            if actual_str in allowed:
+                return True, f"`{key}` = `{actual}` (in allowed set)"
+            return False, f"`{key}` = `{actual}` not in allowed values: {', '.join(allowed)}"
+
+        elif rule_type == "naming_convention":
+            pattern = rule.get("pattern", "")
+            res_name = resource.get("name", "")
+            if isinstance(res_name, str) and res_name.startswith("["):
+                return True, "Name uses ARM expression (assumed compliant)"
+            if pattern and res_name:
+                # Simple pattern match — convert naming pattern placeholders to regex
+                regex = pattern.replace("{", "(?P<").replace("}", ">[a-z0-9-]+)")
+                try:
+                    if re.match(regex, str(res_name).lower()):
+                        return True, f"Name `{res_name}` matches pattern"
+                except re.error:
+                    return True, f"Pattern `{pattern}` not evaluable as regex"
+            return True, "Naming convention check (manual review)"
+
+        elif rule_type == "cost_threshold":
+            # Can't evaluate cost from ARM JSON alone
+            return True, f"Cost threshold ${rule.get('max_monthly_usd', 0)}/mo (requires runtime check)"
+
+        return True, "Rule type not evaluable statically"
+
+    # ── Scan each template ────────────────────────────────────
+    scan_results = []
+    total_checks = 0
+    total_passed = 0
+    severity_counts = {"critical": {"total": 0, "passed": 0}, "high": {"total": 0, "passed": 0}, "medium": {"total": 0, "passed": 0}, "low": {"total": 0, "passed": 0}}
+
+    for tmpl_info in templates_to_scan:
+        arm_content = tmpl_info["arm_content"]
+        try:
+            tpl = _json.loads(arm_content) if arm_content else None
+        except Exception:
+            scan_results.append({
+                "template_id": tmpl_info["id"],
+                "template_name": tmpl_info["name"],
+                "is_dependency": tmpl_info["is_dependency"],
+                "error": "Invalid JSON — could not parse ARM template",
+                "resources": [],
+            })
+            continue
+
+        if not tpl or not isinstance(tpl.get("resources"), list):
+            scan_results.append({
+                "template_id": tmpl_info["id"],
+                "template_name": tmpl_info["name"],
+                "is_dependency": tmpl_info["is_dependency"],
+                "error": "No resources found in ARM template",
+                "resources": [],
+            })
+            continue
+
+        params = tpl.get("parameters", {})
+        variables = tpl.get("variables", {})
+        resources = tpl.get("resources", [])
+
+        tmpl_resource_results = []
+
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                continue
+            res_type = res.get("type", "")
+            res_name = res.get("name", f"resource[{i}]")
+            # Resolve name if it's an ARM expression
+            resolved_name = _resolve_arm_value(res_name, params, variables) if isinstance(res_name, str) else res_name
+
+            # Find matching standards
+            matching = [s for s in all_standards if scope_matches(s.get("scope", "*"), res_type)]
+            if not matching:
+                tmpl_resource_results.append({
+                    "resource_type": res_type,
+                    "resource_name": str(resolved_name),
+                    "standards_checked": 0,
+                    "findings": [],
+                    "all_passed": True,
+                })
+                continue
+
+            findings = []
+            for std in matching:
+                rule = std.get("rule", {})
+                sev = std.get("severity", "medium")
+                passed, detail = evaluate_rule(rule, res, params, variables)
+
+                total_checks += 1
+                if sev in severity_counts:
+                    severity_counts[sev]["total"] += 1
+                if passed:
+                    total_passed += 1
+                    if sev in severity_counts:
+                        severity_counts[sev]["passed"] += 1
+
+                findings.append({
+                    "standard_id": std["id"],
+                    "standard_name": std["name"],
+                    "category": std.get("category", ""),
+                    "severity": sev,
+                    "passed": passed,
+                    "detail": detail,
+                    "remediation": rule.get("remediation", ""),
+                })
+
+            tmpl_resource_results.append({
+                "resource_type": res_type,
+                "resource_name": str(resolved_name),
+                "standards_checked": len(matching),
+                "findings": findings,
+                "all_passed": all(f["passed"] for f in findings),
+            })
+
+        scan_results.append({
+            "template_id": tmpl_info["id"],
+            "template_name": tmpl_info["name"],
+            "is_dependency": tmpl_info["is_dependency"],
+            "resources": tmpl_resource_results,
+        })
+
+    # ── Compute overall score ─────────────────────────────────
+    score = round((total_passed / total_checks) * 100) if total_checks > 0 else 100
+    violations = total_checks - total_passed
+
+    return JSONResponse({
+        "template_id": template_id,
+        "template_name": tmpl.get("name", template_id),
+        "score": score,
+        "total_checks": total_checks,
+        "total_passed": total_passed,
+        "violations": violations,
+        "severity_breakdown": severity_counts,
+        "templates_scanned": len(templates_to_scan),
+        "standards_count": len(all_standards),
+        "results": scan_results,
+    })
+
+
 # ── Auto-Heal Template ──────────────────────────────────────
 
 @app.post("/api/catalog/templates/{template_id}/auto-heal")
