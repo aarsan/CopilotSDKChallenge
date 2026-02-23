@@ -6994,6 +6994,284 @@ body {
     color: var(--text-primary);
 }
 
+/* ── Remediation Pipeline Flowchart ────────────────────────── */
+
+.remed-pipeline {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    margin-top: 0.75rem;
+    animation: scanFadeIn 0.35s ease;
+}
+
+/* Arrow between nodes */
+.pipe-arrow {
+    display: flex;
+    justify-content: center;
+    height: 28px;
+    flex-shrink: 0;
+}
+
+/* ── Pipeline Node (template box) ── */
+
+.pipe-node {
+    width: 100%;
+    border-radius: 10px;
+    border: 2px solid var(--border-muted);
+    background: var(--surface-secondary);
+    overflow: hidden;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.pipe-node.pipe-pending {
+    border-color: var(--border-muted);
+    opacity: 0.7;
+}
+
+.pipe-node.pipe-running {
+    border-color: var(--accent-blue);
+    opacity: 1;
+    box-shadow: 0 0 12px rgba(56, 139, 253, 0.2);
+    animation: pipeNodePulse 2s ease-in-out infinite;
+}
+
+.pipe-node.pipe-success {
+    border-color: #3fb950;
+    opacity: 1;
+    background: color-mix(in srgb, #3fb950 4%, var(--surface-secondary));
+}
+
+.pipe-node.pipe-failed {
+    border-color: #f85149;
+    opacity: 1;
+    background: color-mix(in srgb, #f85149 4%, var(--surface-secondary));
+}
+
+@keyframes pipeNodePulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(56, 139, 253, 0.15); }
+    50% { box-shadow: 0 0 18px rgba(56, 139, 253, 0.35); }
+}
+
+/* Node header */
+.pipe-node-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid var(--border-muted);
+    background: color-mix(in srgb, var(--surface-tertiary) 60%, transparent);
+}
+
+.pipe-node-status {
+    font-size: 1rem;
+    line-height: 1;
+    transition: all 0.2s;
+}
+
+.pipe-node.pipe-running .pipe-node-status {
+    color: var(--accent-blue);
+    animation: pipeStatusSpin 1.5s linear infinite;
+}
+
+@keyframes pipeStatusSpin {
+    0% { transform: rotate(0deg); }
+    50% { transform: rotate(180deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.pipe-node-label {
+    font-weight: 700;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.pipe-node-steps {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    background: var(--surface-primary);
+    padding: 0.15rem 0.45rem;
+    border-radius: 6px;
+    font-weight: 500;
+}
+
+/* Sub-nodes (Load → AI → Parse → Save) */
+.pipe-node-subs {
+    display: flex;
+    gap: 0;
+    padding: 0.4rem 0.85rem;
+    border-bottom: 1px solid var(--border-muted);
+    background: color-mix(in srgb, var(--surface-primary) 40%, transparent);
+}
+
+.pipe-sub {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: 1;
+    padding: 0.3rem 0.2rem;
+    position: relative;
+    transition: all 0.2s;
+}
+
+/* Arrow connectors between sub-nodes */
+.pipe-sub:not(:last-child)::after {
+    content: '→';
+    position: absolute;
+    right: -0.15rem;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.pipe-sub-icon {
+    font-size: 0.72rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: all 0.2s;
+}
+
+.pipe-sub-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.pipe-sub.pipe-sub-pending {
+    opacity: 0.5;
+}
+
+.pipe-sub.pipe-sub-running {
+    opacity: 1;
+}
+
+.pipe-sub.pipe-sub-running .pipe-sub-icon {
+    color: var(--accent-blue);
+    animation: pipeSubPulse 1s ease-in-out infinite;
+}
+
+.pipe-sub.pipe-sub-running .pipe-sub-label {
+    color: var(--accent-blue);
+    font-weight: 600;
+}
+
+@keyframes pipeSubPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.pipe-sub.pipe-sub-success {
+    opacity: 1;
+}
+
+.pipe-sub.pipe-sub-success .pipe-sub-label {
+    color: #3fb950;
+}
+
+.pipe-sub.pipe-sub-failed .pipe-sub-label {
+    color: #f85149;
+}
+
+/* Log area inside nodes */
+.pipe-node-logs {
+    max-height: 120px;
+    overflow-y: auto;
+    padding: 0;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.68rem;
+    line-height: 1.55;
+    scroll-behavior: smooth;
+}
+
+.pipe-node-logs:empty {
+    display: none;
+}
+
+.pipe-log {
+    padding: 0.2rem 0.85rem;
+    color: var(--text-muted);
+    border-bottom: 1px solid color-mix(in srgb, var(--border-muted) 30%, transparent);
+}
+
+.pipe-log:last-child {
+    border-bottom: none;
+}
+
+.pipe-log-error {
+    color: #f85149;
+    background: color-mix(in srgb, #f85149 6%, transparent);
+}
+
+.pipe-log-info {
+    color: var(--text-secondary);
+}
+
+/* Result badge */
+.pipe-node-result {
+    padding: 0.4rem 0.85rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #3fb950;
+    background: color-mix(in srgb, #3fb950 6%, transparent);
+    border-top: 1px solid color-mix(in srgb, #3fb950 15%, transparent);
+}
+
+.pipe-node-result.hidden {
+    display: none;
+}
+
+/* Pipeline done banner */
+.remed-pipe-done {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 0.7rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-muted);
+    background: var(--surface-secondary);
+}
+
+.remed-pipe-done-ok {
+    border-color: rgba(63, 185, 80, 0.3);
+    background: color-mix(in srgb, #3fb950 5%, var(--surface-secondary));
+}
+
+.remed-pipe-done-partial {
+    border-color: rgba(210, 153, 34, 0.3);
+    background: color-mix(in srgb, #d29922 5%, var(--surface-secondary));
+}
+
+.remed-pipe-done-icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.remed-pipe-done-text {
+    flex: 1;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.remed-pipe-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.8rem 1rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, #f85149 8%, var(--surface-secondary));
+    border: 1px solid rgba(248, 81, 73, 0.3);
+    color: #f85149;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.remed-pipe-error-icon {
+    font-size: 1rem;
+}
+
 /* ── Template Test Results ──────────────────────────────────── */
 .test-summary {
     display: flex;

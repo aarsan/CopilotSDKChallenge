@@ -3148,13 +3148,11 @@ async function executeRemediationPlan(templateId) {
     if (!planSteps || !_lastScanData) return;
 
     const execSection = document.querySelector('.remed-execute-section');
-    if (execSection) {
-        execSection.innerHTML = `
-        <div class="scan-loading">
-            <div class="scan-loading-spinner"></div>
-            <span>Applying remediation to templates — this may take a minute…</span>
-        </div>`;
-    }
+    if (!execSection) return;
+
+    // Replace the button with the pipeline container
+    execSection.innerHTML = `<div class="remed-pipeline" id="remed-pipeline"></div>`;
+    const pipeline = document.getElementById('remed-pipeline');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/execute`, {
@@ -3166,14 +3164,179 @@ async function executeRemediationPlan(templateId) {
             const err = await res.json();
             throw new Error(err.detail || 'Execution failed');
         }
-        const data = await res.json();
-        if (execSection) {
-            execSection.innerHTML = _renderRemediationResults(data);
+
+        // Read NDJSON stream
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let pipelineState = null;
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete last line
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    pipelineState = _handlePipelineEvent(pipeline, event, pipelineState);
+                } catch { /* skip malformed lines */ }
+            }
         }
+
+        // Process any remaining buffer
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                pipelineState = _handlePipelineEvent(pipeline, event, pipelineState);
+            } catch { /* skip */ }
+        }
+
     } catch (err) {
-        if (execSection) {
-            execSection.innerHTML = `<div class="scan-error">❌ Execution failed: ${escapeHtml(err.message)}</div>`;
+        pipeline.innerHTML = `
+            <div class="remed-pipe-error">
+                <span class="remed-pipe-error-icon">❌</span>
+                <span>Execution failed: ${escapeHtml(err.message)}</span>
+            </div>`;
+    }
+}
+
+/** Handle a single pipeline NDJSON event and update the visualization */
+function _handlePipelineEvent(container, event, state) {
+    if (!state) state = { nodes: [], nodeEls: {}, logCounts: {} };
+
+    switch (event.type) {
+        case 'pipeline_init':
+            state.nodes = event.nodes || [];
+            container.innerHTML = _renderPipelineDAG(state.nodes);
+            // Cache node elements
+            for (const node of state.nodes) {
+                state.nodeEls[node.id] = document.getElementById(`pipe-node-${node.id}`);
+                state.logCounts[node.id] = 0;
+                for (const sub of (node.sub_nodes || [])) {
+                    state.nodeEls[sub.id] = document.getElementById(`pipe-sub-${sub.id}`);
+                }
+            }
+            break;
+
+        case 'node_status': {
+            const el = state.nodeEls[event.node_id];
+            if (!el) break;
+            // Remove old status classes and add new
+            el.classList.remove('pipe-pending', 'pipe-running', 'pipe-success', 'pipe-failed');
+            el.classList.add(`pipe-${event.status}`);
+            // Update status indicator
+            const indicator = el.querySelector('.pipe-node-status');
+            if (indicator) indicator.textContent = _pipelineStatusIcon(event.status);
+            // If failed, show error
+            if (event.status === 'failed' && event.error) {
+                const logArea = el.querySelector('.pipe-node-logs');
+                if (logArea) {
+                    logArea.innerHTML += `<div class="pipe-log pipe-log-error">❌ ${escapeHtml(event.error)}</div>`;
+                    logArea.scrollTop = logArea.scrollHeight;
+                }
+            }
+            // If success and has result, show summary
+            if (event.status === 'success' && event.result) {
+                const r = event.result;
+                const summary = el.querySelector('.pipe-node-result');
+                if (summary) {
+                    summary.classList.remove('hidden');
+                    summary.innerHTML = `✅ v${escapeHtml(r.new_semver || '')} — ${r.changes_made?.length || 0} change(s)`;
+                }
+            }
+            break;
         }
+
+        case 'sub_node_status': {
+            const el = state.nodeEls[event.sub_id];
+            if (!el) break;
+            el.classList.remove('pipe-sub-pending', 'pipe-sub-running', 'pipe-sub-success', 'pipe-sub-failed');
+            el.classList.add(`pipe-sub-${event.status}`);
+            const icon = el.querySelector('.pipe-sub-icon');
+            if (icon) icon.textContent = _pipelineStatusIcon(event.status);
+            break;
+        }
+
+        case 'log': {
+            const nodeEl = state.nodeEls[event.node_id];
+            if (!nodeEl) break;
+            const logArea = nodeEl.querySelector('.pipe-node-logs');
+            if (!logArea) break;
+            state.logCounts[event.node_id] = (state.logCounts[event.node_id] || 0) + 1;
+            const level = event.level || 'info';
+            logArea.innerHTML += `<div class="pipe-log pipe-log-${level}">${escapeHtml(event.message)}</div>`;
+            logArea.scrollTop = logArea.scrollHeight;
+            break;
+        }
+
+        case 'pipeline_done': {
+            // Add completion banner and re-scan button
+            const allOk = event.all_success;
+            const banner = document.createElement('div');
+            banner.className = `remed-pipe-done ${allOk ? 'remed-pipe-done-ok' : 'remed-pipe-done-partial'}`;
+            banner.innerHTML = `
+                <span class="remed-pipe-done-icon">${allOk ? '✅' : '⚠️'}</span>
+                <span class="remed-pipe-done-text">${allOk ? 'All templates updated successfully' : 'Some templates failed — check logs above'}</span>
+                <button class="btn btn-sm scan-rescan-btn" onclick="runComplianceScan('${escapeHtml(event.template_id)}')">🔄 Re-scan</button>
+            `;
+            container.appendChild(banner);
+            break;
+        }
+    }
+
+    return state;
+}
+
+/** Render the initial pipeline DAG with all nodes in pending state */
+function _renderPipelineDAG(nodes) {
+    let html = '';
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const isLast = i === nodes.length - 1;
+
+        html += `
+        <div class="pipe-node pipe-pending" id="pipe-node-${node.id}">
+            <div class="pipe-node-header">
+                <span class="pipe-node-status">${_pipelineStatusIcon('pending')}</span>
+                <span class="pipe-node-label">${escapeHtml(node.label)}</span>
+                <span class="pipe-node-steps">${node.step_count} step${node.step_count !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="pipe-node-subs">
+                ${(node.sub_nodes || []).map(sub => `
+                    <div class="pipe-sub pipe-sub-pending" id="pipe-sub-${sub.id}">
+                        <span class="pipe-sub-icon">${_pipelineStatusIcon('pending')}</span>
+                        <span class="pipe-sub-label">${escapeHtml(sub.label)}</span>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="pipe-node-logs"></div>
+            <div class="pipe-node-result hidden"></div>
+        </div>`;
+
+        if (!isLast) {
+            html += `<div class="pipe-arrow">
+                <svg width="24" height="28" viewBox="0 0 24 28">
+                    <line x1="12" y1="0" x2="12" y2="20" stroke="var(--border-muted)" stroke-width="2"/>
+                    <polygon points="6,18 12,26 18,18" fill="var(--border-muted)"/>
+                </svg>
+            </div>`;
+        }
+    }
+    return html;
+}
+
+function _pipelineStatusIcon(status) {
+    switch (status) {
+        case 'pending': return '○';
+        case 'running': return '◉';
+        case 'success': return '✅';
+        case 'failed': return '❌';
+        default: return '○';
     }
 }
 

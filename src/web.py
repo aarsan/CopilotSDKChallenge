@@ -2812,8 +2812,15 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 async def compliance_remediate_execute(template_id: str, request: Request):
     """Phase 2: Execute the remediation plan — apply fixes to ARM templates.
 
-    Uses CODE_GENERATION model (claude-sonnet-4) to apply the planned changes
-    to each template. Creates new versions for modified templates.
+    Streams NDJSON progress events so the UI can render a live pipeline
+    flowchart showing each template being processed with sub-steps.
+
+    Event types:
+      pipeline_init   — full DAG of nodes and sub-nodes
+      node_status     — template-level status change (pending→running→success/fail)
+      sub_node_status — sub-step status change
+      log             — detailed log message for a node
+      pipeline_done   — final summary with results
     """
     import asyncio
     from src.model_router import Task, get_model_for_task
@@ -2846,201 +2853,282 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         tid = step.get("template_id", template_id)
         steps_by_template.setdefault(tid, []).append(step)
 
-    results = []
-
-    for tid, steps in steps_by_template.items():
-        # Load current ARM content
-        if tid == template_id:
-            versions = await get_template_versions(tid)
-            current_arm = ""
-            ver_num = None
-            if versions:
-                ver = await get_template_version(tid, versions[0]["version"])
-                current_arm = ver.get("arm_template", "") if ver else ""
-                ver_num = versions[0]["version"]
-            if not current_arm:
-                current_arm = tmpl.get("content", "")
-        else:
-            dep_tmpl = await get_template_by_id(tid)
-            current_arm = dep_tmpl.get("content", "") if dep_tmpl else ""
-
-        if not current_arm:
-            results.append({
-                "template_id": tid,
-                "success": False,
-                "error": "No ARM content found",
-            })
-            continue
-
-        # Build edit instructions from all steps for this template
-        instructions = "\n".join(
-            f"{i+1}. [{s.get('severity','medium').upper()}] {s.get('action','')}: {s.get('detail','')}"
-            for i, s in enumerate(steps)
-        )
-
-        # Build the violations context
-        violations_context = ""
-        if scan_data:
-            for tmpl_result in scan_data.get("results", []):
-                if tmpl_result.get("template_id") == tid:
-                    for res in tmpl_result.get("resources", []):
-                        for f in res.get("findings", []):
-                            if not f.get("passed", True):
-                                violations_context += (
-                                    f"  - {f.get('standard_name','')}: {f.get('detail','')}\n"
-                                )
-
-        prompt = (
-            "You are an Azure ARM template compliance remediation expert. "
-            "Apply the following remediation steps to the ARM template.\n\n"
-            f"--- REMEDIATION STEPS ---\n{instructions}\n--- END STEPS ---\n\n"
-        )
-        if violations_context:
-            prompt += f"--- ORIGINAL VIOLATIONS ---\n{violations_context}--- END VIOLATIONS ---\n\n"
-        prompt += (
-            f"--- CURRENT ARM TEMPLATE ---\n{current_arm}\n--- END TEMPLATE ---\n\n"
-            "Apply ALL the remediation steps to produce a fixed ARM template.\n\n"
-            "Return a JSON object:\n"
-            "{\n"
-            '  "arm_template": { ...the complete fixed ARM JSON... },\n'
-            '  "changes_made": [\n'
-            '    {"step": 1, "description": "What was changed", "resource": "affected resource"}\n'
-            "  ]\n"
-            "}\n\n"
-            "RULES:\n"
-            "- Return the COMPLETE ARM template, not just changed parts\n"
-            "- Maintain valid ARM template structure\n"
-            "- Keep all existing parameters, variables, outputs that are still relevant\n"
-            "- Preserve resource tags, dependencies, and naming conventions\n"
-            "- Do NOT change resource names or parameter names\n"
-            "- Do NOT remove resources — only modify properties for compliance\n"
-            "- Return ONLY raw JSON — no markdown fences\n"
-        )
-
-        session = await client.create_session({
-            "model": model,
-            "streaming": True,
-            "tools": [],
-            "system_message": {
-                "content": (
-                    "You are an ARM template compliance remediation expert. "
-                    "You fix ARM templates to meet organizational standards. "
-                    "Return ONLY raw JSON — no markdown, no commentary."
-                )
-            },
-        })
-
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=120)
-        finally:
-            unsub()
-
-        raw = "".join(chunks).strip()
-        # Strip markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3].strip()
-        if raw.startswith("json"):
-            raw = raw[4:].strip()
-
-        try:
-            result_json = json.loads(raw)
-        except json.JSONDecodeError:
-            results.append({
-                "template_id": tid,
-                "success": False,
-                "error": "Failed to parse AI response",
-            })
-            continue
-
-        arm_template = result_json.get("arm_template", result_json)
-        changes_made = result_json.get("changes_made", [])
-
-        # Validate it's valid JSON with $schema
-        if isinstance(arm_template, dict) and "$schema" in arm_template:
-            fixed_content = json.dumps(arm_template, indent=2)
-        elif isinstance(arm_template, str):
-            try:
-                parsed = json.loads(arm_template)
-                if "$schema" in parsed:
-                    fixed_content = json.dumps(parsed, indent=2)
-                else:
-                    results.append({
-                        "template_id": tid,
-                        "success": False,
-                        "error": "AI returned JSON without ARM $schema",
-                    })
-                    continue
-            except json.JSONDecodeError:
-                results.append({
-                    "template_id": tid,
-                    "success": False,
-                    "error": "AI returned invalid ARM JSON",
-                })
-                continue
-        else:
-            results.append({
-                "template_id": tid,
-                "success": False,
-                "error": "Unexpected AI response format",
-            })
-            continue
-
-        # Build changelog
-        changes_desc = "; ".join(
-            c.get("description", "") for c in changes_made if c.get("description")
-        ) or "Compliance remediation applied"
-        changelog = f"Compliance remediation: {changes_desc}"
-
-        # Determine change_type from plan steps
-        step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
-
-        # Create new version
-        new_ver = await create_template_version(
-            tid,
-            fixed_content,
-            changelog=changelog,
-            change_type=step_change_type,
-            created_by="compliance-remediation",
-        )
-
-        # Update parent catalog_templates.content
-        now_iso = datetime.now(timezone.utc).isoformat()
-        await backend.execute_write(
-            "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
-            (fixed_content, now_iso, tid),
-        )
-
-        results.append({
+    # Build pipeline DAG for the init event
+    nodes = []
+    for i, (tid, steps) in enumerate(steps_by_template.items()):
+        tname = steps[0].get("template_name", tid)
+        nodes.append({
+            "id": f"tmpl-{i}",
             "template_id": tid,
-            "template_name": steps[0].get("template_name", tid),
-            "success": True,
-            "new_version": new_ver.get("version"),
-            "new_semver": new_ver.get("semver"),
-            "changes_made": changes_made,
-            "changelog": changelog,
+            "label": tname,
+            "step_count": len(steps),
+            "sub_nodes": [
+                {"id": f"tmpl-{i}-load", "label": "Load Template"},
+                {"id": f"tmpl-{i}-ai", "label": "AI Remediation"},
+                {"id": f"tmpl-{i}-parse", "label": "Parse & Validate"},
+                {"id": f"tmpl-{i}-save", "label": "Save Version"},
+            ],
         })
 
-    return JSONResponse({
-        "template_id": template_id,
-        "results": results,
-        "all_success": all(r.get("success") for r in results),
-    })
+    async def _generate():
+        # Emit pipeline init
+        yield json.dumps({"type": "pipeline_init", "nodes": nodes}) + "\n"
+        await asyncio.sleep(0)
+
+        results = []
+
+        for i, (tid, steps) in enumerate(steps_by_template.items()):
+            node_id = f"tmpl-{i}"
+            tname = steps[0].get("template_name", tid)
+
+            # ── Node: RUNNING ──
+            yield json.dumps({"type": "node_status", "node_id": node_id, "status": "running"}) + "\n"
+            await asyncio.sleep(0)
+
+            # ── Sub-node: Load Template ──
+            yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-load", "status": "running"}) + "\n"
+            yield json.dumps({"type": "log", "node_id": node_id, "message": f"Loading ARM template for {tname}…"}) + "\n"
+            await asyncio.sleep(0)
+
+            try:
+                if tid == template_id:
+                    versions = await get_template_versions(tid)
+                    current_arm = ""
+                    ver_num = None
+                    if versions:
+                        ver = await get_template_version(tid, versions[0]["version"])
+                        current_arm = ver.get("arm_template", "") if ver else ""
+                        ver_num = versions[0]["version"]
+                    if not current_arm:
+                        current_arm = tmpl.get("content", "")
+                else:
+                    dep_tmpl = await get_template_by_id(tid)
+                    current_arm = dep_tmpl.get("content", "") if dep_tmpl else ""
+
+                if not current_arm:
+                    yield json.dumps({"type": "log", "node_id": node_id, "message": "No ARM content found", "level": "error"}) + "\n"
+                    yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-load", "status": "failed"}) + "\n"
+                    yield json.dumps({"type": "node_status", "node_id": node_id, "status": "failed", "error": "No ARM content found"}) + "\n"
+                    results.append({"template_id": tid, "success": False, "error": "No ARM content found"})
+                    await asyncio.sleep(0)
+                    continue
+
+                arm_size = len(current_arm)
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Loaded template ({arm_size:,} bytes)" + (f" from version {ver_num}" if tid == template_id and ver_num else "")}) + "\n"
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-load", "status": "success"}) + "\n"
+                await asyncio.sleep(0)
+
+                # ── Sub-node: AI Remediation ──
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-ai", "status": "running"}) + "\n"
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Sending {len(steps)} remediation step(s) to AI ({model})…"}) + "\n"
+                await asyncio.sleep(0)
+
+                instructions = "\n".join(
+                    f"{j+1}. [{s.get('severity','medium').upper()}] {s.get('action','')}: {s.get('detail','')}"
+                    for j, s in enumerate(steps)
+                )
+
+                violations_context = ""
+                if scan_data:
+                    for tmpl_result in scan_data.get("results", []):
+                        if tmpl_result.get("template_id") == tid:
+                            for res in tmpl_result.get("resources", []):
+                                for f in res.get("findings", []):
+                                    if not f.get("passed", True):
+                                        violations_context += (
+                                            f"  - {f.get('standard_name','')}: {f.get('detail','')}\n"
+                                        )
+
+                prompt = (
+                    "You are an Azure ARM template compliance remediation expert. "
+                    "Apply the following remediation steps to the ARM template.\n\n"
+                    f"--- REMEDIATION STEPS ---\n{instructions}\n--- END STEPS ---\n\n"
+                )
+                if violations_context:
+                    prompt += f"--- ORIGINAL VIOLATIONS ---\n{violations_context}--- END VIOLATIONS ---\n\n"
+                prompt += (
+                    f"--- CURRENT ARM TEMPLATE ---\n{current_arm}\n--- END TEMPLATE ---\n\n"
+                    "Apply ALL the remediation steps to produce a fixed ARM template.\n\n"
+                    "Return a JSON object:\n"
+                    "{\n"
+                    '  "arm_template": { ...the complete fixed ARM JSON... },\n'
+                    '  "changes_made": [\n'
+                    '    {"step": 1, "description": "What was changed", "resource": "affected resource"}\n'
+                    "  ]\n"
+                    "}\n\n"
+                    "RULES:\n"
+                    "- Return the COMPLETE ARM template, not just changed parts\n"
+                    "- Maintain valid ARM template structure\n"
+                    "- Keep all existing parameters, variables, outputs that are still relevant\n"
+                    "- Preserve resource tags, dependencies, and naming conventions\n"
+                    "- Do NOT change resource names or parameter names\n"
+                    "- Do NOT remove resources — only modify properties for compliance\n"
+                    "- Return ONLY raw JSON — no markdown fences\n"
+                )
+
+                session = await client.create_session({
+                    "model": model,
+                    "streaming": True,
+                    "tools": [],
+                    "system_message": {
+                        "content": (
+                            "You are an ARM template compliance remediation expert. "
+                            "You fix ARM templates to meet organizational standards. "
+                            "Return ONLY raw JSON — no markdown, no commentary."
+                        )
+                    },
+                })
+
+                chunks: list[str] = []
+                done_ev = asyncio.Event()
+                token_count = [0]
+
+                def on_event(ev):
+                    try:
+                        if ev.type.value == "assistant.message_delta":
+                            chunks.append(ev.data.delta_content or "")
+                            token_count[0] += 1
+                        elif ev.type.value in ("assistant.message", "session.idle"):
+                            done_ev.set()
+                    except Exception:
+                        done_ev.set()
+
+                unsub = session.on(on_event)
+                try:
+                    await session.send({"prompt": prompt})
+                    # Emit token progress while waiting
+                    while not done_ev.is_set():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=3)
+                        except asyncio.TimeoutError:
+                            pass
+                        if token_count[0] > 0:
+                            yield json.dumps({"type": "log", "node_id": node_id, "message": f"AI generating… ({token_count[0]} chunks received)"}) + "\n"
+                            await asyncio.sleep(0)
+                finally:
+                    unsub()
+
+                raw = "".join(chunks).strip()
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"AI response received ({len(raw):,} chars)"}) + "\n"
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-ai", "status": "success"}) + "\n"
+                await asyncio.sleep(0)
+
+                # ── Sub-node: Parse & Validate ──
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-parse", "status": "running"}) + "\n"
+                yield json.dumps({"type": "log", "node_id": node_id, "message": "Parsing AI response…"}) + "\n"
+                await asyncio.sleep(0)
+
+                # Strip markdown fences
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+                if raw.endswith("```"):
+                    raw = raw[:-3].strip()
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+
+                try:
+                    result_json = json.loads(raw)
+                except json.JSONDecodeError:
+                    yield json.dumps({"type": "log", "node_id": node_id, "message": "Failed to parse AI response as JSON", "level": "error"}) + "\n"
+                    yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-parse", "status": "failed"}) + "\n"
+                    yield json.dumps({"type": "node_status", "node_id": node_id, "status": "failed", "error": "Failed to parse AI response"}) + "\n"
+                    results.append({"template_id": tid, "success": False, "error": "Failed to parse AI response"})
+                    await asyncio.sleep(0)
+                    continue
+
+                arm_template = result_json.get("arm_template", result_json)
+                changes_made = result_json.get("changes_made", [])
+
+                # Validate ARM structure
+                if isinstance(arm_template, dict) and "$schema" in arm_template:
+                    fixed_content = json.dumps(arm_template, indent=2)
+                elif isinstance(arm_template, str):
+                    try:
+                        parsed = json.loads(arm_template)
+                        if "$schema" in parsed:
+                            fixed_content = json.dumps(parsed, indent=2)
+                        else:
+                            raise ValueError("Missing $schema")
+                    except (json.JSONDecodeError, ValueError):
+                        yield json.dumps({"type": "log", "node_id": node_id, "message": "AI returned JSON without valid ARM $schema", "level": "error"}) + "\n"
+                        yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-parse", "status": "failed"}) + "\n"
+                        yield json.dumps({"type": "node_status", "node_id": node_id, "status": "failed", "error": "AI returned invalid ARM JSON"}) + "\n"
+                        results.append({"template_id": tid, "success": False, "error": "AI returned invalid ARM JSON"})
+                        await asyncio.sleep(0)
+                        continue
+                else:
+                    yield json.dumps({"type": "log", "node_id": node_id, "message": "Unexpected AI response format", "level": "error"}) + "\n"
+                    yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-parse", "status": "failed"}) + "\n"
+                    yield json.dumps({"type": "node_status", "node_id": node_id, "status": "failed", "error": "Unexpected AI response format"}) + "\n"
+                    results.append({"template_id": tid, "success": False, "error": "Unexpected AI response format"})
+                    await asyncio.sleep(0)
+                    continue
+
+                change_count = len(changes_made)
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Valid ARM template with {change_count} change(s) applied"}) + "\n"
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-parse", "status": "success"}) + "\n"
+                await asyncio.sleep(0)
+
+                # ── Sub-node: Save Version ──
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-save", "status": "running"}) + "\n"
+                yield json.dumps({"type": "log", "node_id": node_id, "message": "Creating new template version…"}) + "\n"
+                await asyncio.sleep(0)
+
+                changes_desc = "; ".join(
+                    c.get("description", "") for c in changes_made if c.get("description")
+                ) or "Compliance remediation applied"
+                changelog = f"Compliance remediation: {changes_desc}"
+                step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
+
+                new_ver = await create_template_version(
+                    tid,
+                    fixed_content,
+                    changelog=changelog,
+                    change_type=step_change_type,
+                    created_by="compliance-remediation",
+                )
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await backend.execute_write(
+                    "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                    (fixed_content, now_iso, tid),
+                )
+
+                new_semver = new_ver.get("semver", "")
+                new_version_num = new_ver.get("version", "?")
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Saved as version {new_version_num} (v{new_semver})"}) + "\n"
+                yield json.dumps({"type": "sub_node_status", "node_id": node_id, "sub_id": f"{node_id}-save", "status": "success"}) + "\n"
+                await asyncio.sleep(0)
+
+                result = {
+                    "template_id": tid,
+                    "template_name": tname,
+                    "success": True,
+                    "new_version": new_version_num,
+                    "new_semver": new_semver,
+                    "changes_made": changes_made,
+                    "changelog": changelog,
+                }
+                results.append(result)
+
+                yield json.dumps({"type": "node_status", "node_id": node_id, "status": "success", "result": result}) + "\n"
+                await asyncio.sleep(0)
+
+            except Exception as e:
+                yield json.dumps({"type": "log", "node_id": node_id, "message": f"Unexpected error: {str(e)}", "level": "error"}) + "\n"
+                yield json.dumps({"type": "node_status", "node_id": node_id, "status": "failed", "error": str(e)}) + "\n"
+                results.append({"template_id": tid, "success": False, "error": str(e)})
+                await asyncio.sleep(0)
+
+        # ── Pipeline complete ──
+        yield json.dumps({
+            "type": "pipeline_done",
+            "template_id": template_id,
+            "results": results,
+            "all_success": all(r.get("success") for r in results),
+        }) + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
 # ── Auto-Heal Template ──────────────────────────────────────
