@@ -4660,6 +4660,10 @@ function closeModal(id) {
     document.getElementById(id).classList.add('hidden');
 }
 
+function openModal(id) {
+    document.getElementById(id).classList.remove('hidden');
+}
+
 function closeModalOnOverlay(event, id) {
     if (event.target === event.currentTarget) {
         closeModal(id);
