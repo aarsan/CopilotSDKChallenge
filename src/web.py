@@ -2630,32 +2630,59 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
     # ── Gather dependency info for composed templates (BEFORE violations) ──
     dep_service_ids = tmpl.get("service_ids", []) or []
-    all_tmpls_map = {}
-    if dep_service_ids:
-        all_tmpls_list = await get_all_templates()
-        all_tmpls_map = {t["id"]: t for t in all_tmpls_list}
 
-    # Build resource→service mapping from dependency templates
-    resource_to_service = {}  # resource_type -> service template id
-    for sid in dep_service_ids:
-        dep = all_tmpls_map.get(sid)
-        if dep:
-            dep_resources = dep.get("resources", [])
-            if isinstance(dep_resources, list):
-                for r in dep_resources:
-                    rtype = r if isinstance(r, str) else (r.get("type", "") if isinstance(r, dict) else "")
-                    if rtype:
-                        resource_to_service[rtype.lower()] = sid
-            # Also try to extract resource types from the ARM content
-            dep_content = dep.get("content", "")
-            if dep_content:
-                try:
-                    dep_arm = json.loads(dep_content)
-                    for res in dep_arm.get("resources", []):
-                        if isinstance(res, dict) and res.get("type"):
-                            resource_to_service[res["type"].lower()] = sid
-                except Exception:
-                    pass
+    # Build resource→service mapping.
+    # service_ids ARE resource types (e.g. "Microsoft.Network/virtualNetworks").
+    # They may or may not exist as separate catalog entries.  We map every
+    # resource type found in the composed ARM template to its owning service_id
+    # using:  1) exact match,  2) provider-namespace match,
+    #         3) child-resource prefix match.
+    resource_to_service: dict[str, str] = {}
+    service_id_names: dict[str, str] = {}          # pretty name for each sid
+
+    if dep_service_ids:
+        # Normalised lookup  sid_lower → original sid
+        sids_lower = {sid.lower(): sid for sid in dep_service_ids}
+
+        # Extract resource types from the composed ARM template
+        try:
+            arm_json = json.loads(tmpl.get("content", "") or "")
+            arm_resources = arm_json.get("resources", [])
+        except Exception:
+            arm_resources = []
+
+        for res in arm_resources:
+            if not isinstance(res, dict):
+                continue
+            rtype = (res.get("type", "") or "").lower()
+            if not rtype:
+                continue
+
+            # 1) Exact match (resource type == service_id)
+            if rtype in sids_lower:
+                resource_to_service[rtype] = sids_lower[rtype]
+                continue
+
+            # 2) Child‑resource prefix (e.g. Microsoft.Compute/virtualMachines/extensions)
+            for sid_l, sid in sids_lower.items():
+                if rtype.startswith(sid_l + "/"):
+                    resource_to_service[rtype] = sid
+                    break
+            if rtype in resource_to_service:
+                continue
+
+            # 3) Same provider namespace (e.g. Microsoft.Network)
+            provider = rtype.rsplit("/", 1)[0] if "/" in rtype else rtype
+            for sid_l, sid in sids_lower.items():
+                sid_provider = sid_l.rsplit("/", 1)[0] if "/" in sid_l else sid_l
+                if provider == sid_provider:
+                    resource_to_service[rtype] = sid
+                    break
+
+        # Build friendly names for each service_id  (short suffix form)
+        for sid in dep_service_ids:
+            parts = sid.split("/")
+            service_id_names[sid] = parts[-1] if len(parts) > 1 else sid
 
     # Collect violations per template — re-attribute to owning service template
     violations_summary = []
@@ -2667,9 +2694,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             # If this resource belongs to a service template, attribute to it
             owning_service = resource_to_service.get(rt)
             effective_tid = owning_service if owning_service else tid
-            effective_name = tname
-            if owning_service and owning_service in all_tmpls_map:
-                effective_name = all_tmpls_map[owning_service].get("name", owning_service)
+            effective_name = service_id_names.get(effective_tid, tname) if owning_service else tname
             for f in res.get("findings", []):
                 if not f.get("passed", True):
                     violations_summary.append({
@@ -2703,7 +2728,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
     for tid in template_ids:
         versions = await get_template_versions(tid)
-        current_semver = await get_latest_semver(tid)
+        current_semver = await get_latest_semver(tid) or "1.0.0"
         current_ver_num = versions[0]["version"] if versions else 0
 
         # Determine change_type based on severity of violations for this template
@@ -2715,7 +2740,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
         if not has_violations:
             change_type = "none"
-            projected_semver = current_semver or "1.0.0"
+            projected_semver = current_semver
         elif has_critical:
             change_type = "minor"  # critical compliance = minor bump
         else:
@@ -2725,14 +2750,16 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             projected_semver = compute_next_semver(current_semver, change_type)
 
         dep_name = ""
-        if tid in all_tmpls_map:
-            dep_name = all_tmpls_map[tid].get("name", tid)
-        elif tid == template_id:
+        if tid == template_id:
             dep_name = tmpl.get("name", tid)
+        elif tid in service_id_names:
+            dep_name = service_id_names[tid]
+        else:
+            dep_name = tid
 
         template_version_info[tid] = {
             "current_version": current_ver_num,
-            "current_semver": current_semver or "1.0.0",
+            "current_semver": current_semver,
             "change_type": change_type,
             "projected_semver": projected_semver,
             "projected_version": current_ver_num + 1 if change_type != "none" else current_ver_num,
@@ -2749,8 +2776,8 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             if not arm_snippets.get(tid):
                 arm_snippets[tid] = tmpl.get("content", "")
         else:
-            dep = all_tmpls_map.get(tid) or await get_template_by_id(tid)
-            arm_snippets[tid] = dep.get("content", "") if dep else ""
+            # Service template — use the parent's composed ARM (it contains all resources)
+            arm_snippets[tid] = tmpl.get("content", "")
 
     # If service templates have violations, propagate a version bump to the parent
     # (composed parent should bump when any of its dependencies change)
@@ -2825,93 +2852,116 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         '  "steps": [\n'
         "    {\n"
         '      "step": 1,\n'
-        '      "template_id": "which template to modify (use the owning service template ID, not the composed parent)",\n'
-        '      "template_name": "human-readable name",\n'
-        '      "action": "Brief description of the change",\n'
-        '      "detail": "Specific technical detail of what to modify in the ARM JSON",\n'
+        '      "template_id": "the owning service template ID from the RESOURCE OWNERSHIP list",\n'
+        '      "template_name": "human-readable name of that service template",\n'
+        '      "action": "Brief description of the change for THIS service template only",\n'
+        '      "detail": "Specific technical detail of what to modify in the ARM JSON for this service",\n'
         '      "severity": "critical|high|medium|low",\n'
         '      "standards_addressed": ["list of standard names this step fixes"]\n'
         "    }\n"
         "  ]\n"
         "}\n\n"
         "RULES:\n"
-        "- Group related changes into single steps where possible\n"
-        "- Order by severity (critical first)\n"
+        "- CRITICAL: Generate SEPARATE steps for EACH service template. Do NOT create\n"
+        "  cross-cutting steps that span multiple service templates.\n"
+        "  For example, if TLS must be fixed on both virtualNetworks AND virtualMachines,\n"
+        "  emit two separate steps — one per service template.\n"
+        "- Each step's template_id MUST be an exact service template ID from the\n"
+        "  RESOURCE OWNERSHIP section (e.g. 'Microsoft.Network/virtualNetworks').\n"
+        "  NEVER use the composed parent template ID.\n"
+        "- Group related changes FOR THE SAME service template into single steps\n"
+        "- Order by severity (critical first), then by service template\n"
         "- Be specific about what ARM properties to change\n"
         "- Each step should be independently actionable\n"
         "- Reference actual resource names and property paths\n"
     )
-    if resource_ownership_text:
-        prompt += (
-            "- IMPORTANT: When a resource belongs to a service template (marked with [owned by: ...]),\n"
-            "  set template_id to the owning service template, NOT the composed parent.\n"
-            "  The composed template's ARM is assembled from the service templates.\n"
-        )
 
     client = await ensure_copilot_client()
     if not client:
         raise HTTPException(503, "AI client not available")
 
     model = get_model_for_task(Task.PLANNING)
-    session = await client.create_session({
-        "model": model,
-        "streaming": True,
-        "tools": [],
-        "system_message": {
-            "content": (
-                "You are a compliance remediation planner for Azure ARM templates. "
-                "Produce structured JSON plans. Return ONLY raw JSON — no markdown, no commentary."
-            )
-        },
-    })
 
-    chunks: list[str] = []
-    done_ev = asyncio.Event()
+    MAX_PLAN_RETRIES = 3
+    plan = None
+    last_error = ""
 
-    def on_event(ev):
-        try:
-            if ev.type.value == "assistant.message_delta":
-                chunks.append(ev.data.delta_content or "")
-            elif ev.type.value in ("assistant.message", "session.idle"):
+    for attempt in range(1, MAX_PLAN_RETRIES + 1):
+        session = await client.create_session({
+            "model": model,
+            "streaming": True,
+            "tools": [],
+            "system_message": {
+                "content": (
+                    "You are a compliance remediation planner for Azure ARM templates. "
+                    "Produce structured JSON plans. Return ONLY raw JSON — no markdown, "
+                    "no commentary, no code fences."
+                )
+            },
+        })
+
+        chunks: list[str] = []
+        done_ev = asyncio.Event()
+
+        def on_event(ev):
+            try:
+                if ev.type.value == "assistant.message_delta":
+                    chunks.append(ev.data.delta_content or "")
+                elif ev.type.value in ("assistant.message", "session.idle"):
+                    done_ev.set()
+            except Exception:
                 done_ev.set()
-        except Exception:
-            done_ev.set()
 
-    unsub = session.on(on_event)
-    try:
-        await session.send({"prompt": prompt})
-        await asyncio.wait_for(done_ev.wait(), timeout=90)
-    finally:
-        unsub()
+        retry_prompt = prompt
+        if attempt > 1 and last_error:
+            retry_prompt += (
+                f"\n\nPREVIOUS ATTEMPT FAILED: {last_error}\n"
+                "Return ONLY valid raw JSON. No markdown fences, no ```json, no text.\n"
+            )
 
-    raw = "".join(chunks).strip()
-    # Strip markdown fences
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-    if raw.endswith("```"):
-        raw = raw[:-3].strip()
-    if raw.startswith("json"):
-        raw = raw[4:].strip()
+        unsub = session.on(on_event)
+        try:
+            await session.send({"prompt": retry_prompt})
+            await asyncio.wait_for(done_ev.wait(), timeout=90)
+        finally:
+            unsub()
 
-    try:
-        plan = json.loads(raw)
-    except json.JSONDecodeError:
-        return JSONResponse({
-            "plan": [],
-            "summary": "Failed to parse remediation plan from AI",
-            "raw": raw,
-            "violation_count": len(violations_summary),
-        }, status_code=500)
+        raw = "".join(chunks).strip()
+
+        # Robust JSON extraction
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+        brace_start = raw.find("{")
+        brace_end = raw.rfind("}")
+        if brace_start >= 0 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end + 1]
+
+        try:
+            plan = json.loads(raw)
+            break  # Success
+        except json.JSONDecodeError as e:
+            last_error = f"JSON parse error: {str(e)}"
+            if attempt >= MAX_PLAN_RETRIES:
+                return JSONResponse({
+                    "plan": [],
+                    "summary": f"Failed to parse remediation plan after {MAX_PLAN_RETRIES} attempts",
+                    "raw": raw,
+                    "violation_count": len(violations_summary),
+                }, status_code=500)
 
     # Enrich steps with version info + normalize template_ids
     steps = plan.get("steps", [])
     valid_template_ids = set(template_version_info.keys())
     for step in steps:
         tid = step.get("template_id", template_id)
-        # Normalize: if the LLM returned a name or invalid ID, map to the parent
+        # Normalize: if the LLM returned a name or invalid ID, resolve it
         if tid not in valid_template_ids:
-            # Try to find a match by name or partial match
             matched = False
+            # Try name / partial match against template_version_info
             for vtid, vinfo in template_version_info.items():
                 tname = vinfo.get("template_name", "")
                 if tname and (tname.lower() == tid.lower() or vtid.lower() in tid.lower()):
@@ -2919,6 +2969,23 @@ async def compliance_remediate_plan(template_id: str, request: Request):
                     tid = vtid
                     matched = True
                     break
+            # If still unmatched, infer from resource types mentioned in the step text
+            if not matched and resource_to_service:
+                step_text = (
+                    (step.get("action", "") + " " + step.get("detail", ""))
+                ).lower()
+                # Count how many times each service_id's resources appear in the text
+                sid_hits: dict[str, int] = {}
+                for rtype, sid in resource_to_service.items():
+                    # Check for the resource type or its short name
+                    short = rtype.rsplit("/", 1)[-1] if "/" in rtype else rtype
+                    if rtype in step_text or short in step_text:
+                        sid_hits[sid] = sid_hits.get(sid, 0) + 1
+                if sid_hits:
+                    best_sid = max(sid_hits, key=sid_hits.get)
+                    step["template_id"] = best_sid
+                    tid = best_sid
+                    matched = True
             if not matched:
                 step["template_id"] = template_id
                 tid = template_id
@@ -2929,6 +2996,9 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         step["change_type"] = vinfo.get("change_type", "patch")
         step["current_version"] = vinfo.get("current_version", 0)
         step["projected_version"] = vinfo.get("projected_version", 1)
+        # Override template_name with the authoritative name from version_info
+        if vinfo.get("template_name"):
+            step["template_name"] = vinfo["template_name"]
 
     return JSONResponse({
         "plan": steps,
@@ -3172,75 +3242,118 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             step_log(sid, f"Sending to AI model: {model}")
             step_log(sid, f"Prompt size: {len(prompt):,} chars")
 
-            session = await client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": (
-                        "You are an ARM template compliance remediation expert. "
-                        "You fix ARM templates to meet organizational standards. "
-                        "Return ONLY raw JSON — no markdown, no commentary."
-                    )
-                },
-            })
+            MAX_AI_RETRIES = 3
+            result_json = None
+            last_parse_error = ""
 
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-            token_count = [0]
+            for attempt in range(1, MAX_AI_RETRIES + 1):
+                if attempt > 1:
+                    step_log(sid, f"Retry {attempt}/{MAX_AI_RETRIES} — re-sending to AI…")
 
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                        token_count[0] += 1
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
+                session = await client.create_session({
+                    "model": model,
+                    "streaming": True,
+                    "tools": [],
+                    "system_message": {
+                        "content": (
+                            "You are an ARM template compliance remediation expert. "
+                            "You fix ARM templates to meet organizational standards. "
+                            "Return ONLY raw JSON — no markdown, no commentary, no code fences."
+                        )
+                    },
+                })
 
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                last_report = 0
-                while not done_ev.is_set():
+                chunks: list[str] = []
+                done_ev = asyncio.Event()
+                token_count = [0]
+
+                def on_event(ev):
                     try:
-                        await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=4)
-                    except asyncio.TimeoutError:
-                        pass
-                    if token_count[0] > last_report:
-                        step_log(sid, f"Generating… {token_count[0]} chunks received ({len(''.join(chunks)):,} chars)")
-                        last_report = token_count[0]
-            finally:
-                unsub()
+                        if ev.type.value == "assistant.message_delta":
+                            chunks.append(ev.data.delta_content or "")
+                            token_count[0] += 1
+                        elif ev.type.value in ("assistant.message", "session.idle"):
+                            done_ev.set()
+                    except Exception:
+                        done_ev.set()
 
-            raw = "".join(chunks).strip()
-            step_log(sid, f"AI response complete: {len(raw):,} chars, {token_count[0]} chunks")
+                unsub = session.on(on_event)
+                try:
+                    retry_prompt = prompt
+                    if attempt > 1 and last_parse_error:
+                        retry_prompt += (
+                            f"\n\nPREVIOUS ATTEMPT FAILED: {last_parse_error}\n"
+                            "You MUST return ONLY valid raw JSON. No markdown fences, "
+                            "no ```json blocks, no commentary before or after the JSON.\n"
+                        )
+                    await session.send({"prompt": retry_prompt})
+                    last_report = 0
+                    while not done_ev.is_set():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=4)
+                        except asyncio.TimeoutError:
+                            pass
+                        if token_count[0] > last_report:
+                            step_log(sid, f"Generating… {token_count[0]} chunks received ({len(''.join(chunks)):,} chars)")
+                            last_report = token_count[0]
+                finally:
+                    unsub()
+
+                raw = "".join(chunks).strip()
+                step_log(sid, f"AI response: {len(raw):,} chars, {token_count[0]} chunks")
+
+                if not raw:
+                    last_parse_error = "Empty response from AI"
+                    step_log(sid, f"⚠ Empty AI response (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
+                    if attempt < MAX_AI_RETRIES:
+                        continue
+                    else:
+                        step_end(sid, "failed", int((time.time() - s2) * 1000))
+                        emit({"type": "job_end", "job_id": job_id, "status": "failed",
+                              "error": "AI returned empty response after retries",
+                              "duration_ms": int((time.time() - t0) * 1000)})
+                        return {"template_id": tid, "success": False, "error": "AI returned empty response"}
+
+                # Robust JSON extraction — strip fences, find JSON object
+                cleaned = raw
+                # Strip markdown code fences
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3].strip()
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:].strip()
+                # Try to find the outermost { ... } if there's extra text
+                brace_start = cleaned.find("{")
+                brace_end = cleaned.rfind("}")
+                if brace_start >= 0 and brace_end > brace_start:
+                    cleaned = cleaned[brace_start:brace_end + 1]
+
+                try:
+                    result_json = json.loads(cleaned)
+                    break  # Success — exit retry loop
+                except json.JSONDecodeError as e:
+                    last_parse_error = f"JSON parse error: {str(e)}"
+                    step_log(sid, f"⚠ {last_parse_error} (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
+                    if attempt < MAX_AI_RETRIES:
+                        continue
+
             step_end(sid, "success", int((time.time() - s2) * 1000))
 
             # ── Step 3: VALIDATE ──
             sid = f"{job_id}-validate"
             step_start(sid)
             s3 = time.time()
-            step_log(sid, "Parsing AI response as JSON…")
 
-            # Strip markdown fences
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3].strip()
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-
-            try:
-                result_json = json.loads(raw)
-                step_log(sid, "JSON parsed successfully")
-            except json.JSONDecodeError as e:
-                step_log(sid, f"JSON parse error: {str(e)}", "error")
+            if result_json is None:
+                step_log(sid, f"Failed to parse AI response after {MAX_AI_RETRIES} attempts", "error")
                 step_end(sid, "failed", int((time.time() - s3) * 1000))
                 emit({"type": "job_end", "job_id": job_id, "status": "failed",
-                      "error": "Failed to parse AI response", "duration_ms": int((time.time() - t0) * 1000)})
+                      "error": "Failed to parse AI response after retries",
+                      "duration_ms": int((time.time() - t0) * 1000)})
                 return {"template_id": tid, "success": False, "error": "Failed to parse AI response"}
+
+            step_log(sid, "JSON parsed successfully")
 
             arm_template = result_json.get("arm_template", result_json)
             changes_made = result_json.get("changes_made", [])
