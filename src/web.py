@@ -2907,9 +2907,21 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     template_version_info = {}  # tid -> {current_version, current_semver, ...}
 
     for tid in template_ids:
-        versions = await get_template_versions(tid)
-        current_semver = await get_latest_semver(tid) or "1.0.0"
-        current_ver_num = versions[0]["version"] if versions else 0
+        # Service templates (dependencies) store versions in service_versions,
+        # not template_versions.  Read from the correct table.
+        is_service_dep = tid in dep_service_ids and tid != template_id
+        if is_service_dep:
+            latest_svc = await get_latest_service_version(tid)
+            if latest_svc:
+                current_ver_num = latest_svc.get("version", 0)
+                current_semver = latest_svc.get("semver") or f"{current_ver_num}.0.0"
+            else:
+                current_ver_num = 0
+                current_semver = "1.0.0"
+        else:
+            versions = await get_template_versions(tid)
+            current_semver = await get_latest_semver(tid) or "1.0.0"
+            current_ver_num = versions[0]["version"] if versions else 0
 
         # Determine change_type based on severity of violations for this template
         # (violations are already attributed to owning service templates)
@@ -3252,7 +3264,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
         create_template_version, get_backend, get_latest_semver, compute_next_semver,
-        get_latest_service_version,
+        get_latest_service_version, create_service_version,
     )
     from src.tools.deploy_engine import run_what_if, _get_subscription_id, _get_resource_client
 
@@ -3379,14 +3391,25 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             ver_num = None
             current_semver = ""
 
-            versions = await get_template_versions(tid)
-            if versions:
-                ver = await get_template_version(tid, versions[0]["version"])
-                current_arm = ver.get("arm_template", "") if ver else ""
-                ver_num = versions[0]["version"]
-                current_semver = ver.get("semver", "") if ver else ""
-                step_log(sid, f"Found {len(versions)} version(s) in history")
-                step_log(sid, f"Latest: v{current_semver} (version #{ver_num})")
+            # Service deps store versions in service_versions table
+            is_service_dep = tid in dep_service_ids and tid != template_id
+
+            if is_service_dep:
+                latest_svc = await get_latest_service_version(tid)
+                if latest_svc and latest_svc.get("arm_template"):
+                    current_arm = latest_svc["arm_template"]
+                    ver_num = latest_svc.get("version", 0)
+                    current_semver = latest_svc.get("semver") or f"{ver_num}.0.0"
+                    step_log(sid, f"Latest service version: v{current_semver} (version #{ver_num})")
+            else:
+                versions = await get_template_versions(tid)
+                if versions:
+                    ver = await get_template_version(tid, versions[0]["version"])
+                    current_arm = ver.get("arm_template", "") if ver else ""
+                    ver_num = versions[0]["version"]
+                    current_semver = ver.get("semver", "") if ver else ""
+                    step_log(sid, f"Found {len(versions)} version(s) in history")
+                    step_log(sid, f"Latest: v{current_semver} (version #{ver_num})")
 
             if not current_arm:
                 src_tmpl = known_templates.get(tid) or await get_template_by_id(tid)
@@ -3853,18 +3876,35 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
 
             # Get fresh semver for the version bump
-            latest_semver = await get_latest_semver(tid) or "1.0.0"
+            # Service deps store versions in service_versions, not template_versions
+            is_service_dep = tid in dep_service_ids and tid != template_id
+
+            if is_service_dep:
+                latest_svc = await get_latest_service_version(tid)
+                latest_semver = (latest_svc.get("semver") or "1.0.0") if latest_svc else "1.0.0"
+            else:
+                latest_semver = await get_latest_semver(tid) or "1.0.0"
+
             new_semver = compute_next_semver(latest_semver, step_change_type)
             step_log(sid, f"Version bump: {latest_semver} → {new_semver} ({step_change_type})")
             step_log(sid, f"Changelog: {changelog[:120]}{'…' if len(changelog) > 120 else ''}")
 
-            new_ver = await create_template_version(
-                tid,
-                fixed_content,
-                changelog=changelog,
-                change_type=step_change_type,
-                created_by="compliance-remediation",
-            )
+            if is_service_dep:
+                new_ver = await create_service_version(
+                    tid,
+                    fixed_content,
+                    semver=new_semver,
+                    changelog=changelog,
+                    created_by="compliance-remediation",
+                )
+            else:
+                new_ver = await create_template_version(
+                    tid,
+                    fixed_content,
+                    changelog=changelog,
+                    change_type=step_change_type,
+                    created_by="compliance-remediation",
+                )
 
             new_version_num = new_ver.get("version", "?")
             new_semver_actual = new_ver.get("semver", new_semver)
@@ -3875,14 +3915,22 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             sid = f"{job_id}-publish"
             step_start(sid)
             s5 = time.time()
-            step_log(sid, "Updating catalog template content…")
 
             now_iso = datetime.now(timezone.utc).isoformat()
-            await backend.execute_write(
-                "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
-                (fixed_content, now_iso, tid),
-            )
-            step_log(sid, f"Catalog updated for {tid}")
+
+            if is_service_dep:
+                # Service deps store ARM in service_versions (already written in
+                # step 6).  Nothing to update in catalog_templates which has no
+                # entry for service IDs.
+                step_log(sid, f"Service version v{new_semver_actual} stored for {tid}")
+            else:
+                step_log(sid, "Updating catalog template content…")
+                await backend.execute_write(
+                    "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                    (fixed_content, now_iso, tid),
+                )
+                step_log(sid, f"Catalog updated for {tid}")
+
             step_log(sid, f"New template published: v{new_semver_actual}")
             step_end(sid, "success", int((time.time() - s5) * 1000))
 
