@@ -7253,6 +7253,11 @@ body {
     color: #f85149;
 }
 
+.ado-badge-warning {
+    background: color-mix(in srgb, #d29922 15%, transparent);
+    color: #d29922;
+}
+
 @keyframes adoBadgePulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
@@ -7398,6 +7403,11 @@ body {
     color: #fff;
 }
 
+.ado-icon-warning {
+    background: #d29922;
+    color: #fff;
+}
+
 .ado-icon-skipped {
     color: var(--text-muted);
     border: 2px solid var(--border-muted);
@@ -7516,6 +7526,11 @@ body {
 }
 
 .ado-log-info { color: var(--text-secondary); }
+.ado-log-warning {
+    color: #d29922;
+    background: color-mix(in srgb, #d29922 5%, transparent);
+    border-radius: 3px;
+}
 .ado-log-error {
     color: #f85149;
     background: color-mix(in srgb, #f85149 5%, transparent);

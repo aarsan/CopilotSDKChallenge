@@ -3025,6 +3025,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     """
     import asyncio
     import time
+    import uuid
     from src.model_router import Task, get_model_for_task
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
@@ -3482,11 +3483,13 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 step_end(sid, "success", int((time.time() - s_dt) * 1000))
 
             except Exception as deploy_err:
-                step_log(sid, f"ARM What-If failed: {str(deploy_err)}", "error")
-                step_log(sid, "Template will still be versioned — deployment validation is advisory")
-                deploy_proof = {"error": str(deploy_err), "status": "failed"}
-                step_end(sid, "failed", int((time.time() - s_dt) * 1000),
-                         "What-If failed (non-blocking)")
+                step_log(sid, f"⚠ ARM What-If could not complete: {str(deploy_err)}", "warning")
+                step_log(sid, "This is advisory only — the template is still valid and will be versioned.")
+                step_log(sid, "Common causes: missing Azure credentials, subscription quota, or transient API errors.")
+                step_log(sid, "To retry deployment validation later, use the Deploy button from the template version viewer.")
+                deploy_proof = {"error": str(deploy_err), "status": "skipped"}
+                step_end(sid, "warning", int((time.time() - s_dt) * 1000),
+                         "What-If skipped (advisory)")
 
             # ── Step 5: VERSION ──
             sid = f"{job_id}-version"

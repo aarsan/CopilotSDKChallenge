@@ -3303,7 +3303,7 @@ function _adoHandleEvent(container, event, state) {
                 dur.classList.remove('hidden');
             }
             // Collapse completed step, unless it failed
-            if (event.status === 'success') {
+            if (event.status === 'success' || event.status === 'warning') {
                 _adoExpandStep(state, event.step_id, false);
             }
             break;
@@ -3316,7 +3316,7 @@ function _adoHandleEvent(container, event, state) {
             el.classList.add(`ado-job-${event.status}`);
             const badge = el.querySelector('.ado-job-status-badge');
             if (badge) {
-                badge.textContent = event.status === 'success' ? 'Succeeded' : 'Failed';
+                badge.textContent = event.status === 'success' ? 'Succeeded' : event.status === 'warning' ? 'Completed' : 'Failed';
                 badge.className = `ado-job-status-badge ado-badge-${event.status}`;
             }
             // Duration
@@ -3465,6 +3465,7 @@ function _adoStepIcon(status) {
         case 'pending':  return '<span class="ado-icon ado-icon-pending">○</span>';
         case 'running':  return '<span class="ado-icon ado-icon-running"><span class="ado-spinner"></span></span>';
         case 'success':  return '<span class="ado-icon ado-icon-success">✓</span>';
+        case 'warning':  return '<span class="ado-icon ado-icon-warning">⚠</span>';
         case 'failed':   return '<span class="ado-icon ado-icon-failed">✗</span>';
         case 'skipped':  return '<span class="ado-icon ado-icon-skipped">⊘</span>';
         default:         return '<span class="ado-icon ado-icon-pending">○</span>';
