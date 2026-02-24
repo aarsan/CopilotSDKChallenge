@@ -88,13 +88,13 @@ DEFAULT_STANDARDS: list[dict] = [
         "description": "All services must enforce TLS 1.2 or higher. Older versions are prohibited.",
         "category": "encryption",
         "severity": "critical",
-        "scope": "*",
+        "scope": "Microsoft.Storage/*,Microsoft.Web/*,Microsoft.Sql/*,Microsoft.DBforPostgreSQL/*,Microsoft.Cache/*,Microsoft.KeyVault/*,Microsoft.Cdn/*",
         "rule": {
             "type": "property",
-            "key": "minTlsVersion",
+            "key": "properties.minimumTlsVersion",
             "operator": ">=",
             "value": "1.2",
-            "remediation": "Set minTlsVersion to '1.2' in resource properties.",
+            "remediation": "Set properties.minimumTlsVersion to 'TLS1_2' in resource properties.",
         },
     },
     {
@@ -133,13 +133,13 @@ DEFAULT_STANDARDS: list[dict] = [
         "description": "Resources must use managed identities instead of stored credentials, keys, or passwords.",
         "category": "identity",
         "severity": "high",
-        "scope": "*",
+        "scope": "Microsoft.Compute/*,Microsoft.Web/*,Microsoft.ContainerService/*,Microsoft.App/*,Microsoft.ContainerRegistry/*",
         "rule": {
             "type": "property",
-            "key": "managedIdentity",
-            "operator": "==",
-            "value": True,
-            "remediation": "Enable system-assigned or user-assigned managed identity. Remove stored credentials.",
+            "key": "identity.type",
+            "operator": "contains",
+            "value": "assigned",
+            "remediation": "Add an identity block with type 'SystemAssigned' or 'UserAssigned'.",
         },
     },
     {
@@ -163,13 +163,13 @@ DEFAULT_STANDARDS: list[dict] = [
         "description": "Resources must deny public network access unless explicitly approved.",
         "category": "network",
         "severity": "high",
-        "scope": "*",
+        "scope": "Microsoft.Storage/*,Microsoft.Sql/*,Microsoft.KeyVault/*,Microsoft.DocumentDB/*,Microsoft.Web/*,Microsoft.Cache/*,Microsoft.CognitiveServices/*",
         "rule": {
             "type": "property",
-            "key": "publicNetworkAccess",
+            "key": "properties.publicNetworkAccess",
             "operator": "==",
             "value": "Disabled",
-            "remediation": "Disable public network access. Configure private endpoints.",
+            "remediation": "Set properties.publicNetworkAccess to 'Disabled'. Configure private endpoints.",
         },
     },
     {
@@ -190,16 +190,16 @@ DEFAULT_STANDARDS: list[dict] = [
     {
         "id": "STD-MONITOR-DIAG",
         "name": "Diagnostic Logging Required",
-        "description": "All resources must have diagnostic logging enabled and connected to Log Analytics.",
+        "description": "Diagnostic settings resources must target a Log Analytics workspace.",
         "category": "monitoring",
         "severity": "high",
-        "scope": "*",
+        "scope": "Microsoft.Insights/diagnosticSettings",
         "rule": {
             "type": "property",
-            "key": "diagnosticLogging",
-            "operator": "==",
-            "value": True,
-            "remediation": "Enable diagnostic settings and connect to a Log Analytics workspace.",
+            "key": "properties.workspaceId",
+            "operator": "!=",
+            "value": "",
+            "remediation": "Set properties.workspaceId to a Log Analytics workspace resource ID.",
         },
     },
     {
@@ -250,14 +250,69 @@ DEFAULT_STANDARDS: list[dict] = [
 # ══════════════════════════════════════════════════════════════
 
 
+# Scope corrections for standards that had overly broad wildcard scopes.
+# Maps standard ID → corrected {scope, rule_json} values.
+_SCOPE_FIXES: dict[str, dict] = {
+    "STD-ENCRYPT-TLS": {
+        "scope": "Microsoft.Storage/*,Microsoft.Web/*,Microsoft.Sql/*,Microsoft.DBforPostgreSQL/*,Microsoft.Cache/*,Microsoft.KeyVault/*,Microsoft.Cdn/*",
+        "rule_json": json.dumps({
+            "type": "property",
+            "key": "properties.minimumTlsVersion",
+            "operator": ">=",
+            "value": "1.2",
+            "remediation": "Set properties.minimumTlsVersion to 'TLS1_2' in resource properties.",
+        }),
+    },
+    "STD-IDENTITY-MI": {
+        "scope": "Microsoft.Compute/*,Microsoft.Web/*,Microsoft.ContainerService/*,Microsoft.App/*,Microsoft.ContainerRegistry/*",
+        "rule_json": json.dumps({
+            "type": "property",
+            "key": "identity.type",
+            "operator": "contains",
+            "value": "assigned",
+            "remediation": "Add an identity block with type 'SystemAssigned' or 'UserAssigned'.",
+        }),
+    },
+    "STD-NETWORK-PUBLIC": {
+        "scope": "Microsoft.Storage/*,Microsoft.Sql/*,Microsoft.KeyVault/*,Microsoft.DocumentDB/*,Microsoft.Web/*,Microsoft.Cache/*,Microsoft.CognitiveServices/*",
+        "rule_json": json.dumps({
+            "type": "property",
+            "key": "properties.publicNetworkAccess",
+            "operator": "==",
+            "value": "Disabled",
+            "remediation": "Set properties.publicNetworkAccess to 'Disabled'. Configure private endpoints.",
+        }),
+    },
+    "STD-MONITOR-DIAG": {
+        "scope": "Microsoft.Insights/diagnosticSettings",
+        "rule_json": json.dumps({
+            "type": "property",
+            "key": "properties.workspaceId",
+            "operator": "!=",
+            "value": "",
+            "remediation": "Set properties.workspaceId to a Log Analytics workspace resource ID.",
+        }),
+    },
+    "STD-NAMING-CHARSET": {
+        "scope": "*",
+        "rule_json": json.dumps({
+            "type": "naming_convention",
+            "pattern": "^[a-z0-9-]+$",
+            "remediation": "Rename the resource to use only lowercase letters, numbers, and hyphens.",
+        }),
+    },
+}
+
+
 async def init_standards() -> None:
-    """Seed default standards if the table is empty."""
+    """Seed default standards if the table is empty, then apply scope fixes."""
     backend = await get_backend()
     rows = await backend.execute(
         "SELECT COUNT(*) as cnt FROM org_standards", ()
     )
     if rows and rows[0]["cnt"] > 0:
-        logger.info("Organization standards already seeded — skipping")
+        logger.info("Organization standards already seeded — applying scope fixes")
+        await _apply_scope_fixes(backend)
         return
 
     logger.info("Seeding default organization standards...")
@@ -302,6 +357,46 @@ async def init_standards() -> None:
 
     logger.info(f"Seeded {len(DEFAULT_STANDARDS)} organization standards")
 
+
+async def _apply_scope_fixes(backend) -> None:
+    """Fix overly broad wildcard scopes on existing standards.
+
+    Standards like STD-ENCRYPT-TLS had scope='*' which checked minTlsVersion
+    on VNets and NICs (nonsensical). This migration narrows scopes to only
+    the resource types each standard actually applies to.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    fixed = 0
+
+    for std_id, fix in _SCOPE_FIXES.items():
+        # Only update if the scope or rule has changed
+        rows = await backend.execute(
+            "SELECT scope, rule_json FROM org_standards WHERE id = ?", (std_id,)
+        )
+        if not rows:
+            continue
+
+        current_scope = rows[0]["scope"]
+        current_rule = rows[0]["rule_json"]
+        new_scope = fix["scope"]
+        new_rule = fix["rule_json"]
+
+        # Skip if already fixed (both scope and rule match)
+        if current_scope == new_scope and current_rule == new_rule:
+            continue
+
+        await backend.execute_write(
+            """UPDATE org_standards
+               SET scope = ?, rule_json = ?, updated_at = ?
+               WHERE id = ?""",
+            (new_scope, new_rule, now, std_id),
+        )
+        fixed += 1
+
+    if fixed:
+        logger.info(f"Fixed scopes on {fixed} organization standard(s)")
+    else:
+        logger.info("All standard scopes already correct")
 
 async def get_all_standards(
     category: Optional[str] = None,
