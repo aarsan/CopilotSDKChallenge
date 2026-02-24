@@ -6200,7 +6200,7 @@ function _renderCompletenessBoard() {
     const container = document.getElementById('gov-completeness');
     if (!container) return;
 
-    // Count standards per category
+    // Count standards per category (for regular categories)
     const catCounts = {};
     const catEnabled = {};
     for (const std of allStandards) {
@@ -6209,7 +6209,21 @@ function _renderCompletenessBoard() {
         if (std.enabled) catEnabled[cat] = (catEnabled[cat] || 0) + 1;
     }
 
-    const configured = GOV_CATEGORIES.filter(c => (catCounts[c.id] || 0) > 0).length;
+    // Count standards per framework (for regulatory framework categories)
+    const fwCounts = {};
+    const fwEnabled = {};
+    for (const std of allStandards) {
+        for (const fw of (std.frameworks || [])) {
+            fwCounts[fw] = (fwCounts[fw] || 0) + 1;
+            if (std.enabled) fwEnabled[fw] = (fwEnabled[fw] || 0) + 1;
+        }
+    }
+
+    // For completeness calculation, use appropriate counter per category type
+    const _getCount = (cat) => cat.group ? (fwCounts[cat.id] || 0) : (catCounts[cat.id] || 0);
+    const _getEnabled = (cat) => cat.group ? (fwEnabled[cat.id] || 0) : (catEnabled[cat.id] || 0);
+
+    const configured = GOV_CATEGORIES.filter(c => _getCount(c) > 0).length;
     const total = GOV_CATEGORIES.length;
     const pct = total > 0 ? Math.round((configured / total) * 100) : 0;
 
@@ -6247,9 +6261,9 @@ function _renderCompletenessBoard() {
     // Render grouped categories (e.g. "Regulatory Compliance")
     for (const [groupName, groupData] of Object.entries(groups)) {
         const groupCats = groupData.cats;
-        const groupConfigured = groupCats.filter(c => (catCounts[c.id] || 0) > 0).length;
+        const groupConfigured = groupCats.filter(c => (fwCounts[c.id] || 0) > 0).length;
         const groupTotal = groupCats.length;
-        const groupTotalStds = groupCats.reduce((sum, c) => sum + (catEnabled[c.id] || 0), 0);
+        const groupTotalStds = groupCats.reduce((sum, c) => sum + (fwEnabled[c.id] || 0), 0);
 
         html += `
         <div class="gov-cat-group">
@@ -6261,7 +6275,7 @@ function _renderCompletenessBoard() {
             <div class="gov-cat-group-grid">`;
 
         for (const cat of groupCats) {
-            html += _renderCatCard(cat, catCounts, catEnabled);
+            html += _renderCatCard(cat, fwCounts, fwEnabled);
         }
 
         html += `
@@ -6322,11 +6336,16 @@ function openCategoryDetail(categoryId) {
     const catName = cat ? cat.name : categoryId.charAt(0).toUpperCase() + categoryId.slice(1).replace(/_/g, ' ');
     const catIcon = cat ? cat.icon : '📄';
     const catDesc = cat ? cat.desc : '';
+    const isFramework = cat && cat.group; // Regulatory framework (cross-cutting view)
 
     if (titleEl) titleEl.textContent = `${catIcon} ${catName}`;
 
-    // Find existing standards for this category
-    const catStandards = allStandards.filter(s => s.category === categoryId);
+    // Find existing standards:
+    // - For frameworks: show all standards tagged with this framework (cross-cutting across categories)
+    // - For regular categories: show standards with matching category
+    const catStandards = isFramework
+        ? allStandards.filter(s => (s.frameworks || []).includes(categoryId))
+        : allStandards.filter(s => s.category === categoryId);
     const enabled = catStandards.filter(s => s.enabled);
     const disabled = catStandards.filter(s => !s.enabled);
 
@@ -6342,14 +6361,18 @@ function openCategoryDetail(categoryId) {
         // CONFIGURED MODE — table + modification prompt
         // ═══════════════════════════════════════════════════
 
+        // For framework views, group standards by their category for clarity
+        const showCategoryCol = isFramework;
+
         html += `
         <div class="cat-detail-section">
-            <h4>Standards <span class="cat-detail-count">${enabled.length} active · ${disabled.length} disabled</span></h4>
+            <h4>Standards <span class="cat-detail-count">${enabled.length} active · ${disabled.length} disabled${isFramework ? ` · across ${new Set(catStandards.map(s=>s.category)).size} categories` : ''}</span></h4>
             <table class="cat-std-table">
                 <thead>
                     <tr>
                         <th style="width:40px"></th>
                         <th>Standard</th>
+                        ${showCategoryCol ? '<th>Category</th>' : ''}
                         <th>Severity</th>
                         <th>Rule</th>
                         <th style="width:50px"></th>
@@ -6357,11 +6380,25 @@ function openCategoryDetail(categoryId) {
                 </thead>
                 <tbody>`;
 
-        for (const std of catStandards) {
+        // Sort: for frameworks, group by category
+        const sortedStds = isFramework
+            ? [...catStandards].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name))
+            : catStandards;
+
+        for (const std of sortedStds) {
             const sevIcon = std.severity === 'critical' ? '🔴' : std.severity === 'high' ? '🟠' : std.severity === 'medium' ? '🟡' : '🟢';
             const sevLabel = std.severity.charAt(0).toUpperCase() + std.severity.slice(1);
             const ruleDesc = _describeRule(std.rule);
             const scope = std.scope === '*' ? 'All services' : std.scope;
+            const catLabel = std.category.charAt(0).toUpperCase() + std.category.slice(1).replace(/_/g, ' ');
+            // Framework badges for this standard
+            const fwBadges = (std.frameworks || [])
+                .filter(fw => fw !== categoryId) // Don't show the current framework as a badge
+                .map(fw => {
+                    const fwCat = GOV_CATEGORIES.find(c => c.id === fw);
+                    return fwCat ? `<span class="std-fw-badge" title="${fwCat.name}">${fwCat.icon}</span>` : '';
+                }).join('');
+
             html += `
                 <tr class="${std.enabled ? '' : 'cat-std-disabled'}">
                     <td>
@@ -6371,9 +6408,10 @@ function openCategoryDetail(categoryId) {
                         </label>
                     </td>
                     <td>
-                        <div class="cat-std-name">${escapeHtml(std.name)}</div>
+                        <div class="cat-std-name">${escapeHtml(std.name)}${fwBadges ? ` <span class="std-fw-badges">${fwBadges}</span>` : ''}</div>
                         <div class="cat-std-scope">${escapeHtml(scope)}</div>
                     </td>
+                    ${showCategoryCol ? `<td><span class="cat-std-cat-badge">${catLabel}</span></td>` : ''}
                     <td><span class="cat-std-sev">${sevIcon} ${sevLabel}</span></td>
                     <td><div class="cat-std-rule">${ruleDesc || '—'}</div></td>
                     <td><button class="btn btn-xs btn-ghost" onclick="closeCategoryDetail(); setTimeout(() => showStandardDetail('${std.id}'), 200)" title="View full details">⋯</button></td>
@@ -6385,11 +6423,17 @@ function openCategoryDetail(categoryId) {
         // ── Modification prompt
         html += `
         <div class="cat-detail-section cat-detail-modify">
-            <h4>✏️ Modify Standards</h4>
-            <p class="cat-gen-explain">Describe changes you'd like — add new rules, adjust thresholds, change severity, or refine scope. The AI will generate updated standards.</p>
-            <textarea id="cat-modify-prompt" class="cat-modify-textarea" rows="3" placeholder="e.g. Add a rule requiring all resource names to include the cost center code…"></textarea>
+            <h4>✏️ ${isFramework ? 'Add Standards for ' + escapeHtml(catName) : 'Modify Standards'}</h4>
+            <p class="cat-gen-explain">${isFramework
+                ? 'Describe what additional policies this framework requires. The AI will generate standards tagged with ' + escapeHtml(catName) + ' and assign them to the appropriate technical categories.'
+                : 'Describe changes you\'d like — add new rules, adjust thresholds, change severity, or refine scope. The AI will generate updated standards.'
+            }</p>
+            <textarea id="cat-modify-prompt" class="cat-modify-textarea" rows="3" placeholder="${isFramework
+                ? 'e.g. Add PHI access logging and audit trail requirements…'
+                : 'e.g. Add a rule requiring all resource names to include the cost center code…'
+            }"></textarea>
             <div class="cat-detail-footer">
-                <button class="btn btn-primary" onclick="modifyStandardsForCategory('${categoryId}')">🤖 Apply Changes</button>
+                <button class="btn btn-primary" onclick="modifyStandardsForCategory('${categoryId}')">🤖 ${isFramework ? 'Generate Standards' : 'Apply Changes'}</button>
                 <button class="btn btn-secondary" onclick="importStandardsForCategory('${categoryId}')">📥 Import More</button>
             </div>
         </div>`;
@@ -6468,9 +6512,21 @@ function generateFromCategoryDetail(categoryId) {
     const cat = GOV_CATEGORIES.find(c => c.id === categoryId);
     if (!cat) return;
 
+    const isFramework = cat.group; // Regulatory framework (cross-cutting)
+
     // Get the (possibly edited) prompt from the textarea
     const promptEl = document.getElementById('cat-gen-prompt');
     let prompt = promptEl ? promptEl.value : cat.prompt;
+
+    // For frameworks, prepend instructions about cross-cutting category assignment and framework tagging
+    if (isFramework) {
+        prompt = `IMPORTANT: This is a regulatory compliance framework (${cat.name}). For each standard you generate:
+1. Set "category" to the appropriate TECHNICAL domain (encryption, identity, network, monitoring, tagging, etc.) — NOT a compliance-prefixed category
+2. Include "${categoryId}" in the "frameworks" array, e.g. "frameworks": ["${categoryId}"]
+3. If a standard also satisfies other frameworks, include those too (e.g. ["${categoryId}", "compliance_soc2"])
+
+${prompt}`;
+    }
 
     // Append severity/option instructions
     const opts = [];
@@ -6510,14 +6566,34 @@ function modifyStandardsForCategory(categoryId) {
     }
 
     // Build context: existing standards + user's modification request
-    const catStandards = allStandards.filter(s => s.category === categoryId);
+    const isFramework = cat && cat.group;
+    const catStandards = isFramework
+        ? allStandards.filter(s => (s.frameworks || []).includes(categoryId))
+        : allStandards.filter(s => s.category === categoryId);
     const existingSummary = catStandards.map(s => {
         const rule = s.rule || {};
-        return `- ${s.name} (${s.severity}, ${s.enabled ? 'enabled' : 'disabled'}): ${JSON.stringify(rule)}`;
+        return `- ${s.name} [${s.category}] (${s.severity}, ${s.enabled ? 'enabled' : 'disabled'}${(s.frameworks||[]).length ? ', frameworks: ' + s.frameworks.join(',') : ''}): ${JSON.stringify(rule)}`;
     }).join('\n');
 
     const catName = cat ? cat.name : categoryId;
-    const prompt = `Category: ${catName}
+    let prompt;
+    if (isFramework) {
+        prompt = `Regulatory Framework: ${catName}
+
+This is a cross-cutting regulatory compliance framework. Standards generated for this framework should:
+1. Be assigned to the appropriate TECHNICAL category (encryption, identity, network, monitoring, etc.) — NOT a "compliance" category
+2. Include "${categoryId}" in their "frameworks" array
+3. A single standard can satisfy multiple frameworks
+
+Existing standards tagged with ${catName}:
+${existingSummary || '(none yet)'}
+
+Requested changes / additions:
+${userRequest}
+
+Generate standards that satisfy ${catName} requirements. Assign each standard to the correct technical category and include "${categoryId}" in the frameworks array.`;
+    } else {
+        prompt = `Category: ${catName}
 
 Existing standards in this category:
 ${existingSummary}
@@ -6526,6 +6602,7 @@ Requested changes:
 ${userRequest}
 
 Please generate the updated or new standards based on the changes requested above. Keep existing standards that were not mentioned. Output all standards for this category.`;
+    }
 
     closeCategoryDetail();
     openImportStandardsModal();
@@ -6591,9 +6668,15 @@ function _renderStandardsList() {
 
     let filtered = allStandards;
 
-    // Category filter
+    // Category filter (supports both regular categories and framework IDs)
     if (currentStandardsCategoryFilter !== 'all') {
-        filtered = filtered.filter(s => s.category === currentStandardsCategoryFilter);
+        const filterCat = GOV_CATEGORIES.find(c => c.id === currentStandardsCategoryFilter);
+        if (filterCat && filterCat.group) {
+            // Framework filter: show standards tagged with this framework
+            filtered = filtered.filter(s => (s.frameworks || []).includes(currentStandardsCategoryFilter));
+        } else {
+            filtered = filtered.filter(s => s.category === currentStandardsCategoryFilter);
+        }
     }
 
     // Severity filter
@@ -6643,6 +6726,12 @@ function _renderStandardsList() {
 
         const remediationHint = rule.remediation ? `<div class="std-card-remediation" title="${escapeHtml(rule.remediation)}">💡 ${escapeHtml(rule.remediation)}</div>` : '';
 
+        // Framework badges (show which regulatory frameworks this standard satisfies)
+        const fwBadgeHtml = (std.frameworks || []).map(fw => {
+            const fwCat = GOV_CATEGORIES.find(c => c.id === fw);
+            return fwCat ? `<span class="std-fw-badge" title="${fwCat.name}" onclick="event.stopPropagation(); openCategoryDetail('${fw}')">${fwCat.icon}</span>` : '';
+        }).join('');
+
         return `
         <div class="std-card ${enabledClass}">
             <div class="std-card-header">
@@ -6658,6 +6747,7 @@ function _renderStandardsList() {
                         <span class="category-badge">${escapeHtml(std.category)}</span>
                         <span class="std-scope-badge" title="Scope: ${escapeHtml(std.scope)}">${escapeHtml(std.scope === '*' ? 'All Services' : std.scope)}</span>
                     </div>
+                    ${fwBadgeHtml ? `<div class="std-fw-badges">${fwBadgeHtml}</div>` : ''}
                     <label class="std-toggle" onclick="event.stopPropagation()" title="${std.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
                         <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${escapeHtml(std.id)}', this.checked)" />
                         <span class="std-toggle-slider"></span>
@@ -6767,6 +6857,18 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
         </div>
     </div>` : '';
 
+    // Framework links
+    const fwLinks = (std.frameworks || []).map(fw => {
+        const fwCat = GOV_CATEGORIES.find(c => c.id === fw);
+        return fwCat ? `<span class="std-fw-detail-badge" onclick="closeStandardDetail(); openCategoryDetail('${fw}')">${fwCat.icon} ${fwCat.name}</span>` : '';
+    }).filter(Boolean).join('');
+
+    const frameworksHtml = fwLinks ? `
+    <div class="std-detail-section">
+        <h4>Regulatory Frameworks</h4>
+        <div class="std-fw-detail-list">${fwLinks}</div>
+    </div>` : '';
+
     return `
     <div class="std-detail-section">
         <div class="std-detail-meta">
@@ -6777,6 +6879,8 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
         </div>
         <p class="std-detail-desc">${escapeHtml(std.description || '')}</p>
     </div>
+
+    ${frameworksHtml}
 
     <div class="std-detail-section">
         <h4>Rule</h4>

@@ -40,12 +40,21 @@ Each standard must be converted into this exact schema:
   "severity": "<one of: critical, high, medium, low>",
   "scope": "<comma-separated Azure resource type globs, e.g. 'Microsoft.Storage/*,Microsoft.Sql/*' or '*' for all>",
   "enabled": true,
+  "frameworks": ["<regulatory framework IDs this standard satisfies — zero or more of: compliance_hipaa, compliance_soc2, compliance_pci, compliance_gdpr, compliance_data_residency>"],
   "rule": {
     "type": "<one of: property, tags, allowed_values, cost_threshold>",
     ... type-specific fields (see below) ...
     "remediation": "<How to fix a resource that violates this standard>"
   }
 }
+
+IMPORTANT: The "frameworks" field connects standards to regulatory requirements.
+A single standard can satisfy multiple compliance frameworks. For example:
+- "HTTPS Required" satisfies HIPAA, PCI-DSS, and SOC 2 → ["compliance_hipaa", "compliance_pci", "compliance_soc2"]
+- "Encryption at Rest" satisfies HIPAA, PCI-DSS, GDPR → ["compliance_hipaa", "compliance_pci", "compliance_gdpr"]
+- A naming convention standard may satisfy none → []
+
+Always tag standards with ALL applicable frameworks based on the regulatory requirements they help satisfy.
 
 Rule type schemas:
 

@@ -50,6 +50,9 @@ _STANDARDS_SCHEMA = [
     CREATE INDEX idx_org_standards_category ON org_standards(category)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_org_standards_enabled')
     CREATE INDEX idx_org_standards_enabled ON org_standards(enabled)""",
+    # ── Add frameworks column (many-to-many: standards ↔ regulatory frameworks) ──
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'frameworks')
+    ALTER TABLE org_standards ADD frameworks NVARCHAR(MAX) DEFAULT '[]'""",
     # ── Version history for standards ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'org_standards_history')
@@ -64,11 +67,14 @@ _STANDARDS_SCHEMA = [
         scope           NVARCHAR(500) NOT NULL,
         rule_json       NVARCHAR(MAX) NOT NULL,
         enabled         BIT DEFAULT 1,
+        frameworks      NVARCHAR(MAX) DEFAULT '[]',
         changed_by      NVARCHAR(200) DEFAULT 'platform-team',
         changed_at      NVARCHAR(50) NOT NULL,
         change_reason   NVARCHAR(MAX) DEFAULT ''
     )
     """,
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'frameworks')
+    ALTER TABLE org_standards_history ADD frameworks NVARCHAR(MAX) DEFAULT '[]'""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_org_standards_hist_sid')
     CREATE INDEX idx_org_standards_hist_sid ON org_standards_history(standard_id)""",
 ]
@@ -424,6 +430,7 @@ async def get_all_standards(
         d = dict(row)
         d["rule"] = json.loads(d.pop("rule_json", "{}"))
         d["enabled"] = bool(d.get("enabled"))
+        d["frameworks"] = json.loads(d.get("frameworks") or "[]")
         result.append(d)
     return result
 
@@ -439,6 +446,7 @@ async def get_standard(standard_id: str) -> Optional[dict]:
     d = dict(rows[0])
     d["rule"] = json.loads(d.pop("rule_json", "{}"))
     d["enabled"] = bool(d.get("enabled"))
+    d["frameworks"] = json.loads(d.get("frameworks") or "[]")
     return d
 
 
@@ -449,11 +457,13 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
 
     std_id = std.get("id") or f"STD-{_short_hash(std['name'])}"
 
+    frameworks_json = json.dumps(std.get("frameworks", []))
+
     await backend.execute_write(
         """INSERT INTO org_standards
            (id, name, description, category, severity, scope,
-            rule_json, enabled, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rule_json, enabled, frameworks, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             std_id,
             std["name"],
@@ -463,6 +473,7 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
             std.get("scope", "*"),
             json.dumps(std.get("rule", {})),
             int(std.get("enabled", True)),
+            frameworks_json,
             created_by,
             now,
             now,
@@ -473,9 +484,9 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
     await backend.execute_write(
         """INSERT INTO org_standards_history
            (standard_id, version, name, description, category,
-            severity, scope, rule_json, enabled,
+            severity, scope, rule_json, enabled, frameworks,
             changed_by, changed_at, change_reason)
-           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Created')""",
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Created')""",
         (
             std_id,
             std["name"],
@@ -485,6 +496,7 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
             std.get("scope", "*"),
             json.dumps(std.get("rule", {})),
             int(std.get("enabled", True)),
+            frameworks_json,
             created_by,
             now,
         ),
@@ -515,16 +527,19 @@ async def update_standard(
     scope = updates.get("scope", existing["scope"])
     rule = updates.get("rule", existing["rule"])
     enabled = updates.get("enabled", existing["enabled"])
+    frameworks = updates.get("frameworks", existing.get("frameworks", []))
+    frameworks_json = json.dumps(frameworks)
 
     await backend.execute_write(
         """UPDATE org_standards
            SET name = ?, description = ?, category = ?, severity = ?,
-               scope = ?, rule_json = ?, enabled = ?, updated_at = ?
+               scope = ?, rule_json = ?, enabled = ?, frameworks = ?,
+               updated_at = ?
            WHERE id = ?""",
         (
             name, description, category, severity,
-            scope, json.dumps(rule), int(enabled), now,
-            standard_id,
+            scope, json.dumps(rule), int(enabled), frameworks_json,
+            now, standard_id,
         ),
     )
 
@@ -538,13 +553,13 @@ async def update_standard(
     await backend.execute_write(
         """INSERT INTO org_standards_history
            (standard_id, version, name, description, category,
-            severity, scope, rule_json, enabled,
+            severity, scope, rule_json, enabled, frameworks,
             changed_by, changed_at, change_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             standard_id, next_ver, name, description, category,
             severity, scope, json.dumps(rule), int(enabled),
-            changed_by, now, change_reason,
+            frameworks_json, changed_by, now, change_reason,
         ),
     )
 
@@ -578,6 +593,7 @@ async def get_standard_history(standard_id: str) -> list[dict]:
         d = dict(row)
         d["rule"] = json.loads(d.pop("rule_json", "{}"))
         d["enabled"] = bool(d.get("enabled"))
+        d["frameworks"] = json.loads(d.get("frameworks") or "[]")
         result.append(d)
     return result
 

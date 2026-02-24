@@ -5006,6 +5006,68 @@ body {
     color: var(--accent-green);
 }
 
+/* ── Framework Badges (many-to-many: standards ↔ frameworks) ─ */
+
+.std-fw-badges {
+    display: inline-flex;
+    gap: 0.25rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.std-fw-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.75rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 6px;
+    background: rgba(136, 132, 216, 0.12);
+    border: 1px solid rgba(136, 132, 216, 0.3);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.std-fw-badge:hover {
+    background: rgba(136, 132, 216, 0.25);
+    border-color: rgba(136, 132, 216, 0.5);
+}
+
+.std-fw-detail-list {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.std-fw-detail-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 8px;
+    background: rgba(136, 132, 216, 0.12);
+    border: 1px solid rgba(136, 132, 216, 0.3);
+    color: #b8b4f0;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.std-fw-detail-badge:hover {
+    background: rgba(136, 132, 216, 0.25);
+    border-color: rgba(136, 132, 216, 0.5);
+}
+
+.cat-std-cat-badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 6px;
+    background: rgba(88, 166, 255, 0.1);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    color: var(--accent-blue);
+    white-space: nowrap;
+}
+
 .std-card-desc {
     font-size: 0.78rem;
     color: var(--text-secondary);
