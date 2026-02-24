@@ -3410,6 +3410,125 @@ async function executeRemediationPlan(templateId) {
     }
 }
 
+/* ── Live Log Stream Renderer ── */
+
+/**
+ * Render a live log stream event into a container.
+ * Uses a standardized NDJSON format:
+ *   { type: "log"|"step"|"result"|"error", phase, status, message, detail?, ts }
+ *
+ * Call this once per event. It appends/updates the log in place.
+ */
+function renderLogStreamEvent(container, event) {
+    if (!container) return;
+
+    // Ensure log structure exists
+    if (!container.querySelector('.logstream')) {
+        container.innerHTML = '';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'logstream';
+        container.appendChild(wrapper);
+    }
+    const wrapper = container.querySelector('.logstream');
+
+    const statusIcon = {
+        running: '<span class="logstream-icon logstream-icon-running">⏳</span>',
+        success: '<span class="logstream-icon logstream-icon-success">✓</span>',
+        warning: '<span class="logstream-icon logstream-icon-warning">⚠</span>',
+        error:   '<span class="logstream-icon logstream-icon-error">✗</span>',
+        skip:    '<span class="logstream-icon logstream-icon-skip">○</span>',
+    };
+
+    if (event.type === 'step') {
+        // Step events update/create a step row
+        const stepId = `logstream-step-${event.phase}`;
+        let stepEl = wrapper.querySelector(`#${stepId}`);
+
+        if (!stepEl) {
+            stepEl = document.createElement('div');
+            stepEl.id = stepId;
+            stepEl.className = 'logstream-step';
+            wrapper.appendChild(stepEl);
+        }
+
+        stepEl.className = `logstream-step logstream-step-${event.status}`;
+        stepEl.innerHTML = `
+            ${statusIcon[event.status] || ''}
+            <span class="logstream-step-phase">${escapeHtml(event.phase)}</span>
+            <span class="logstream-step-msg">${escapeHtml(event.message)}</span>
+        `;
+
+        // Auto-scroll the container
+        container.scrollTop = container.scrollHeight;
+    }
+    else if (event.type === 'log') {
+        // Log events append under the current step
+        const logEl = document.createElement('div');
+        logEl.className = `logstream-log logstream-log-${event.status || 'running'}`;
+        logEl.innerHTML = `<span class="logstream-log-msg">${escapeHtml(event.message)}</span>`;
+        wrapper.appendChild(logEl);
+        container.scrollTop = container.scrollHeight;
+    }
+    else if (event.type === 'error') {
+        const errEl = document.createElement('div');
+        errEl.className = 'logstream-error';
+        errEl.innerHTML = `
+            ${statusIcon.error}
+            <span class="logstream-error-msg">${escapeHtml(event.message)}</span>
+        `;
+        wrapper.appendChild(errEl);
+        container.scrollTop = container.scrollHeight;
+    }
+    else if (event.type === 'result') {
+        // Final result — appended at the bottom
+        // Don't render here — let the caller handle the final result
+    }
+}
+
+/**
+ * Read an NDJSON stream and render events into a container.
+ * Returns the final 'result' event (or null on error).
+ */
+async function consumeLogStream(response, container) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult = null;
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const event = JSON.parse(line);
+                if (event.type === 'result' || event.type === 'error') {
+                    finalResult = event;
+                }
+                renderLogStreamEvent(container, event);
+            } catch (e) { /* skip malformed */ }
+        }
+    }
+
+    // Process remaining buffer
+    if (buffer.trim()) {
+        try {
+            const event = JSON.parse(buffer);
+            if (event.type === 'result' || event.type === 'error') {
+                finalResult = event;
+            }
+            renderLogStreamEvent(container, event);
+        } catch (e) { /* skip */ }
+    }
+
+    return finalResult;
+}
+
 /* ── GitHub-style Diff Viewer ── */
 
 /**
@@ -4317,40 +4436,57 @@ async function submitRevision(templateId) {
                 <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>`;
         }
 
-        // ── Step 2: Submit revision ──────────────────────────
+        // ── Step 2: Submit revision (streaming) ──────────────
         btn.textContent = '⏳ Copilot SDK revising template…';
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Copilot SDK is analyzing the request and recomposing the template…</div>';
+        resultDiv.innerHTML = '';  // will be populated by log stream renderer
 
         const revRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/revise`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt, skip_policy_check: true }),
         });
-        const revData = await revRes.json();
 
         if (!revRes.ok) {
-            resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(revData.detail || revData.message || 'Revision failed')}</div>`;
+            const errData = await revRes.json().catch(() => ({ detail: revRes.statusText }));
+            resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(errData.detail || errData.message || 'Revision failed')}</div>`;
             return;
         }
 
-        if (revData.status === 'no_changes') {
-            resultDiv.innerHTML = `
-                <div class="tmpl-revision-no-change">
-                    <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
-                    <div class="tmpl-revision-hint">ℹ️ ${escapeHtml(revData.message)}</div>
+        // Consume the NDJSON stream with live rendering
+        const finalEvent = await consumeLogStream(revRes, resultDiv);
+
+        if (!finalEvent) {
+            resultDiv.innerHTML += `<div class="tmpl-revision-error">❌ Stream ended without a result</div>`;
+            return;
+        }
+
+        const revData = finalEvent.detail || {};
+        const revStatus = revData.status || finalEvent.status;
+
+        if (revStatus === 'blocked') {
+            // Already shown in log stream
+            return;
+        }
+
+        if (revStatus === 'no_changes') {
+            resultDiv.innerHTML += `
+                <div class="logstream-result logstream-result-info">
+                    <div class="tmpl-revision-hint">ℹ️ ${escapeHtml(revData.message || finalEvent.message || 'No changes needed')}</div>
                 </div>`;
             return;
         }
 
-        if (revData.status === 'edit_failed') {
-            resultDiv.innerHTML = `
-                <div class="tmpl-revision-error">❌ ${escapeHtml(revData.message || 'Edit failed')}</div>
-                <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>`;
+        if (revStatus === 'error' || finalEvent.type === 'error') {
+            resultDiv.innerHTML += `
+                <div class="logstream-result logstream-result-error">
+                    ❌ ${escapeHtml(finalEvent.message || 'Revision failed')}
+                </div>`;
             return;
         }
 
-        // Show success
+        // Success — show summary and trigger validation
+        const ver = revData.version || {};
         let actionsHtml = '';
         if (revData.actions_taken?.length) {
             actionsHtml = '<div class="tmpl-revision-actions"><strong>Changes made:</strong><ul>' +
@@ -4362,30 +4498,31 @@ async function submitRevision(templateId) {
                 }).join('') + '</ul></div>';
         }
 
-        resultDiv.innerHTML = `
-            <div class="tmpl-revision-success">
-                <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
-                ${actionsHtml}
-                <div class="tmpl-revision-summary">
-                    ✅ Template revised → <strong>v${revData.version?.semver || '?'}</strong>:
-                    <strong>${revData.resource_count}</strong> resources,
-                    <strong>${revData.parameter_count}</strong> params from
-                    <strong>${revData.services?.length || '?'}</strong> services.
-                    <br><em>Starting validation…</em>
-                </div>
+        // Append the final summary to the log stream output
+        const summaryEl = document.createElement('div');
+        summaryEl.className = 'logstream-result logstream-result-success';
+        summaryEl.innerHTML = `
+            <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
+            ${actionsHtml}
+            <div class="tmpl-revision-summary">
+                ✅ Template revised → <strong>v${ver.semver || '?'}</strong>:
+                <strong>${revData.resource_count || '?'}</strong> resources,
+                <strong>${revData.parameter_count || '?'}</strong> params from
+                <strong>${revData.services?.length || '?'}</strong> services.
+                <br><em>Starting validation…</em>
             </div>`;
+        resultDiv.appendChild(summaryEl);
 
         textarea.value = '';
-        showToast(`✅ Revised → v${revData.version?.semver || '?'} — starting validation…`, 'success');
+        showToast(`✅ Revised → v${ver.semver || '?'} — starting validation…`, 'success');
         setTimeout(async () => {
             await loadCatalog();
-            // Auto-trigger full validation pipeline
             runFullValidation(templateId);
         }, 1500);
 
     } catch (err) {
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
+        resultDiv.innerHTML += `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
         showToast(`❌ Revision error: ${err.message}`, 'error');
     } finally {
         btn.disabled = false;

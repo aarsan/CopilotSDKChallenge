@@ -8144,6 +8144,134 @@ body {
     margin-bottom: 1rem;
 }
 
+/* ── Live Log Stream ── */
+.logstream {
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    padding: 0.5rem 0;
+    max-height: 320px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.logstream-step {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.5rem;
+    border-left: 3px solid var(--border-muted);
+    margin: 0.15rem 0;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.logstream-step-running {
+    border-left-color: var(--accent-blue, #58a6ff);
+    background: color-mix(in srgb, var(--accent-blue, #58a6ff) 5%, transparent);
+}
+
+.logstream-step-success {
+    border-left-color: #3fb950;
+}
+
+.logstream-step-warning {
+    border-left-color: #d29922;
+    background: color-mix(in srgb, #d29922 5%, transparent);
+}
+
+.logstream-step-error {
+    border-left-color: #f85149;
+    background: color-mix(in srgb, #f85149 5%, transparent);
+}
+
+.logstream-step-skip {
+    border-left-color: var(--text-muted);
+    opacity: 0.7;
+}
+
+.logstream-icon {
+    font-size: 0.7rem;
+    width: 1rem;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.logstream-icon-running { color: var(--accent-blue, #58a6ff); }
+.logstream-icon-success { color: #3fb950; font-weight: 700; }
+.logstream-icon-warning { color: #d29922; }
+.logstream-icon-error   { color: #f85149; font-weight: 700; }
+.logstream-icon-skip    { color: var(--text-muted); }
+
+.logstream-step-phase {
+    font-weight: 700;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    min-width: 4rem;
+    flex-shrink: 0;
+}
+
+.logstream-step-msg {
+    color: var(--text-primary);
+}
+
+.logstream-log {
+    padding: 0.05rem 0.5rem 0.05rem 2.2rem;
+    color: var(--text-secondary);
+    font-size: 0.66rem;
+    line-height: 1.5;
+}
+
+.logstream-log-warning {
+    color: #d29922;
+}
+
+.logstream-log-msg::before {
+    content: '│ ';
+    color: var(--border-muted);
+}
+
+.logstream-error {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.5rem;
+    margin: 0.15rem 0;
+    border-left: 3px solid #f85149;
+    background: color-mix(in srgb, #f85149 6%, transparent);
+    color: #f85149;
+}
+
+.logstream-error-msg {
+    font-weight: 600;
+}
+
+.logstream-result {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-muted);
+}
+
+.logstream-result-success {
+    border-color: color-mix(in srgb, #3fb950 25%, var(--border-muted));
+    background: color-mix(in srgb, #3fb950 4%, var(--surface-primary));
+}
+
+.logstream-result-error {
+    border-color: color-mix(in srgb, #f85149 25%, var(--border-muted));
+    background: color-mix(in srgb, #f85149 4%, var(--surface-primary));
+    color: #f85149;
+    font-weight: 600;
+    font-size: 0.72rem;
+}
+
+.logstream-result-info {
+    border-color: color-mix(in srgb, var(--accent-blue) 25%, var(--border-muted));
+    background: color-mix(in srgb, var(--accent-blue) 4%, var(--surface-primary));
+}
+
 /* ── GitHub-style Diff Viewer ── */
 .diff-viewer {
     margin-top: 0.55rem;

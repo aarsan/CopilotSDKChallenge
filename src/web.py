@@ -6633,18 +6633,23 @@ async def revision_policy_check(template_id: str, request: Request):
 async def revise_template(template_id: str, request: Request):
     """Revise a template based on natural language — with policy enforcement.
 
+    Streams NDJSON log events so the UI can show live progress.
+
     Body:
     {
         "prompt": "Add a SQL database and a Key Vault to this template",
         "skip_policy_check": false
     }
 
-    Flow:
-    1. Policy pre-check → block if violations
-    2. LLM determines which services are needed (new + existing)
-    3. Auto-onboard missing services
-    4. Recompose the template
-    5. Return the updated template + policy check results
+    Stream event format (one JSON object per line):
+    {
+        "type": "log" | "step" | "result" | "error",
+        "phase": "policy" | "analyze" | "onboard" | "compose" | "save" | "done",
+        "status": "running" | "success" | "warning" | "error" | "skip",
+        "message": "Human-readable log line",
+        "detail": { ... optional structured data ... },
+        "ts": "ISO timestamp"
+    }
     """
     from src.database import (
         get_template_by_id, upsert_template, create_template_version,
@@ -6674,286 +6679,384 @@ async def revise_template(template_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Prompt is required")
 
     skip_policy = body.get("skip_policy_check", False)
-    client = await ensure_copilot_client()
 
-    # ── Step 1: Policy pre-check ──────────────────────────────
-    policy_result = None
-    if not skip_policy:
-        policy_result = await check_revision_policy(
-            prompt,
-            template=tmpl,
-            copilot_client=client,
-        )
+    async def _stream():
+        from datetime import datetime, timezone
 
-        if policy_result["verdict"] == "block":
-            return JSONResponse({
-                "status": "blocked",
-                "policy_check": policy_result,
-                "message": "Revision blocked by organizational policy. Address the issues below before proceeding.",
-            }, status_code=422)
+        def emit(type_: str, phase: str, status: str, message: str, detail: dict | None = None):
+            event = {
+                "type": type_,
+                "phase": phase,
+                "status": status,
+                "message": message,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            if detail:
+                event["detail"] = detail
+            return _json.dumps(event, default=str) + "\n"
 
-    # ── Step 2: Analyze what needs to change ──────────────────
-    feedback_result = await analyze_template_feedback(
-        tmpl,
-        prompt,
-        copilot_client=client,
-    )
+        try:
+            client = await ensure_copilot_client()
 
-    if not feedback_result["should_recompose"]:
-        # ── Step 2b: Direct code edit path ────────────────────
-        if feedback_result.get("needs_code_edit"):
-            from src.orchestrator import apply_template_code_edit
+            # ── Phase 1: Policy pre-check ─────────────────────────
+            yield emit("step", "policy", "running", "Checking organizational policies…")
+            policy_result = None
+            if not skip_policy:
+                policy_result = await check_revision_policy(
+                    prompt, template=tmpl, copilot_client=client,
+                )
+                verdict = policy_result.get("verdict", "pass")
+                if verdict == "block":
+                    yield emit("step", "policy", "error",
+                               f"Blocked by policy: {policy_result.get('summary', '')}",
+                               {"policy_check": policy_result})
+                    yield emit("result", "done", "blocked",
+                               "Revision blocked by organizational policy.",
+                               {"status": "blocked", "policy_check": policy_result})
+                    return
+                elif verdict == "warning":
+                    yield emit("step", "policy", "warning",
+                               f"Policy warnings: {policy_result.get('summary', '')}",
+                               {"policy_check": policy_result})
+                else:
+                    yield emit("step", "policy", "success", "Policy check passed")
+            else:
+                yield emit("step", "policy", "skip", "Policy check skipped (pre-checked)")
 
-            edit_result = await apply_template_code_edit(
-                tmpl,
-                feedback_result.get("edit_instruction", prompt),
-                prompt,
-                copilot_client=client,
+            # ── Phase 2: Analyze what needs to change ─────────────
+            yield emit("step", "analyze", "running", "Analyzing request with Copilot SDK…")
+            yield emit("log", "analyze", "running",
+                       f"Prompt: \"{prompt[:120]}{'…' if len(prompt) > 120 else ''}\"")
+
+            feedback_result = await analyze_template_feedback(
+                tmpl, prompt, copilot_client=client,
             )
 
-            if not edit_result["success"]:
-                return JSONResponse({
-                    "status": "edit_failed",
-                    "policy_check": policy_result,
-                    "analysis": feedback_result["analysis"],
-                    "message": f"Could not apply the edit: {edit_result['error']}",
+            analysis = feedback_result.get("analysis", "")
+            if analysis:
+                yield emit("log", "analyze", "running", f"Analysis: {analysis}")
+
+            actions = feedback_result.get("actions_taken", [])
+            for a in actions:
+                yield emit("log", "analyze", "running",
+                           f"Action: {a.get('action', '?')} → {a.get('service_id', '?')} — {a.get('detail', '')}")
+
+            if not feedback_result["should_recompose"]:
+                # ── Direct code edit path ─────────────────────────
+                if feedback_result.get("needs_code_edit"):
+                    yield emit("step", "analyze", "success",
+                               "Direct code edit needed (no new services)")
+                    yield emit("step", "compose", "running",
+                               "Applying code edits via Copilot SDK…")
+
+                    from src.orchestrator import apply_template_code_edit
+                    edit_result = await apply_template_code_edit(
+                        tmpl,
+                        feedback_result.get("edit_instruction", prompt),
+                        prompt,
+                        copilot_client=client,
+                    )
+
+                    if not edit_result["success"]:
+                        yield emit("step", "compose", "error",
+                                   f"Edit failed: {edit_result['error']}")
+                        yield emit("result", "done", "error",
+                                   f"Could not apply the edit: {edit_result['error']}",
+                                   {"status": "edit_failed",
+                                    "policy_check": policy_result,
+                                    "analysis": analysis})
+                        return
+
+                    yield emit("log", "compose", "running",
+                               f"Changes: {edit_result['changes_summary']}")
+                    yield emit("step", "compose", "success", "Code edit applied")
+
+                    # Save
+                    yield emit("step", "save", "running", "Saving edited template…")
+                    edited_content = edit_result["content"]
+                    try:
+                        parsed = _json.loads(edited_content)
+                        resource_count = len(parsed.get("resources", []))
+                        param_count = len(parsed.get("parameters", {}))
+                    except Exception:
+                        resource_count = 0
+                        param_count = 0
+
+                    try:
+                        parsed_params = _json.loads(edited_content).get("parameters", {})
+                        param_list = [
+                            {"name": k, "type": v.get("type", "string"),
+                             "required": "defaultValue" not in v}
+                            for k, v in parsed_params.items()
+                        ]
+                    except Exception:
+                        param_list = tmpl.get("parameters", [])
+
+                    catalog_entry = {
+                        "id": template_id,
+                        "name": tmpl.get("name", template_id),
+                        "description": tmpl.get("description", ""),
+                        "format": "arm",
+                        "category": tmpl.get("category", "blueprint"),
+                        "content": edited_content,
+                        "tags": tmpl.get("tags", []),
+                        "resources": tmpl.get("resources", []),
+                        "parameters": param_list,
+                        "outputs": tmpl.get("outputs", []),
+                        "is_blueprint": tmpl.get("is_blueprint", False),
+                        "service_ids": tmpl.get("service_ids", []),
+                        "status": "draft",
+                        "registered_by": tmpl.get("registered_by", "template-composer"),
+                        "template_type": tmpl.get("template_type", ""),
+                        "provides": tmpl.get("provides", []),
+                        "requires": tmpl.get("requires", []),
+                        "optional_refs": tmpl.get("optional_refs", []),
+                    }
+
+                    await upsert_template(catalog_entry)
+                    ver = await create_template_version(
+                        template_id, edited_content,
+                        changelog=f"Edit: {prompt[:100]}",
+                        change_type="minor",
+                        created_by="revision-code-edit",
+                    )
+                    yield emit("step", "save", "success",
+                               f"Saved as v{ver.get('semver', '?')}")
+
+                    yield emit("result", "done", "success",
+                               f"Template edited: {edit_result['changes_summary']}",
+                               {"status": "revised",
+                                "policy_check": policy_result,
+                                "analysis": analysis,
+                                "actions_taken": [{"action": "code_edit",
+                                                   "service_id": "template",
+                                                   "detail": edit_result["changes_summary"]}],
+                                "template_id": template_id,
+                                "resource_count": resource_count,
+                                "parameter_count": param_count,
+                                "services": tmpl.get("service_ids", []),
+                                "version": ver})
+                    return
+
+                # No changes path
+                yield emit("step", "analyze", "success", "No new services identified")
+                yield emit("result", "done", "no_changes",
+                           feedback_result.get("analysis", "No changes needed."),
+                           {"status": "no_changes",
+                            "policy_check": policy_result,
+                            "analysis": analysis,
+                            "actions_taken": actions,
+                            "message": "No new services identified from your request. "
+                                       "Try being more specific about what resources you need."})
+                return
+
+            # ── Phase 3: Service onboarding ───────────────────────
+            new_service_ids = feedback_result["new_service_ids"]
+            yield emit("step", "analyze", "success",
+                       f"Identified {len(new_service_ids)} service(s) for composition")
+
+            yield emit("step", "onboard", "running",
+                       f"Preparing {len(new_service_ids)} service template(s)…")
+
+            STANDARD_PARAMS = {
+                "resourceName", "location", "environment",
+                "projectName", "ownerEmail", "costCenter",
+            }
+
+            service_templates: list[dict] = []
+            for sid in new_service_ids:
+                svc = await get_service(sid)
+                if not svc:
+                    yield emit("log", "onboard", "warning", f"Service {sid} not found — skipping")
+                    continue
+
+                tpl_dict = None
+                active = await get_active_service_version(sid)
+                if active and active.get("arm_template"):
+                    try:
+                        tpl_dict = _json.loads(active["arm_template"])
+                        yield emit("log", "onboard", "running",
+                                   f"✓ {svc.get('name', sid)} — loaded from catalog")
+                    except Exception:
+                        pass
+                if not tpl_dict and has_builtin_skeleton(sid):
+                    tpl_dict = generate_arm_template(sid)
+                    yield emit("log", "onboard", "running",
+                               f"✓ {svc.get('name', sid)} — generated ARM skeleton")
+                if not tpl_dict:
+                    yield emit("log", "onboard", "warning",
+                               f"✗ {svc.get('name', sid)} — no template available")
+                    continue
+
+                service_templates.append({
+                    "svc": svc,
+                    "template": tpl_dict,
+                    "quantity": 1,
                 })
 
-            # Parse to extract resource/param counts
-            edited_content = edit_result["content"]
-            try:
-                parsed = _json.loads(edited_content)
-                resource_count = len(parsed.get("resources", []))
-                param_count = len(parsed.get("parameters", {}))
-            except Exception:
-                resource_count = 0
-                param_count = 0
+            if not service_templates:
+                yield emit("step", "onboard", "error",
+                           "No service templates available for recomposition")
+                yield emit("result", "done", "error",
+                           "No service templates available for recomposition",
+                           {"status": "error"})
+                return
 
-            # Build param list for catalog entry
-            try:
-                parsed_params = _json.loads(edited_content).get("parameters", {})
-                param_list = [
-                    {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
-                    for k, v in parsed_params.items()
+            yield emit("step", "onboard", "success",
+                       f"{len(service_templates)} service template(s) ready")
+
+            # ── Phase 4: Compose ──────────────────────────────────
+            yield emit("step", "compose", "running",
+                       f"Composing ARM template from {len(service_templates)} services…")
+
+            combined_params = dict(_STANDARD_PARAMETERS)
+            combined_resources: list[dict] = []
+            combined_outputs: dict = {}
+            resource_types: list[str] = []
+            tags_list: list[str] = []
+
+            for entry in service_templates:
+                svc = entry["svc"]
+                tpl = entry["template"]
+                sid = svc["id"]
+                short_name = sid.split("/")[-1].lower()
+                resource_types.append(sid)
+                tags_list.append(svc.get("category", ""))
+
+                src_params = tpl.get("parameters", {})
+                src_resources = tpl.get("resources", [])
+                src_outputs = tpl.get("outputs", {})
+
+                suffix = f"_{short_name}"
+                instance_name_param = f"resourceName{suffix}"
+                combined_params[instance_name_param] = {
+                    "type": "string",
+                    "metadata": {"description": f"Name for {svc.get('name', sid)}"},
+                }
+
+                all_non_standard = [
+                    pname for pname in src_params
+                    if pname not in STANDARD_PARAMS and pname != "resourceName"
                 ]
-            except Exception:
-                param_list = tmpl.get("parameters", [])
+                for pname in all_non_standard:
+                    pdef = src_params.get(pname)
+                    if not pdef:
+                        continue
+                    suffixed = f"{pname}{suffix}"
+                    combined_params[suffixed] = dict(pdef)
 
-            # Save the edited template
+                for res in src_resources:
+                    res_str = _json.dumps(res)
+                    res_str = res_str.replace("[parameters('resourceName')]",
+                                             f"[parameters('{instance_name_param}')]")
+                    res_str = res_str.replace("parameters('resourceName')",
+                                             f"parameters('{instance_name_param}')")
+                    for pname in all_non_standard:
+                        suffixed = f"{pname}{suffix}"
+                        res_str = res_str.replace(f"[parameters('{pname}')]",
+                                                  f"[parameters('{suffixed}')]")
+                        res_str = res_str.replace(f"parameters('{pname}')",
+                                                  f"parameters('{suffixed}')")
+                    combined_resources.append(_json.loads(res_str))
+
+                for oname, odef in src_outputs.items():
+                    out_name = f"{oname}{suffix}"
+                    out_val = _json.dumps(odef)
+                    out_val = out_val.replace("[parameters('resourceName')]",
+                                             f"[parameters('{instance_name_param}')]")
+                    out_val = out_val.replace("parameters('resourceName')",
+                                             f"parameters('{instance_name_param}')")
+                    for pname in all_non_standard:
+                        suffixed = f"{pname}{suffix}"
+                        out_val = out_val.replace(f"[parameters('{pname}')]",
+                                                  f"[parameters('{suffixed}')]")
+                        out_val = out_val.replace(f"parameters('{pname}')",
+                                                  f"parameters('{suffixed}')")
+                    combined_outputs[out_name] = _json.loads(out_val)
+
+                yield emit("log", "compose", "running",
+                           f"Merged {svc.get('name', sid)}: "
+                           f"{len(src_resources)} resource(s), "
+                           f"{len(all_non_standard)} param(s)")
+
+            composed = dict(_TEMPLATE_WRAPPER)
+            composed["parameters"] = combined_params
+            composed["variables"] = {}
+            composed["resources"] = combined_resources
+            composed["outputs"] = combined_outputs
+
+            content_str = _json.dumps(composed, indent=2)
+            content_str = _ensure_parameter_defaults(content_str)
+            content_str = _sanitize_placeholder_guids(content_str)
+            content_str = _sanitize_dns_zone_names(content_str)
+
+            composed = _json.loads(content_str)
+            combined_params = composed.get("parameters", {})
+            param_list = [
+                {"name": k, "type": v.get("type", "string"),
+                 "required": "defaultValue" not in v}
+                for k, v in combined_params.items()
+            ]
+
+            dep_analysis = analyze_dependencies(new_service_ids)
+
+            yield emit("step", "compose", "success",
+                       f"Composed: {len(combined_resources)} resources, "
+                       f"{len(combined_params)} params")
+
+            # ── Phase 5: Save ─────────────────────────────────────
+            yield emit("step", "save", "running", "Saving to catalog…")
+
             catalog_entry = {
                 "id": template_id,
                 "name": tmpl.get("name", template_id),
                 "description": tmpl.get("description", ""),
                 "format": "arm",
                 "category": tmpl.get("category", "blueprint"),
-                "content": edited_content,
-                "tags": tmpl.get("tags", []),
-                "resources": tmpl.get("resources", []),
+                "content": content_str,
+                "tags": list(set(tags_list)),
+                "resources": list(set(resource_types)),
                 "parameters": param_list,
-                "outputs": tmpl.get("outputs", []),
-                "is_blueprint": tmpl.get("is_blueprint", False),
-                "service_ids": tmpl.get("service_ids", []),
+                "outputs": list(combined_outputs.keys()),
+                "is_blueprint": len(service_templates) > 1,
+                "service_ids": new_service_ids,
                 "status": "draft",
                 "registered_by": tmpl.get("registered_by", "template-composer"),
-                "template_type": tmpl.get("template_type", ""),
-                "provides": tmpl.get("provides", []),
-                "requires": tmpl.get("requires", []),
-                "optional_refs": tmpl.get("optional_refs", []),
+                "template_type": dep_analysis["template_type"],
+                "provides": dep_analysis["provides"],
+                "requires": dep_analysis["requires"],
+                "optional_refs": dep_analysis["optional_refs"],
             }
 
-            try:
-                await upsert_template(catalog_entry)
-                ver = await create_template_version(
-                    template_id, edited_content,
-                    changelog=f"Edit: {prompt[:100]}",
-                    change_type="minor",
-                    created_by="revision-code-edit",
-                )
-            except Exception as e:
-                logger.error(f"Failed to save edited template: {e}")
-                raise HTTPException(status_code=500, detail=str(e))
+            await upsert_template(catalog_entry)
+            ver = await create_template_version(
+                template_id, content_str,
+                changelog=f"Revision: {prompt[:100]}",
+                change_type="minor",
+                created_by="revision-orchestrator",
+            )
 
-            return JSONResponse({
-                "status": "revised",
-                "policy_check": policy_result,
-                "analysis": feedback_result["analysis"],
-                "actions_taken": [{
-                    "action": "code_edit",
-                    "service_id": "template",
-                    "detail": edit_result["changes_summary"],
-                }],
-                "template_id": template_id,
-                "resource_count": resource_count,
-                "parameter_count": param_count,
-                "services": tmpl.get("service_ids", []),
-                "version": ver,
-                "message": f"Template edited: {edit_result['changes_summary']}. Status reset to draft.",
-            })
+            yield emit("step", "save", "success",
+                       f"Version v{ver.get('semver', '?')} created")
 
-        return JSONResponse({
-            "status": "no_changes",
-            "policy_check": policy_result,
-            "analysis": feedback_result["analysis"],
-            "actions_taken": feedback_result["actions_taken"],
-            "message": "No new services identified from your request. "
-                       "Try being more specific about what resources you need.",
-        })
+            # ── Done ──────────────────────────────────────────────
+            yield emit("result", "done", "success",
+                       f"Template revised with {len(actions)} change(s).",
+                       {"status": "revised",
+                        "policy_check": policy_result,
+                        "analysis": analysis,
+                        "actions_taken": actions,
+                        "template_id": template_id,
+                        "resource_count": len(combined_resources),
+                        "parameter_count": len(combined_params),
+                        "services": new_service_ids,
+                        "version": ver})
 
-    # ── Step 3: Recompose with updated service list ───────────
-    new_service_ids = feedback_result["new_service_ids"]
-    STANDARD_PARAMS = {
-        "resourceName", "location", "environment",
-        "projectName", "ownerEmail", "costCenter",
-    }
+        except Exception as e:
+            logger.error(f"Revision stream error: {e}")
+            yield emit("error", "done", "error", str(e))
 
-    service_templates: list[dict] = []
-    for sid in new_service_ids:
-        svc = await get_service(sid)
-        if not svc:
-            continue
-        tpl_dict = None
-        active = await get_active_service_version(sid)
-        if active and active.get("arm_template"):
-            try:
-                tpl_dict = _json.loads(active["arm_template"])
-            except Exception:
-                pass
-        if not tpl_dict and has_builtin_skeleton(sid):
-            tpl_dict = generate_arm_template(sid)
-        if not tpl_dict:
-            continue
-        service_templates.append({
-            "svc": svc,
-            "template": tpl_dict,
-            "quantity": 1,
-        })
-
-    if not service_templates:
-        raise HTTPException(status_code=500, detail="No service templates available for recomposition")
-
-    # Compose
-    combined_params = dict(_STANDARD_PARAMETERS)
-    combined_resources: list[dict] = []
-    combined_outputs: dict = {}
-    resource_types: list[str] = []
-    tags_list: list[str] = []
-
-    for entry in service_templates:
-        svc = entry["svc"]
-        tpl = entry["template"]
-        sid = svc["id"]
-        short_name = sid.split("/")[-1].lower()
-        resource_types.append(sid)
-        tags_list.append(svc.get("category", ""))
-
-        src_params = tpl.get("parameters", {})
-        src_resources = tpl.get("resources", [])
-        src_outputs = tpl.get("outputs", {})
-
-        suffix = f"_{short_name}"
-        instance_name_param = f"resourceName{suffix}"
-        combined_params[instance_name_param] = {
-            "type": "string",
-            "metadata": {"description": f"Name for {svc.get('name', sid)}"},
-        }
-
-        all_non_standard = [
-            pname for pname in src_params
-            if pname not in STANDARD_PARAMS and pname != "resourceName"
-        ]
-        for pname in all_non_standard:
-            pdef = src_params.get(pname)
-            if not pdef:
-                continue
-            suffixed = f"{pname}{suffix}"
-            combined_params[suffixed] = dict(pdef)
-
-        for res in src_resources:
-            res_str = _json.dumps(res)
-            res_str = res_str.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
-            res_str = res_str.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                res_str = res_str.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
-                res_str = res_str.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
-            combined_resources.append(_json.loads(res_str))
-
-        for oname, odef in src_outputs.items():
-            out_name = f"{oname}{suffix}"
-            out_val = _json.dumps(odef)
-            out_val = out_val.replace("[parameters('resourceName')]", f"[parameters('{instance_name_param}')]")
-            out_val = out_val.replace("parameters('resourceName')", f"parameters('{instance_name_param}')")
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                out_val = out_val.replace(f"[parameters('{pname}')]", f"[parameters('{suffixed}')]")
-                out_val = out_val.replace(f"parameters('{pname}')", f"parameters('{suffixed}')")
-            combined_outputs[out_name] = _json.loads(out_val)
-
-    composed = dict(_TEMPLATE_WRAPPER)
-    composed["parameters"] = combined_params
-    composed["variables"] = {}
-    composed["resources"] = combined_resources
-    composed["outputs"] = combined_outputs
-
-    content_str = _json.dumps(composed, indent=2)
-    content_str = _ensure_parameter_defaults(content_str)
-    content_str = _sanitize_placeholder_guids(content_str)
-    content_str = _sanitize_dns_zone_names(content_str)
-
-    composed = _json.loads(content_str)
-    combined_params = composed.get("parameters", {})
-    param_list = [
-        {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
-        for k, v in combined_params.items()
-    ]
-
-    dep_analysis = analyze_dependencies(new_service_ids)
-
-    catalog_entry = {
-        "id": template_id,
-        "name": tmpl.get("name", template_id),
-        "description": tmpl.get("description", ""),
-        "format": "arm",
-        "category": tmpl.get("category", "blueprint"),
-        "content": content_str,
-        "tags": list(set(tags_list)),
-        "resources": list(set(resource_types)),
-        "parameters": param_list,
-        "outputs": list(combined_outputs.keys()),
-        "is_blueprint": len(service_templates) > 1,
-        "service_ids": new_service_ids,
-        "status": "draft",
-        "registered_by": tmpl.get("registered_by", "template-composer"),
-        "template_type": dep_analysis["template_type"],
-        "provides": dep_analysis["provides"],
-        "requires": dep_analysis["requires"],
-        "optional_refs": dep_analysis["optional_refs"],
-    }
-
-    try:
-        await upsert_template(catalog_entry)
-        ver = await create_template_version(
-            template_id, content_str,
-            changelog=f"Revision: {prompt[:100]}",
-            change_type="minor",
-            created_by="revision-orchestrator",
-        )
-    except Exception as e:
-        logger.error(f"Failed to save revised template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-    return JSONResponse({
-        "status": "revised",
-        "policy_check": policy_result,
-        "analysis": feedback_result["analysis"],
-        "actions_taken": feedback_result["actions_taken"],
-        "template_id": template_id,
-        "resource_count": len(combined_resources),
-        "parameter_count": len(combined_params),
-        "services": new_service_ids,
-        "version": ver,
-        "message": f"Template revised with {len(feedback_result['actions_taken'])} change(s). Status reset to draft.",
-    })
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 # ══════════════════════════════════════════════════════════════
