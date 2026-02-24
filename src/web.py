@@ -3918,6 +3918,156 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             except Exception as e:
                 results.append({"success": False, "error": str(e)})
 
+        # ── Recompose parent template if any dependency was fixed ──
+        any_success = any(r.get("success") for r in results)
+        successful_dep_tids = [
+            r["template_id"] for r in results
+            if r.get("success") and r.get("template_id") != template_id
+        ]
+        # Also handle the case where the parent itself was fixed
+        parent_was_fixed = any(
+            r.get("success") and r.get("template_id") == template_id
+            for r in results
+        )
+
+        if successful_dep_tids and dep_service_ids:
+            # Dependencies were remediated — recompose the parent's ARM
+            try:
+                # Start from the current parent ARM
+                parent_versions = await get_template_versions(template_id)
+                parent_arm_str = ""
+                if parent_versions:
+                    parent_ver = await get_template_version(
+                        template_id, parent_versions[0]["version"]
+                    )
+                    parent_arm_str = parent_ver.get("arm_template", "") if parent_ver else ""
+                if not parent_arm_str:
+                    parent_arm_str = tmpl.get("content", "")
+
+                composed = json.loads(parent_arm_str)
+
+                # For each fixed dependency, swap its resources into the parent
+                for dep_tid in successful_dep_tids:
+                    # Read the updated dep content — prefer template_versions
+                    # (the VERSION step always writes there), fall back to catalog
+                    dep_arm_str = ""
+                    dep_versions = await get_template_versions(dep_tid)
+                    if dep_versions:
+                        dep_ver = await get_template_version(
+                            dep_tid, dep_versions[0]["version"]
+                        )
+                        dep_arm_str = dep_ver.get("arm_template", "") if dep_ver else ""
+                    if not dep_arm_str:
+                        dep_rows = await backend.execute(
+                            "SELECT content FROM catalog_templates WHERE id = ?",
+                            (dep_tid,),
+                        )
+                        if dep_rows and dep_rows[0].get("content"):
+                            dep_arm_str = dep_rows[0]["content"]
+                    if not dep_arm_str:
+                        continue
+                    dep_arm = json.loads(dep_arm_str)
+                    dep_resources = dep_arm.get("resources", [])
+                    if not dep_resources:
+                        continue
+
+                    # Identify resource types from the fixed dep
+                    dep_types = {
+                        r.get("type", "").lower()
+                        for r in dep_resources
+                        if isinstance(r, dict) and r.get("type")
+                    }
+
+                    # Remove old resources of these types from parent
+                    kept = [
+                        r for r in composed.get("resources", [])
+                        if not isinstance(r, dict)
+                        or r.get("type", "").lower() not in dep_types
+                    ]
+                    # Add the new fixed resources
+                    kept.extend(dep_resources)
+                    composed["resources"] = kept
+
+                    # Merge parameters and variables from the fixed dep
+                    for pk, pv in dep_arm.get("parameters", {}).items():
+                        composed.setdefault("parameters", {})[pk] = pv
+                    for vk, vv in dep_arm.get("variables", {}).items():
+                        composed.setdefault("variables", {})[vk] = vv
+
+                recomposed_arm = json.dumps(composed, indent=2)
+
+                # Create a new parent version with the recomposed ARM
+                # Determine the bump type from the highest dep change
+                parent_change = "patch"
+                for r in results:
+                    if r.get("success") and r.get("template_id") != template_id:
+                        # The individual job used whatever change_type the plan had
+                        pass  # patch is fine for recomposition
+
+                parent_semver = await get_latest_semver(template_id) or "1.0.0"
+                parent_new_semver = compute_next_semver(parent_semver, parent_change)
+
+                dep_names = ", ".join(successful_dep_tids)
+                recompose_changelog = (
+                    f"Recomposed after compliance remediation of: {dep_names}"
+                )
+
+                await create_template_version(
+                    template_id,
+                    recomposed_arm,
+                    changelog=recompose_changelog,
+                    change_type=parent_change,
+                    created_by="compliance-remediation",
+                )
+
+                # Also update catalog_templates.content for the parent
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await backend.execute_write(
+                    "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                    (recomposed_arm, now_iso, template_id),
+                )
+
+                yield json.dumps({
+                    "type": "step_log",
+                    "job_id": "recompose",
+                    "step_id": "recompose",
+                    "message": f"Recomposed parent template with {len(successful_dep_tids)} updated dependencies → v{parent_new_semver}",
+                    "level": "info",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }) + "\n"
+                await asyncio.sleep(0)
+
+            except Exception as e:
+                yield json.dumps({
+                    "type": "step_log",
+                    "job_id": "recompose",
+                    "step_id": "recompose",
+                    "message": f"Warning: Failed to recompose parent template: {str(e)}",
+                    "level": "error",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }) + "\n"
+                await asyncio.sleep(0)
+
+        elif parent_was_fixed:
+            # The parent itself was remediated (non-composed or parent-targeted fix).
+            # The job already saved the new version and updated catalog content.
+            # But also update catalog_templates.content from the latest version
+            # to keep them in sync.
+            try:
+                parent_versions = await get_template_versions(template_id)
+                if parent_versions:
+                    latest_ver = await get_template_version(
+                        template_id, parent_versions[0]["version"]
+                    )
+                    if latest_ver and latest_ver.get("arm_template"):
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        await backend.execute_write(
+                            "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                            (latest_ver["arm_template"], now_iso, template_id),
+                        )
+            except Exception:
+                pass  # Non-critical — the version table is the source of truth
+
         # Pipeline done
         yield json.dumps({
             "type": "pipeline_done",
