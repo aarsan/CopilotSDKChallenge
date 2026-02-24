@@ -535,7 +535,7 @@ async def _deep_heal_composed_template(
         if on_event:
             await on_event(evt)
 
-    await _emit({"phase": "deep_heal_start", "detail": "Analyzing root cause across service templates…"})
+    await _emit({"phase": "deep_heal_start", "detail": "Let me look at the individual service templates to figure out what's going wrong…"})
 
     # ── Step 1: Root-cause analysis ──────────────────────────
     # Identify which service template is causing the failure
@@ -557,7 +557,7 @@ async def _deep_heal_composed_template(
             resource_type_map[sid] = arm
 
     if not resource_type_map:
-        await _emit({"phase": "deep_heal_fail", "detail": "No source service templates found"})
+        await _emit({"phase": "deep_heal_fail", "detail": "I can't find the source service templates to analyze — there's nothing for me to dig into here."})
         return None
 
     # Use the error message + resource types to identify the culprit
@@ -620,7 +620,7 @@ async def _deep_heal_composed_template(
 
     await _emit({
         "phase": "deep_heal_identified",
-        "detail": f"Root cause: {culprit_sid} template needs fixing",
+        "detail": f"Found it — the issue is coming from the {culprit_sid} template",
         "culprit_service": culprit_sid,
     })
 
@@ -638,8 +638,8 @@ async def _deep_heal_composed_template(
     for svc_attempt in range(1, MAX_SVC_HEAL + 1):
         await _emit({
             "phase": "deep_heal_fix",
-            "detail": f"Repairing {culprit_sid} ARM template…" + (
-                "" if svc_attempt == 1 else f" (trying different strategy — {len(heal_attempts)} prior fix{'es' if len(heal_attempts) != 1 else ''} didn't resolve it)"
+            "detail": f"Working on fixing the {culprit_sid} template…" + (
+                "" if svc_attempt == 1 else f" (previous attempt didn't work, trying a different angle)"
             ),
             "service_id": culprit_sid,
         })
@@ -655,13 +655,13 @@ async def _deep_heal_composed_template(
             )
             candidate = json.loads(fixed_json)
         except Exception as fix_err:
-            await _emit({"phase": "deep_heal_fix_error", "detail": f"LLM fix failed: {fix_err}"})
+            await _emit({"phase": "deep_heal_fix_error", "detail": f"Hmm, I couldn't generate a fix this time: {fix_err}"})
             continue
 
         # ── Step 3: Validate standalone ──────────────────────
         await _emit({
             "phase": "deep_heal_validate",
-            "detail": f"Validating fixed {culprit_sid} template with standalone deploy…",
+            "detail": f"Let me test the fixed {culprit_sid} template on its own to make sure it works…",
         })
 
         val_rg = f"infraforge-dheal-{_dh_uuid.uuid4().hex[:8]}"
@@ -700,7 +700,7 @@ async def _deep_heal_composed_template(
         if val_status == "succeeded":
             await _emit({
                 "phase": "deep_heal_validated",
-                "detail": f"✅ {culprit_sid} template validated successfully!",
+                "detail": f"Nice — the {culprit_sid} fix is working!",
                 "service_id": culprit_sid,
                 "resources": val_result.get("provisioned_resources", []),
             })
@@ -711,7 +711,7 @@ async def _deep_heal_composed_template(
             val_error = val_result.get("error", "unknown")
             await _emit({
                 "phase": "deep_heal_validate_fail",
-                "detail": f"Validation failed: {val_error[:200]}",
+                "detail": f"That fix didn't quite work either: {val_error[:200]}",
             })
             # Track for next heal attempt
             heal_attempts.append({
@@ -724,13 +724,13 @@ async def _deep_heal_composed_template(
             error_msg = val_error  # update error for next LLM call
 
     if not fixed_svc_arm:
-        await _emit({"phase": "deep_heal_fail", "detail": f"Could not resolve {culprit_sid} issues with available tools"})
+        await _emit({"phase": "deep_heal_fail", "detail": f"I wasn't able to fix the {culprit_sid} template automatically. This one might need a manual look."})
         return None
 
     # ── Step 4: Save new service version ─────────────────────
     await _emit({
         "phase": "deep_heal_version",
-        "detail": f"Publishing new version of {culprit_sid}…",
+        "detail": f"The fix worked! Saving a new version of {culprit_sid}…",
     })
 
     try:
@@ -767,7 +767,7 @@ async def _deep_heal_composed_template(
     # ── Step 5: Recompose the parent template ────────────────
     await _emit({
         "phase": "deep_heal_recompose",
-        "detail": f"Recomposing {template_id} with fixed service templates…",
+        "detail": f"Now let me rebuild the full template with the fixed pieces…",
     })
 
     # Gather all service ARM templates (using fixed one for culprit)
@@ -4139,7 +4139,7 @@ async def auto_heal_template(template_id: str):
             "status": "heal_failed",
             "template_id": template_id,
             "errors": failed_tests,
-            "message": "Auto-heal could not fix this template. Use Request Revision to describe the changes needed.",
+            "message": "I tried but couldn't fix this one automatically. Try using Request Revision to describe what needs to change.",
         })
 
     # Save the fixed template
@@ -4243,8 +4243,8 @@ async def auto_heal_template(template_id: str):
         "original_failures": failed_tests,
         "retest": retest_results,
         "all_passed": all_passed,
-        "message": "Template auto-healed and all tests pass!" if all_passed
-                   else f"Auto-heal fixed some issues but {retest_results['failed']} test(s) still need attention.",
+        "message": "All fixed! Every test is passing now." if all_passed
+                   else f"I fixed some things, but {retest_results['failed']} test(s) still need attention.",
     })
 
 
@@ -4848,7 +4848,7 @@ async def validate_template(template_id: str, request: Request):
 
         yield json.dumps({
             "phase": "starting",
-            "detail": f"Validating template '{_tmpl_name}' — deploying to temp RG {rg_name}…",
+            "detail": f"Alright, let me spin up a temporary environment to test '{_tmpl_name}'…",
             "deployment_name": deployment_name,
             "resource_group": rg_name,
             "region": region,
@@ -4866,13 +4866,14 @@ async def validate_template(template_id: str, request: Request):
             if attempt > 1:
                 current_deploy_name = f"infraforge-val-{_heal_uuid.uuid4().hex[:8]}"
 
-            # Describe what we're doing, not which attempt we're on
+            # Agent-style conversational step messages
             if attempt == 1:
-                step_detail = "Deploying template to validation environment…"
+                step_detail = "Deploying your template to Azure — let's see how it goes…"
             elif deep_healed:
-                step_detail = "Verifying deep-healed template…"
+                step_detail = "I rebuilt the template from the ground up — let me verify the fix works…"
             else:
-                step_detail = f"Verifying corrected template (resolved {len(heal_history)} issue{'s' if len(heal_history) != 1 else ''} so far)…"
+                n = len(heal_history)
+                step_detail = f"I've fixed {n} issue{'s' if n != 1 else ''} so far — deploying the updated template to check…"
 
             yield json.dumps({
                 "phase": "step",
@@ -4928,7 +4929,7 @@ async def validate_template(template_id: str, request: Request):
                     "issues_resolved": len(heal_history),
                     "deployment_id": result.get("deployment_id"),
                     "error": error_msg,
-                    "detail": "Template could not be verified — all available resolution strategies exhausted",
+                    "detail": "I've tried everything I can think of, but this one's beyond what I can auto-fix. You may need to review the template manually.",
                     "heal_history": [
                         {"error": h["error"][:200], "fix_summary": h["fix_summary"]}
                         for h in heal_history
@@ -4941,8 +4942,8 @@ async def validate_template(template_id: str, request: Request):
                 yield json.dumps({
                     "phase": "deep_heal_trigger",
                     "detail": (
-                        "Surface-level adjustments haven't resolved the issue — "
-                        "switching to deep analysis: examining underlying service templates…"
+                        "Hmm, simple fixes aren't cutting it. Let me dig deeper — "
+                        "I'll look at the individual service templates to find the root cause…"
                     ),
                     "service_ids": svc_ids,
                 }) + "\n"
@@ -5003,7 +5004,7 @@ async def validate_template(template_id: str, request: Request):
 
                     yield json.dumps({
                         "phase": "healed",
-                        "detail": "Deep analysis complete — recomposed template ready, verifying fix…",
+                        "detail": "I've rebuilt the template with the fixed services — let me verify it works now…",
                         "fix_summary": "Deep analysis: fixed underlying service templates and recomposed",
                         "deep_healed": True,
                     }) + "\n"
@@ -5011,7 +5012,7 @@ async def validate_template(template_id: str, request: Request):
 
                 yield json.dumps({
                     "phase": "deep_heal_fallback",
-                    "detail": "Deep analysis did not produce a fix — trying alternative strategy…",
+                    "detail": "The deep fix didn't pan out — let me try another approach…",
                 }) + "\n"
 
             # ── SHALLOW HEAL ──
@@ -5028,7 +5029,7 @@ async def validate_template(template_id: str, request: Request):
             if _same_error_count >= 2:
                 yield json.dumps({
                     "phase": "healing",
-                    "detail": f"Same error class '{_err_code}' detected {_same_error_count + 1} times — escalating strategy…",
+                    "detail": f"This '{_err_code}' error keeps coming back ({_same_error_count + 1} times now). Let me try a completely different approach…",
                     "error_summary": error_msg[:300],
                     "repeated_error": True,
                     "error_code": _err_code,
@@ -5037,7 +5038,7 @@ async def validate_template(template_id: str, request: Request):
             else:
                 yield json.dumps({
                     "phase": "healing",
-                    "detail": "Azure returned feedback — analyzing error and adjusting template…",
+                    "detail": "Hmm, Azure isn't happy with something. Let me read through the error and adjust the template…",
                     "error_summary": error_msg[:300],
                 }) + "\n"
 
@@ -5058,7 +5059,7 @@ async def validate_template(template_id: str, request: Request):
                     "phase": "complete",
                     "status": "failed",
                     "error": error_msg,
-                    "detail": f"LLM healing could not produce a fix: {heal_err}",
+                    "detail": f"I wasn't able to figure out a fix for this one. The error is a bit tricky: {heal_err}",
                 }) + "\n"
                 final_status = "failed"
                 break
@@ -5095,14 +5096,14 @@ async def validate_template(template_id: str, request: Request):
 
             yield json.dumps({
                 "phase": "healed",
-                "detail": f"Applied fix: {fix_summary}",
+                "detail": f"Got it — {fix_summary}",
                 "fix_summary": fix_summary,
             }) + "\n"
 
         # ── Post-loop: update DB status and save healed template ──
         yield json.dumps({
             "phase": "cleanup",
-            "detail": f"Cleaning up validation resource group {rg_name}…",
+            "detail": f"Cleaning up — removing the temporary resource group…",
         }) + "\n"
 
         # Update template version status
@@ -5155,12 +5156,12 @@ async def validate_template(template_id: str, request: Request):
             )
             yield json.dumps({
                 "phase": "cleanup_done",
-                "detail": f"Temp RG {rg_name} deletion started.",
+                "detail": "All cleaned up — temporary resources are being removed.",
             }) + "\n"
         except Exception as cle:
             yield json.dumps({
                 "phase": "cleanup_warning",
-                "detail": f"Could not delete temp RG {rg_name}: {cle}",
+                "detail": f"Heads up — I couldn't clean up the temp resource group automatically. You may want to delete '{rg_name}' manually.",
             }) + "\n"
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
@@ -5474,13 +5475,13 @@ async def deploy_template(template_id: str, request: Request):
                 yield json.dumps({
                     "type": "agent",
                     "action": "retry",
-                    "content": f"🔄 **Iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS}** — retrying with the fixed template…",
+                    "content": f"🔄 Let me try again with the fixed template (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
                 }) + "\n"
 
             # ── STEP 2: WHAT-IF VALIDATION ────────────────────
             yield json.dumps({
                 "type": "status",
-                "message": "Validating ARM template against Azure (What-If)…",
+                "message": "Let me check with Azure if this template will work (running What-If)…",
                 "progress": att_base + 0.03 / MAX_DEPLOY_HEAL_ATTEMPTS,
             }) + "\n"
 
@@ -5508,7 +5509,7 @@ async def deploy_template(template_id: str, request: Request):
                 if any(kw in what_if_errors.lower() for kw in _infra_keywords):
                     yield json.dumps({
                         "type": "status",
-                        "message": "Transient Azure issue — waiting before retry…",
+                        "message": "Azure is having a moment — I'll wait a bit and try again…",
                         "progress": att_base + 0.05 / MAX_DEPLOY_HEAL_ATTEMPTS,
                     }) + "\n"
                     await asyncio.sleep(10)
@@ -5518,7 +5519,7 @@ async def deploy_template(template_id: str, request: Request):
                 yield json.dumps({
                     "type": "agent",
                     "action": "healing",
-                    "content": f"🧠 **What-If rejected** — deployment agent fixing the template (iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
+                    "content": f"🧠 Azure rejected the template — let me read the error and fix it (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
                 }) + "\n"
 
                 healed = await _run_heal_step(
@@ -5533,7 +5534,7 @@ async def deploy_template(template_id: str, request: Request):
                     yield json.dumps({
                         "type": "agent",
                         "action": "healed",
-                        "content": f"🔧 **Fixed:** {healed['fix_summary']}",
+                        "content": f"🔧 Got it — {healed['fix_summary']}",
                     }) + "\n"
 
                     heal_history.append({
@@ -5555,7 +5556,7 @@ async def deploy_template(template_id: str, request: Request):
                     yield json.dumps({
                         "type": "agent",
                         "action": "heal_failed",
-                        "content": "⚠️ Auto-heal couldn't resolve the What-If error — trying a different approach…",
+                        "content": "Hmm, I couldn't fix the What-If error this time — let me try a different angle…",
                     }) + "\n"
                 continue  # Retry from What-If with the fixed template
 
@@ -5565,7 +5566,7 @@ async def deploy_template(template_id: str, request: Request):
             )
             yield json.dumps({
                 "type": "status",
-                "message": f"✓ What-If passed — {change_summary or 'template accepted'}",
+                "message": f"✅ Template looks good — {change_summary or 'Azure accepted it'}",
                 "progress": att_base + 0.08 / MAX_DEPLOY_HEAL_ATTEMPTS,
             }) + "\n"
 
@@ -5656,8 +5657,8 @@ async def deploy_template(template_id: str, request: Request):
                             "type": "agent",
                             "action": "saved",
                             "content": (
-                                f"💾 Fixed template saved as "
-                                f"**version {new_ver['version']}**."
+                                f"💾 I've saved the fixed template as "
+                                f"version {new_ver['version']}."
                             ),
                         }) + "\n"
                     except Exception as e:
@@ -5708,7 +5709,7 @@ async def deploy_template(template_id: str, request: Request):
             ):
                 yield json.dumps({
                     "type": "status",
-                    "message": "Transient Azure issue — waiting before retry…",
+                    "message": "Azure is being flaky right now — waiting a moment before trying again…",
                     "progress": att_base + 0.15 / MAX_DEPLOY_HEAL_ATTEMPTS,
                 }) + "\n"
                 await asyncio.sleep(10)
@@ -5721,8 +5722,8 @@ async def deploy_template(template_id: str, request: Request):
                 "type": "agent",
                 "action": "healing",
                 "content": (
-                    f"🧠 **Deploy failed** — deployment agent fixing the "
-                    f"template (iteration {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…"
+                    f"🧠 The deployment hit an error — let me analyze what went wrong and fix it "
+                    f"(attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…"
                 ),
             }) + "\n"
 
@@ -5740,16 +5741,16 @@ async def deploy_template(template_id: str, request: Request):
                 yield json.dumps({
                     "type": "agent",
                     "action": "healed",
-                    "content": f"🔧 **Fixed:** {healed['fix_summary']}",
+                    "content": f"🔧 Got it — {healed['fix_summary']}",
                 }) + "\n"
                 if healed.get("deep"):
                     yield json.dumps({
                         "type": "agent",
                         "action": "deep_healed",
                         "content": (
-                            f"🔬 **Deep heal:** Fixed the underlying "
-                            f"`{healed.get('culprit', '?')}` service template, "
-                            f"validated it standalone, and recomposed the parent."
+                            f"🔬 I had to dig deeper — the real issue was in the "
+                            f"`{healed.get('culprit', '?')}` template. I fixed it, "
+                            f"verified it on its own, and rebuilt the parent."
                         ),
                     }) + "\n"
 
@@ -5771,8 +5772,8 @@ async def deploy_template(template_id: str, request: Request):
                     "type": "agent",
                     "action": "heal_failed",
                     "content": (
-                        "⚠️ Auto-heal couldn't resolve this error "
-                        "— trying a different approach…"
+                        "Hmm, I couldn't fix this particular error "
+                        "— let me try a different approach…"
                     ),
                 }) + "\n"
 
@@ -5788,8 +5789,8 @@ async def deploy_template(template_id: str, request: Request):
             "type": "agent",
             "action": "analyzing",
             "content": (
-                f"🧠 Deployment agent analyzing the issue after "
-                f"{len(heal_history)} iteration(s)…"
+                f"🧠 I've tried {len(heal_history)} fix{'es' if len(heal_history) != 1 else ''} "
+                f"but the issue persists. Let me write up what I've found…"
             ),
         }) + "\n"
 
@@ -9729,7 +9730,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 change_summary = ", ".join(f"{v} {k}" for k, v in wif.get("change_counts", {}).items())
                 yield json.dumps({
                     "type": "progress", "phase": "what_if_complete", "step": attempt,
-                    "detail": f"✓ What-If passed — changes: {change_summary or 'none'}",
+                    "detail": f"✅ Azure accepted the template — {change_summary or 'no issues found'}",
                     "progress": att_base + 0.14,
                     "result": wif,
                 }) + "\n"

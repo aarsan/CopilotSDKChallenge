@@ -2282,7 +2282,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-pending">
-                📝 <strong>New Template</strong> — Run validation to verify this template meets structural and Azure requirements.
+                📝 <strong>New Template</strong> — I haven't tested this yet. Let me run validation to check if everything's set up correctly.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
                 🧪 Validate
@@ -2292,7 +2292,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-validate">
-                ✅ Structural tests passed. Validate against Azure to confirm deployment readiness.
+                ✅ The structure checks out. Let me now test it against Azure to confirm it'll actually deploy.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
                 🧪 Validate Against Azure
@@ -2302,7 +2302,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-ready">
-                ✅ <strong>Validated</strong> — Template verified against Azure. Ready to publish to the catalog.
+                ✅ <strong>Verified</strong> — I've tested this template against Azure and it's good to go. Ready to publish!
             </div>
             <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
                 🚀 Publish to Catalog
@@ -2312,7 +2312,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ Validation found issues — auto-heal will attempt to fix them, or describe changes below.
+                ❌ I found some issues during validation. I can try to fix them automatically, or you can describe what needs to change below.
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
                 <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
@@ -2376,7 +2376,7 @@ function showTemplateDetail(templateId) {
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
             <h4>🧪 Validation</h4>
-            <p class="tmpl-validate-desc">Validates this template by deploying to a temporary Azure resource group. Self-healing fixes issues automatically. The temp RG is cleaned up afterward.</p>
+            <p class="tmpl-validate-desc">I'll deploy this to a temporary Azure resource group to test it. If anything breaks, I'll try to fix it automatically. The temp resources are cleaned up afterward.</p>
             <div id="tmpl-validate-params"></div>
             <div class="tmpl-validate-actions">
                 <select id="tmpl-validate-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
@@ -2819,8 +2819,8 @@ function _renderVersionPipeline(v) {
         const rg = valResults.resource_group || '';
 
         let valTitle = valPassed
-            ? (deepHealed ? '🔧 Azure Validation — Passed after self-healing' : '✅ Azure Validation — Passed')
-            : '❌ Azure Validation — Failed';
+            ? (deepHealed ? '🔧 Verified — I had to fix a few things along the way' : '✅ Verified — template deployed successfully')
+            : '❌ Verification failed — needs more work';
 
         detailHtml += `
             <div class="ver-pipeline-detail ${detailType}">
@@ -2846,7 +2846,7 @@ function _renderVersionPipeline(v) {
     return `
         <div class="ver-pipeline" onclick="event.stopPropagation()">
             <div class="ver-pipeline-stages">${stagesHtml}</div>
-            ${detailHtml || '<div class="ver-pipeline-detail detail-info"><div class="ver-detail-title">ℹ️ No detailed results yet — run validation to see the full pipeline.</div></div>'}
+            ${detailHtml || '<div class="ver-pipeline-detail detail-info"><div class="ver-detail-title">ℹ️ Haven\'t tested this version yet — run validation to see how it does.</div></div>'}
         </div>`;
 }
 
@@ -3732,7 +3732,7 @@ function _renderRemediationResults(data) {
 async function runFullValidation(templateId, skipTests = false) {
     if (!skipTests) {
         // Step 1: Run structural tests
-        showToast('🧪 Running structural tests…', 'info');
+        showToast('� Let me check the structure first…', 'info');
         try {
             const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
                 method: 'POST',
@@ -3746,12 +3746,12 @@ async function runFullValidation(templateId, skipTests = false) {
             const data = await res.json();
             const results = data.results || {};
             if (!results.all_passed) {
-                showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+                showToast(`❌ ${results.failed} of ${results.total} structural checks didn't pass`, 'error');
                 await loadAllData();
                 showTemplateDetail(templateId);
                 return;
             }
-            showToast(`✅ All ${results.total} structural tests passed`, 'success');
+            showToast(`✅ Structure looks solid — all ${results.total} checks passed`, 'success');
         } catch (err) {
             showToast(`Test error: ${err.message}`, 'error');
             return;
@@ -3821,10 +3821,10 @@ async function runTemplateValidation(templateId) {
     }
     if (resultsDiv) {
         resultsDiv.style.display = 'block';
-        resultsDiv.innerHTML = '<div class="compose-loading">🧪 Running validation… This may take 1-5 minutes.</div>';
+        resultsDiv.innerHTML = '<div class="compose-loading">🧪 Working on it… This usually takes 1-5 minutes.</div>';
     }
 
-    showToast('🧪 Running validation…', 'info');
+    showToast('🧪 Starting validation — I\'ll deploy the template and see how Azure responds', 'info');
 
     // Initialize tracker
     const tracker = {
@@ -3908,10 +3908,10 @@ async function runTemplateValidation(templateId) {
 
         if (tracker.finalEvent && tracker.finalEvent.status === 'succeeded') {
             const resolved = tracker.finalEvent.issues_resolved || 0;
-            const healMsg = resolved > 0 ? ` (resolved ${resolved} issue${resolved !== 1 ? 's' : ''})` : '';
-            showToast(`✅ Template verified${healMsg}! Ready to publish.`, 'success');
+            const healMsg = resolved > 0 ? ` I fixed ${resolved} issue${resolved !== 1 ? 's' : ''} along the way.` : '';
+            showToast(`✅ Template is good to go!${healMsg} Ready to publish.`, 'success');
         } else if (tracker.finalEvent && tracker.finalEvent.status === 'failed') {
-            showToast(`⚠️ Template could not be fully verified. Review the log for details.`, 'error');
+            showToast(`⚠️ I couldn't fully resolve all the issues. Check the log for details.`, 'error');
         }
 
         // Refresh and reopen detail
@@ -4711,7 +4711,7 @@ function _renderDeployProgress(container, event, ctx) {
         card.id = `vf-attempt-${attempt.step}`;
 
         const isFirst = attempt.step === 1;
-        const label = isFirst ? 'Initial Deployment' : `Re-deploy #${attempt.step - 1}`;
+        const label = isFirst ? 'Getting Started' : `Attempt #${attempt.step}`;
 
         card.innerHTML = `
             <div class="vf-attempt-header">
@@ -4754,7 +4754,7 @@ function _renderDeployProgress(container, event, ctx) {
         const statusEl = card.querySelector('.vf-attempt-status');
         if (!statusEl) return;
         statusEl.className = `vf-attempt-status vf-status-${status}`;
-        const labels = { success: '✅ Passed', error: '❌ Failed', healed: '🔧 Fixed' };
+        const labels = { success: '✅ Looking good!', error: '❌ Hit a snag', healed: '🔧 Fixed it' };
         statusEl.innerHTML = labels[status] || status;
     }
 
@@ -4786,7 +4786,7 @@ function _renderDeployProgress(container, event, ctx) {
         state.currentAttempt = attempt;
         _setActiveStage('deploy');
         const card = _createAttemptCard(attempt);
-        _addSubStep(card, '🚀', escapeHtml(detail || 'Deploying to Azure…'), 'vf-substep-deploy');
+        _addSubStep(card, '🚀', escapeHtml(detail || 'Sending the template to Azure…'), 'vf-substep-deploy');
         // Scroll to bottom
         timeline.scrollTop = timeline.scrollHeight;
         return;
@@ -4834,8 +4834,8 @@ function _renderDeployProgress(container, event, ctx) {
 
         const isRepeated = event.repeated_error;
         const healMsg = isRepeated
-            ? `⚠️ Same error class '${escapeHtml(event.error_code || '')}' recurring — escalating strategy…`
-            : (isValidate ? 'Analyzing Azure feedback…' : (detail || 'Analyzing error…'));
+            ? `This '${escapeHtml(event.error_code || '')}' error keeps showing up — let me try something different…`
+            : (detail || 'Let me take a look at what went wrong…');
         _addSubStep(card, '🧠', healMsg, isRepeated ? 'vf-substep-analyze vf-substep-escalate' : 'vf-substep-analyze');
 
         if (event.error_summary) {
@@ -4886,8 +4886,8 @@ function _renderDeployProgress(container, event, ctx) {
             dhContainer.innerHTML = `
                 <div class="vf-deep-header">
                     <span class="vf-deep-icon">🔬</span>
-                    <span class="vf-deep-title">Deep Analysis</span>
-                    <span class="vf-deep-desc">Examining underlying service templates</span>
+                    <span class="vf-deep-title">Deep Dive</span>
+                    <span class="vf-deep-desc">Investigating the underlying service templates</span>
                 </div>
                 ${event.service_ids?.length ? `
                 <div class="vf-deep-services">
@@ -4964,12 +4964,12 @@ function _renderDeployProgress(container, event, ctx) {
         // Build final result card
         const resultDiv = document.createElement('div');
         if (event.status === 'succeeded') {
-            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} via self-healing` : '';
+            const healMsg = issuesResolved > 0 ? ` — I resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
             resultDiv.className = 'vf-result vf-result-success';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
                     <span class="vf-result-icon">✅</span>
-                    <span>${isValidate ? `Template Verified${healMsg}` : 'Deployment Succeeded'}</span>
+                    <span>${isValidate ? `All good! Template verified${healMsg}` : `Deployment succeeded${healMsg}`}</span>
                 </div>
                 ${resources.length ? `
                 <div class="vf-result-section">
@@ -5000,7 +5000,7 @@ function _renderDeployProgress(container, event, ctx) {
             const uniqueErrors = Object.entries(state.seenErrors);
             const dedupHtml = uniqueErrors.length > 1 ? `
                 <div class="vf-error-dedup">
-                    <div class="vf-dedup-title">Error Pattern Analysis</div>
+                    <div class="vf-dedup-title">Errors I've seen</div>
                     <div class="vf-dedup-list">
                         ${uniqueErrors.map(([code, count]) => `
                             <div class="vf-dedup-item ${count > 1 ? 'vf-dedup-repeated' : ''}">
@@ -5016,21 +5016,21 @@ function _renderDeployProgress(container, event, ctx) {
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
                     <span class="vf-result-icon">${isValidate ? '🔧' : '⚠️'}</span>
-                    <span>${isValidate ? 'Template Needs More Work' : 'Deployment Issue'}</span>
+                    <span>${isValidate ? 'I couldn\'t fully resolve this one' : 'Something went wrong with the deployment'}</span>
                 </div>
                 <div class="vf-result-body">
                     ${isValidate
-                        ? '<p>The self-healing pipeline couldn\'t resolve all issues. Review the flow above for details.</p>'
-                        : '<p>The deployment could not be completed. This template may need re-validation.</p>'}
+                        ? '<p>I gave it my best shot with self-healing, but some issues remain. Take a look at the log above to see what happened.</p>'
+                        : '<p>The deployment didn\'t go through. You might want to re-validate the template or check the parameters.</p>'}
                     ${event.error ? `
                     <details class="vf-error-details" open>
-                        <summary>Last diagnostic</summary>
+                        <summary>What Azure told me</summary>
                         <code>${escapeHtml(event.error)}</code>
                     </details>` : ''}
                     ${dedupHtml}
                     ${healHistory.length ? `
                     <details class="vf-heal-summary">
-                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} attempted</summary>
+                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} I tried</summary>
                         <div class="vf-heal-list">
                             ${healHistory.map(h => `
                                 <div class="vf-heal-entry">
@@ -5087,7 +5087,7 @@ function _renderDeployProgress(container, event, ctx) {
 
 /** Auto-heal a failed template — system fixes it, not the user */
 async function autoHealTemplate(templateId) {
-    showToast('🔧 Auto-healing template…', 'info');
+    showToast('🔧 Let me try to fix this automatically…', 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
@@ -5103,9 +5103,9 @@ async function autoHealTemplate(templateId) {
         }
 
         if (data.status === 'no_issues') {
-            showToast('ℹ️ No issues found — template looks fine', 'info');
+            showToast('ℹ️ Actually, everything looks fine — no issues to fix!', 'info');
         } else if (data.all_passed) {
-            showToast(`✅ Template auto-healed — all ${data.retest?.total || ''} tests pass! Starting validation…`, 'success');
+            showToast(`✅ Fixed it! All ${data.retest?.total || ''} tests pass now. Let me run the full validation…`, 'success');
             // Auto-chain to ARM validation after successful heal
             await loadAllData();
             showTemplateDetail(templateId);
@@ -5115,7 +5115,7 @@ async function autoHealTemplate(templateId) {
             runTemplateValidation(templateId);
             return;
         } else {
-            showToast(`🔧 Partial fix — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. Try Request Revision for remaining issues.`, 'warning');
+            showToast(`🔧 I fixed some things — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. You might want to use Request Revision for the rest.`, 'warning');
         }
 
         await loadAllData();
@@ -5127,7 +5127,7 @@ async function autoHealTemplate(templateId) {
 
 /** Run tests on a template from the detail drawer */
 async function runTemplateTest(templateId) {
-    showToast('🧪 Running template tests…', 'info');
+    showToast('🧪 Checking the template structure…', 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
