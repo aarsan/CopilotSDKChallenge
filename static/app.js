@@ -3384,6 +3384,25 @@ function _adoHandleEvent(container, event, state) {
                 </div>
             `;
             container.appendChild(banner);
+
+            // Auto-refresh compliance scan against the newly published version
+            if (event.template_id) {
+                const scanResults = document.getElementById('tmpl-scan-results');
+                if (scanResults) {
+                    scanResults.innerHTML = '<div class="scan-loading">🔄 Re-scanning compliance against updated template…</div>';
+                }
+                // Refresh template data so the detail view reflects the new version/status
+                loadAllData().then(() => {
+                    // Update the in-memory template reference for the detail view
+                    const updatedTmpl = allTemplates.find(t => t.id === event.template_id);
+                    if (updatedTmpl) {
+                        // Refresh the version history section
+                        _loadTemplateVersionHistory(event.template_id);
+                    }
+                });
+                // Re-scan compliance with small delay to let publish settle
+                setTimeout(() => runComplianceScan(event.template_id), 800);
+            }
             break;
         }
     }
