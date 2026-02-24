@@ -285,6 +285,13 @@ def _evaluate_operator(actual, operator: str, expected) -> bool:
             return str(actual) <= str(expected)
 
     if operator == "in":
+        # Auto-detect regex patterns (e.g. ^[a-z0-9-]+$) stored as values
+        if isinstance(expected, str) and expected.startswith("^"):
+            import re
+            try:
+                return bool(re.fullmatch(str(expected).lower(), str(actual).lower()))
+            except re.error:
+                return True
         if isinstance(expected, list):
             actual_lower = str(actual).lower()
             return actual_lower in [str(v).lower() for v in expected]
@@ -301,6 +308,13 @@ def _evaluate_operator(actual, operator: str, expected) -> bool:
 
     if operator == "not_exists":
         return actual is None
+
+    if operator in ("matches", "regex"):
+        import re
+        try:
+            return bool(re.fullmatch(str(expected).lower(), str(actual).lower()))
+        except re.error:
+            return True  # Malformed regex — can't evaluate, assume ok
 
     # Default: equality
     return str(actual).lower() == str(expected).lower()

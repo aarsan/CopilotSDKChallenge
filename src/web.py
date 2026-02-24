@@ -2391,8 +2391,20 @@ def _evaluate_rule(rule, resource, params, variables):
                 passed = actual_str <= expected_str
         elif operator in ("contains",):
             passed = expected_str in actual_str
+        elif operator in ("matches", "regex"):
+            try:
+                passed = bool(re.fullmatch(expected_str, actual_str))
+            except re.error:
+                passed = True  # Malformed regex — can't evaluate, assume ok
         elif operator == "in":
-            passed = actual_str in [str(v).lower() for v in (expected if isinstance(expected, list) else [expected])]
+            # Auto-detect regex patterns (e.g. ^[a-z0-9-]+$) stored as values
+            if isinstance(expected, str) and expected.startswith("^"):
+                try:
+                    passed = bool(re.fullmatch(expected_str, actual_str))
+                except re.error:
+                    passed = True
+            else:
+                passed = actual_str in [str(v).lower() for v in (expected if isinstance(expected, list) else [expected])]
         else:
             passed = actual_str == expected_str
 

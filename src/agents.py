@@ -326,7 +326,9 @@ Always tag standards with ALL applicable frameworks based on the regulatory requ
 Rule type schemas:
 
 1. property — Check a resource property value
-   {"type": "property", "key": "<ARM property name>", "operator": "<==|!=|>=|<=|in|exists>", "value": <expected>, "remediation": "..."}
+   {"type": "property", "key": "<ARM property name>", "operator": "<==|!=|>=|<=|in|matches|exists>", "value": <expected>, "remediation": "..."}
+   - Use operator "matches" when value is a regex pattern (e.g. "^[a-z0-9-]+$")
+   - Use operator "in" only for literal value membership checks
    
    IMPORTANT property key mappings for Azure ARM:
    - TLS version → "minTlsVersion" (checks minTlsVersion/minimumTlsVersion/minimalTlsVersion per resource type)
