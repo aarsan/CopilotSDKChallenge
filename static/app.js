@@ -5146,7 +5146,6 @@ function _renderDeployProgress(container, event, ctx) {
         const labels = {
             success: { cls: 'vf-badge-success', label: '● Complete' },
             done:    { cls: 'vf-badge-done',    label: '● Done' },
-            iterating: { cls: 'vf-badge-iterating', label: '● Iterating' },
         };
         const l = labels[status] || labels.done;
         badge.className = `vf-node-badge ${l.cls}`;
@@ -5205,11 +5204,23 @@ function _renderDeployProgress(container, event, ctx) {
     if (phase === 'step' || phase === 'attempt_start') {
         state.activeStep++;
         _setActiveStage('deploy');
-        const title = state.activeStep === 1
-            ? 'Deploying to Azure'
-            : `Iteration ${state.activeStep}`;
-        const node = _createNode('🚀', title);
-        _addActivity('🚀', escapeHtml(detail || 'Sending the template to Azure…'), 'vf-activity-deploy');
+
+        // After deep heal or analysis, show "Verifying" instead of a new iteration
+        const ctx = event.context || '';
+        let title, icon;
+        if (ctx === 'verify_deep_heal') {
+            title = 'Verifying Rebuilt Template';
+            icon = '🧪';
+        } else if (ctx === 'retry') {
+            title = 'Deploying Updated Template';
+            icon = '🚀';
+        } else {
+            title = 'Deploying to Azure';
+            icon = '🚀';
+        }
+
+        const node = _createNode(icon, title);
+        _addActivity(icon, escapeHtml(detail || 'Sending the template to Azure…'), 'vf-activity-deploy');
         return;
     }
 
@@ -5227,12 +5238,11 @@ function _renderDeployProgress(container, event, ctx) {
     if (phase === 'healing') {
         _setActiveStage('analyze');
         const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
-        if (curNode) _finalizeNode(curNode, 'iterating');
+        if (curNode) _finalizeNode(curNode, 'done');
 
         const isRepeated = event.repeated_error;
-        const healMsg = isRepeated
-            ? 'This pattern keeps showing up — trying a different approach…'
-            : (detail || 'Analyzing and adjusting…');
+        const errorBrief = event.error_brief || '';
+        const whatWasTried = event.what_was_tried || [];
 
         // Create an "Analyzing" node
         _addEdge('vf-flow-edge-active');
@@ -5254,8 +5264,22 @@ function _renderDeployProgress(container, event, ctx) {
         canvas.appendChild(node);
         state.currentNodeId = nodeId;
 
+        // Show the error brief — what went wrong
+        if (errorBrief) {
+            _addActivity('📌', `Issue: ${escapeHtml(errorBrief)}`, 'vf-activity-issue');
+        }
+
+        // Show what was already tried (if any)
+        if (whatWasTried.length > 0) {
+            const triedText = whatWasTried.length === 1
+                ? `Already tried: ${escapeHtml(whatWasTried[0])}`
+                : `Already tried ${whatWasTried.length} approaches — trying something different`;
+            _addActivity('📋', triedText, 'vf-activity-history');
+        }
+
+        // Add the analysis detail
         const cssClass = isRepeated ? 'vf-activity-escalate' : 'vf-activity-analyze';
-        _addActivity('🧠', healMsg, cssClass);
+        _addActivity('🧠', escapeHtml(detail || 'Analyzing and adjusting…'), cssClass);
 
         if (event.error_summary) {
             const ek = _errorKey(event.error_summary);
@@ -5265,13 +5289,20 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
-    // Healed — fix applied, finalize analyzing node
+    // Healed — fix applied, show what was fixed and finalize analyzing node
     if (phase === 'healed') {
         _setActiveStage('fix');
         const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
         const fixMsg = event.fix_summary || detail || 'Fix applied';
         const deepFlag = event.deep_healed ? '<span class="vf-tag vf-tag-service" style="margin-left:0.3rem;font-size:0.62rem">Deep Fix</span>' : '';
-        _addActivity('🔧', `${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-activity-fix');
+        const errorBrief = event.error_brief || '';
+
+        // Show the resolution: what was wrong → what was fixed
+        if (errorBrief) {
+            _addActivity('🔧', `${escapeHtml(errorBrief)} → ${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-activity-fix');
+        } else {
+            _addActivity('🔧', `${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-activity-fix');
+        }
         if (curNode) _finalizeNode(curNode, 'done');
         canvas.scrollTop = canvas.scrollHeight;
         return;
@@ -5286,7 +5317,7 @@ function _renderDeployProgress(container, event, ctx) {
 
             // Finalize current node
             const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
-            if (curNode) _finalizeNode(curNode, 'iterating');
+            if (curNode) _finalizeNode(curNode, 'done');
 
             const serviceIds = event.service_ids || [];
 

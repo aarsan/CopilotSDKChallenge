@@ -9608,10 +9608,6 @@ details[open] > .tmpl-deploy-group-optional {
     color: #3fb950;
     background: rgba(63,185,80,0.1);
 }
-.vf-badge-iterating {
-    color: var(--accent-purple);
-    background: rgba(139,92,246,0.1);
-}
 .vf-badge-pulse {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
     background: var(--accent-blue);
@@ -9638,6 +9634,18 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-activity-analyze { background: rgba(139,92,246,0.05); color: var(--accent-purple); }
 .vf-activity-fix     { background: rgba(59,130,246,0.05); border-left: 3px solid var(--accent-blue); }
 .vf-activity-info    { background: transparent; color: var(--text-secondary); font-size: 0.73rem; }
+.vf-activity-issue   {
+    background: rgba(234,179,8,0.06);
+    border-left: 3px solid rgba(234,179,8,0.5);
+    color: var(--text-primary);
+    font-weight: 500;
+}
+.vf-activity-history {
+    background: rgba(139,92,246,0.03);
+    color: var(--text-secondary);
+    font-size: 0.73rem;
+    font-style: italic;
+}
 .vf-activity-escalate {
     background: rgba(59,130,246,0.06);
     border-left: 3px solid var(--accent-blue);

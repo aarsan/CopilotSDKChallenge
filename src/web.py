@@ -88,6 +88,60 @@ logger = logging.getLogger("infraforge.web")
 # The loop counter is a budget/safety limit, NOT an "attempt" count.
 # Progress events describe WHAT the engine is doing, not which attempt it's on.
 
+
+def _brief_azure_error(error_msg: str) -> str:
+    """Convert a raw Azure ARM error into a one-line conversational brief.
+
+    Maps common ARM error codes to plain-language descriptions. Falls back
+    to extracting the first meaningful sentence from the error message.
+    """
+    import re as _re_brief
+    code_match = _re_brief.search(r'\(([A-Za-z]+)\)', error_msg)
+    code = code_match.group(1) if code_match else None
+
+    _briefs = {
+        "InvalidTemplate": "The ARM template has a structural issue",
+        "InvalidTemplateDeployment": "One of the resource definitions has a configuration problem",
+        "DeploymentFailed": "One or more resources couldn't be provisioned",
+        "AccountNameInvalid": "A resource name doesn't meet Azure's naming requirements",
+        "StorageAccountAlreadyTaken": "The storage account name is already in use globally",
+        "InvalidResourceReference": "A resource dependency reference is pointing to something invalid",
+        "LinkedAuthorizationFailed": "A cross-subscription resource reference needs authorization",
+        "ResourceNotFound": "A referenced resource or dependency doesn't exist yet",
+        "MissingRegistrationForType": "A resource provider hasn't been registered in the subscription",
+        "InvalidApiVersionForResourceType": "The API version used for a resource type isn't supported",
+        "BadRequest": "A resource property has an invalid value",
+        "LocationNotAvailableForResourceType": "The resource type isn't available in the selected region",
+        "SkuNotAvailable": "The requested SKU or tier isn't available in the selected region",
+        "QuotaExceeded": "Hit a subscription quota or resource limit",
+        "ConflictingUserInput": "Conflicting parameter values were provided",
+        "InvalidParameter": "One of the parameter values is invalid",
+        "PropertyChangeNotAllowed": "Tried to change a property that can't be modified after creation",
+        "NoRegisteredProviderFound": "The resource provider isn't registered",
+        "InvalidResourceType": "An unrecognized resource type was used in the template",
+        "ParentResourceNotFound": "A parent resource this resource depends on wasn't found",
+        "AnotherOperationInProgress": "Another operation is still running on the same resource",
+        "InvalidRequestContent": "The template or parameters JSON structure is invalid",
+        "ResourceGroupNotFound": "The target resource group doesn't exist",
+        "AuthorizationFailed": "The deployment identity doesn't have permission for this operation",
+        "RequestDisallowedByPolicy": "An Azure Policy is blocking this resource configuration",
+    }
+
+    if code and code in _briefs:
+        return _briefs[code]
+
+    # Fallback: extract first meaningful sentence
+    clean = _re_brief.sub(r'[{}\[\]"]', '', error_msg)
+    for sentence in clean.split("."):
+        s = sentence.strip()
+        if 20 < len(s) < 200:
+            return s
+
+    if code:
+        return f"Azure returned a '{code}' error"
+    return "The deployment encountered an issue"
+
+
 def _summarize_fix(before: str, after: str) -> str:
     """Produce a short summary of what changed between two ARM template strings.
 
@@ -5229,16 +5283,21 @@ async def validate_template(template_id: str, request: Request):
             # Agent-style conversational step messages
             if attempt == 1:
                 step_detail = "Deploying your template to Azure — let's see how it goes…"
-            elif deep_healed:
-                step_detail = "I rebuilt the template from the ground up — let me verify the fix works…"
+                step_context = "initial"
+            elif deep_healed and attempt == (heal_history[-1]["step"] + 1 if heal_history else attempt):
+                step_detail = "I've rebuilt the template with fixed service components — verifying the result…"
+                step_context = "verify_deep_heal"
             else:
                 n = len(heal_history)
-                step_detail = f"I've fixed {n} issue{'s' if n != 1 else ''} so far — deploying the updated template to check…"
+                last_fix = heal_history[-1]["fix_summary"] if heal_history else "adjustments"
+                step_detail = f"Applied fix ({last_fix}) — deploying the updated template…"
+                step_context = "retry"
 
             yield json.dumps({
                 "phase": "step",
                 "step": attempt,
                 "detail": step_detail,
+                "context": step_context,
             }) + "\n"
 
             try:
@@ -5386,11 +5445,16 @@ async def validate_template(template_id: str, request: Request):
                 if _m: _prev_err_codes.append(_m.group(1))
             _same_error_count = _prev_err_codes.count(_err_code) if _err_code else 0
 
+            _error_brief = _brief_azure_error(error_msg)
+            _what_was_tried = [h["fix_summary"] for h in heal_history] if heal_history else []
+
             if _same_error_count >= 2:
                 yield json.dumps({
                     "phase": "healing",
-                    "detail": f"This '{_err_code}' error keeps coming back ({_same_error_count + 1} times now). Let me try a completely different approach…",
+                    "detail": f"This '{_err_code}' error keeps recurring ({_same_error_count + 1} times). The previous approaches didn't resolve it — trying a fundamentally different strategy…",
                     "error_summary": error_msg[:300],
+                    "error_brief": _error_brief,
+                    "what_was_tried": _what_was_tried,
                     "repeated_error": True,
                     "error_code": _err_code,
                     "occurrence": _same_error_count + 1,
@@ -5398,8 +5462,10 @@ async def validate_template(template_id: str, request: Request):
             else:
                 yield json.dumps({
                     "phase": "healing",
-                    "detail": "Hmm, Azure isn't happy with something. Let me read through the error and adjust the template…",
+                    "detail": f"{_error_brief}. Analyzing the root cause and adjusting the template…",
                     "error_summary": error_msg[:300],
+                    "error_brief": _error_brief,
+                    "what_was_tried": _what_was_tried,
                 }) + "\n"
 
             pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
@@ -5458,6 +5524,7 @@ async def validate_template(template_id: str, request: Request):
                 "phase": "healed",
                 "detail": f"Got it — {fix_summary}",
                 "fix_summary": fix_summary,
+                "error_brief": _error_brief,
             }) + "\n"
 
         # ── Post-loop: update DB status and save healed template ──
