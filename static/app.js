@@ -3630,22 +3630,25 @@ function _adoHandleEvent(container, event, state) {
             `;
             container.appendChild(banner);
 
-            // Auto-refresh compliance scan against the newly published version
+            // Move the pipeline report out of the scan-results area so it
+            // survives the compliance re-scan that replaces tmpl-scan-results.
             if (event.template_id) {
+                const pipelineEl = document.getElementById('ado-pipeline');
                 const scanResults = document.getElementById('tmpl-scan-results');
-                if (scanResults) {
-                    scanResults.innerHTML = '<div class="scan-loading">🔄 Re-scanning compliance against updated template…</div>';
+                if (pipelineEl && scanResults) {
+                    // Detach pipeline from inside the scan area and
+                    // insert it right before the scan results container.
+                    scanResults.parentNode.insertBefore(pipelineEl, scanResults);
                 }
-                // Refresh template data so the detail view reflects the new version/status
+
+                // Refresh template data so the detail view reflects new version
                 loadAllData().then(() => {
-                    // Update the in-memory template reference for the detail view
                     const updatedTmpl = allTemplates.find(t => t.id === event.template_id);
                     if (updatedTmpl) {
-                        // Refresh the version history section
                         _loadTemplateVersionHistory(event.template_id);
                     }
                 });
-                // Re-scan compliance with small delay to let publish settle
+                // Re-scan compliance with delay to let publish settle
                 setTimeout(() => runComplianceScan(event.template_id), 800);
             }
             break;

@@ -8117,6 +8117,11 @@ body {
     margin-top: 0.25rem;
 }
 
+/* Pipeline report promoted above scan results */
+#ado-pipeline.ado-pipeline {
+    margin-bottom: 1rem;
+}
+
 .ado-error {
     display: flex;
     align-items: center;
