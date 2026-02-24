@@ -2481,6 +2481,43 @@ async def _quick_compliance_check(arm_content: str) -> list[dict]:
     return violations
 
 
+# ── Compliance Profile ───────────────────────────────────────
+
+@app.put("/api/catalog/templates/{template_id}/compliance-profile")
+async def update_compliance_profile(template_id: str, request: Request):
+    """Update the compliance profile for a template.
+
+    Body: { "profile": ["encryption", "compliance_hipaa", ...] }
+    - profile = list of GOV_CATEGORIES IDs that this template must comply with
+    - profile = [] means the template is exempt from all compliance checks
+    - profile = null means not configured (scan checks all standards — legacy behavior)
+    """
+    from src.database import get_template_by_id, get_backend
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(404, "Template not found")
+
+    body = await request.json()
+    profile = body.get("profile")  # None or list
+
+    if profile is not None and not isinstance(profile, list):
+        raise HTTPException(400, "profile must be a list of category IDs or null")
+
+    backend = await get_backend()
+    profile_json = _json.dumps(profile) if profile is not None else None
+    await backend.execute_write(
+        "UPDATE catalog_templates SET compliance_profile_json = ? WHERE id = ?",
+        (profile_json, template_id),
+    )
+
+    return JSONResponse({
+        "template_id": template_id,
+        "compliance_profile": profile,
+    })
+
+
 # ── Compliance Scan ──────────────────────────────────────────
 
 @app.post("/api/catalog/templates/{template_id}/compliance-scan")
@@ -2552,6 +2589,28 @@ async def compliance_scan_template(template_id: str, request: Request):
 
     # ── Load all enabled standards ────────────────────────────
     all_standards = await get_all_standards(enabled_only=True)
+
+    # ── Filter by compliance profile ─────────────────────────
+    compliance_profile = tmpl.get("compliance_profile")  # None or list
+    profile_applied = False
+    if compliance_profile is not None:
+        profile_applied = True
+        if len(compliance_profile) == 0:
+            # Template is exempt — no standards apply
+            all_standards = []
+        else:
+            profile_set = set(compliance_profile)
+            filtered = []
+            for s in all_standards:
+                # Include if the standard's category is in the profile
+                if s.get("category", "") in profile_set:
+                    filtered.append(s)
+                    continue
+                # Include if any of the standard's frameworks overlap with the profile
+                s_frameworks = s.get("frameworks") or []
+                if any(fw in profile_set for fw in s_frameworks):
+                    filtered.append(s)
+            all_standards = filtered
 
     # Use module-level compliance helpers: _scope_matches, _resolve_arm_value,
     # _get_nested, _evaluate_rule
@@ -2665,6 +2724,8 @@ async def compliance_scan_template(template_id: str, request: Request):
         "severity_breakdown": severity_counts,
         "templates_scanned": len(templates_to_scan),
         "standards_count": len(all_standards),
+        "compliance_profile": compliance_profile,
+        "profile_applied": profile_applied,
         "results": scan_results,
     })
 

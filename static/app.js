@@ -2354,6 +2354,17 @@ function showTemplateDetail(templateId) {
 
         ${ctaHtml}
 
+        <!-- Compliance Profile -->
+        <div class="detail-section tmpl-compliance-profile-section">
+            <div class="compliance-profile-header">
+                <h4>📋 Compliance Profile</h4>
+                <span class="compliance-profile-hint">Select which standards apply to this template. Unassigned templates are scanned against all standards.</span>
+            </div>
+            <div id="tmpl-compliance-profile-picker" class="compliance-profile-picker">
+                ${_renderComplianceProfilePicker(tmpl)}
+            </div>
+        </div>
+
         <!-- Compliance Scan -->
         <div class="detail-section tmpl-scan-section">
             <button class="btn btn-sm tmpl-scan-btn" onclick="runComplianceScan('${escapeHtml(tmpl.id)}')">
@@ -2839,6 +2850,137 @@ function _renderVersionPipeline(v) {
         </div>`;
 }
 
+// ── Compliance Profile Picker ───────────────────────────────
+
+function _renderComplianceProfilePicker(tmpl) {
+    const profile = tmpl.compliance_profile; // null or array
+    const isConfigured = profile !== null && profile !== undefined;
+
+    // Group categories like the governance board does
+    const ungrouped = GOV_CATEGORIES.filter(c => !c.group);
+    const groups = {};
+    for (const cat of GOV_CATEGORIES) {
+        if (cat.group) {
+            if (!groups[cat.group]) groups[cat.group] = { icon: cat.groupIcon || '📁', cats: [] };
+            groups[cat.group].cats.push(cat);
+        }
+    }
+
+    let html = `<div class="compliance-profile-controls">
+        <label class="compliance-profile-toggle">
+            <input type="checkbox" id="cp-toggle-configured"
+                ${isConfigured ? 'checked' : ''}
+                onchange="toggleComplianceProfileConfigured('${escapeHtml(tmpl.id)}', this.checked)">
+            <span>Custom profile assigned</span>
+        </label>
+        ${isConfigured && profile.length === 0
+            ? '<span class="compliance-profile-exempt-badge">🚫 Exempt — no compliance checks</span>'
+            : !isConfigured
+            ? '<span class="compliance-profile-all-badge">🌐 All standards apply (default)</span>'
+            : `<span class="compliance-profile-count-badge">${profile.length} categor${profile.length === 1 ? 'y' : 'ies'} selected</span>`
+        }
+    </div>`;
+
+    html += `<div class="compliance-profile-cats" style="${isConfigured ? '' : 'display:none'}" id="cp-cats-container">`;
+
+    // Ungrouped categories
+    for (const cat of ungrouped) {
+        const checked = isConfigured && profile.includes(cat.id);
+        html += `
+        <label class="compliance-profile-cat ${checked ? 'cp-selected' : ''}">
+            <input type="checkbox" value="${cat.id}" ${checked ? 'checked' : ''}
+                onchange="onComplianceProfileChange('${escapeHtml(tmpl.id)}')">
+            <span class="cp-cat-icon">${cat.icon}</span>
+            <span class="cp-cat-name">${escapeHtml(cat.name)}</span>
+        </label>`;
+    }
+
+    // Grouped categories (regulatory frameworks)
+    for (const [groupName, group] of Object.entries(groups)) {
+        html += `<div class="compliance-profile-group">
+            <div class="compliance-profile-group-header">${group.icon} ${escapeHtml(groupName)}</div>
+            <div class="compliance-profile-group-cats">`;
+        for (const cat of group.cats) {
+            const checked = isConfigured && profile.includes(cat.id);
+            html += `
+            <label class="compliance-profile-cat compliance-profile-fw ${checked ? 'cp-selected' : ''}">
+                <input type="checkbox" value="${cat.id}" ${checked ? 'checked' : ''}
+                    onchange="onComplianceProfileChange('${escapeHtml(tmpl.id)}')">
+                <span class="cp-cat-icon">${cat.icon}</span>
+                <span class="cp-cat-name">${escapeHtml(cat.name)}</span>
+            </label>`;
+        }
+        html += `</div></div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+function toggleComplianceProfileConfigured(templateId, configured) {
+    const container = document.getElementById('cp-cats-container');
+    if (container) container.style.display = configured ? '' : 'none';
+
+    if (!configured) {
+        // Save null (not configured = all standards apply)
+        _saveComplianceProfile(templateId, null);
+    } else {
+        // Default to empty (exempt) — user will check categories
+        _saveComplianceProfile(templateId, []);
+    }
+}
+
+function onComplianceProfileChange(templateId) {
+    const container = document.getElementById('cp-cats-container');
+    if (!container) return;
+
+    const checked = [...container.querySelectorAll('input[type=checkbox]:checked')].map(cb => cb.value);
+
+    // Update visual state
+    container.querySelectorAll('.compliance-profile-cat').forEach(label => {
+        const cb = label.querySelector('input[type=checkbox]');
+        label.classList.toggle('cp-selected', cb && cb.checked);
+    });
+
+    _saveComplianceProfile(templateId, checked);
+}
+
+async function _saveComplianceProfile(templateId, profile) {
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-profile`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile }),
+        });
+        if (!res.ok) throw new Error('Failed to save');
+
+        // Update local template data
+        const tmpl = allTemplates.find(t => t.id === templateId);
+        if (tmpl) tmpl.compliance_profile = profile;
+
+        // Update the status badges in the controls area
+        const controls = document.querySelector('.compliance-profile-controls');
+        if (controls) {
+            const isConfigured = profile !== null;
+            const badgeEl = controls.querySelector('.compliance-profile-exempt-badge, .compliance-profile-all-badge, .compliance-profile-count-badge');
+            if (badgeEl) {
+                if (!isConfigured) {
+                    badgeEl.className = 'compliance-profile-all-badge';
+                    badgeEl.textContent = '🌐 All standards apply (default)';
+                } else if (profile.length === 0) {
+                    badgeEl.className = 'compliance-profile-exempt-badge';
+                    badgeEl.textContent = '🚫 Exempt — no compliance checks';
+                } else {
+                    badgeEl.className = 'compliance-profile-count-badge';
+                    badgeEl.textContent = `${profile.length} categor${profile.length === 1 ? 'y' : 'ies'} selected`;
+                }
+            }
+        }
+    } catch (err) {
+        console.error('Failed to save compliance profile:', err);
+    }
+}
+
 // ── Compliance Scan ─────────────────────────────────────────
 
 let _lastScanData = null;
@@ -2910,6 +3052,14 @@ function _renderComplianceScanReport(data) {
                 </div>
                 <div class="scan-meta">
                     ${data.templates_scanned} template${data.templates_scanned > 1 ? 's' : ''} scanned · ${data.standards_count} standards loaded
+                    ${data.profile_applied
+                        ? (data.compliance_profile && data.compliance_profile.length > 0
+                            ? ` · 📋 Profile: ${data.compliance_profile.length} categor${data.compliance_profile.length === 1 ? 'y' : 'ies'}`
+                            : data.compliance_profile && data.compliance_profile.length === 0
+                            ? ' · 🚫 Exempt (0 standards)'
+                            : '')
+                        : ' · 🌐 All standards'
+                    }
                 </div>
             </div>
         </div>

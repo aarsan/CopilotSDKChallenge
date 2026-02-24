@@ -6385,6 +6385,149 @@ body {
 }
 
 /* ── Compliance Scan Report ─────────────────────────────────── */
+/* ── Compliance Profile Picker ───────────────────────────── */
+
+.tmpl-compliance-profile-section {
+    margin-bottom: 1rem;
+    background: rgba(26, 82, 118, 0.05);
+    border-radius: 10px;
+    padding: 1rem;
+    border: 1px solid rgba(26, 82, 118, 0.12);
+}
+
+.compliance-profile-header h4 {
+    margin: 0 0 0.25rem 0;
+    font-size: 0.95rem;
+    color: #2c3e50;
+}
+
+.compliance-profile-hint {
+    font-size: 0.78rem;
+    color: #7f8c8d;
+    display: block;
+    margin-bottom: 0.75rem;
+}
+
+.compliance-profile-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.compliance-profile-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #2c3e50;
+    cursor: pointer;
+}
+
+.compliance-profile-toggle input[type="checkbox"] {
+    accent-color: #1a5276;
+    width: 16px;
+    height: 16px;
+}
+
+.compliance-profile-exempt-badge,
+.compliance-profile-all-badge,
+.compliance-profile-count-badge {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-weight: 600;
+}
+
+.compliance-profile-exempt-badge {
+    background: rgba(231, 76, 60, 0.12);
+    color: #c0392b;
+}
+
+.compliance-profile-all-badge {
+    background: rgba(46, 134, 193, 0.12);
+    color: #1a5276;
+}
+
+.compliance-profile-count-badge {
+    background: rgba(39, 174, 96, 0.12);
+    color: #1e8449;
+}
+
+.compliance-profile-cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.compliance-profile-cat {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.7);
+    border: 1.5px solid rgba(26, 82, 118, 0.15);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-size: 0.8rem;
+}
+
+.compliance-profile-cat:hover {
+    border-color: rgba(26, 82, 118, 0.35);
+    background: rgba(26, 82, 118, 0.06);
+}
+
+.compliance-profile-cat.cp-selected {
+    background: rgba(26, 82, 118, 0.1);
+    border-color: #1a5276;
+    box-shadow: 0 0 0 1px rgba(26, 82, 118, 0.15);
+}
+
+.compliance-profile-cat input[type="checkbox"] {
+    display: none;
+}
+
+.cp-cat-icon {
+    font-size: 1rem;
+}
+
+.cp-cat-name {
+    font-weight: 500;
+    color: #2c3e50;
+    white-space: nowrap;
+}
+
+.compliance-profile-group {
+    width: 100%;
+    margin-top: 0.25rem;
+}
+
+.compliance-profile-group-header {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #7f8c8d;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.35rem;
+    padding-left: 0.2rem;
+}
+
+.compliance-profile-group-cats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.compliance-profile-fw {
+    border-style: dashed;
+}
+
+.compliance-profile-fw.cp-selected {
+    border-style: solid;
+}
 
 .tmpl-scan-section {
     margin-bottom: 0.5rem;

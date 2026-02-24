@@ -695,6 +695,16 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_process_steps_process')
     CREATE INDEX idx_process_steps_process ON process_steps(process_id, step_order)""",
+    # ── Compliance profile on templates ──
+    # JSON array of GOV_CATEGORIES IDs (e.g. ["encryption","compliance_hipaa"])
+    # NULL = not configured (scan uses all standards), [] = exempt (skip all)
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'compliance_profile_json'
+    )
+    ALTER TABLE catalog_templates ADD compliance_profile_json NVARCHAR(MAX) DEFAULT NULL
+    """,
 ]
 
 
@@ -1422,6 +1432,10 @@ async def upsert_template(tmpl: dict) -> None:
     await backend.execute_write(
         "DELETE FROM catalog_templates WHERE id = ?", (tmpl["id"],)
     )
+    # Compliance profile: None = not configured, [] = exempt, [...] = specific
+    cp = tmpl.get("compliance_profile")
+    cp_json = json.dumps(cp) if cp is not None else None
+
     await backend.execute_write(
         """
         INSERT INTO catalog_templates
@@ -1429,8 +1443,9 @@ async def upsert_template(tmpl: dict) -> None:
              tags_json, resources_json, parameters_json, outputs_json,
              service_ids_json, is_blueprint, registered_by, status,
              template_type, provides_json, requires_json, optional_refs_json,
+             compliance_profile_json,
              created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tmpl["id"],
@@ -1452,6 +1467,7 @@ async def upsert_template(tmpl: dict) -> None:
             json.dumps(tmpl.get("provides", [])),
             json.dumps(tmpl.get("requires", [])),
             json.dumps(tmpl.get("optional_refs", [])),
+            cp_json,
             now,
             now,
         ),
@@ -1508,6 +1524,9 @@ async def get_all_templates(
         t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
         t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
         t["optional_refs"] = json.loads(t.pop("optional_refs_json", None) or "[]")
+        # Compliance profile: None = not configured, list = specific categories
+        _cp_raw = t.pop("compliance_profile_json", None)
+        t["compliance_profile"] = json.loads(_cp_raw) if _cp_raw else None
         t.setdefault("template_type", "workload")
         # Rename source_path back to 'source' for compatibility
         t["source"] = t.pop("source_path", "")
@@ -1527,6 +1546,8 @@ def _parse_template_row(row: dict) -> dict:
     t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
     t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
     t["optional_refs"] = json.loads(t.pop("optional_refs_json", None) or "[]")
+    _cp_raw = t.pop("compliance_profile_json", None)
+    t["compliance_profile"] = json.loads(_cp_raw) if _cp_raw else None
     t.setdefault("template_type", "workload")
     t["source"] = t.pop("source_path", "")
     return t
