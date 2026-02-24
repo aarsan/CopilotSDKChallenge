@@ -5993,27 +5993,142 @@ const GOV_CATEGORIES = [
 - Resources without mandatory tags must be flagged and remediated within 48 hours`,
     },
     {
-        id: 'compliance',
-        icon: '📋',
-        name: 'Regulatory Compliance',
-        desc: 'HIPAA, SOC 2, PCI-DSS, GDPR, and other framework requirements',
-        prompt: `Our regulatory compliance standards include:
+        id: 'compliance_hipaa',
+        icon: '🏥',
+        name: 'HIPAA',
+        desc: 'Health Insurance Portability and Accountability Act — PHI protection',
+        group: 'Regulatory Compliance',
+        groupIcon: '📋',
+        prompt: `Our HIPAA compliance standards for protecting PHI (Protected Health Information) require:
 
-HIPAA (for healthcare/PHI data):
-- PHI data stores must use customer-managed encryption keys
-- Access to PHI must be logged and auditable for 7 years
-- PHI data must not traverse public networks
-- Business Associate Agreements (BAAs) must be in place with all vendors
+- PHI data stores must use customer-managed encryption keys (CMK)
+- Access to PHI must be logged and auditable for a minimum of 7 years
+- PHI data must not traverse public networks — private endpoints required
+- Business Associate Agreements (BAAs) must be in place with all vendors handling PHI
+- PHI at rest must be encrypted with AES-256 or stronger
+- PHI in transit must use TLS 1.2 or higher
+- Access to PHI resources must require multi-factor authentication
+- PHI data must be classified and tagged with dataClassification = "restricted"
+- Backup and recovery of PHI data must meet HIPAA retention requirements
+- Audit logs for PHI access must be immutable and tamper-evident`,
+    },
+    {
+        id: 'compliance_soc2',
+        icon: '🔒',
+        name: 'SOC 2',
+        desc: 'Service Organization Control 2 — security, availability, and confidentiality',
+        group: 'Regulatory Compliance',
+        groupIcon: '📋',
+        prompt: `Our SOC 2 compliance standards (Trust Services Criteria) require:
 
-SOC 2:
+Security:
 - All changes must go through approved CI/CD pipelines (no manual portal changes)
-- Access reviews must be conducted quarterly
+- Access reviews must be conducted quarterly and documented
+- All production access must be logged and monitored with alerts
 - Incident response procedures must be documented and tested annually
-- All production access must be logged and monitored
+- Vulnerability scanning must be performed at least monthly
+- Penetration testing must be conducted annually by a third party
 
-Data Residency:
+Availability:
+- Production systems must have documented SLAs with uptime targets
+- Disaster recovery plans must be tested at least annually
+- Automated monitoring and alerting must be in place for all critical services
+
+Confidentiality:
+- Data classification labels must be applied to all resources
+- Encryption at rest and in transit is mandatory for all data stores
+- Key rotation must occur at least every 365 days`,
+    },
+    {
+        id: 'compliance_pci',
+        icon: '💳',
+        name: 'PCI-DSS',
+        desc: 'Payment Card Industry Data Security Standard — cardholder data protection',
+        group: 'Regulatory Compliance',
+        groupIcon: '📋',
+        prompt: `Our PCI-DSS compliance standards for cardholder data environments (CDE) require:
+
+Requirement 1 — Network Security:
+- Cardholder data environments must be isolated in dedicated VNets/subnets
+- Network Security Groups (NSGs) must restrict traffic to/from CDE
+- Web Application Firewall (WAF) required for all public-facing payment applications
+
+Requirement 3 — Protect Stored Data:
+- PAN (Primary Account Number) must never be stored in plaintext
+- Cardholder data at rest must use AES-256 encryption with customer-managed keys
+- Encryption key management must follow documented key lifecycle procedures
+
+Requirement 4 — Encrypt Transmission:
+- TLS 1.2 or higher required for all cardholder data transmission
+- No cardholder data may traverse public networks unencrypted
+
+Requirement 7 — Restrict Access:
+- Access to cardholder data limited to personnel with business need-to-know
+- Role-based access control (RBAC) must enforce least-privilege
+- All access to CDE must require multi-factor authentication
+
+Requirement 10 — Logging and Monitoring:
+- All access to cardholder data must be logged with immutable audit trails
+- Logs must be retained for at least 1 year, with 3 months immediately available
+- Automated alerting for suspicious activity in CDE environments
+- Log integrity monitoring must be enabled`,
+    },
+    {
+        id: 'compliance_gdpr',
+        icon: '🇪🇺',
+        name: 'GDPR',
+        desc: 'General Data Protection Regulation — EU personal data protection',
+        group: 'Regulatory Compliance',
+        groupIcon: '📋',
+        prompt: `Our GDPR compliance standards for EU personal data protection require:
+
+Data Residency & Sovereignty:
+- EU personal data must be stored in EU-based Azure regions (West Europe, North Europe)
+- Cross-border data transfers must comply with adequacy decisions or use SCCs
+- Geo-replication for DR must use EU region pairs only for EU data
+
+Data Protection:
+- Personal data must be encrypted at rest and in transit
+- Pseudonymization must be applied where feasible
+- Data minimization — only collect and store data necessary for the stated purpose
+- Resources storing personal data must be tagged with dataClassification = "confidential" or "restricted"
+
+Data Subject Rights:
+- Systems must support data export (right of access / portability)
+- Systems must support data deletion (right to erasure / right to be forgotten)
+- Consent management and audit trails must be implemented
+
+Security:
+- Data Protection Impact Assessments (DPIAs) must be documented for high-risk processing
+- Breach notification procedures must enable reporting within 72 hours
+- Access to personal data must be logged and auditable
+- Privacy by design — default to most privacy-protective settings`,
+    },
+    {
+        id: 'compliance_data_residency',
+        icon: '🌍',
+        name: 'Data Residency',
+        desc: 'Data sovereignty, geographic restrictions, and cross-border transfer rules',
+        group: 'Regulatory Compliance',
+        groupIcon: '📋',
+        prompt: `Our data residency and sovereignty standards require:
+
+Geographic Restrictions:
 - Customer data must remain within approved geographic regions
-- Cross-region replication for DR must use approved region pairs only`,
+- Cross-region replication for DR must use approved region pairs only
+- EU customer data: West Europe and North Europe only
+- US customer data: East US 2 and West US 2 only
+- No customer data may be stored in or replicated to unapproved regions
+
+Cross-Border Transfers:
+- Data transfers between regions must comply with applicable regulations (GDPR, etc.)
+- Standard Contractual Clauses (SCCs) must be in place for cross-border transfers
+- Transfer Impact Assessments must be documented
+
+Data Classification:
+- All data stores must be tagged with data residency region
+- Data sovereignty requirements must be documented per dataset
+- Resources must specify location explicitly (no default/inherited location)`,
     },
     {
         id: 'monitoring',
@@ -6098,6 +6213,16 @@ function _renderCompletenessBoard() {
     const total = GOV_CATEGORIES.length;
     const pct = total > 0 ? Math.round((configured / total) * 100) : 0;
 
+    // Separate ungrouped and grouped categories
+    const ungrouped = GOV_CATEGORIES.filter(c => !c.group);
+    const groups = {};
+    for (const cat of GOV_CATEGORIES) {
+        if (cat.group) {
+            if (!groups[cat.group]) groups[cat.group] = { icon: cat.groupIcon || '📋', cats: [] };
+            groups[cat.group].cats.push(cat);
+        }
+    }
+
     // Progress header
     let html = `
     <div class="gov-completeness-header">
@@ -6114,25 +6239,33 @@ function _renderCompletenessBoard() {
     </div>
     <div class="gov-category-grid">`;
 
-    for (const cat of GOV_CATEGORIES) {
-        const count = catCounts[cat.id] || 0;
-        const enabled = catEnabled[cat.id] || 0;
-        const isConfigured = count > 0;
+    // Render ungrouped categories as flat cards
+    for (const cat of ungrouped) {
+        html += _renderCatCard(cat, catCounts, catEnabled);
+    }
+
+    // Render grouped categories (e.g. "Regulatory Compliance")
+    for (const [groupName, groupData] of Object.entries(groups)) {
+        const groupCats = groupData.cats;
+        const groupConfigured = groupCats.filter(c => (catCounts[c.id] || 0) > 0).length;
+        const groupTotal = groupCats.length;
+        const groupTotalStds = groupCats.reduce((sum, c) => sum + (catEnabled[c.id] || 0), 0);
 
         html += `
-        <div class="gov-cat-card ${isConfigured ? 'gov-cat-configured' : 'gov-cat-missing'}" onclick="openCategoryDetail('${cat.id}')">
-            <div class="gov-cat-icon">${cat.icon}</div>
-            <div class="gov-cat-info">
-                <div class="gov-cat-name">${cat.name}</div>
-                ${isConfigured
-                    ? `<div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>`
-                    : `<div class="gov-cat-desc">${cat.desc}</div>`
-                }
+        <div class="gov-cat-group">
+            <div class="gov-cat-group-header">
+                <span class="gov-cat-group-icon">${groupData.icon}</span>
+                <span class="gov-cat-group-name">${escapeHtml(groupName)}</span>
+                <span class="gov-cat-group-count">${groupConfigured}/${groupTotal} frameworks${groupTotalStds > 0 ? ` · ${groupTotalStds} standards` : ''}</span>
             </div>
-            ${isConfigured
-                ? `<div class="gov-cat-status gov-cat-ok">✓</div>`
-                : `<div class="gov-cat-status gov-cat-gap">○</div>`
-            }
+            <div class="gov-cat-group-grid">`;
+
+        for (const cat of groupCats) {
+            html += _renderCatCard(cat, catCounts, catEnabled);
+        }
+
+        html += `
+            </div>
         </div>`;
     }
 
@@ -6155,6 +6288,28 @@ function _renderCompletenessBoard() {
 
     html += '</div>';
     container.innerHTML = html;
+}
+
+function _renderCatCard(cat, catCounts, catEnabled) {
+    const count = catCounts[cat.id] || 0;
+    const enabled = catEnabled[cat.id] || 0;
+    const isConfigured = count > 0;
+
+    return `
+    <div class="gov-cat-card ${isConfigured ? 'gov-cat-configured' : 'gov-cat-missing'}${cat.group ? ' gov-cat-framework' : ''}" onclick="openCategoryDetail('${cat.id}')">
+        <div class="gov-cat-icon">${cat.icon}</div>
+        <div class="gov-cat-info">
+            <div class="gov-cat-name">${cat.name}</div>
+            ${isConfigured
+                ? `<div class="gov-cat-count">${enabled} standard${enabled !== 1 ? 's' : ''} active</div>`
+                : `<div class="gov-cat-desc">${cat.desc}</div>`
+            }
+        </div>
+        ${isConfigured
+            ? `<div class="gov-cat-status gov-cat-ok">✓</div>`
+            : `<div class="gov-cat-status gov-cat-gap">○</div>`
+        }
+    </div>`;
 }
 
 function openCategoryDetail(categoryId) {

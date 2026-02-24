@@ -5296,6 +5296,72 @@ body {
     opacity: 0.4;
 }
 
+/* ── Category Group (Regulatory Compliance, etc.) ────────── */
+
+.gov-cat-group {
+    grid-column: 1 / -1;
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    background: var(--surface-primary);
+    padding: 0.75rem;
+    margin-top: 0.25rem;
+}
+
+.gov-cat-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.35rem 0.6rem;
+}
+
+.gov-cat-group-icon {
+    font-size: 1.15rem;
+}
+
+.gov-cat-group-name {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+}
+
+.gov-cat-group-count {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+.gov-cat-group-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 0.5rem;
+}
+
+.gov-cat-card.gov-cat-framework {
+    padding: 0.65rem 0.85rem;
+    border-radius: 8px;
+    background: var(--surface-secondary);
+}
+
+.gov-cat-card.gov-cat-framework .gov-cat-icon {
+    font-size: 1.25rem;
+    width: 1.75rem;
+}
+
+.gov-cat-card.gov-cat-framework .gov-cat-name {
+    font-size: 0.8rem;
+}
+
+.gov-cat-card.gov-cat-missing.gov-cat-framework {
+    cursor: pointer;
+}
+
+.gov-cat-card.gov-cat-missing.gov-cat-framework:hover {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px var(--accent-blue);
+    transform: translateY(-1px);
+}
+
 /* ── Category Detail Panel ───────────────────────────────── */
 
 .cat-detail-desc {
