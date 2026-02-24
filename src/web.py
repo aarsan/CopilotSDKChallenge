@@ -2292,6 +2292,195 @@ async def test_template(template_id: str, request: Request):
     })
 
 
+# ── Compliance Helpers (shared by scan, plan, execute) ───────
+
+def _scope_matches(scope: str, resource_type: str) -> bool:
+    """Check whether a standard's scope pattern matches a resource type."""
+    import fnmatch
+    rt = resource_type.lower()
+    for pat in scope.split(","):
+        pat = pat.strip().lower()
+        if pat and fnmatch.fnmatch(rt, pat):
+            return True
+    return False
+
+
+def _resolve_arm_value(val, params, variables):
+    """Best-effort resolution of ARM template expressions."""
+    import re
+    if not isinstance(val, str):
+        return val
+    if not val.startswith("[") or not val.endswith("]"):
+        return val
+    expr = val[1:-1].strip()
+    m = re.match(r"parameters\(['\"](\w+)['\"]\)", expr)
+    if m:
+        pname = m.group(1)
+        pdef = params.get(pname, {})
+        return pdef.get("defaultValue", f"<param:{pname}>")
+    m = re.match(r"variables\(['\"](\w+)['\"]\)", expr)
+    if m:
+        vname = m.group(1)
+        return variables.get(vname, f"<var:{vname}>")
+    return val
+
+
+def _get_nested(obj, dotpath, params=None, variables=None):
+    """Get a value from a nested dict using dot notation."""
+    parts = dotpath.split(".")
+    current = obj
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+    if current is not None and params is not None:
+        current = _resolve_arm_value(current, params, variables or {})
+    return current
+
+
+def _evaluate_rule(rule, resource, params, variables):
+    """Evaluate one org_standard rule against a resource dict.
+    Returns (passed: bool, detail: str).
+    """
+    import re
+    rule_type = rule.get("type", "property")
+
+    if rule_type in ("property", "property_check"):
+        key = rule.get("key", "")
+        operator = rule.get("operator", "==")
+        expected = rule.get("value")
+        actual = _get_nested(resource, key, params, variables)
+
+        if actual is None:
+            if operator in ("!=", "not_equals"):
+                return True, f"`{key}` not set (satisfies != check)"
+            return False, f"`{key}` not found in resource"
+
+        actual_resolved = actual
+        if isinstance(actual_resolved, str) and actual_resolved.startswith("<"):
+            return True, f"`{key}` uses parameter (assumed compliant)"
+
+        actual_str = str(actual_resolved).lower()
+        expected_str = str(expected).lower() if expected is not None else ""
+
+        if operator in ("==", "equals"):
+            passed = actual_str == expected_str
+        elif operator in ("!=", "not_equals"):
+            passed = actual_str != expected_str
+        elif operator in (">=",):
+            try:
+                passed = float(actual_str) >= float(expected_str)
+            except ValueError:
+                passed = actual_str >= expected_str
+        elif operator in ("<=",):
+            try:
+                passed = float(actual_str) <= float(expected_str)
+            except ValueError:
+                passed = actual_str <= expected_str
+        elif operator in ("contains",):
+            passed = expected_str in actual_str
+        elif operator == "in":
+            passed = actual_str in [str(v).lower() for v in (expected if isinstance(expected, list) else [expected])]
+        else:
+            passed = actual_str == expected_str
+
+        detail = f"`{key}` = `{actual_resolved}` (expected {operator} `{expected}`)"
+        return passed, detail
+
+    elif rule_type == "tags":
+        required = set(t.lower() for t in rule.get("required_tags", []))
+        tags = resource.get("tags", {})
+        if isinstance(tags, str):
+            return True, "Tags use ARM expression (assumed compliant)"
+        actual_tags = set(k.lower() for k in tags.keys()) if isinstance(tags, dict) else set()
+        if isinstance(tags, dict):
+            for v in tags.values():
+                if isinstance(v, str) and "standardTags" in v:
+                    return True, "Tags use shared standardTags variable"
+        missing = required - actual_tags
+        if missing:
+            return False, f"Missing tags: {', '.join(sorted(missing))}"
+        return True, f"All required tags present ({', '.join(sorted(required))})"
+
+    elif rule_type == "allowed_values":
+        key = rule.get("key", "")
+        allowed = [str(v).lower() for v in rule.get("values", [])]
+        actual = _get_nested(resource, key, params, variables)
+        if actual is None:
+            return False, f"`{key}` not set"
+        actual_str = str(actual).lower()
+        if isinstance(actual, str) and actual.startswith("<"):
+            return True, f"`{key}` uses parameter (assumed compliant)"
+        if actual_str in allowed:
+            return True, f"`{key}` = `{actual}` (in allowed set)"
+        return False, f"`{key}` = `{actual}` not in allowed values: {', '.join(allowed)}"
+
+    elif rule_type == "naming_convention":
+        pattern = rule.get("pattern", "")
+        res_name = resource.get("name", "")
+        if isinstance(res_name, str) and res_name.startswith("["):
+            return True, "Name uses ARM expression (assumed compliant)"
+        if pattern and res_name:
+            regex = pattern.replace("{", "(?P<").replace("}", ">[a-z0-9-]+)")
+            try:
+                if re.match(regex, str(res_name).lower()):
+                    return True, f"Name `{res_name}` matches pattern"
+            except re.error:
+                return True, f"Pattern `{pattern}` not evaluable as regex"
+        return True, "Naming convention check (manual review)"
+
+    elif rule_type == "cost_threshold":
+        return True, f"Cost threshold ${rule.get('max_monthly_usd', 0)}/mo (requires runtime check)"
+
+    return True, "Rule type not evaluable statically"
+
+
+async def _quick_compliance_check(arm_content: str) -> list[dict]:
+    """Run a fast compliance scan on ARM JSON and return a list of violations.
+
+    Each violation dict has: resource_type, resource_name, standard_name,
+    severity, detail, remediation.  Empty list = fully compliant.
+    """
+    from src.standards import get_all_standards
+    import json as _json
+
+    try:
+        tpl = _json.loads(arm_content) if arm_content else None
+    except Exception:
+        return [{"resource_type": "?", "resource_name": "?",
+                 "standard_name": "JSON", "severity": "critical",
+                 "detail": "Invalid JSON", "remediation": "Fix JSON syntax"}]
+
+    if not tpl or not isinstance(tpl.get("resources"), list):
+        return []
+
+    standards = await get_all_standards(enabled_only=True)
+    params = tpl.get("parameters", {})
+    variables = tpl.get("variables", {})
+    violations: list[dict] = []
+
+    for res in tpl.get("resources", []):
+        if not isinstance(res, dict):
+            continue
+        res_type = res.get("type", "")
+        res_name = res.get("name", "?")
+        matching = [s for s in standards if _scope_matches(s.get("scope", "*"), res_type)]
+        for std in matching:
+            passed, detail = _evaluate_rule(std.get("rule", {}), res, params, variables)
+            if not passed:
+                violations.append({
+                    "resource_type": res_type,
+                    "resource_name": str(res_name),
+                    "standard_name": std["name"],
+                    "severity": std.get("severity", "medium"),
+                    "detail": detail,
+                    "remediation": std.get("rule", {}).get("remediation", ""),
+                })
+
+    return violations
+
+
 # ── Compliance Scan ──────────────────────────────────────────
 
 @app.post("/api/catalog/templates/{template_id}/compliance-scan")
@@ -2364,151 +2553,8 @@ async def compliance_scan_template(template_id: str, request: Request):
     # ── Load all enabled standards ────────────────────────────
     all_standards = await get_all_standards(enabled_only=True)
 
-    def scope_matches(scope: str, resource_type: str) -> bool:
-        rt = resource_type.lower()
-        for pat in scope.split(","):
-            pat = pat.strip().lower()
-            if pat and fnmatch.fnmatch(rt, pat):
-                return True
-        return False
-
-    def _resolve_arm_value(val, params, variables):
-        """Best-effort resolution of ARM template expressions."""
-        if not isinstance(val, str):
-            return val
-        if not val.startswith("[") or not val.endswith("]"):
-            return val
-        expr = val[1:-1].strip()
-        # parameters('xxx')
-        m = re.match(r"parameters\(['\"](\w+)['\"]\)", expr)
-        if m:
-            pname = m.group(1)
-            pdef = params.get(pname, {})
-            return pdef.get("defaultValue", f"<param:{pname}>")
-        # variables('xxx')
-        m = re.match(r"variables\(['\"](\w+)['\"]\)", expr)
-        if m:
-            vname = m.group(1)
-            return variables.get(vname, f"<var:{vname}>")
-        return val
-
-    def _get_nested(obj, dotpath, params=None, variables=None):
-        """Get a value from a nested dict using dot notation.
-        Supports 'properties.minTlsVersion' style paths.
-        """
-        parts = dotpath.split(".")
-        current = obj
-        for part in parts:
-            if isinstance(current, dict):
-                current = current.get(part)
-            else:
-                return None
-        if current is not None and params is not None:
-            current = _resolve_arm_value(current, params, variables or {})
-        return current
-
-    def evaluate_rule(rule, resource, params, variables):
-        """Evaluate one org_standard rule against a resource dict.
-        Returns (passed: bool, detail: str).
-        """
-        rule_type = rule.get("type", "property")
-
-        if rule_type == "property" or rule_type == "property_check":
-            key = rule.get("key", "")
-            operator = rule.get("operator", "==")
-            expected = rule.get("value")
-            actual = _get_nested(resource, key, params, variables)
-
-            if actual is None:
-                # Property not set — usually a fail
-                if operator in ("!=", "not_equals"):
-                    return True, f"`{key}` not set (satisfies != check)"
-                return False, f"`{key}` not found in resource"
-
-            # Resolve ARM expressions
-            actual_resolved = actual
-            if isinstance(actual_resolved, str) and actual_resolved.startswith("<"):
-                # Unresolvable parameter — can't evaluate, give benefit of doubt
-                return True, f"`{key}` uses parameter (assumed compliant)"
-
-            # Compare
-            actual_str = str(actual_resolved).lower()
-            expected_str = str(expected).lower() if expected is not None else ""
-
-            if operator in ("==", "equals"):
-                passed = actual_str == expected_str
-            elif operator in ("!=", "not_equals"):
-                passed = actual_str != expected_str
-            elif operator in (">=",):
-                try:
-                    passed = float(actual_str) >= float(expected_str)
-                except ValueError:
-                    passed = actual_str >= expected_str
-            elif operator in ("<=",):
-                try:
-                    passed = float(actual_str) <= float(expected_str)
-                except ValueError:
-                    passed = actual_str <= expected_str
-            elif operator in ("contains",):
-                passed = expected_str in actual_str
-            elif operator == "in":
-                passed = actual_str in [str(v).lower() for v in (expected if isinstance(expected, list) else [expected])]
-            else:
-                passed = actual_str == expected_str
-
-            detail = f"`{key}` = `{actual_resolved}` (expected {operator} `{expected}`)"
-            return passed, detail
-
-        elif rule_type == "tags":
-            required = set(t.lower() for t in rule.get("required_tags", []))
-            tags = resource.get("tags", {})
-            if isinstance(tags, str):
-                # ARM expression for tags — assume compliant
-                return True, "Tags use ARM expression (assumed compliant)"
-            actual_tags = set(k.lower() for k in tags.keys()) if isinstance(tags, dict) else set()
-            # Also check if tags reference a shared variable
-            if isinstance(tags, dict):
-                for v in tags.values():
-                    if isinstance(v, str) and "standardTags" in v:
-                        return True, "Tags use shared standardTags variable"
-            missing = required - actual_tags
-            if missing:
-                return False, f"Missing tags: {', '.join(sorted(missing))}"
-            return True, f"All required tags present ({', '.join(sorted(required))})"
-
-        elif rule_type == "allowed_values":
-            key = rule.get("key", "")
-            allowed = [str(v).lower() for v in rule.get("values", [])]
-            actual = _get_nested(resource, key, params, variables)
-            if actual is None:
-                return False, f"`{key}` not set"
-            actual_str = str(actual).lower()
-            if isinstance(actual, str) and actual.startswith("<"):
-                return True, f"`{key}` uses parameter (assumed compliant)"
-            if actual_str in allowed:
-                return True, f"`{key}` = `{actual}` (in allowed set)"
-            return False, f"`{key}` = `{actual}` not in allowed values: {', '.join(allowed)}"
-
-        elif rule_type == "naming_convention":
-            pattern = rule.get("pattern", "")
-            res_name = resource.get("name", "")
-            if isinstance(res_name, str) and res_name.startswith("["):
-                return True, "Name uses ARM expression (assumed compliant)"
-            if pattern and res_name:
-                # Simple pattern match — convert naming pattern placeholders to regex
-                regex = pattern.replace("{", "(?P<").replace("}", ">[a-z0-9-]+)")
-                try:
-                    if re.match(regex, str(res_name).lower()):
-                        return True, f"Name `{res_name}` matches pattern"
-                except re.error:
-                    return True, f"Pattern `{pattern}` not evaluable as regex"
-            return True, "Naming convention check (manual review)"
-
-        elif rule_type == "cost_threshold":
-            # Can't evaluate cost from ARM JSON alone
-            return True, f"Cost threshold ${rule.get('max_monthly_usd', 0)}/mo (requires runtime check)"
-
-        return True, "Rule type not evaluable statically"
+    # Use module-level compliance helpers: _scope_matches, _resolve_arm_value,
+    # _get_nested, _evaluate_rule
 
     # ── Scan each template ────────────────────────────────────
     scan_results = []
@@ -2555,7 +2601,7 @@ async def compliance_scan_template(template_id: str, request: Request):
             resolved_name = _resolve_arm_value(res_name, params, variables) if isinstance(res_name, str) else res_name
 
             # Find matching standards
-            matching = [s for s in all_standards if scope_matches(s.get("scope", "*"), res_type)]
+            matching = [s for s in all_standards if _scope_matches(s.get("scope", "*"), res_type)]
             if not matching:
                 tmpl_resource_results.append({
                     "resource_type": res_type,
@@ -2570,7 +2616,7 @@ async def compliance_scan_template(template_id: str, request: Request):
             for std in matching:
                 rule = std.get("rule", {})
                 sev = std.get("severity", "medium")
-                passed, detail = evaluate_rule(rule, res, params, variables)
+                passed, detail = _evaluate_rule(rule, res, params, variables)
 
                 total_checks += 1
                 if sev in severity_counts:
@@ -2637,6 +2683,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
         get_all_templates, get_latest_semver, compute_next_semver,
+        get_latest_service_version,
     )
 
     body = await request.json()
@@ -2798,6 +2845,47 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         else:
             # Service template — use the parent's composed ARM (it contains all resources)
             arm_snippets[tid] = tmpl.get("content", "")
+
+    # ── Check for newer compliant service versions (upgrade check) ──
+    # For each service dependency with violations, check if a newer version
+    # of that service's ARM skeleton exists and is already compliant.
+    # If yes → recommend upgrade instead of AI fix.
+    # If no  → still pull the latest version's ARM for the AI to fix.
+    for sid in dep_service_ids:
+        vinfo = template_version_info.get(sid)
+        if not vinfo or vinfo.get("violation_count", 0) == 0:
+            continue  # no violations for this service — skip
+
+        latest_svc = await get_latest_service_version(sid)
+        if not latest_svc or not latest_svc.get("arm_template"):
+            vinfo["upgrade_available"] = False
+            vinfo["upgrade_action"] = "ai_fix"
+            continue
+
+        svc_arm = latest_svc["arm_template"]
+        svc_semver = latest_svc.get("semver", "?")
+        svc_ver_num = latest_svc.get("version", 0)
+
+        # Run a quick compliance check on the latest service version's ARM
+        svc_violations = await _quick_compliance_check(svc_arm)
+
+        if not svc_violations:
+            # Latest service version is already compliant — recommend upgrade
+            vinfo["upgrade_available"] = True
+            vinfo["upgrade_action"] = "upgrade"
+            vinfo["upgrade_version"] = svc_ver_num
+            vinfo["upgrade_semver"] = svc_semver
+            vinfo["change_type"] = "patch"  # upgrade = patch bump
+            vinfo["projected_semver"] = compute_next_semver(
+                vinfo["current_semver"], "patch"
+            )
+        else:
+            # Latest service version still has violations — pull latest and AI-fix
+            vinfo["upgrade_available"] = False
+            vinfo["upgrade_action"] = "ai_fix_latest"
+            vinfo["upgrade_version"] = svc_ver_num
+            vinfo["upgrade_semver"] = svc_semver
+            vinfo["upgrade_violations"] = len(svc_violations)
 
     # If service templates have violations, propagate a version bump to the parent
     # (composed parent should bump when any of its dependencies change)
@@ -3016,6 +3104,11 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         step["change_type"] = vinfo.get("change_type", "patch")
         step["current_version"] = vinfo.get("current_version", 0)
         step["projected_version"] = vinfo.get("projected_version", 1)
+        # Propagate upgrade info to steps
+        step["upgrade_action"] = vinfo.get("upgrade_action", "ai_fix")
+        step["upgrade_available"] = vinfo.get("upgrade_available", False)
+        if vinfo.get("upgrade_semver"):
+            step["upgrade_semver"] = vinfo["upgrade_semver"]
         # Override template_name with the authoritative name from version_info
         if vinfo.get("template_name"):
             step["template_name"] = vinfo["template_name"]
@@ -3050,6 +3143,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
         create_template_version, get_backend, get_latest_semver, compute_next_semver,
+        get_latest_service_version,
     )
     from src.tools.deploy_engine import run_what_if, _get_subscription_id, _get_resource_client
 
@@ -3101,7 +3195,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         tid = step.get("template_id", template_id)
         steps_by_template.setdefault(tid, []).append(step)
 
-    # Build pipeline DAG — each template is a "job" with 6 steps
+    # Build pipeline DAG — each template is a "job" with 7 steps
     jobs = []
     for i, (tid, steps) in enumerate(steps_by_template.items()):
         tname = steps[0].get("template_name", tid)
@@ -3109,6 +3203,14 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         current_semver = steps[0].get("current_semver", "")
         projected_semver = steps[0].get("projected_semver", "")
         change_type = steps[0].get("change_type", "patch")
+        upgrade_action = steps[0].get("upgrade_action", "ai_fix")
+        upgrade_available = steps[0].get("upgrade_available", False)
+        upgrade_semver = steps[0].get("upgrade_semver", "")
+        dep_check_detail = "Check for newer compliant service version"
+        if upgrade_available:
+            dep_check_detail = f"Upgrade available → v{upgrade_semver} (compliant)"
+        elif upgrade_action == "ai_fix_latest":
+            dep_check_detail = f"Latest v{upgrade_semver} still needs fixes"
         jobs.append({
             "id": f"job-{i}",
             "template_id": tid,
@@ -3116,9 +3218,13 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             "current_semver": current_semver,
             "projected_semver": projected_semver,
             "change_type": change_type,
+            "upgrade_action": upgrade_action,
+            "upgrade_available": upgrade_available,
+            "upgrade_semver": upgrade_semver,
             "step_count": len(steps),
             "steps": [
                 {"id": f"job-{i}-checkout", "label": "Checkout", "detail": f"Check out v{current_semver}"},
+                {"id": f"job-{i}-depcheck", "label": "Dep Check", "detail": dep_check_detail},
                 {"id": f"job-{i}-remediate", "label": "Remediate", "detail": f"Apply {len(steps)} compliance fix(es)"},
                 {"id": f"job-{i}-validate", "label": "Validate", "detail": "Parse & validate ARM JSON"},
                 {"id": f"job-{i}-deploy-test", "label": "Deploy Test", "detail": "ARM What-If validation against Azure"},
@@ -3207,197 +3313,316 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 pass
             step_end(sid, "success", int((time.time() - s1) * 1000))
 
-            # ── Step 2: REMEDIATE ──
+            # ── Step 2: DEP CHECK (Dependency Upgrade Check) ──
+            sid = f"{job_id}-depcheck"
+            step_start(sid)
+            s_dc = time.time()
+
+            upgrade_action = jobs[job_idx].get("upgrade_action", "ai_fix")
+            upgrade_skips_ai = False  # True when upgrade resolves all violations
+
+            # Only check services (not the composed parent itself)
+            if tid != template_id and tid in dep_service_ids:
+                step_log(sid, f"Checking for newer version of {tid}…")
+                latest_svc = await get_latest_service_version(tid)
+
+                if latest_svc and latest_svc.get("arm_template"):
+                    svc_arm = latest_svc["arm_template"]
+                    svc_semver = latest_svc.get("semver", "?")
+                    svc_ver = latest_svc.get("version", 0)
+                    step_log(sid, f"Latest service version: v{svc_semver} (#{svc_ver})")
+
+                    # Run compliance check on the latest service version
+                    svc_violations = await _quick_compliance_check(svc_arm)
+
+                    if not svc_violations:
+                        # Newer version is compliant — swap resources in the composed ARM
+                        step_log(sid, f"✓ Service version v{svc_semver} is fully compliant")
+                        step_log(sid, "Upgrading composed template with compliant service version…")
+
+                        # Replace resources belonging to this service in the composed ARM
+                        try:
+                            composed = json.loads(current_arm)
+                            svc_tpl = json.loads(svc_arm)
+                            svc_resources = svc_tpl.get("resources", [])
+
+                            # Identify resource types from the service version
+                            svc_types = {
+                                r.get("type", "").lower()
+                                for r in svc_resources if isinstance(r, dict)
+                            }
+
+                            # Remove old resources of these types from composed ARM
+                            kept = [
+                                r for r in composed.get("resources", [])
+                                if not isinstance(r, dict) or r.get("type", "").lower() not in svc_types
+                            ]
+                            # Add the new compliant resources
+                            kept.extend(svc_resources)
+                            composed["resources"] = kept
+
+                            # Merge parameters and variables from the service version
+                            for pk, pv in svc_tpl.get("parameters", {}).items():
+                                composed.setdefault("parameters", {})[pk] = pv
+                            for vk, vv in svc_tpl.get("variables", {}).items():
+                                composed.setdefault("variables", {})[vk] = vv
+
+                            current_arm = json.dumps(composed, indent=2)
+                            upgrade_skips_ai = True
+                            step_log(sid, f"Replaced {len(svc_types)} resource type(s) with compliant versions")
+                            step_log(sid, f"Composed template updated: {len(current_arm):,} bytes")
+                        except Exception as swap_err:
+                            step_log(sid, f"⚠ Resource swap failed: {swap_err}", "warning")
+                            step_log(sid, "Falling back to AI remediation")
+                    else:
+                        # Latest version still has violations — use its ARM for AI to fix
+                        step_log(sid, f"Latest v{svc_semver} has {len(svc_violations)} violation(s)")
+                        for sv in svc_violations[:5]:
+                            step_log(sid, f"  • {sv['standard_name']}: {sv['detail']}")
+                        step_log(sid, "Will pull latest version and send to AI for remediation")
+
+                        # Replace resources in composed ARM with latest service version
+                        # (even though it's not compliant, it may have partial fixes)
+                        try:
+                            composed = json.loads(current_arm)
+                            svc_tpl = json.loads(svc_arm)
+                            svc_resources = svc_tpl.get("resources", [])
+                            svc_types = {
+                                r.get("type", "").lower()
+                                for r in svc_resources if isinstance(r, dict)
+                            }
+                            kept = [
+                                r for r in composed.get("resources", [])
+                                if not isinstance(r, dict) or r.get("type", "").lower() not in svc_types
+                            ]
+                            kept.extend(svc_resources)
+                            composed["resources"] = kept
+                            for pk, pv in svc_tpl.get("parameters", {}).items():
+                                composed.setdefault("parameters", {})[pk] = pv
+                            for vk, vv in svc_tpl.get("variables", {}).items():
+                                composed.setdefault("variables", {})[vk] = vv
+                            current_arm = json.dumps(composed, indent=2)
+                            step_log(sid, f"Pulled latest service ARM into composed template")
+                        except Exception as pull_err:
+                            step_log(sid, f"⚠ Could not pull latest version: {pull_err}", "warning")
+                else:
+                    step_log(sid, "No service version with ARM content found")
+                    step_log(sid, "Proceeding with current ARM for AI remediation")
+            else:
+                step_log(sid, "Composed parent template — no dependency upgrade check needed")
+                upgrade_action = "ai_fix"
+
+            dep_check_status = "success" if upgrade_skips_ai else "success"
+            step_end(sid, dep_check_status, int((time.time() - s_dc) * 1000),
+                     "Upgraded" if upgrade_skips_ai else "Checked")
+
+            # ── Step 3: REMEDIATE ──
             sid = f"{job_id}-remediate"
             step_start(sid)
             s2 = time.time()
-            step_log(sid, f"Preparing {len(steps)} remediation instruction(s)")
 
-            for j, s in enumerate(steps):
-                sev = s.get("severity", "medium").upper()
-                step_log(sid, f"  [{sev}] {s.get('action', 'Fix')}")
+            if upgrade_skips_ai:
+                # Upgrade resolved all violations — skip AI remediation
+                step_log(sid, "✓ All violations resolved by service version upgrade")
+                step_log(sid, "Skipping AI remediation — template already compliant")
+                result_json = None
+                fixed_content = current_arm  # Already updated by dep check
+                changes_made = [{"step": 0, "description": f"Upgraded {tid} to compliant service version", "resource": tid}]
+                step_end(sid, "success", int((time.time() - s2) * 1000), "Skipped (upgrade)")
 
-            instructions = "\n".join(
-                f"{j+1}. [{s.get('severity','medium').upper()}] {s.get('action','')}: {s.get('detail','')}"
-                for j, s in enumerate(steps)
-            )
+                # Skip the AI block — jump to validate
+            else:
+                step_log(sid, f"Preparing {len(steps)} remediation instruction(s)")
 
-            violations_context = ""
-            if scan_data:
-                for tmpl_result in scan_data.get("results", []):
-                    if tmpl_result.get("template_id") == tid:
-                        for res in tmpl_result.get("resources", []):
-                            for f in res.get("findings", []):
-                                if not f.get("passed", True):
-                                    violations_context += (
-                                        f"  - {f.get('standard_name','')}: {f.get('detail','')}\n"
-                                    )
+                for j, s in enumerate(steps):
+                    sev = s.get("severity", "medium").upper()
+                    step_log(sid, f"  [{sev}] {s.get('action', 'Fix')}")
 
-            prompt = (
-                "You are an Azure ARM template compliance remediation expert. "
-                "Apply the following remediation steps to the ARM template.\n\n"
-                f"--- REMEDIATION STEPS ---\n{instructions}\n--- END STEPS ---\n\n"
-            )
-            if violations_context:
-                prompt += f"--- ORIGINAL VIOLATIONS ---\n{violations_context}--- END VIOLATIONS ---\n\n"
-            prompt += (
-                f"--- CURRENT ARM TEMPLATE ---\n{current_arm}\n--- END TEMPLATE ---\n\n"
-                "Apply ALL the remediation steps to produce a fixed ARM template.\n\n"
-                "Return a JSON object:\n"
-                "{\n"
-                '  "arm_template": { ...the complete fixed ARM JSON... },\n'
-                '  "changes_made": [\n'
-                '    {"step": 1, "description": "What was changed", "resource": "affected resource"}\n'
-                "  ]\n"
-                "}\n\n"
-                "RULES:\n"
-                "- Return the COMPLETE ARM template, not just changed parts\n"
-                "- Maintain valid ARM template structure\n"
-                "- Keep all existing parameters, variables, outputs that are still relevant\n"
-                "- Preserve resource tags, dependencies, and naming conventions\n"
-                "- Do NOT change resource names or parameter names\n"
-                "- Do NOT remove resources — only modify properties for compliance\n"
-                "- Return ONLY raw JSON — no markdown fences\n"
-            )
+                instructions = "\n".join(
+                    f"{j+1}. [{s.get('severity','medium').upper()}] {s.get('action','')}: {s.get('detail','')}"
+                    for j, s in enumerate(steps)
+                )
 
-            step_log(sid, f"Sending to AI model: {model}")
-            step_log(sid, f"Prompt size: {len(prompt):,} chars")
+                violations_context = ""
+                if scan_data:
+                    for tmpl_result in scan_data.get("results", []):
+                        if tmpl_result.get("template_id") == tid:
+                            for res in tmpl_result.get("resources", []):
+                                for f in res.get("findings", []):
+                                    if not f.get("passed", True):
+                                        violations_context += (
+                                            f"  - {f.get('standard_name','')}: {f.get('detail','')}\n"
+                                        )
 
-            MAX_AI_RETRIES = 3
-            result_json = None
-            last_parse_error = ""
+                prompt = (
+                    "You are an Azure ARM template compliance remediation expert. "
+                    "Apply the following remediation steps to the ARM template.\n\n"
+                    f"--- REMEDIATION STEPS ---\n{instructions}\n--- END STEPS ---\n\n"
+                )
+                if violations_context:
+                    prompt += f"--- ORIGINAL VIOLATIONS ---\n{violations_context}--- END VIOLATIONS ---\n\n"
+                prompt += (
+                    f"--- CURRENT ARM TEMPLATE ---\n{current_arm}\n--- END TEMPLATE ---\n\n"
+                    "Apply ALL the remediation steps to produce a fixed ARM template.\n\n"
+                    "Return a JSON object:\n"
+                    "{\n"
+                    '  "arm_template": { ...the complete fixed ARM JSON... },\n'
+                    '  "changes_made": [\n'
+                    '    {"step": 1, "description": "What was changed", "resource": "affected resource"}\n'
+                    "  ]\n"
+                    "}\n\n"
+                    "RULES:\n"
+                    "- Return the COMPLETE ARM template, not just changed parts\n"
+                    "- Maintain valid ARM template structure\n"
+                    "- Keep all existing parameters, variables, outputs that are still relevant\n"
+                    "- Preserve resource tags, dependencies, and naming conventions\n"
+                    "- Do NOT change resource names or parameter names\n"
+                    "- Do NOT remove resources — only modify properties for compliance\n"
+                    "- Return ONLY raw JSON — no markdown fences\n"
+                )
 
-            for attempt in range(1, MAX_AI_RETRIES + 1):
-                if attempt > 1:
-                    step_log(sid, f"Retry {attempt}/{MAX_AI_RETRIES} — re-sending to AI…")
+                step_log(sid, f"Sending to AI model: {model}")
+                step_log(sid, f"Prompt size: {len(prompt):,} chars")
 
-                session = await client.create_session({
-                    "model": model,
-                    "streaming": True,
-                    "tools": [],
-                    "system_message": {
-                        "content": (
-                            "You are an ARM template compliance remediation expert. "
-                            "You fix ARM templates to meet organizational standards. "
-                            "Return ONLY raw JSON — no markdown, no commentary, no code fences."
-                        )
-                    },
-                })
+                MAX_AI_RETRIES = 3
+                result_json = None
+                last_parse_error = ""
 
-                chunks: list[str] = []
-                done_ev = asyncio.Event()
-                token_count = [0]
+                for attempt in range(1, MAX_AI_RETRIES + 1):
+                    if attempt > 1:
+                        step_log(sid, f"Retry {attempt}/{MAX_AI_RETRIES} — re-sending to AI…")
 
-                def on_event(ev):
-                    try:
-                        if ev.type.value == "assistant.message_delta":
-                            chunks.append(ev.data.delta_content or "")
-                            token_count[0] += 1
-                        elif ev.type.value in ("assistant.message", "session.idle"):
-                            done_ev.set()
-                    except Exception:
-                        done_ev.set()
+                    session = await client.create_session({
+                        "model": model,
+                        "streaming": True,
+                        "tools": [],
+                        "system_message": {
+                            "content": (
+                                "You are an ARM template compliance remediation expert. "
+                                "You fix ARM templates to meet organizational standards. "
+                                "Return ONLY raw JSON — no markdown, no commentary, no code fences."
+                            )
+                        },
+                    })
 
-                unsub = session.on(on_event)
-                try:
-                    retry_prompt = prompt
-                    if attempt > 1 and last_parse_error:
-                        retry_prompt += (
-                            f"\n\nPREVIOUS ATTEMPT FAILED: {last_parse_error}\n"
-                            "You MUST return ONLY valid raw JSON. No markdown fences, "
-                            "no ```json blocks, no commentary before or after the JSON.\n"
-                        )
-                    await session.send({"prompt": retry_prompt})
-                    last_report = 0
-                    while not done_ev.is_set():
+                    chunks: list[str] = []
+                    done_ev = asyncio.Event()
+                    token_count = [0]
+
+                    def on_event(ev):
                         try:
-                            await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=4)
-                        except asyncio.TimeoutError:
-                            pass
-                        if token_count[0] > last_report:
-                            step_log(sid, f"Generating… {token_count[0]} chunks received ({len(''.join(chunks)):,} chars)")
-                            last_report = token_count[0]
-                finally:
-                    unsub()
+                            if ev.type.value == "assistant.message_delta":
+                                chunks.append(ev.data.delta_content or "")
+                                token_count[0] += 1
+                            elif ev.type.value in ("assistant.message", "session.idle"):
+                                done_ev.set()
+                        except Exception:
+                            done_ev.set()
 
-                raw = "".join(chunks).strip()
-                step_log(sid, f"AI response: {len(raw):,} chars, {token_count[0]} chunks")
+                    unsub = session.on(on_event)
+                    try:
+                        retry_prompt = prompt
+                        if attempt > 1 and last_parse_error:
+                            retry_prompt += (
+                                f"\n\nPREVIOUS ATTEMPT FAILED: {last_parse_error}\n"
+                                "You MUST return ONLY valid raw JSON. No markdown fences, "
+                                "no ```json blocks, no commentary before or after the JSON.\n"
+                            )
+                        await session.send({"prompt": retry_prompt})
+                        last_report = 0
+                        while not done_ev.is_set():
+                            try:
+                                await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=4)
+                            except asyncio.TimeoutError:
+                                pass
+                            if token_count[0] > last_report:
+                                step_log(sid, f"Generating… {token_count[0]} chunks received ({len(''.join(chunks)):,} chars)")
+                                last_report = token_count[0]
+                    finally:
+                        unsub()
 
-                if not raw:
-                    last_parse_error = "Empty response from AI"
-                    step_log(sid, f"⚠ Empty AI response (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
-                    if attempt < MAX_AI_RETRIES:
-                        continue
-                    else:
-                        step_end(sid, "failed", int((time.time() - s2) * 1000))
-                        emit({"type": "job_end", "job_id": job_id, "status": "failed",
-                              "error": "AI returned empty response after retries",
-                              "duration_ms": int((time.time() - t0) * 1000)})
-                        return {"template_id": tid, "success": False, "error": "AI returned empty response"}
+                    raw = "".join(chunks).strip()
+                    step_log(sid, f"AI response: {len(raw):,} chars, {token_count[0]} chunks")
 
-                # Robust JSON extraction — strip fences, find JSON object
-                cleaned = raw
-                # Strip markdown code fences
-                if cleaned.startswith("```"):
-                    cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3].strip()
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:].strip()
-                # Try to find the outermost { ... } if there's extra text
-                brace_start = cleaned.find("{")
-                brace_end = cleaned.rfind("}")
-                if brace_start >= 0 and brace_end > brace_start:
-                    cleaned = cleaned[brace_start:brace_end + 1]
+                    if not raw:
+                        last_parse_error = "Empty response from AI"
+                        step_log(sid, f"⚠ Empty AI response (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
+                        if attempt < MAX_AI_RETRIES:
+                            continue
+                        else:
+                            step_end(sid, "failed", int((time.time() - s2) * 1000))
+                            emit({"type": "job_end", "job_id": job_id, "status": "failed",
+                                  "error": "AI returned empty response after retries",
+                                  "duration_ms": int((time.time() - t0) * 1000)})
+                            return {"template_id": tid, "success": False, "error": "AI returned empty response"}
 
-                try:
-                    result_json = json.loads(cleaned)
-                    break  # Success — exit retry loop
-                except json.JSONDecodeError as e:
-                    last_parse_error = f"JSON parse error: {str(e)}"
-                    step_log(sid, f"⚠ {last_parse_error} (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
-                    if attempt < MAX_AI_RETRIES:
-                        continue
+                    # Robust JSON extraction — strip fences, find JSON object
+                    cleaned = raw
+                    # Strip markdown code fences
+                    if cleaned.startswith("```"):
+                        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned[:-3].strip()
+                    if cleaned.startswith("json"):
+                        cleaned = cleaned[4:].strip()
+                    # Try to find the outermost { ... } if there's extra text
+                    brace_start = cleaned.find("{")
+                    brace_end = cleaned.rfind("}")
+                    if brace_start >= 0 and brace_end > brace_start:
+                        cleaned = cleaned[brace_start:brace_end + 1]
 
-            step_end(sid, "success", int((time.time() - s2) * 1000))
+                    try:
+                        result_json = json.loads(cleaned)
+                        break  # Success — exit retry loop
+                    except json.JSONDecodeError as e:
+                        last_parse_error = f"JSON parse error: {str(e)}"
+                        step_log(sid, f"⚠ {last_parse_error} (attempt {attempt}/{MAX_AI_RETRIES})", "warning")
+                        if attempt < MAX_AI_RETRIES:
+                            continue
 
-            # ── Step 3: VALIDATE ──
+                step_end(sid, "success", int((time.time() - s2) * 1000))
+
+            # ── Step 4: VALIDATE ──
             sid = f"{job_id}-validate"
             step_start(sid)
             s3 = time.time()
 
-            if result_json is None:
-                step_log(sid, f"Failed to parse AI response after {MAX_AI_RETRIES} attempts", "error")
+            if not upgrade_skips_ai and result_json is None:
+                step_log(sid, "Failed to parse AI response after retries", "error")
                 step_end(sid, "failed", int((time.time() - s3) * 1000))
                 emit({"type": "job_end", "job_id": job_id, "status": "failed",
                       "error": "Failed to parse AI response after retries",
                       "duration_ms": int((time.time() - t0) * 1000)})
                 return {"template_id": tid, "success": False, "error": "Failed to parse AI response"}
 
-            step_log(sid, "JSON parsed successfully")
+            if upgrade_skips_ai:
+                # Upgrade path — fixed_content and changes_made already set
+                step_log(sid, "Validating upgraded ARM template…")
+            else:
+                step_log(sid, "JSON parsed successfully")
 
-            arm_template = result_json.get("arm_template", result_json)
-            changes_made = result_json.get("changes_made", [])
+                arm_template = result_json.get("arm_template", result_json)
+                changes_made = result_json.get("changes_made", [])
 
-            # Validate ARM structure
-            fixed_content = None
-            if isinstance(arm_template, dict) and "$schema" in arm_template:
-                fixed_content = json.dumps(arm_template, indent=2)
-                step_log(sid, "Valid ARM template object with $schema")
-            elif isinstance(arm_template, str):
-                try:
-                    parsed = json.loads(arm_template)
-                    if "$schema" in parsed:
-                        fixed_content = json.dumps(parsed, indent=2)
-                        step_log(sid, "Valid ARM template string with $schema")
-                    else:
-                        raise ValueError("Missing $schema")
-                except (json.JSONDecodeError, ValueError) as e:
-                    step_log(sid, f"Invalid ARM template: {str(e)}", "error")
-                    step_end(sid, "failed", int((time.time() - s3) * 1000))
-                    emit({"type": "job_end", "job_id": job_id, "status": "failed",
-                          "error": "AI returned invalid ARM JSON", "duration_ms": int((time.time() - t0) * 1000)})
-                    return {"template_id": tid, "success": False, "error": "AI returned invalid ARM JSON"}
+                # Validate ARM structure
+                fixed_content = None
+                if isinstance(arm_template, dict) and "$schema" in arm_template:
+                    fixed_content = json.dumps(arm_template, indent=2)
+                    step_log(sid, "Valid ARM template object with $schema")
+                elif isinstance(arm_template, str):
+                    try:
+                        parsed = json.loads(arm_template)
+                        if "$schema" in parsed:
+                            fixed_content = json.dumps(parsed, indent=2)
+                            step_log(sid, "Valid ARM template string with $schema")
+                        else:
+                            raise ValueError("Missing $schema")
+                    except (json.JSONDecodeError, ValueError) as e:
+                        step_log(sid, f"Invalid ARM template: {str(e)}", "error")
+                        step_end(sid, "failed", int((time.time() - s3) * 1000))
+                        emit({"type": "job_end", "job_id": job_id, "status": "failed",
+                              "error": "AI returned invalid ARM JSON", "duration_ms": int((time.time() - t0) * 1000)})
+                        return {"template_id": tid, "success": False, "error": "AI returned invalid ARM JSON"}
 
             if not fixed_content:
                 step_log(sid, "Unexpected AI response format", "error")
@@ -3417,7 +3642,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 pass
             step_end(sid, "success", int((time.time() - s3) * 1000))
 
-            # ── Step 4: DEPLOY TEST (ARM What-If) ──
+            # ── Step 5: DEPLOY TEST (ARM What-If) ──
             sid = f"{job_id}-deploy-test"
             step_start(sid)
             s_dt = time.time()
@@ -3511,7 +3736,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 step_end(sid, "warning", int((time.time() - s_dt) * 1000),
                          "What-If skipped (advisory)")
 
-            # ── Step 5: VERSION ──
+            # ── Step 6: VERSION ──
             sid = f"{job_id}-version"
             step_start(sid)
             s4 = time.time()
@@ -3541,7 +3766,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             step_log(sid, f"Created version #{new_version_num} (v{new_semver_actual})")
             step_end(sid, "success", int((time.time() - s4) * 1000))
 
-            # ── Step 6: PUBLISH ──
+            # ── Step 7: PUBLISH ──
             sid = f"{job_id}-publish"
             step_start(sid)
             s5 = time.time()

@@ -3127,6 +3127,8 @@ function _renderRemediationPlan(templateId, data) {
                         ${hasViolations
                             ? `<span class="remed-ver-type remed-ver-type-${vi.change_type}">${changeLabels[vi.change_type] || vi.change_type}</span>`
                             : '<span class="remed-ver-clean-badge">✅ Clean</span>'}
+                        ${vi.upgrade_available ? '<span class="remed-upgrade-badge" title="Newer compliant version found — will upgrade instead of AI fix">⬆ Upgrade</span>' : ''}
+                        ${vi.upgrade_action === 'ai_fix_latest' ? '<span class="remed-upgrade-badge remed-upgrade-pull" title="Latest version pulled for AI remediation">⬇ Latest</span>' : ''}
                     </div>
                     ${hasViolations ? `
                     <div class="remed-ver-arrow">
@@ -3134,7 +3136,9 @@ function _renderRemediationPlan(templateId, data) {
                         →
                         <span class="remed-ver-next">${escapeHtml(vi.projected_semver)}</span>
                     </div>
-                    <div class="remed-ver-dep-reason">${vi.violation_count} violation${vi.violation_count !== 1 ? 's' : ''} to fix</div>`
+                    <div class="remed-ver-dep-reason">${vi.upgrade_available
+                        ? 'Compliant version available — will upgrade'
+                        : `${vi.violation_count} violation${vi.violation_count !== 1 ? 's' : ''} to fix`}</div>`
                     : `<div class="remed-ver-dep-ver">${escapeHtml(vi.current_semver)}</div>`}
                     ${resourceTypes.length > 0 ? `<div class="remed-ver-dep-resources">${resourceTypes.map(r => `<span class="remed-ver-dep-rt">${escapeHtml(r)}</span>`).join('')}</div>` : ''}
                 </div>`;
@@ -3446,6 +3450,8 @@ function _adoRenderPipeline(jobs, initEvent) {
                 <span class="ado-ver-to">v${escapeHtml(job.projected_semver || '?')}</span>
                 <span class="ado-ver-type">${escapeHtml(job.change_type || 'patch')}</span>
                 <span class="ado-ver-fixes">${job.step_count} fix${job.step_count !== 1 ? 'es' : ''}</span>
+                ${job.upgrade_available ? '<span class="ado-upgrade-badge" title="Newer compliant version available — AI remediation skipped">⬆ Upgrade</span>' : ''}
+                ${job.upgrade_action === 'ai_fix_latest' ? '<span class="ado-upgrade-badge ado-upgrade-pull" title="Latest version pulled for AI remediation">⬇ Latest</span>' : ''}
             </div>
             <div class="ado-steps-timeline">`;
 

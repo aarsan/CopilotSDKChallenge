@@ -7301,6 +7301,30 @@ body {
     color: #d29922;
 }
 
+/* ── Upgrade badges (pipeline & plan) ── */
+.ado-upgrade-badge,
+.remed-upgrade-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    background: color-mix(in srgb, #2ea043 15%, transparent);
+    color: #2ea043;
+    border: 1px solid color-mix(in srgb, #2ea043 25%, transparent);
+}
+
+.ado-upgrade-badge.ado-upgrade-pull,
+.remed-upgrade-badge.remed-upgrade-pull {
+    background: color-mix(in srgb, #388bfd 15%, transparent);
+    color: #388bfd;
+    border-color: color-mix(in srgb, #388bfd 25%, transparent);
+}
+
 @keyframes adoBadgePulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
