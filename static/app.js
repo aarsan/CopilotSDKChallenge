@@ -2673,6 +2673,8 @@ async function _loadTemplateVersionHistory(templateId) {
             const dateStr = v.created_at ? v.created_at.substring(0, 10) : '';
             const hasTemplate = (v.template_size_bytes || 0) > 0;
             const tid = escapeHtml(templateId);
+            // Previous version for diff — sorted is newest-first, so prev is idx+1
+            const prevVersion = idx < sorted.length - 1 ? sorted[idx + 1].version : null;
 
             return `
                 <div class="comp-verlog-item ${isActive ? 'comp-verlog-active' : ''} comp-verlog-${v.status}">
@@ -2683,6 +2685,7 @@ async function _loadTemplateVersionHistory(templateId) {
                         ${changeLabel ? `<span class="comp-verlog-change">${changeLabel}</span>` : ''}
                         <span class="comp-verlog-date">${dateStr}</span>
                         <span class="comp-verlog-actions">
+                            ${hasTemplate && prevVersion != null ? `<button class="comp-verlog-btn comp-verlog-btn-diff" onclick="toggleVersionDiff(this, '${tid}', ${prevVersion}, ${v.version})" title="Diff against previous version">± Diff</button>` : ''}
                             ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-view" onclick="viewCatalogTemplateVersion('${tid}', ${v.version})" title="View ARM template">👁 View</button>` : ''}
                             ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-deploy" onclick="deployCatalogTemplateVersion('${tid}', ${v.version}, '${semverDisplay}')" title="Deploy this version">🚀 Deploy</button>` : ''}
                         </span>
@@ -3407,6 +3410,130 @@ async function executeRemediationPlan(templateId) {
     }
 }
 
+/* ── GitHub-style Diff Viewer ── */
+
+/**
+ * Toggle diff viewer for a pipeline result.
+ * Lazily fetches the diff from the server on first open.
+ */
+async function toggleDiffViewer(btn, templateId, fromVersion, toVersion) {
+    const card = btn.closest('.ado-report-card');
+    let viewer = card.querySelector('.diff-viewer');
+
+    if (viewer) {
+        // Toggle visibility
+        const visible = viewer.style.display !== 'none';
+        viewer.style.display = visible ? 'none' : '';
+        btn.classList.toggle('diff-expanded', !visible);
+        return;
+    }
+
+    // Create viewer placeholder with loading state
+    btn.classList.add('diff-expanded');
+    viewer = document.createElement('div');
+    viewer.className = 'diff-viewer';
+    viewer.innerHTML = `<div class="diff-loading"><span class="diff-spinner"></span>Loading diff&hellip;</div>`;
+    btn.insertAdjacentElement('afterend', viewer);
+
+    try {
+        const resp = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/diff?from_version=${fromVersion}&to_version=${toVersion}`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            viewer.innerHTML = `<div class="diff-error">Failed to load diff: ${escapeHtml(err.detail || 'Unknown error')}</div>`;
+            return;
+        }
+
+        const data = await resp.json();
+        _renderDiffViewer(viewer, data);
+    } catch (e) {
+        viewer.innerHTML = `<div class="diff-error">Failed to load diff: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+/**
+ * Render structured diff data into a GitHub-style diff viewer.
+ */
+function _renderDiffViewer(container, data) {
+    if (!data.hunks || data.hunks.length === 0) {
+        container.innerHTML = `<div class="diff-empty">No differences found between versions</div>`;
+        return;
+    }
+
+    // Toolbar
+    let html = `<div class="diff-toolbar">
+        <div class="diff-toolbar-title">
+            <span>📄</span>
+            <span>v${escapeHtml(data.from_semver)} → v${escapeHtml(data.to_semver)}</span>
+        </div>
+        <div class="diff-toolbar-stats">
+            <span class="diff-stat-add">+${data.additions}</span>
+            <span class="diff-stat-del">−${data.deletions}</span>
+        </div>
+    </div>`;
+
+    // Hunks
+    for (const hunk of data.hunks) {
+        html += `<div class="diff-hunk">`;
+        html += `<div class="diff-hunk-header">${escapeHtml(hunk.header)}</div>`;
+        html += `<table class="diff-table"><tbody>`;
+
+        for (const line of hunk.lines) {
+            const cls = line.type === 'add' ? 'diff-line-add'
+                      : line.type === 'del' ? 'diff-line-del'
+                      : 'diff-line-ctx';
+            const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' ';
+            const oldLn = line.old_ln != null ? line.old_ln : '';
+            const newLn = line.new_ln != null ? line.new_ln : '';
+
+            html += `<tr class="diff-line ${cls}">
+                <td class="diff-ln diff-ln-old">${oldLn}</td>
+                <td class="diff-ln diff-ln-new">${newLn}</td>
+                <td class="diff-content"><span class="diff-prefix">${prefix}</span>${escapeHtml(line.content)}</td>
+            </tr>`;
+        }
+
+        html += `</tbody></table></div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+/**
+ * Toggle diff viewer in the version history panel.
+ * Works similarly to toggleDiffViewer but for version-history items.
+ */
+async function toggleVersionDiff(btn, templateId, fromVersion, toVersion) {
+    const item = btn.closest('.comp-verlog-item');
+    let viewer = item.querySelector('.diff-viewer');
+
+    if (viewer) {
+        const visible = viewer.style.display !== 'none';
+        viewer.style.display = visible ? 'none' : '';
+        btn.classList.toggle('diff-expanded', !visible);
+        return;
+    }
+
+    btn.classList.add('diff-expanded');
+    viewer = document.createElement('div');
+    viewer.className = 'diff-viewer';
+    viewer.innerHTML = `<div class="diff-loading"><span class="diff-spinner"></span>Loading diff&hellip;</div>`;
+    item.appendChild(viewer);
+
+    try {
+        const resp = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/diff?from_version=${fromVersion}&to_version=${toVersion}`);
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            viewer.innerHTML = `<div class="diff-error">Failed to load diff: ${escapeHtml(err.detail || 'Unknown error')}</div>`;
+            return;
+        }
+
+        const data = await resp.json();
+        _renderDiffViewer(viewer, data);
+    } catch (e) {
+        viewer.innerHTML = `<div class="diff-error">Failed to load diff: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
 /* ── ADO Pipeline State Machine ── */
 function _adoHandleEvent(container, event, state) {
     if (!state) state = { jobs: [], elements: {}, stepLogs: {}, expanded: {} };
@@ -3605,6 +3732,17 @@ function _adoHandleEvent(container, event, state) {
                     </div>`;
                 }
 
+                // Diff toggle button — only if we have both version numbers
+                let diffBtnHtml = '';
+                if (ok && r.old_version && r.new_version && r.old_version !== r.new_version) {
+                    const tid = escapeHtml(r.template_id || '');
+                    diffBtnHtml = `<button class="diff-toggle-btn"
+                        onclick="toggleDiffViewer(this, '${tid}', ${r.old_version}, ${r.new_version})">
+                        <span class="diff-toggle-icon">▶</span>
+                        View Diff (v${escapeHtml(r.old_semver || String(r.old_version))} → v${escapeHtml(r.new_semver || String(r.new_version))})
+                    </button>`;
+                }
+
                 resultsHtml += `
                 <div class="ado-report-card ${ok ? 'ado-report-card-ok' : 'ado-report-card-fail'}">
                     <div class="ado-report-card-header">
@@ -3613,6 +3751,7 @@ function _adoHandleEvent(container, event, state) {
                         ${r.new_semver ? `<span class="ado-report-card-ver">v${escapeHtml(r.new_semver)}</span>` : ''}
                     </div>
                     ${changesHtml}
+                    ${diffBtnHtml}
                     ${proofHtml}
                     ${changelogHtml}
                 </div>`;

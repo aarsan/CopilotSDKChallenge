@@ -3891,6 +3891,8 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 "template_id": tid,
                 "template_name": tname,
                 "success": True,
+                "old_version": ver_num,
+                "old_semver": current_semver or None,
                 "new_version": new_version_num,
                 "new_semver": new_semver_actual,
                 "changes_made": changes_made,
@@ -4892,6 +4894,122 @@ async def create_new_template_version(template_id: str, request: Request):
         "status": "ok",
         "template_id": template_id,
         "version": ver,
+    })
+
+
+@app.get("/api/catalog/templates/{template_id}/diff")
+async def get_template_diff(template_id: str, request: Request):
+    """Compute a unified diff between two template versions.
+
+    Query params:
+        from_version (int)  — the old version number
+        to_version   (int)  — the new version number
+    Returns hunks with line numbers suitable for GitHub-style rendering.
+    """
+    import difflib, json as _json
+    from src.database import get_template_by_id, get_template_version
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    params = request.query_params
+    try:
+        from_ver = int(params.get("from_version", "0"))
+        to_ver = int(params.get("to_version", "0"))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="from_version and to_version must be integers")
+
+    if from_ver < 1 or to_ver < 1:
+        raise HTTPException(status_code=400, detail="from_version and to_version must be >= 1")
+
+    old = await get_template_version(template_id, from_ver)
+    new = await get_template_version(template_id, to_ver)
+    if not old:
+        raise HTTPException(status_code=404, detail=f"Version {from_ver} not found")
+    if not new:
+        raise HTTPException(status_code=404, detail=f"Version {to_ver} not found")
+
+    # Normalise ARM JSON to consistent formatting for clean diffs
+    def _normalise(arm_str: str) -> list[str]:
+        try:
+            obj = _json.loads(arm_str)
+            return _json.dumps(obj, indent=2).splitlines(keepends=False)
+        except Exception:
+            return arm_str.splitlines(keepends=False)
+
+    old_lines = _normalise(old.get("arm_template", ""))
+    new_lines = _normalise(new.get("arm_template", ""))
+
+    # Generate unified diff
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"v{old.get('semver', from_ver)}",
+        tofile=f"v{new.get('semver', to_ver)}",
+        lineterm="",
+    ))
+
+    # Parse into structured hunks for rendering
+    hunks = []
+    current_hunk = None
+    for line in diff:
+        if line.startswith("@@"):
+            # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            import re as _re
+            m = _re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", line)
+            if m:
+                current_hunk = {
+                    "old_start": int(m.group(1)),
+                    "new_start": int(m.group(3)),
+                    "header": line,
+                    "lines": [],
+                }
+                hunks.append(current_hunk)
+        elif line.startswith("---") or line.startswith("+++"):
+            continue  # file headers — skip
+        elif current_hunk is not None:
+            if line.startswith("+"):
+                current_hunk["lines"].append({"type": "add", "content": line[1:]})
+            elif line.startswith("-"):
+                current_hunk["lines"].append({"type": "del", "content": line[1:]})
+            else:
+                current_hunk["lines"].append({"type": "ctx", "content": line[1:] if line.startswith(" ") else line})
+
+    # Compute line numbers for each line
+    for hunk in hunks:
+        old_ln = hunk["old_start"]
+        new_ln = hunk["new_start"]
+        for ln in hunk["lines"]:
+            if ln["type"] == "del":
+                ln["old_ln"] = old_ln
+                ln["new_ln"] = None
+                old_ln += 1
+            elif ln["type"] == "add":
+                ln["old_ln"] = None
+                ln["new_ln"] = new_ln
+                new_ln += 1
+            else:
+                ln["old_ln"] = old_ln
+                ln["new_ln"] = new_ln
+                old_ln += 1
+                new_ln += 1
+
+    # Stats
+    additions = sum(1 for h in hunks for l in h["lines"] if l["type"] == "add")
+    deletions = sum(1 for h in hunks for l in h["lines"] if l["type"] == "del")
+
+    return JSONResponse({
+        "template_id": template_id,
+        "template_name": tmpl.get("name", ""),
+        "from_version": from_ver,
+        "from_semver": old.get("semver", str(from_ver)),
+        "to_version": to_ver,
+        "to_semver": new.get("semver", str(to_ver)),
+        "additions": additions,
+        "deletions": deletions,
+        "hunks": hunks,
+        "total_old_lines": len(old_lines),
+        "total_new_lines": len(new_lines),
     })
 
 
