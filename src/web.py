@@ -2628,30 +2628,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     if not tmpl:
         raise HTTPException(404, "Template not found")
 
-    # Collect violations per template
-    violations_summary = []
-    for tmpl_result in scan_data.get("results", []):
-        tid = tmpl_result.get("template_id", "")
-        tname = tmpl_result.get("template_name", tid)
-        for res in tmpl_result.get("resources", []):
-            for f in res.get("findings", []):
-                if not f.get("passed", True):
-                    violations_summary.append({
-                        "template_id": tid,
-                        "template_name": tname,
-                        "resource_type": res.get("resource_type", ""),
-                        "resource_name": res.get("resource_name", ""),
-                        "standard": f.get("standard_name", ""),
-                        "category": f.get("category", ""),
-                        "severity": f.get("severity", ""),
-                        "detail": f.get("detail", ""),
-                        "remediation": f.get("remediation", ""),
-                    })
-
-    if not violations_summary:
-        return JSONResponse({"plan": [], "summary": "No violations to remediate — template is fully compliant.", "violation_count": 0})
-
-    # ── Gather dependency info for composed templates ──
+    # ── Gather dependency info for composed templates (BEFORE violations) ──
     dep_service_ids = tmpl.get("service_ids", []) or []
     all_tmpls_map = {}
     if dep_service_ids:
@@ -2680,6 +2657,36 @@ async def compliance_remediate_plan(template_id: str, request: Request):
                 except Exception:
                     pass
 
+    # Collect violations per template — re-attribute to owning service template
+    violations_summary = []
+    for tmpl_result in scan_data.get("results", []):
+        tid = tmpl_result.get("template_id", "")
+        tname = tmpl_result.get("template_name", tid)
+        for res in tmpl_result.get("resources", []):
+            rt = res.get("resource_type", "").lower()
+            # If this resource belongs to a service template, attribute to it
+            owning_service = resource_to_service.get(rt)
+            effective_tid = owning_service if owning_service else tid
+            effective_name = tname
+            if owning_service and owning_service in all_tmpls_map:
+                effective_name = all_tmpls_map[owning_service].get("name", owning_service)
+            for f in res.get("findings", []):
+                if not f.get("passed", True):
+                    violations_summary.append({
+                        "template_id": effective_tid,
+                        "template_name": effective_name,
+                        "resource_type": res.get("resource_type", ""),
+                        "resource_name": res.get("resource_name", ""),
+                        "standard": f.get("standard_name", ""),
+                        "category": f.get("category", ""),
+                        "severity": f.get("severity", ""),
+                        "detail": f.get("detail", ""),
+                        "remediation": f.get("remediation", ""),
+                    })
+
+    if not violations_summary:
+        return JSONResponse({"plan": [], "summary": "No violations to remediate — template is fully compliant.", "violation_count": 0})
+
     # Gather ARM content + version info for each template mentioned in violations
     # AND all dependency templates
     template_ids = list({v["template_id"] for v in violations_summary})
@@ -2687,6 +2694,9 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     for sid in dep_service_ids:
         if sid not in template_ids:
             template_ids.append(sid)
+    # Always include the parent
+    if template_id not in template_ids:
+        template_ids.append(template_id)
 
     arm_snippets = {}
     template_version_info = {}  # tid -> {current_version, current_semver, ...}
@@ -2697,13 +2707,8 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         current_ver_num = versions[0]["version"] if versions else 0
 
         # Determine change_type based on severity of violations for this template
+        # (violations are already attributed to owning service templates)
         tid_violations = [v for v in violations_summary if v["template_id"] == tid]
-        # Also count violations whose resources belong to this service template
-        if tid in dep_service_ids:
-            for v in violations_summary:
-                rt = v.get("resource_type", "").lower()
-                if resource_to_service.get(rt) == tid and v not in tid_violations:
-                    tid_violations.append(v)
 
         has_critical = any(v["severity"] == "critical" for v in tid_violations)
         has_violations = len(tid_violations) > 0
@@ -2746,6 +2751,29 @@ async def compliance_remediate_plan(template_id: str, request: Request):
         else:
             dep = all_tmpls_map.get(tid) or await get_template_by_id(tid)
             arm_snippets[tid] = dep.get("content", "") if dep else ""
+
+    # If service templates have violations, propagate a version bump to the parent
+    # (composed parent should bump when any of its dependencies change)
+    if dep_service_ids and template_id in template_version_info:
+        parent_info = template_version_info[template_id]
+        dep_has_changes = any(
+            template_version_info.get(sid, {}).get("change_type", "none") != "none"
+            for sid in dep_service_ids
+        )
+        if dep_has_changes and parent_info["change_type"] == "none":
+            # Propagate the highest change level from deps
+            dep_change_types = [
+                template_version_info.get(sid, {}).get("change_type", "none")
+                for sid in dep_service_ids
+            ]
+            if "minor" in dep_change_types:
+                parent_info["change_type"] = "minor"
+            elif "patch" in dep_change_types:
+                parent_info["change_type"] = "patch"
+            parent_info["projected_semver"] = compute_next_semver(
+                parent_info["current_semver"], parent_info["change_type"]
+            )
+            parent_info["projected_version"] = parent_info["current_version"] + 1
 
     # Build resource ownership context for the LLM
     resource_ownership_text = ""
