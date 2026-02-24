@@ -524,18 +524,15 @@ async def analyze_template_feedback(
 
         try:
             from src.model_router import Task, get_model_for_task
-            model = get_model_for_task(Task.PLANNING)
+            from src.agents import GAP_ANALYST
+            model = get_model_for_task(GAP_ANALYST.task)
 
             session = await copilot_client.create_session({
                 "model": model,
                 "streaming": True,
                 "tools": [],
                 "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure analysis agent. "
-                        "You identify gaps between what a template provides and "
-                        "what a user expects. Return ONLY raw JSON."
-                    )
+                    "content": GAP_ANALYST.system_prompt
                 },
             })
 
@@ -816,18 +813,15 @@ async def apply_template_code_edit(
 
     try:
         from src.model_router import Task, get_model_for_task
-        model = get_model_for_task(Task.CODE_GENERATION)
+        from src.agents import ARM_TEMPLATE_EDITOR
+        model = get_model_for_task(ARM_TEMPLATE_EDITOR.task)
 
         session = await copilot_client.create_session({
             "model": model,
             "streaming": True,
             "tools": [],
             "system_message": {
-                "content": (
-                    "You are an ARM template editor. You modify existing Azure "
-                    "Resource Manager templates based on user instructions. "
-                    "Return ONLY raw JSON — no markdown, no commentary."
-                )
+                "content": ARM_TEMPLATE_EDITOR.system_prompt
             },
         })
 
@@ -965,7 +959,8 @@ async def check_revision_policy(
     if copilot_client:
         try:
             from src.model_router import Task, get_model_for_task
-            model = get_model_for_task(Task.PLANNING)
+            from src.agents import POLICY_CHECKER
+            model = get_model_for_task(POLICY_CHECKER.task)
 
             template_context = ""
             if template:
@@ -1014,11 +1009,7 @@ async def check_revision_policy(
                 "streaming": True,
                 "tools": [],
                 "system_message": {
-                    "content": (
-                        "You are a governance policy checker for Azure infrastructure. "
-                        "You evaluate user requests against organizational policies. "
-                        "Return ONLY raw JSON."
-                    )
+                    "content": POLICY_CHECKER.system_prompt
                 },
             })
 
@@ -1158,7 +1149,8 @@ async def determine_services_from_prompt(
 
         try:
             from src.model_router import Task, get_model_for_task
-            model = get_model_for_task(Task.PLANNING)
+            from src.agents import REQUEST_PARSER
+            model = get_model_for_task(REQUEST_PARSER.task)
 
             prompt = (
                 "You are an Azure infrastructure architect. A user has described what infrastructure they need "
@@ -1193,10 +1185,7 @@ async def determine_services_from_prompt(
                 "streaming": True,
                 "tools": [],
                 "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure architect that maps user requests "
-                        "to specific Azure resource types. Return ONLY raw JSON."
-                    )
+                    "content": REQUEST_PARSER.system_prompt
                 },
             })
 

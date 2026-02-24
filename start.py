@@ -1,8 +1,5 @@
 # InfraForge Quick Start
-# Run this file to launch InfraForge
+# Run this file to launch the InfraForge web application
 
-import asyncio
-from src.main import main
-
-if __name__ == "__main__":
-    asyncio.run(main())
+import runpy
+runpy.run_path("web_start.py", run_name="__main__")

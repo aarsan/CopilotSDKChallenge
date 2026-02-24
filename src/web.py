@@ -35,13 +35,24 @@ from src.config import (
     COPILOT_MODEL,
     COPILOT_LOG_LEVEL,
     OUTPUT_DIR,
-    SYSTEM_MESSAGE,
     WEB_HOST,
     WEB_PORT,
     SESSION_SECRET,
     AVAILABLE_MODELS,
     get_active_model,
     set_active_model,
+)
+from src.agents import (
+    WEB_CHAT_AGENT,
+    TEMPLATE_HEALER,
+    ERROR_CULPRIT_DETECTOR,
+    DEPLOY_FAILURE_ANALYST,
+    REMEDIATION_PLANNER,
+    REMEDIATION_EXECUTOR,
+    ARTIFACT_GENERATOR,
+    POLICY_FIXER,
+    DEEP_TEMPLATE_HEALER,
+    LLM_REASONER,
 )
 from src.tools import get_all_tools
 from src.auth import (
@@ -416,15 +427,10 @@ async def _copilot_heal_template(
         if _client is None:
             raise RuntimeError("Copilot SDK not available")
         session = await _client.create_session({
-            "model": get_model_for_task(Task.CODE_FIXING),
+            "model": get_model_for_task(TEMPLATE_HEALER.task),
             "streaming": True,
             "tools": [],
-            "system_message": {"content": (
-                "You are an Azure infrastructure expert. "
-                "When fixing ARM templates, check parameter defaultValues FIRST — "
-                "invalid resource names usually come from bad parameter defaults. "
-                "Return ONLY raw JSON — no markdown, no code fences."
-            )},
+            "system_message": {"content": TEMPLATE_HEALER.system_prompt},
         })
         chunks: list[str] = []
         done_ev = asyncio.Event()
@@ -578,9 +584,9 @@ async def _deep_heal_composed_template(
             _client = await ensure_copilot_client()
             if _client:
                 session = await _client.create_session({
-                    "model": get_model_for_task(Task.PLANNING),
+                    "model": get_model_for_task(ERROR_CULPRIT_DETECTOR.task),
                     "streaming": True, "tools": [],
-                    "system_message": {"content": "You are an Azure infrastructure error analyst. Return ONLY the Azure resource type ID."},
+                    "system_message": {"content": ERROR_CULPRIT_DETECTOR.system_prompt},
                 })
                 chunks = []
                 done_ev = asyncio.Event()
@@ -3061,11 +3067,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             "streaming": True,
             "tools": [],
             "system_message": {
-                "content": (
-                    "You are a compliance remediation planner for Azure ARM templates. "
-                    "Produce structured JSON plans. Return ONLY raw JSON — no markdown, "
-                    "no commentary, no code fences."
-                )
+                "content": REMEDIATION_PLANNER.system_prompt
             },
         })
 
@@ -3558,11 +3560,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                         "streaming": True,
                         "tools": [],
                         "system_message": {
-                            "content": (
-                                "You are an ARM template compliance remediation expert. "
-                                "You fix ARM templates to meet organizational standards. "
-                                "Return ONLY raw JSON — no markdown, no commentary, no code fences."
-                            )
+                            "content": REMEDIATION_EXECUTOR.system_prompt
                         },
                     })
 
@@ -5399,25 +5397,7 @@ async def publish_template(template_id: str, request: Request):
 MAX_DEPLOY_HEAL_ATTEMPTS = 5   # Match validate's budget
 DEEP_HEAL_THRESHOLD = 3        # After this many surface heals, go deep
 
-DEPLOY_AGENT_PROMPT = """\
-You are the InfraForge Deployment Agent. A deployment failed after the
-auto-healing pipeline tried {attempts} iteration(s). Summarize what
-happened clearly for the user.
-
-When explaining:
-1. Explain the error in plain language (what went wrong)
-2. Describe what the pipeline tried (surface heals, deep heals if any)
-3. Suggest specific next steps
-
-Guidelines:
-- Be concise (3-5 sentences max)
-- Use markdown for formatting
-- Don't be alarming — deployment issues are normal in iterative development
-- Frame problems as improvements needed, not failures
-- If the error is a template issue, suggest re-running validation
-- If the error is an Azure issue (quota, region, SKU), explain the limitation
-- Never dump raw error codes — translate them for humans
-"""
+DEPLOY_AGENT_PROMPT = DEPLOY_FAILURE_ANALYST.system_prompt
 
 
 async def _get_deploy_agent_analysis(
@@ -7451,11 +7431,8 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             if _client is None:
                 raise RuntimeError("Copilot SDK not available")
             session = await _client.create_session({
-                "model": get_model_for_task(Task.CODE_FIXING), "streaming": True, "tools": [],
-                "system_message": {"content": (
-                    "You are an Azure infrastructure expert. "
-                    "Return ONLY raw JSON — no markdown, no code fences."
-                )},
+                "model": get_model_for_task(POLICY_FIXER.task), "streaming": True, "tools": [],
+                "system_message": {"content": POLICY_FIXER.system_prompt},
             })
             chunks: list[str] = []
             done_ev = asyncio.Event()
@@ -8340,12 +8317,7 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
                 "streaming": True,
                 "tools": [],  # No tools needed for pure generation
                 "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure expert. "
-                        "Generate production-ready infrastructure artifacts. "
-                        "Return ONLY the raw code/configuration — no markdown, "
-                        "no explanation text, no code fences."
-                    )
+                    "content": ARTIFACT_GENERATOR.system_prompt
                 },
             })
 
@@ -8699,10 +8671,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 raise RuntimeError("Copilot SDK not available")
             session = await _client.create_session({
                 "model": task_model, "streaming": True, "tools": [],
-                "system_message": {"content": system_msg or (
-                    "You are an Azure infrastructure expert performing a detailed analysis. "
-                    "Think step-by-step and explain your reasoning clearly."
-                )},
+                "system_message": {"content": system_msg or LLM_REASONER.system_prompt},
             })
             chunks: list[str] = []
             done_ev = asyncio.Event()
@@ -8850,10 +8819,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 raise RuntimeError("Copilot SDK not available")
             session = await _client.create_session({
                 "model": fix_model, "streaming": True, "tools": [],
-                "system_message": {"content": (
-                    "You are an Azure infrastructure expert. "
-                    "Return ONLY raw JSON — no markdown, no code fences."
-                )},
+                "system_message": {"content": DEEP_TEMPLATE_HEALER.system_prompt},
             })
             chunks: list[str] = []
             done_ev = asyncio.Event()
@@ -10507,7 +10473,7 @@ async def websocket_chat(websocket: WebSocket):
             return
 
         personalized_system_message = (
-            SYSTEM_MESSAGE + "\n" + user_context.to_prompt_context()
+            WEB_CHAT_AGENT.system_prompt + "\n" + user_context.to_prompt_context()
         )
 
         tools = get_all_tools()

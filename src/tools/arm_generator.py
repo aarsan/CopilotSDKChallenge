@@ -955,17 +955,13 @@ async def modify_arm_template_with_copilot(
 
     for attempt in range(1, max_attempts + 1):
         try:
+            from src.agents import ARM_MODIFIER
             session = await copilot_client.create_session({
                 "model": model,
                 "streaming": True,
                 "tools": [],
                 "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure expert. "
-                        "You modify existing ARM templates based on user instructions. "
-                        "Return ONLY the complete modified ARM template as raw JSON — "
-                        "no markdown, no code fences, no explanation."
-                    )
+                    "content": ARM_MODIFIER.system_prompt
                 },
             })
 
@@ -1100,16 +1096,13 @@ async def generate_arm_template_with_copilot(
 
     for attempt in range(1, max_attempts + 1):
         try:
+            from src.agents import ARM_GENERATOR
             session = await copilot_client.create_session({
                 "model": model,
                 "streaming": True,
                 "tools": [],
                 "system_message": {
-                    "content": (
-                        "You are an Azure infrastructure expert. "
-                        "Generate production-ready ARM templates. "
-                        "Return ONLY raw JSON — no markdown, no code fences, no explanation."
-                    )
+                    "content": ARM_GENERATOR.system_prompt
                 },
             })
 

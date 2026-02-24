@@ -23,79 +23,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from src.agents import STANDARDS_EXTRACTOR
+
 # ── System prompt for the LLM ────────────────────────────────
 
-_SYSTEM_PROMPT = """\
-You are an infrastructure compliance expert. Your job is to extract
-structured governance and security standards from documentation text
-and output them as JSON.
-
-Each standard must be converted into this exact schema:
-
-{
-  "id": "STD-<SHORT-CODE>",
-  "name": "<Human-readable standard name>",
-  "description": "<Full description of what this standard enforces>",
-  "category": "<one of: encryption, identity, network, monitoring, tagging, naming, region, geography, cost, security, compliance, compute, data_protection, operations, general>",
-  "severity": "<one of: critical, high, medium, low>",
-  "scope": "<comma-separated Azure resource type globs, e.g. 'Microsoft.Storage/*,Microsoft.Sql/*' or '*' for all>",
-  "enabled": true,
-  "frameworks": ["<regulatory framework IDs this standard satisfies — zero or more of: compliance_hipaa, compliance_soc2, compliance_pci, compliance_gdpr, compliance_data_residency>"],
-  "rule": {
-    "type": "<one of: property, tags, allowed_values, cost_threshold>",
-    ... type-specific fields (see below) ...
-    "remediation": "<How to fix a resource that violates this standard>"
-  }
-}
-
-IMPORTANT: The "frameworks" field connects standards to regulatory requirements.
-A single standard can satisfy multiple compliance frameworks. For example:
-- "HTTPS Required" satisfies HIPAA, PCI-DSS, and SOC 2 → ["compliance_hipaa", "compliance_pci", "compliance_soc2"]
-- "Encryption at Rest" satisfies HIPAA, PCI-DSS, GDPR → ["compliance_hipaa", "compliance_pci", "compliance_gdpr"]
-- A naming convention standard may satisfy none → []
-
-Always tag standards with ALL applicable frameworks based on the regulatory requirements they help satisfy.
-
-Rule type schemas:
-
-1. property — Check a resource property value
-   {"type": "property", "key": "<ARM property name>", "operator": "<==|!=|>=|<=|in|exists>", "value": <expected>, "remediation": "..."}
-   
-   IMPORTANT property key mappings for Azure ARM:
-   - TLS version → "minTlsVersion" (checks minTlsVersion/minimumTlsVersion/minimalTlsVersion per resource type)
-   - HTTPS required → "httpsOnly" (checks httpsOnly or supportsHttpsTrafficOnly)
-   - Managed identity → "managedIdentity" (checks identity.type on the resource)
-   - Public network access → "publicNetworkAccess"
-   - Encryption at rest → "encryptionAtRest"
-   - Soft delete → "enableSoftDelete"
-   - Purge protection → "enablePurgeProtection"
-   - RBAC authorization → "enableRbacAuthorization"
-   - AAD authentication → "aadAuthEnabled"
-   - Blob public access → "allowBlobPublicAccess"
-
-2. tags — Check for required resource tags
-   {"type": "tags", "required_tags": ["environment", "owner", ...], "remediation": "..."}
-
-3. allowed_values — Check a value is in an allowlist
-   {"type": "allowed_values", "key": "<property>", "values": ["value1", "value2", ...], "remediation": "..."}
-   Common use: allowed regions → key="location", values=["eastus", "westus2", ...]
-
-4. cost_threshold — Monthly cost cap (informational)
-   {"type": "cost_threshold", "max_monthly_usd": 500, "remediation": "..."}
-
-5. naming_convention — Resource naming pattern (category: naming)
-   {"type": "naming_convention", "pattern": "<naming pattern using placeholders like {env}, {app}, {resourcetype}, {region}, {instance}>", "examples": ["prod-myapp-sql-eastus-001"], "remediation": "..."}
-   Use this for any naming standard. Common placeholders: {env}, {app}, {resourcetype}, {region}, {instance}, {org}, {project}, {team}
-
-CRITICAL RULES:
-- Output ONLY a JSON array of standard objects — no markdown, no explanation
-- Merge related requirements into single standards where possible
-- Use meaningful IDs like STD-ENCRYPT-TLS, STD-TAG-REQUIRED, STD-REGION-ALLOWED
-- Set appropriate severity: critical for security/data protection, high for identity/access, medium for monitoring, low for cost
-- Set appropriate scope patterns — don't use '*' when a standard only applies to specific resource types
-- If a requirement is vague or non-actionable as an ARM check, still include it with type "property" and a descriptive remediation
-- Extract ALL standards from the document, even if there are many
-"""
+_SYSTEM_PROMPT = STANDARDS_EXTRACTOR.system_prompt
 
 _USER_PROMPT_TEMPLATE = """\
 Extract all governance and security standards from the following documentation.
