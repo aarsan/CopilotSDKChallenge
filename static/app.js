@@ -5,6 +5,13 @@
  * and AI chat for complex design tasks (infrastructure generation).
  */
 
+// ── Copilot SDK Badge ────────────────────────────────────────
+function _copilotBadge(full) {
+    return full
+        ? '<span class="copilot-badge copilot-badge-lg">✦ GitHub Copilot SDK</span>'
+        : '<span class="copilot-badge">✦ Copilot SDK</span>';
+}
+
 // ── State ───────────────────────────────────────────────────
 let sessionToken = null;
 let currentUser = null;
@@ -203,9 +210,9 @@ function navigateTo(page) {
     // Update header
     const titles = {
         dashboard: ['Dashboard', 'Overview'],
-        services: ['Service Catalog', `${allServices.length} services available`],
-        templates: ['Template Catalog', `${allTemplates.length} templates available`],
-        governance: ['Governance Standards', `${allStandards.length} organization standards`],
+        services: ['Service Catalog', 'Powered by GitHub Copilot SDK'],
+        templates: ['Template Catalog', 'Powered by GitHub Copilot SDK'],
+        governance: ['Governance Standards', 'Powered by GitHub Copilot SDK'],
         activity: ['Observability', 'Deployments & service validation'],
         chat: ['Infrastructure Designer', 'Powered by GitHub Copilot SDK'],
     };
@@ -1117,7 +1124,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
         </div>
 
         <div class="onboard-pipeline">
-            <div class="pipeline-label">Onboarding Pipeline</div>
+            <div class="pipeline-label">Onboarding Pipeline ${_copilotBadge()}</div>
             <div class="pipeline-steps">
                 ${pipelineSteps.map(s => `
                     <div class="pipeline-step" title="${s.desc}">
@@ -1126,7 +1133,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
                     </div>
                 `).join('<span class="pipeline-arrow">→</span>')}
             </div>
-            <p class="pipeline-desc">All steps run automatically with AI-powered auto-healing. Validated against organization governance standards &amp; policies.</p>
+            <p class="pipeline-desc">All steps run automatically with Copilot SDK-powered auto-healing. Validated against organization governance standards &amp; policies.</p>
         </div>
 
         <div class="onboard-model-selector" id="model-selector-container">
@@ -1174,7 +1181,7 @@ function _renderOnboardButton(svc, status, latestVersion) {
             </div>
             <div class="validation-detail">
                 <strong>${escapeHtml(svc.name)}</strong> is approved for use in the organization but doesn't
-                have an ARM template yet. Onboarding will auto-generate a validated, policy-compliant template.
+                have an ARM template yet. The Copilot SDK will auto-generate a validated, policy-compliant template.
             </div>
             <div class="validation-actions">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
@@ -1242,8 +1249,8 @@ function _renderOnboardButton(svc, status, latestVersion) {
             <span class="validation-title">One-Click Onboarding</span>
         </div>
         <div class="validation-detail">
-            Auto-generates an ARM template for <strong>${escapeHtml(svc.name)}</strong>, validates it against
-            organization governance policies, deploys to a test resource group, then promotes to approved.
+            Uses the Copilot SDK to auto-generate an ARM template for <strong>${escapeHtml(svc.name)}</strong>, validate it against
+            organization governance policies, deploy to a test resource group, then promote to approved.
             No manual configuration needed.
         </div>
         <div class="validation-actions">
@@ -2312,12 +2319,13 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ I found some issues during validation. I can try to fix them automatically, or you can describe what needs to change below.
+                ❌ I found some issues during validation. I can use the Copilot SDK to analyze and fix them automatically, or you can describe what needs to change below.
             </div>
-            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
                 <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
                     🔧 Auto-Heal
                 </button>
+                ${_copilotBadge()}
                 <button class="btn btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
                     🧪 Re-validate
                 </button>
@@ -2375,8 +2383,8 @@ function showTemplateDetail(templateId) {
 
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
-            <h4>🧪 Validation</h4>
-            <p class="tmpl-validate-desc">I'll deploy this to a temporary Azure resource group to test it. If anything breaks, I'll try to fix it automatically. The temp resources are cleaned up afterward.</p>
+            <h4>🧪 Validation ${_copilotBadge()}</h4>
+            <p class="tmpl-validate-desc">I'll deploy this to a temporary Azure resource group to test it. If anything breaks, I'll use the Copilot SDK to analyze the errors and fix the template automatically. The temp resources are cleaned up afterward.</p>
             <div id="tmpl-validate-params"></div>
             <div class="tmpl-validate-actions">
                 <select id="tmpl-validate-region" class="form-control" style="width:auto; display:inline-block; margin-right:0.5rem;">
@@ -2396,8 +2404,8 @@ function showTemplateDetail(templateId) {
 
         <!-- Deploy form (hidden by default) -->
         <div id="tmpl-deploy-form" class="detail-section tmpl-deploy-section" style="display:none;">
-            <h4>🚀 Deploy to Azure</h4>
-            <p class="tmpl-deploy-desc">Configure the deployment target and parameter values.</p>
+            <h4>🚀 Deploy to Azure ${_copilotBadge()}</h4>
+            <p class="tmpl-deploy-desc">Configure the deployment target and parameter values. Self-healing errors are resolved via the Copilot SDK.</p>
             <div class="tmpl-deploy-field">
                 <label class="tmpl-deploy-label">Resource Group <span class="param-required">required</span></label>
                 <input type="text" class="form-control" id="tmpl-deploy-rg" placeholder="e.g. my-app-rg" />
@@ -2456,8 +2464,8 @@ function showTemplateDetail(templateId) {
 
                 <!-- Request Changes -->
                 <div class="detail-section tmpl-revision-section">
-                    <h4>📝 Request Changes</h4>
-                    <p class="tmpl-revision-desc">Describe what you want changed and InfraForge will update the template automatically. Changes are policy-checked and create a new version.</p>
+                    <h4>📝 Request Changes ${_copilotBadge()}</h4>
+                    <p class="tmpl-revision-desc">Describe what you want changed and the Copilot SDK will analyze, policy-check, and update the template automatically. Creates a new version.</p>
                     <div class="tmpl-revision-input-group">
                         <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
                             rows="2"
@@ -3178,6 +3186,7 @@ function _renderComplianceScanReport(data) {
             <button class="btn btn-sm scan-remediate-btn" onclick="runComplianceRemediation('${escapeHtml(data.template_id)}')">
                 🔧 Generate Remediation Plan
             </button>
+            ${_copilotBadge()}
             <div id="scan-remediation-results"></div>
         </div>`;
     }
@@ -3195,7 +3204,7 @@ async function runComplianceRemediation(templateId) {
     resultsEl.innerHTML = `
     <div class="scan-loading">
         <div class="scan-loading-spinner"></div>
-        <span>Analyzing ${_lastScanData.violations} violations and generating remediation plan…</span>
+        <span>Copilot SDK is analyzing ${_lastScanData.violations} violations and generating a remediation plan…</span>
     </div>`;
 
     try {
@@ -3227,6 +3236,7 @@ function _renderRemediationPlan(templateId, data) {
             <div class="remed-plan-title">
                 <span class="remed-plan-icon">📋</span>
                 <h4>Remediation Plan</h4>
+                ${_copilotBadge()}
                 <span class="remed-plan-count">${steps.length} step${steps.length > 1 ? 's' : ''}</span>
             </div>
             <p class="remed-plan-summary">${escapeHtml(data.summary)}</p>
@@ -3331,7 +3341,7 @@ function _renderRemediationPlan(templateId, data) {
             <button class="btn remed-execute-btn" onclick="executeRemediationPlan('${escapeHtml(templateId)}')">
                 ⚡ Execute Plan & Update Templates
             </button>
-            <div class="remed-execute-warn">This will create new template versions with compliance fixes applied.</div>
+            <div class="remed-execute-warn">This will create new template versions with compliance fixes applied via the Copilot SDK.</div>
         </div>
     </div>`;
 
@@ -3824,7 +3834,7 @@ async function runTemplateValidation(templateId) {
         resultsDiv.innerHTML = '<div class="compose-loading">🧪 Working on it… This usually takes 1-5 minutes.</div>';
     }
 
-    showToast('🧪 Starting validation — I\'ll deploy the template and see how Azure responds', 'info');
+    showToast('🧪 Starting validation — Copilot SDK will deploy the template and handle any issues', 'info');
 
     // Initialize tracker
     const tracker = {
@@ -4033,7 +4043,7 @@ async function submitRevision(templateId) {
     }
 
     btn.disabled = true;
-    btn.textContent = '⏳ Checking policies…';
+    btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
 
@@ -4080,9 +4090,9 @@ async function submitRevision(templateId) {
         }
 
         // ── Step 2: Submit revision ──────────────────────────
-        btn.textContent = '⏳ Revising template…';
+        btn.textContent = '⏳ Copilot SDK revising template…';
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Analyzing request and recomposing template…</div>';
+        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Copilot SDK is analyzing the request and recomposing the template…</div>';
 
         const revRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/revise`, {
             method: 'POST',
@@ -4512,6 +4522,7 @@ function _renderDeployAgentEvent(container, event) {
                 <div class="deploy-agent-analysis-header">
                     <span class="deploy-agent-analysis-icon">🧠</span>
                     <span>Deployment Agent</span>
+                    ${_copilotBadge()}
                 </div>
                 <div class="deploy-agent-analysis-content">
                     ${renderMarkdown(content)}
@@ -4642,6 +4653,10 @@ function _renderDeployProgress(container, event, ctx) {
 
         // Header stage bar
         flowchart.innerHTML = `
+            <div class="vf-pipeline-header">
+                <span class="vf-pipeline-label">Validation Pipeline</span>
+                ${_copilotBadge(true)}
+            </div>
             <div class="vf-stage-bar">
                 <div class="vf-stage vf-stage-active" data-vf-stage="deploy">
                     <div class="vf-stage-dot"></div>
@@ -5087,7 +5102,7 @@ function _renderDeployProgress(container, event, ctx) {
 
 /** Auto-heal a failed template — system fixes it, not the user */
 async function autoHealTemplate(templateId) {
-    showToast('🔧 Let me try to fix this automatically…', 'info');
+    showToast('🔧 Let me use the Copilot SDK to fix this automatically…', 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
@@ -5753,16 +5768,16 @@ async function submitPromptCompose() {
     }
 
     btn.disabled = true;
-    btn.textContent = '⏳ Checking policies…';
+    btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
 
     try {
         // ── Step 1: Policy pre-check via a lightweight POST ──
         // We reuse the compose-from-prompt endpoint but show incremental feedback
-        btn.textContent = '⏳ Analyzing services…';
+        btn.textContent = '⏳ Copilot SDK analyzing services…';
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Identifying services, checking policies, resolving dependencies…</div>';
+        resultDiv.innerHTML = '<div class="tmpl-revision-loading">Copilot SDK is identifying services, checking policies, resolving dependencies…</div>';
 
         const res = await fetch('/api/catalog/templates/compose-from-prompt', {
             method: 'POST',

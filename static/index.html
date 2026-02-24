@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=91">
+    <link rel="stylesheet" href="/static/styles.css?v=92">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -674,7 +674,7 @@
     <div id="modal-template-onboard" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-onboard')">
         <div class="modal-dialog modal-wide" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3>📦 Create Template</h3>
+                <h3>📦 Create Template <span class="copilot-badge copilot-badge-lg">✦ GitHub Copilot SDK</span></h3>
                 <button class="modal-close" onclick="closeModal('modal-template-onboard')">×</button>
             </div>
 
@@ -696,7 +696,7 @@
                         <textarea id="compose-prompt-input" class="form-control compose-prompt-textarea"
                             rows="3"
                             placeholder="e.g. I need a VM with a SQL database and Key Vault for secrets management…"></textarea>
-                        <div class="compose-prompt-hint">InfraForge will determine the right Azure services, check policies, and compose the template for you.</div>
+                        <div class="compose-prompt-hint">The Copilot SDK will determine the right Azure services, check policies, and compose the template for you.</div>
                     </div>
                     <div id="compose-prompt-policy" class="tmpl-revision-policy" style="display:none;"></div>
                     <div id="compose-prompt-result" style="display:none;"></div>
@@ -890,13 +890,13 @@
     <div id="modal-import-standards" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-import-standards')">
         <div class="modal-dialog modal-lg" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3>📥 Import Organization Standards</h3>
+                <h3>📥 Import Organization Standards <span class="copilot-badge copilot-badge-lg">✦ GitHub Copilot SDK</span></h3>
                 <button class="modal-close" onclick="closeModal('modal-import-standards')">×</button>
             </div>
             <div class="modal-body">
                 <p class="import-intro">
                     Import your organization's existing governance policies, security standards, or compliance requirements.
-                    InfraForge uses AI to extract actionable rules and convert them into enforceable standards automatically.
+                    The Copilot SDK extracts actionable rules and converts them into enforceable standards automatically.
                 </p>
 
                 <!-- Source Tabs -->
@@ -956,7 +956,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=91"></script>
+    <script src="/static/app.js?v=92"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
