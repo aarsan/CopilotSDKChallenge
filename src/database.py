@@ -1595,8 +1595,13 @@ def compute_next_semver(
         "patch"  — auto-heal / bugfix         (1.0.0 → 1.0.1)
         "initial" — first version             (always 1.0.0)
     """
-    if change_type == "initial" or not current_semver:
+    if change_type == "initial":
         return "1.0.0"
+
+    # When no prior version exists, assume 1.0.0 as the base so that
+    # non-initial bumps increment correctly (e.g. patch → 1.0.1).
+    if not current_semver:
+        current_semver = "1.0.0"
 
     parts = current_semver.split(".")
     try:
