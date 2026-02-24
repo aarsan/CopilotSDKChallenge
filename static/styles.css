@@ -7965,6 +7965,156 @@ body {
 .ado-done-actions {
     display: flex;
     gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+/* ── Pipeline Results Report ── */
+.ado-report-stats {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.35rem;
+}
+
+.ado-report-stat {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+    color: var(--text-secondary);
+}
+
+.ado-report-stat-ok {
+    background: color-mix(in srgb, #3fb950 12%, transparent);
+    color: #3fb950;
+}
+
+.ado-report-stat-fail {
+    background: color-mix(in srgb, #f85149 12%, transparent);
+    color: #f85149;
+}
+
+.ado-report-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-top: 0.6rem;
+}
+
+.ado-report-card {
+    border-radius: 8px;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--border-muted);
+    background: var(--surface-primary);
+}
+
+.ado-report-card-ok {
+    border-color: color-mix(in srgb, #3fb950 25%, var(--border-muted));
+    background: color-mix(in srgb, #3fb950 3%, var(--surface-primary));
+}
+
+.ado-report-card-fail {
+    border-color: color-mix(in srgb, #f85149 25%, var(--border-muted));
+    background: color-mix(in srgb, #f85149 3%, var(--surface-primary));
+}
+
+.ado-report-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.ado-report-card-icon { font-size: 0.85rem; }
+
+.ado-report-card-name {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+}
+
+.ado-report-card-ver {
+    font-size: 0.68rem;
+    font-weight: 600;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    margin-left: auto;
+}
+
+.ado-report-changes { margin-top: 0.45rem; }
+
+.ado-report-changes-title,
+.ado-report-changelog-title {
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+}
+
+.ado-report-changes-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.ado-report-changes-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.ado-report-change-step {
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ado-report-change-desc {
+    color: var(--text-secondary);
+}
+
+.ado-report-change-resource {
+    font-size: 0.62rem;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    color: var(--text-muted);
+    margin-left: auto;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.ado-report-changelog {
+    margin-top: 0.45rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border-muted);
+}
+
+.ado-report-changelog-text {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.ado-proof-error-msg {
+    font-size: 0.72rem;
+    color: #f85149;
+    margin-top: 0.25rem;
 }
 
 .ado-error {

@@ -3536,13 +3536,94 @@ function _adoHandleEvent(container, event, state) {
         case 'pipeline_done': {
             const allOk = event.all_success;
             const dur = event.duration_ms ? ` in ${_adoFormatDuration(event.duration_ms)}` : '';
+            const results = event.results || [];
+            const successCount = results.filter(r => r.success).length;
+            const failCount = results.length - successCount;
+
             const banner = document.createElement('div');
             banner.className = `ado-pipeline-done ${allOk ? 'ado-done-ok' : 'ado-done-partial'}`;
+
+            // Build per-result cards
+            let resultsHtml = '';
+            for (const r of results) {
+                const ok = r.success;
+                const icon = ok ? '✅' : '❌';
+                const name = r.template_name || r.template_id || 'Unknown';
+
+                // Changes list
+                let changesHtml = '';
+                if (r.changes_made && r.changes_made.length > 0) {
+                    changesHtml = `<div class="ado-report-changes">
+                        <div class="ado-report-changes-title">Changes Applied</div>
+                        <ul class="ado-report-changes-list">
+                            ${r.changes_made.map(c => `<li>
+                                <span class="ado-report-change-step">Step ${c.step || '?'}</span>
+                                <span class="ado-report-change-desc">${escapeHtml(c.description || '')}</span>
+                                ${c.resource ? `<span class="ado-report-change-resource">${escapeHtml(c.resource)}</span>` : ''}
+                            </li>`).join('')}
+                        </ul>
+                    </div>`;
+                }
+
+                // Deploy proof
+                let proofHtml = '';
+                const dp = r.deploy_proof;
+                if (dp && !dp.error) {
+                    proofHtml = `<div class="ado-deploy-proof">
+                        <div class="ado-proof-title">🔒 Deployment Validation Proof</div>
+                        <div class="ado-proof-grid">
+                            <div class="ado-proof-item"><span class="ado-proof-label">Subscription</span><span class="ado-proof-value">${escapeHtml(dp.subscription_id || '')}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Resource Group</span><span class="ado-proof-value">${escapeHtml(dp.resource_group || '')}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Deployment</span><span class="ado-proof-value">${escapeHtml(dp.deployment_name || '')}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Region</span><span class="ado-proof-value">${escapeHtml(dp.region || '')}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Started</span><span class="ado-proof-value">${dp.started_at ? new Date(dp.started_at).toLocaleString() : '—'}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Completed</span><span class="ado-proof-value">${dp.completed_at ? new Date(dp.completed_at).toLocaleString() : '—'}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Cleanup</span><span class="ado-proof-value">${dp.cleanup_initiated_at ? new Date(dp.cleanup_initiated_at).toLocaleString() : '—'}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Status</span><span class="ado-proof-value ado-proof-status-${dp.what_if_status === 'success' ? 'ok' : 'warn'}">${escapeHtml(dp.what_if_status || '?')}</span></div>
+                            <div class="ado-proof-item"><span class="ado-proof-label">Resources</span><span class="ado-proof-value">${dp.total_changes || 0} operation(s)</span></div>
+                        </div>
+                        ${dp.change_counts ? `<div class="ado-proof-counts">${Object.entries(dp.change_counts).map(([k,v]) => `<span class="ado-proof-count ado-proof-count-${k.toLowerCase()}">${k}: ${v}</span>`).join('')}</div>` : ''}
+                    </div>`;
+                } else if (dp && dp.error) {
+                    proofHtml = `<div class="ado-deploy-proof ado-proof-error">
+                        <div class="ado-proof-title">⚠️ Deployment Validation</div>
+                        <div class="ado-proof-error-msg">${escapeHtml(dp.error)}</div>
+                    </div>`;
+                }
+
+                // Changelog
+                let changelogHtml = '';
+                if (r.changelog) {
+                    changelogHtml = `<div class="ado-report-changelog">
+                        <div class="ado-report-changelog-title">Changelog</div>
+                        <div class="ado-report-changelog-text">${escapeHtml(r.changelog)}</div>
+                    </div>`;
+                }
+
+                resultsHtml += `
+                <div class="ado-report-card ${ok ? 'ado-report-card-ok' : 'ado-report-card-fail'}">
+                    <div class="ado-report-card-header">
+                        <span class="ado-report-card-icon">${icon}</span>
+                        <span class="ado-report-card-name">${escapeHtml(name)}</span>
+                        ${r.new_semver ? `<span class="ado-report-card-ver">v${escapeHtml(r.new_semver)}</span>` : ''}
+                    </div>
+                    ${changesHtml}
+                    ${proofHtml}
+                    ${changelogHtml}
+                </div>`;
+            }
+
             banner.innerHTML = `
                 <div class="ado-done-header">
                     <span class="ado-done-icon">${allOk ? '✅' : '⚠️'}</span>
                     <span class="ado-done-title">${allOk ? 'Pipeline succeeded' : 'Pipeline completed with errors'}${dur}</span>
                 </div>
+                <div class="ado-report-stats">
+                    <span class="ado-report-stat ado-report-stat-total">${results.length} template(s)</span>
+                    ${successCount > 0 ? `<span class="ado-report-stat ado-report-stat-ok">${successCount} succeeded</span>` : ''}
+                    ${failCount > 0 ? `<span class="ado-report-stat ado-report-stat-fail">${failCount} failed</span>` : ''}
+                </div>
+                ${resultsHtml ? `<div class="ado-report-results">${resultsHtml}</div>` : ''}
                 <div class="ado-done-actions">
                     <button class="btn btn-sm scan-rescan-btn" onclick="runComplianceScan('${escapeHtml(event.template_id)}')">Re-scan compliance</button>
                 </div>
