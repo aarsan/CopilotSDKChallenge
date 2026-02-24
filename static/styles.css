@@ -5951,7 +5951,7 @@ body {
     border-radius: 8px;
     padding: 1rem 1.1rem;
     cursor: pointer;
-    transition: box-shadow 0.15s, border-color 0.15s;
+    transition: box-shadow 0.15s, border-color 0.15s, opacity 0.15s;
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
@@ -5960,9 +5960,52 @@ body {
     box-shadow: 0 2px 12px rgba(0,0,0,0.08);
     border-color: var(--accent-blue);
 }
-.tmpl-card.type-foundation  { border-left-color: #22c55e; }
-.tmpl-card.type-workload    { border-left-color: #f59e0b; }
-.tmpl-card.type-composite   { border-left-color: #3b82f6; }
+/* Status-aware left borders */
+.tmpl-card.tmpl-status-approved  { border-left-color: #22c55e; }
+.tmpl-card.tmpl-status-validated { border-left-color: #059669; }
+.tmpl-card.tmpl-status-passed    { border-left-color: #3b82f6; }
+.tmpl-card.tmpl-status-draft     { border-left-color: var(--text-secondary); border-left-style: dashed; }
+.tmpl-card.tmpl-status-failed    { border-left-color: #f85149; }
+.tmpl-card.tmpl-status-deprecated { border-left-color: var(--accent-orange); opacity: 0.65; }
+/* Mute non-published cards */
+.tmpl-card.tmpl-status-draft,
+.tmpl-card.tmpl-status-passed,
+.tmpl-card.tmpl-status-failed { opacity: 0.78; }
+.tmpl-card.tmpl-status-draft:hover,
+.tmpl-card.tmpl-status-passed:hover,
+.tmpl-card.tmpl-status-failed:hover { opacity: 1; }
+
+/* ── Lifecycle progress bar ─────────────────────── */
+.tmpl-lifecycle {
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.02em;
+}
+.lc-step {
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+.lc-sep {
+    color: var(--text-secondary);
+    opacity: 0.4;
+    font-size: 0.7rem;
+}
+.lc-done {
+    color: #22c55e;
+    background: rgba(34,197,94,0.1);
+}
+.lc-pending {
+    color: var(--text-secondary);
+    opacity: 0.5;
+}
+.lc-failed {
+    color: #f85149;
+    background: rgba(248,81,73,0.1);
+}
 
 .tmpl-card-header {
     display: flex;
@@ -7821,6 +7864,24 @@ body {
     background: var(--accent-bg);
     color: var(--accent);
     font-weight: 600;
+}
+
+.tmpl-semver-badge {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-weight: 700;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    letter-spacing: 0.02em;
+}
+
+.tmpl-card-resources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0 0.85rem 0.5rem;
 }
 
 /* Make version items clickable */

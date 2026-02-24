@@ -1468,12 +1468,32 @@ async def get_template_catalog(
     template_type: Optional[str] = None,
 ):
     """Return the template catalog from the database."""
-    from src.database import get_all_templates
+    from src.database import get_all_templates, get_backend
 
     try:
         templates = await get_all_templates(
             category=category, fmt=fmt, template_type=template_type,
         )
+
+        # Enrich with latest semver from template_versions (single query)
+        if templates:
+            backend = await get_backend()
+            semver_rows = await backend.execute(
+                """SELECT tv.template_id, tv.semver
+                   FROM template_versions tv
+                   INNER JOIN (
+                       SELECT template_id, MAX(version) AS max_ver
+                       FROM template_versions
+                       WHERE semver IS NOT NULL
+                       GROUP BY template_id
+                   ) latest ON tv.template_id = latest.template_id
+                              AND tv.version = latest.max_ver""",
+                (),
+            )
+            semver_map = {r["template_id"]: r["semver"] for r in semver_rows if r.get("semver")}
+            for t in templates:
+                t["latest_semver"] = semver_map.get(t["id"])
+
         return JSONResponse({
             "templates": templates,
             "total": len(templates),

@@ -732,6 +732,28 @@ async def init_db() -> None:
     await backend.init()
     # Seed governance tables on first run (no-op if already populated)
     await seed_governance_data()
+    # ── Lifecycle integrity: reset templates that were shortcutted to
+    #    'approved' without completing the validation pipeline.
+    #    A template is considered shortcutted if it is 'approved' but has
+    #    no validated version (no semver assigned and no validated_at). ──
+    try:
+        await backend.execute_write(
+            """
+            UPDATE catalog_templates
+               SET status   = 'draft',
+                   updated_at = ?
+             WHERE status = 'approved'
+               AND id NOT IN (
+                   SELECT DISTINCT template_id
+                     FROM template_versions
+                    WHERE status = 'approved'
+                      AND semver IS NOT NULL
+               )
+            """,
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+    except Exception as exc:
+        logger.warning(f"Template lifecycle migration skipped: {exc}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1425,7 +1447,7 @@ async def upsert_template(tmpl: dict) -> None:
             json.dumps(tmpl.get("service_ids", tmpl.get("composedOf", []))),
             1 if tmpl.get("is_blueprint", tmpl.get("category") == "blueprint") else 0,
             tmpl.get("registered_by", "platform-team"),
-            tmpl.get("status", "approved"),
+            tmpl.get("status", "draft"),
             tmpl.get("template_type", "workload"),
             json.dumps(tmpl.get("provides", [])),
             json.dumps(tmpl.get("requires", [])),

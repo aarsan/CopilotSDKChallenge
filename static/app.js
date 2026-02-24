@@ -2126,19 +2126,39 @@ function renderTemplateTable(templates) {
         deprecated: '⚠️ Deprecated',
     };
 
+    // Lifecycle progress: which stages are completed for this status
+    const lifecycleStages = ['Composed', 'Tested', 'Validated', 'Published'];
+    const statusProgress = {
+        draft: 1,       // Composed only
+        passed: 2,      // Composed + Tested
+        failed: 1,      // Stuck (composed but failed)
+        validated: 3,    // Composed + Tested + Validated
+        approved: 4,    // All stages complete
+        deprecated: 4,
+    };
+
     grid.innerHTML = templates.map(tmpl => {
         const ttype = tmpl.template_type || 'workload';
         const icon = typeIcons[ttype] || '📋';
-        const requires = tmpl.requires || [];
-        const provides = tmpl.provides || [];
-        const optionalRefs = tmpl.optional_refs || [];
-        const status = tmpl.status || 'approved';
+        const status = tmpl.status || 'draft';
         const serviceIds = tmpl.service_ids || [];
-        const isStandalone = ttype === 'foundation' || ttype === 'composite';
-        const isValidating = _activeTemplateValidations[tmpl.id]?.running;
+        const provides = tmpl.provides || [];
+        const semver = tmpl.latest_semver || (tmpl.active_version ? `v${tmpl.active_version}` : null);
+        const progress = statusProgress[status] || 1;
+        const isPublished = status === 'approved';
+        const isFailed = status === 'failed';
+
+        const lifecycleHtml = lifecycleStages.map((stage, i) => {
+            const step = i + 1;
+            let cls = 'lc-pending';
+            if (step <= progress && !isFailed) cls = 'lc-done';
+            else if (isFailed && step === progress) cls = 'lc-failed';
+            else if (isFailed && step < progress) cls = 'lc-done';
+            return `<span class="lc-step ${cls}" title="${stage}">${stage}</span>`;
+        }).join('<span class="lc-sep">›</span>');
 
         return `
-        <div class="tmpl-card tmpl-card-${ttype}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
+        <div class="tmpl-card tmpl-card-${ttype} tmpl-status-${status}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
             <div class="tmpl-card-header">
                 <div class="tmpl-card-title">
                     <span class="tmpl-type-icon">${icon}</span>
@@ -2148,38 +2168,21 @@ function renderTemplateTable(templates) {
                     </div>
                 </div>
                 <div class="tmpl-card-badges">
-                    ${isValidating ? '<span class="tmpl-validating-badge">🧪 Validating…</span>' : ''}
-                    <span class="tmpl-type-badge tmpl-type-${ttype}">${typeLabels[ttype]}</span>
+                    ${semver ? `<span class="tmpl-semver-badge">${escapeHtml(semver)}</span>` : ''}
                     <span class="status-badge ${status}">${statusLabelsMap[status] || status}</span>
                 </div>
             </div>
+            <div class="tmpl-lifecycle">${lifecycleHtml}</div>
             ${tmpl.description ? `<p class="tmpl-card-desc">${escapeHtml(tmpl.description)}</p>` : ''}
-            <div class="tmpl-card-body">
-                <div class="tmpl-provides">
-                    <span class="tmpl-section-label">Creates:</span>
-                    ${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`).join('')}
-                </div>
-                ${requires.length ? `
-                <div class="tmpl-requires">
-                    <span class="tmpl-section-label">⚠️ Requires:</span>
-                    ${requires.map(r => `<span class="tmpl-chip tmpl-chip-requires" title="${escapeHtml(r.reason || '')}">${_shortType(r.type || r)}</span>`).join('')}
-                </div>` : ''}
-                ${optionalRefs.length ? `
-                <div class="tmpl-optional">
-                    <span class="tmpl-section-label">Optional:</span>
-                    ${optionalRefs.map(o => `<span class="tmpl-chip tmpl-chip-optional" title="${escapeHtml(o.reason || '')}">${_shortType(o.type || o)}</span>`).join('')}
-                </div>` : ''}
-            </div>
+            ${provides.length ? `
+            <div class="tmpl-card-resources">
+                ${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`).join('')}
+            </div>` : ''}
             <div class="tmpl-card-footer">
                 <div class="tmpl-card-meta">
-                    <span class="tmpl-format-badge">${escapeHtml(tmpl.format || 'arm')}</span>
                     <span class="tmpl-cat-badge">${escapeHtml(tmpl.category || '')}</span>
                     ${serviceIds.length ? `<span class="tmpl-svc-count">${serviceIds.length} service${serviceIds.length !== 1 ? 's' : ''}</span>` : ''}
-                    ${tmpl.active_version ? `<span class="tmpl-ver-badge">v${tmpl.active_version}</span>` : ''}
                 </div>
-                <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
-                    ${isStandalone ? '✅ Standalone' : '⚙️ Needs infra'}
-                </span>
             </div>
         </div>`;
     }).join('');
