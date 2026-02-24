@@ -3358,6 +3358,11 @@ async function executeRemediationPlan(templateId) {
     const execSection = document.querySelector('.remed-execute-section');
     if (!execSection) return;
 
+    // Remove any leftover pipeline element from a previous execution
+    // to avoid duplicate-ID conflicts with getElementById
+    const oldPipeline = document.getElementById('ado-pipeline');
+    if (oldPipeline) oldPipeline.remove();
+
     execSection.innerHTML = `<div class="ado-pipeline" id="ado-pipeline"></div>`;
     const pipeline = document.getElementById('ado-pipeline');
 
