@@ -311,15 +311,18 @@ _SCOPE_FIXES: dict[str, dict] = {
 
 
 async def init_standards() -> None:
-    """Seed default standards if the table is empty, then apply scope fixes."""
+    """Ensure schema migrations are applied. Does NOT auto-seed defaults."""
     backend = await get_backend()
     rows = await backend.execute(
         "SELECT COUNT(*) as cnt FROM org_standards", ()
     )
     if rows and rows[0]["cnt"] > 0:
-        logger.info("Organization standards already seeded — applying scope fixes")
+        logger.info("Organization standards present (%d) — applying migrations", rows[0]["cnt"])
         await _apply_scope_fixes(backend)
         return
+
+    logger.info("Organization standards table is empty — ready for generation")
+    return
 
     logger.info("Seeding default organization standards...")
     now = datetime.now(timezone.utc).isoformat()
