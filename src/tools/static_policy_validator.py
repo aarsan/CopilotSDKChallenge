@@ -418,6 +418,20 @@ def _check_property_standard(std, rule, scope, severity, enforcement,
             ))
             continue
 
+        # Unresolved ARM expressions cannot be evaluated statically
+        if isinstance(actual, str) and actual.startswith("[") and actual.endswith("]"):
+            results.append(PolicyCheckResult(
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=True,
+                severity=severity,
+                enforcement=enforcement,
+                message=f"{key} uses ARM expression (assumed compliant)",
+                resource_type=rtype,
+                resource_name=rname,
+            ))
+            continue
+
         passed = _evaluate_operator(actual, operator, expected)
 
         results.append(PolicyCheckResult(

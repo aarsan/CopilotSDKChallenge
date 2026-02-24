@@ -2319,12 +2319,12 @@ def _resolve_arm_value(val, params, variables):
     if not val.startswith("[") or not val.endswith("]"):
         return val
     expr = val[1:-1].strip()
-    m = re.match(r"parameters\(['\"](\w+)['\"]\)", expr)
+    m = re.match(r"parameters\(['\"]([a-zA-Z0-9_-]+)['\"]\)", expr)
     if m:
         pname = m.group(1)
         pdef = params.get(pname, {})
         return pdef.get("defaultValue", f"<param:{pname}>")
-    m = re.match(r"variables\(['\"](\w+)['\"]\)", expr)
+    m = re.match(r"variables\(['\"]([a-zA-Z0-9_-]+)['\"]\)", expr)
     if m:
         vname = m.group(1)
         return variables.get(vname, f"<var:{vname}>")
@@ -2366,6 +2366,11 @@ def _evaluate_rule(rule, resource, params, variables):
         actual_resolved = actual
         if isinstance(actual_resolved, str) and actual_resolved.startswith("<"):
             return True, f"`{key}` uses parameter (assumed compliant)"
+        # Unresolved compound ARM expressions (e.g. [toLower(replace(...))])
+        # cannot be evaluated statically — assume compliant.
+        if (isinstance(actual_resolved, str)
+                and actual_resolved.startswith("[") and actual_resolved.endswith("]")):
+            return True, f"`{key}` uses ARM expression (assumed compliant)"
 
         actual_str = str(actual_resolved).lower()
         expected_str = str(expected).lower() if expected is not None else ""
@@ -2418,6 +2423,8 @@ def _evaluate_rule(rule, resource, params, variables):
         actual_str = str(actual).lower()
         if isinstance(actual, str) and actual.startswith("<"):
             return True, f"`{key}` uses parameter (assumed compliant)"
+        if isinstance(actual, str) and actual.startswith("[") and actual.endswith("]"):
+            return True, f"`{key}` uses ARM expression (assumed compliant)"
         if actual_str in allowed:
             return True, f"`{key}` = `{actual}` (in allowed set)"
         return False, f"`{key}` = `{actual}` not in allowed values: {', '.join(allowed)}"
