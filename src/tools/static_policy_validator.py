@@ -419,17 +419,9 @@ def _check_property_standard(std, rule, scope, severity, enforcement,
         found, actual = _get_deep_property(res, key)
 
         if not found and operator not in ("exists", "not_exists"):
-            results.append(PolicyCheckResult(
-                rule_id=std["id"],
-                rule_name=std["name"],
-                passed=False,
-                severity=severity,
-                enforcement=enforcement,
-                message=f"Property '{key}' not set on resource",
-                resource_type=rtype,
-                resource_name=rname,
-                remediation=remediation,
-            ))
+            # Property doesn't exist on this resource type — skip it.
+            # This mirrors Azure Policy: a property check only evaluates
+            # against resources that actually have that property.
             continue
 
         # Unresolved ARM expressions cannot be evaluated statically

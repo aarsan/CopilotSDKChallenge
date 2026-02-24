@@ -2345,9 +2345,18 @@ def _get_nested(obj, dotpath, params=None, variables=None):
     return current
 
 
-def _evaluate_rule(rule, resource, params, variables):
+def _evaluate_rule(rule, resource, params, variables, scope="*"):
     """Evaluate one org_standard rule against a resource dict.
-    Returns (passed: bool, detail: str).
+    Returns (passed: bool | None, detail: str).
+    passed=True  → compliant
+    passed=False → violation
+    passed=None  → not applicable (property doesn't exist on this resource type)
+
+    When scope is '*' and a property is not found, we return None (not
+    applicable) because the standard applies to all resources and this
+    resource type may not support the property.  When scope is narrowed to
+    specific resource types, the property SHOULD exist — not-found is a
+    failure.
     """
     import re
     rule_type = rule.get("type", "property")
@@ -2361,7 +2370,17 @@ def _evaluate_rule(rule, resource, params, variables):
         if actual is None:
             if operator in ("!=", "not_equals"):
                 return True, f"`{key}` not set (satisfies != check)"
-            return False, f"`{key}` not found in resource"
+            if operator in ("exists",):
+                return False, f"`{key}` not found in resource"
+            # Scope-aware handling:
+            # - scope='*' → standard applies to ALL resource types.
+            #   Property not found means this resource type doesn't support
+            #   the property → not applicable (None).
+            # - scope is narrowed → standard targets specific resource types
+            #   that SHOULD have this property → failure.
+            if scope.strip() == "*":
+                return None, f"`{key}` not applicable to this resource type"
+            return False, f"`{key}` not found (expected on resources in scope `{scope}`)"
 
         actual_resolved = actual
         if isinstance(actual_resolved, str) and actual_resolved.startswith("<"):
@@ -2492,7 +2511,9 @@ async def _quick_compliance_check(arm_content: str) -> list[dict]:
         res_name = res.get("name", "?")
         matching = [s for s in standards if _scope_matches(s.get("scope", "*"), res_type)]
         for std in matching:
-            passed, detail = _evaluate_rule(std.get("rule", {}), res, params, variables)
+            passed, detail = _evaluate_rule(std.get("rule", {}), res, params, variables, scope=std.get("scope", "*"))
+            if passed is None:
+                continue  # Not applicable to this resource type
             if not passed:
                 violations.append({
                     "resource_type": res_type,
@@ -2700,7 +2721,13 @@ async def compliance_scan_template(template_id: str, request: Request):
             for std in matching:
                 rule = std.get("rule", {})
                 sev = std.get("severity", "medium")
-                passed, detail = _evaluate_rule(rule, res, params, variables)
+                passed, detail = _evaluate_rule(rule, res, params, variables, scope=std.get("scope", "*"))
+
+                # None = not applicable (property doesn't exist on this
+                # resource type).  Skip it entirely — don't count as a
+                # check or a violation.
+                if passed is None:
+                    continue
 
                 total_checks += 1
                 if sev in severity_counts:
