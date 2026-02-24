@@ -5006,18 +5006,18 @@ function _renderDeployProgress(container, event, ctx) {
     if (!container._vfState) {
         container.innerHTML = '';
         container._vfState = {
-            attempts: [],          // { step, status, events[], error, fix, deepHeal? }
-            currentAttempt: null,
-            seenErrors: {},        // error_code → count (dedup tracking)
+            nodeCount: 0,         // total flow nodes created
+            currentNodeId: null,  // id of the active main-flow node
+            activeStep: 0,        // logical step counter
+            seenErrors: {},       // error_code → count (dedup tracking)
             deepHealActive: false,
+            branchRegion: null,   // the current branch region element
+            branchNodes: {},      // service_id → branch node element
             finalResult: null,
         };
 
-        // Create the flowchart container structure
         const flowchart = document.createElement('div');
         flowchart.className = 'vf-flowchart';
-
-        // Header stage bar
         flowchart.innerHTML = `
             <div class="vf-pipeline-header">
                 <span class="vf-pipeline-label">Validation Pipeline</span>
@@ -5025,26 +5025,22 @@ function _renderDeployProgress(container, event, ctx) {
             </div>
             <div class="vf-stage-bar">
                 <div class="vf-stage vf-stage-active" data-vf-stage="deploy">
-                    <div class="vf-stage-dot"></div>
-                    <span>Deploy</span>
+                    <div class="vf-stage-dot"></div><span>Deploy</span>
                 </div>
                 <div class="vf-stage-connector-h"></div>
                 <div class="vf-stage" data-vf-stage="analyze">
-                    <div class="vf-stage-dot"></div>
-                    <span>Analyze</span>
+                    <div class="vf-stage-dot"></div><span>Analyze</span>
                 </div>
                 <div class="vf-stage-connector-h"></div>
                 <div class="vf-stage" data-vf-stage="fix">
-                    <div class="vf-stage-dot"></div>
-                    <span>Fix</span>
+                    <div class="vf-stage-dot"></div><span>Fix</span>
                 </div>
                 <div class="vf-stage-connector-h"></div>
                 <div class="vf-stage" data-vf-stage="verify">
-                    <div class="vf-stage-dot"></div>
-                    <span>Verify</span>
+                    <div class="vf-stage-dot"></div><span>Verify</span>
                 </div>
             </div>
-            <div class="vf-timeline"></div>
+            <div class="vf-flow-canvas"></div>
             <div class="vf-live-progress"></div>
         `;
         container.appendChild(flowchart);
@@ -5052,7 +5048,7 @@ function _renderDeployProgress(container, event, ctx) {
 
     const state = container._vfState;
     const flowchart = container.querySelector('.vf-flowchart');
-    const timeline = flowchart.querySelector('.vf-timeline');
+    const canvas = flowchart.querySelector('.vf-flow-canvas');
     const liveProgress = flowchart.querySelector('.vf-live-progress');
 
     // ── Helper: update the stage bar ──
@@ -5064,7 +5060,6 @@ function _renderDeployProgress(container, event, ctx) {
                 s.classList.add(status === 'error' ? 'vf-stage-error' : 'vf-stage-active');
             }
         });
-        // Mark all stages before current as done
         const order = ['deploy', 'analyze', 'fix', 'verify'];
         const idx = order.indexOf(stageName);
         if (idx > 0) {
@@ -5078,70 +5073,116 @@ function _renderDeployProgress(container, event, ctx) {
     // ── Helper: classify error for dedup ──
     function _errorKey(errMsg) {
         if (!errMsg) return null;
-        // Extract Azure error code pattern
         const codeMatch = errMsg.match(/\(([A-Za-z]+)\)/);
         if (codeMatch) return codeMatch[1];
-        // Fallback: first 60 chars normalized
         return errMsg.substring(0, 60).replace(/[^a-zA-Z]/g, '').toLowerCase();
     }
 
-    // ── Helper: create an attempt card in the timeline ──
-    function _createAttemptCard(attempt) {
-        const card = document.createElement('div');
-        card.className = 'vf-attempt-card';
-        card.id = `vf-attempt-${attempt.step}`;
+    // ── Helper: add a flow edge (arrow line) ──
+    function _addEdge(extraClass) {
+        const edge = document.createElement('div');
+        edge.className = `vf-flow-edge ${extraClass || ''}`;
+        canvas.appendChild(edge);
+        return edge;
+    }
 
-        const isFirst = attempt.step === 1;
-        const label = isFirst ? 'Getting Started' : `Attempt #${attempt.step}`;
+    // ── Helper: create a main-flow node ──
+    function _createNode(icon, title, iconClass) {
+        state.nodeCount++;
+        const nodeId = `vf-node-${state.nodeCount}`;
 
-        card.innerHTML = `
-            <div class="vf-attempt-header">
-                <div class="vf-attempt-num">${label}</div>
-                <div class="vf-attempt-status vf-status-running">
-                    <span class="vf-status-pulse"></span> Running
-                </div>
-            </div>
-            <div class="vf-attempt-body">
-                <div class="vf-attempt-substeps"></div>
-            </div>
-        `;
-
-        // Add timeline connector if not first
-        if (!isFirst) {
-            const conn = document.createElement('div');
-            conn.className = 'vf-timeline-connector';
-            const connLine = document.createElement('div');
-            connLine.className = 'vf-connector-line';
-            conn.appendChild(connLine);
-            timeline.appendChild(conn);
+        // Add edge before all nodes except the first
+        if (state.nodeCount > 1) {
+            // Finalize previous node if still active
+            const prevNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+            if (prevNode && prevNode.classList.contains('vf-flow-node-active')) {
+                prevNode.classList.remove('vf-flow-node-active');
+                prevNode.classList.add('vf-flow-node-done');
+                const prevBadge = prevNode.querySelector('.vf-node-badge');
+                if (prevBadge) { prevBadge.className = 'vf-node-badge vf-badge-done'; prevBadge.innerHTML = '● Done'; }
+            }
+            _addEdge('vf-flow-edge-done');
         }
 
-        timeline.appendChild(card);
-        return card;
+        const node = document.createElement('div');
+        node.className = 'vf-flow-node vf-flow-node-active';
+        node.id = nodeId;
+        node.innerHTML = `
+            <div class="vf-node-header">
+                <div class="vf-node-icon ${iconClass || ''}">${icon}</div>
+                <div class="vf-node-title">${escapeHtml(title)}</div>
+                <div class="vf-node-badge vf-badge-running">
+                    <span class="vf-badge-pulse"></span> Running
+                </div>
+            </div>
+            <div class="vf-node-body"></div>
+        `;
+        canvas.appendChild(node);
+        state.currentNodeId = nodeId;
+        canvas.scrollTop = canvas.scrollHeight;
+        return node;
     }
 
-    // ── Helper: add a sub-step inside an attempt card ──
-    function _addSubStep(card, icon, text, cssClass) {
-        const substeps = card.querySelector('.vf-attempt-substeps');
+    // ── Helper: add activity line to current node ──
+    function _addActivity(icon, text, cssClass) {
+        const node = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (!node) return null;
+        const body = node.querySelector('.vf-node-body');
+        const act = document.createElement('div');
+        act.className = `vf-activity ${cssClass || ''}`;
+        act.innerHTML = `<span class="vf-activity-icon">${icon}</span><span class="vf-activity-text">${text}</span>`;
+        body.appendChild(act);
+        canvas.scrollTop = canvas.scrollHeight;
+        return act;
+    }
+
+    // ── Helper: finalize current node ──
+    function _finalizeNode(nodeEl, status) {
+        if (!nodeEl) return;
+        nodeEl.classList.remove('vf-flow-node-active');
+        nodeEl.classList.add(status === 'success' ? 'vf-flow-node-success' : 'vf-flow-node-done');
+        const badge = nodeEl.querySelector('.vf-node-badge');
+        if (!badge) return;
+        const labels = {
+            success: { cls: 'vf-badge-success', label: '● Complete' },
+            done:    { cls: 'vf-badge-done',    label: '● Done' },
+            iterating: { cls: 'vf-badge-iterating', label: '● Iterating' },
+        };
+        const l = labels[status] || labels.done;
+        badge.className = `vf-node-badge ${l.cls}`;
+        badge.innerHTML = l.label;
+    }
+
+    // ── Helper: add activity to a branch node ──
+    function _addBranchActivity(serviceId, icon, text) {
+        const branchNode = state.branchNodes[serviceId];
+        if (!branchNode) return;
+        const body = branchNode.querySelector('.vf-branch-body');
         const step = document.createElement('div');
-        step.className = `vf-substep ${cssClass || ''}`;
-        step.innerHTML = `<span class="vf-substep-icon">${icon}</span><span class="vf-substep-text">${text}</span>`;
-        substeps.appendChild(step);
-        return step;
+        step.className = 'vf-branch-step';
+        step.innerHTML = `<span class="vf-branch-step-icon">${icon}</span> ${escapeHtml(text)}`;
+        body.appendChild(step);
+        body.scrollTop = body.scrollHeight;
     }
 
-    // ── Helper: finalize attempt card status ──
-    function _finalizeAttempt(card, status) {
-        const statusEl = card.querySelector('.vf-attempt-status');
-        if (!statusEl) return;
-        statusEl.className = `vf-attempt-status vf-status-${status}`;
-        const labels = { success: '● Complete', error: '● Iterating…', healed: '● Adjusted' };
-        statusEl.innerHTML = labels[status] || status;
+    // ── Helper: finalize a branch node ──
+    function _finalizeBranch(serviceId, status) {
+        const branchNode = state.branchNodes[serviceId];
+        if (!branchNode) return;
+        branchNode.classList.remove('vf-branch-node-active');
+        branchNode.classList.add(status === 'success' ? 'vf-branch-node-success' : 'vf-branch-node-failed');
+        const badge = branchNode.querySelector('.vf-branch-badge');
+        if (badge) {
+            badge.className = `vf-branch-badge ${status === 'success' ? 'vf-branch-badge-success' : 'vf-branch-badge-failed'}`;
+            badge.textContent = status === 'success' ? '● Done' : '● Issue';
+        }
     }
 
-    // ── PHASE HANDLERS ──
+    // ══════════════════════════════════════════════════
+    // PHASE HANDLERS
+    // ══════════════════════════════════════════════════
 
-    // Starting
+    // Starting — show header info
     if (phase === 'starting') {
         _setActiveStage('deploy');
         const rg = event.resource_group || '';
@@ -5155,121 +5196,196 @@ function _renderDeployProgress(container, event, ctx) {
                 ${event.is_blueprint ? '<span class="vf-tag vf-tag-blueprint">Blueprint</span>' : ''}
             </div>
         `;
-        timeline.before(headerInfo);
+        // Insert after stage bar, before canvas
+        canvas.before(headerInfo);
         return;
     }
 
-    // New attempt step
+    // New attempt/step — create a new flow node
     if (phase === 'step' || phase === 'attempt_start') {
-        const step = event.step || (state.attempts.length + 1);
-        const attempt = { step, status: 'running', events: [], error: null, fix: null };
-        state.attempts.push(attempt);
-        state.currentAttempt = attempt;
+        state.activeStep++;
         _setActiveStage('deploy');
-        const card = _createAttemptCard(attempt);
-        _addSubStep(card, '🚀', escapeHtml(detail || 'Sending the template to Azure…'), 'vf-substep-deploy');
-        // Scroll to bottom
-        timeline.scrollTop = timeline.scrollHeight;
+        const title = state.activeStep === 1
+            ? 'Deploying to Azure'
+            : `Iteration ${state.activeStep}`;
+        const node = _createNode('🚀', title);
+        _addActivity('🚀', escapeHtml(detail || 'Sending the template to Azure…'), 'vf-activity-deploy');
         return;
     }
 
-    // Error event — show brief agent-narrated note instead of raw Azure error
+    // Error — brief agent note in current node, then finalize it
     if (phase === 'error') {
-        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
-        if (!card) return;
-
         _setActiveStage('analyze');
-
         const errMsg = event.error || detail || '';
         const errKey = _errorKey(errMsg);
-
-        // Track dedup internally
-        if (errKey) {
-            state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
-        }
-
-        if (state.currentAttempt) state.currentAttempt.error = errMsg;
-
-        // Show a brief agent-narrated note (not the raw Azure error)
-        _addSubStep(card, '📝', 'Looking into something…', 'vf-substep-deploy');
+        if (errKey) state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
+        _addActivity('📝', 'Looking into something…', 'vf-activity-deploy');
         return;
     }
 
-    // Healing (LLM analyzing)
+    // Healing — agent is analyzing the error
     if (phase === 'healing') {
-        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
-        if (!card) return;
-
         _setActiveStage('analyze');
-        _finalizeAttempt(card, 'error');
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (curNode) _finalizeNode(curNode, 'iterating');
 
         const isRepeated = event.repeated_error;
         const healMsg = isRepeated
-            ? `This pattern keeps showing up — trying a different approach…`
+            ? 'This pattern keeps showing up — trying a different approach…'
             : (detail || 'Analyzing and adjusting…');
-        _addSubStep(card, '🧠', healMsg, isRepeated ? 'vf-substep-analyze vf-substep-escalate' : 'vf-substep-analyze');
+
+        // Create an "Analyzing" node
+        _addEdge('vf-flow-edge-active');
+        state.nodeCount++;
+        const nodeId = `vf-node-${state.nodeCount}`;
+        const node = document.createElement('div');
+        node.className = 'vf-flow-node vf-flow-node-active';
+        node.id = nodeId;
+        node.innerHTML = `
+            <div class="vf-node-header">
+                <div class="vf-node-icon vf-node-icon-purple">🧠</div>
+                <div class="vf-node-title">Analyzing</div>
+                <div class="vf-node-badge vf-badge-running">
+                    <span class="vf-badge-pulse"></span> Working
+                </div>
+            </div>
+            <div class="vf-node-body"></div>
+        `;
+        canvas.appendChild(node);
+        state.currentNodeId = nodeId;
+
+        const cssClass = isRepeated ? 'vf-activity-escalate' : 'vf-activity-analyze';
+        _addActivity('🧠', healMsg, cssClass);
 
         if (event.error_summary) {
-            const errKey = _errorKey(event.error_summary);
-            if (errKey) {
-                state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
-            }
-            if (state.currentAttempt) state.currentAttempt.error = event.error_summary;
-            // Don't show raw Azure error summary to the user — agent handles it
+            const ek = _errorKey(event.error_summary);
+            if (ek) state.seenErrors[ek] = (state.seenErrors[ek] || 0) + 1;
         }
+        canvas.scrollTop = canvas.scrollHeight;
         return;
     }
 
-    // Healed (fix applied)
+    // Healed — fix applied, finalize analyzing node
     if (phase === 'healed') {
-        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
-        if (!card) return;
-
         _setActiveStage('fix');
-
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
         const fixMsg = event.fix_summary || detail || 'Fix applied';
-        if (state.currentAttempt) state.currentAttempt.fix = fixMsg;
-
-        const deepFlag = event.deep_healed ? '<span class="vf-deep-badge">Deep Fix</span>' : '';
-        _addSubStep(card, '🔧', `${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-substep-fix');
-        _finalizeAttempt(card, 'healed');
-
-        timeline.scrollTop = timeline.scrollHeight;
+        const deepFlag = event.deep_healed ? '<span class="vf-tag vf-tag-service" style="margin-left:0.3rem;font-size:0.62rem">Deep Fix</span>' : '';
+        _addActivity('🔧', `${escapeHtml(fixMsg)} ${deepFlag}`, 'vf-activity-fix');
+        if (curNode) _finalizeNode(curNode, 'done');
+        canvas.scrollTop = canvas.scrollHeight;
         return;
     }
 
-    // ── Deep healing events — render as a sub-flow inside the current attempt ──
+    // ── Deep healing — branch off into sub-process nodes ──
     if (phase.startsWith('deep_heal_')) {
-        const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
-        if (!card) return;
 
         if (phase === 'deep_heal_trigger') {
             state.deepHealActive = true;
             _setActiveStage('analyze');
 
-            // Create a deep heal sub-flow card
-            const dhContainer = document.createElement('div');
-            dhContainer.className = 'vf-deep-heal-flow';
-            dhContainer.id = 'vf-deep-heal-active';
-            dhContainer.innerHTML = `
-                <div class="vf-deep-header">
-                    <span class="vf-deep-icon">🔬</span>
-                    <span class="vf-deep-title">Deep Dive</span>
-                    <span class="vf-deep-desc">Investigating the underlying service templates</span>
-                </div>
-                ${event.service_ids?.length ? `
-                <div class="vf-deep-services">
-                    ${event.service_ids.map(s => `<span class="vf-tag vf-tag-service">${escapeHtml(s.split('/').pop())}</span>`).join('')}
-                </div>` : ''}
-                <div class="vf-deep-steps"></div>
+            // Finalize current node
+            const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+            if (curNode) _finalizeNode(curNode, 'iterating');
+
+            const serviceIds = event.service_ids || [];
+
+            // Add edge down to branch region
+            _addEdge('vf-flow-edge-active');
+
+            // Create branch label
+            const branchLabel = document.createElement('div');
+            branchLabel.className = 'vf-branch-label';
+            branchLabel.innerHTML = `
+                <span class="vf-branch-label-line"></span>
+                <span>🔬 Investigating Service Templates</span>
+                <span class="vf-branch-label-line"></span>
             `;
-            card.querySelector('.vf-attempt-body').appendChild(dhContainer);
+            canvas.appendChild(branchLabel);
+
+            // Create branch connector (horizontal bar with drops)
+            const connector = document.createElement('div');
+            connector.className = 'vf-branch-connector';
+            if (serviceIds.length > 1) {
+                const barPad = Math.max(5, 50 - serviceIds.length * 15);
+                connector.innerHTML = `<div class="vf-branch-connector-bar" style="--bar-left:${barPad}%;--bar-right:${barPad}%"></div>`;
+                // Add drop lines for each service
+                const spacing = (100 - barPad * 2) / Math.max(1, serviceIds.length - 1);
+                serviceIds.forEach((_, i) => {
+                    const leftPct = barPad + spacing * i;
+                    const drop = document.createElement('div');
+                    drop.className = 'vf-branch-drop';
+                    drop.style.left = `${leftPct}%`;
+                    connector.appendChild(drop);
+                });
+            }
+            canvas.appendChild(connector);
+
+            // Create branch container with nodes
+            const branchContainer = document.createElement('div');
+            branchContainer.className = 'vf-branch-container';
+            state.branchRegion = branchContainer;
+
+            serviceIds.forEach(sid => {
+                const shortName = sid.split('/').pop();
+                const branchNode = document.createElement('div');
+                branchNode.className = 'vf-branch-node vf-branch-node-active';
+                branchNode.id = `vf-branch-${sid.replace(/[/.]/g, '-')}`;
+                branchNode.innerHTML = `
+                    <div class="vf-branch-header">
+                        <div class="vf-branch-icon">⚙️</div>
+                        <div class="vf-branch-title">${escapeHtml(shortName)}</div>
+                        <div class="vf-branch-badge vf-branch-badge-running">
+                            <span class="vf-badge-pulse"></span> Working
+                        </div>
+                    </div>
+                    <div class="vf-branch-body"></div>
+                `;
+                state.branchNodes[sid] = branchNode;
+                branchContainer.appendChild(branchNode);
+            });
+
+            canvas.appendChild(branchContainer);
+
+            // Create merge connector
+            const merge = document.createElement('div');
+            merge.className = 'vf-merge-connector';
+            merge.id = 'vf-merge-connector';
+            if (serviceIds.length > 1) {
+                const barPad = Math.max(5, 50 - serviceIds.length * 15);
+                merge.innerHTML = `<div class="vf-merge-connector-bar" style="--bar-left:${barPad}%;--bar-right:${barPad}%"></div>`;
+                const spacing = (100 - barPad * 2) / Math.max(1, serviceIds.length - 1);
+                serviceIds.forEach((_, i) => {
+                    const leftPct = barPad + spacing * i;
+                    const drop = document.createElement('div');
+                    drop.className = 'vf-merge-drop';
+                    drop.style.left = `${leftPct}%`;
+                    merge.appendChild(drop);
+                });
+            }
+            canvas.appendChild(merge);
+
+            canvas.scrollTop = canvas.scrollHeight;
             return;
         }
 
-        const dhFlow = document.getElementById('vf-deep-heal-active');
-        const dhSteps = dhFlow?.querySelector('.vf-deep-steps');
-        if (!dhSteps) return;
+        // Route deep_heal sub-events to the correct branch node
+        const culpritSid = event.culprit_service || event.service_id || '';
+
+        // Find the matching branch node (or use first if single service)
+        let targetSid = culpritSid;
+        if (!targetSid || !state.branchNodes[targetSid]) {
+            // Try to match by partial name
+            for (const sid of Object.keys(state.branchNodes)) {
+                if (culpritSid && sid.toLowerCase().includes(culpritSid.toLowerCase())) {
+                    targetSid = sid; break;
+                }
+            }
+            // Final fallback: use the first branch node
+            if (!state.branchNodes[targetSid]) {
+                targetSid = Object.keys(state.branchNodes)[0] || '';
+            }
+        }
 
         const deepIcons = {
             deep_heal_start: '🔍', deep_heal_identified: '🎯',
@@ -5281,38 +5397,65 @@ function _renderDeployProgress(container, event, ctx) {
             deep_heal_fail: '●', deep_heal_fallback: '↩️',
         };
         const icon = deepIcons[phase] || '•';
-        const cssClass = '';  // No success/error differentiation
 
-        const step = document.createElement('div');
-        step.className = `vf-deep-step ${cssClass}`;
-        step.innerHTML = `<span class="vf-deep-step-icon">${icon}</span> ${escapeHtml(detail)}`;
-        dhSteps.appendChild(step);
-
-        if (phase === 'deep_heal_complete') {
-            dhFlow.classList.add('vf-deep-success');
-            state.deepHealActive = false;
-        } else if (phase === 'deep_heal_fail') {
-            dhFlow.classList.add('vf-deep-failed');
-            state.deepHealActive = false;
+        if (targetSid) {
+            _addBranchActivity(targetSid, icon, detail);
         }
 
-        timeline.scrollTop = timeline.scrollHeight;
+        if (phase === 'deep_heal_complete') {
+            if (targetSid) _finalizeBranch(targetSid, 'success');
+            state.deepHealActive = false;
+        } else if (phase === 'deep_heal_fail') {
+            if (targetSid) _finalizeBranch(targetSid, 'failed');
+            state.deepHealActive = false;
+        } else if (phase === 'deep_heal_validated') {
+            if (targetSid) _finalizeBranch(targetSid, 'success');
+        } else if (phase === 'deep_heal_validate_fail') {
+            // Don't finalize — keep working
+        }
+
+        canvas.scrollTop = canvas.scrollHeight;
         return;
     }
 
-    // ── Final result (success or failure) ──
+    // deep_heal_fallback as a top-level event
+    if (phase === 'deep_heal_fallback') {
+        state.deepHealActive = false;
+        // Add a new node after the branch merge
+        _addEdge('vf-flow-edge-active');
+        state.nodeCount++;
+        const nodeId = `vf-node-${state.nodeCount}`;
+        const node = document.createElement('div');
+        node.className = 'vf-flow-node vf-flow-node-active';
+        node.id = nodeId;
+        node.innerHTML = `
+            <div class="vf-node-header">
+                <div class="vf-node-icon">↩️</div>
+                <div class="vf-node-title">Trying Another Approach</div>
+                <div class="vf-node-badge vf-badge-running">
+                    <span class="vf-badge-pulse"></span> Working
+                </div>
+            </div>
+            <div class="vf-node-body"></div>
+        `;
+        canvas.appendChild(node);
+        state.currentNodeId = nodeId;
+        _addActivity('↩️', escapeHtml(detail || 'The deep fix didn\'t pan out — trying another approach…'), 'vf-activity-info');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    // ── Final result ──
     if (phase === 'complete' || phase === 'done') {
         const resources = event.provisioned_resources || [];
         const outputs = event.outputs || {};
         const healHistory = event.heal_history || [];
         const issuesResolved = event.issues_resolved || 0;
 
-        // Remove live progress
         liveProgress.innerHTML = '';
 
-        // Update stage bar — all stages done or final state
+        // Update stage bar
         if (event.status === 'succeeded') {
-            _setActiveStage('verify');
             flowchart.querySelectorAll('.vf-stage').forEach(s => {
                 s.classList.remove('vf-stage-active', 'vf-stage-error');
                 s.classList.add('vf-stage-done');
@@ -5325,13 +5468,14 @@ function _renderDeployProgress(container, event, ctx) {
             });
         }
 
-        // Finalize last attempt card
-        const lastCard = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
-        if (lastCard) {
-            _finalizeAttempt(lastCard, event.status === 'succeeded' ? 'success' : 'healed');
-        }
+        // Finalize last active node
+        const lastNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (lastNode) _finalizeNode(lastNode, event.status === 'succeeded' ? 'success' : 'done');
 
-        // Build final result card
+        // Add edge to result
+        _addEdge('vf-flow-edge-done');
+
+        // Build final result node
         const resultDiv = document.createElement('div');
         if (event.status === 'succeeded') {
             const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
@@ -5366,22 +5510,6 @@ function _renderDeployProgress(container, event, ctx) {
                 ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
             `;
         } else {
-            // Build dedup summary of errors seen
-            const uniqueErrors = Object.entries(state.seenErrors);
-            const dedupHtml = uniqueErrors.length > 1 ? `
-                <div class="vf-error-dedup">
-                    <div class="vf-dedup-title">Errors I've seen</div>
-                    <div class="vf-dedup-list">
-                        ${uniqueErrors.map(([code, count]) => `
-                            <div class="vf-dedup-item ${count > 1 ? 'vf-dedup-repeated' : ''}">
-                                <span class="vf-dedup-code">${escapeHtml(code)}</span>
-                                <span class="vf-dedup-count">${count}×</span>
-                                ${count > 1 ? '<span class="vf-dedup-flag">⚠️ Repeated</span>' : ''}
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>` : '';
-
             resultDiv.className = 'vf-result vf-result-fail';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
@@ -5390,7 +5518,7 @@ function _renderDeployProgress(container, event, ctx) {
                 </div>
                 <div class="vf-result-body">
                     ${isValidate
-                        ? '<p>The agent worked through several iterations. Take a look at the log above to see the progress.</p>'
+                        ? '<p>The agent worked through several iterations. Take a look at the flow above to see the progress.</p>'
                         : '<p>The deployment needs some adjustments. You might want to revise the template or check the parameters.</p>'}
                     ${healHistory.length ? `
                     <details class="vf-heal-summary">
@@ -5408,9 +5536,8 @@ function _renderDeployProgress(container, event, ctx) {
                 ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
             `;
         }
-        timeline.appendChild(resultDiv);
-        timeline.scrollTop = timeline.scrollHeight;
-
+        canvas.appendChild(resultDiv);
+        canvas.scrollTop = canvas.scrollHeight;
         state.finalResult = event;
         return;
     }
@@ -5418,10 +5545,9 @@ function _renderDeployProgress(container, event, ctx) {
     // ── Cleanup events ──
     if (phase === 'cleanup' || phase === 'cleanup_done' || phase === 'cleanup_warning') {
         const cleanupEl = document.createElement('div');
-        const icon = '🧹';  // always neutral cleanup icon
         cleanupEl.className = 'vf-cleanup';
-        cleanupEl.innerHTML = `${icon} ${escapeHtml(detail)}`;
-        timeline.appendChild(cleanupEl);
+        cleanupEl.innerHTML = `🧹 ${escapeHtml(detail)}`;
+        canvas.appendChild(cleanupEl);
         return;
     }
 
@@ -5431,12 +5557,12 @@ function _renderDeployProgress(container, event, ctx) {
         starting: '🚀', resource_group: '📁', validating: '🔍',
         validated: '●', deploying: '⚙️', provisioning: '📦',
     };
-    const icon = phaseIcons[phase] || '⏳';
+    const pIcon = phaseIcons[phase] || '⏳';
     liveProgress.innerHTML = `
         <div class="vf-progress-bar">
             <div class="vf-progress-fill" style="width: ${pct}%"></div>
         </div>
-        <div class="vf-progress-phase">${icon} ${escapeHtml(detail || phase)}</div>
+        <div class="vf-progress-phase">${pIcon} ${escapeHtml(detail || phase)}</div>
         ${event.resources ? `
         <div class="vf-resource-chips">
             ${event.resources.map(r => `
