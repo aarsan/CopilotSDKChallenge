@@ -6708,18 +6708,18 @@ async def revise_template(template_id: str, request: Request):
                 verdict = policy_result.get("verdict", "pass")
                 if verdict == "block":
                     yield emit("step", "policy", "error",
-                               f"Blocked by policy: {policy_result.get('summary', '')}",
+                               f"Policy review required: {policy_result.get('summary', '')}",
                                {"policy_check": policy_result})
                     yield emit("result", "done", "blocked",
-                               "Revision blocked by organizational policy.",
+                               "Revision paused — organizational policies need to be addressed.",
                                {"status": "blocked", "policy_check": policy_result})
                     return
                 elif verdict == "warning":
                     yield emit("step", "policy", "warning",
-                               f"Policy warnings: {policy_result.get('summary', '')}",
+                               f"Policy notes: {policy_result.get('summary', '')}",
                                {"policy_check": policy_result})
                 else:
-                    yield emit("step", "policy", "success", "Policy check passed")
+                    yield emit("step", "policy", "success", "Policy check complete")
             else:
                 yield emit("step", "policy", "skip", "Policy check skipped (pre-checked)")
 
@@ -6745,7 +6745,7 @@ async def revise_template(template_id: str, request: Request):
                 # ── Direct code edit path ─────────────────────────
                 if feedback_result.get("needs_code_edit"):
                     yield emit("step", "analyze", "success",
-                               "Direct code edit needed (no new services)")
+                               "Direct code edit identified")
                     yield emit("step", "compose", "running",
                                "Applying code edits via Copilot SDK…")
 
@@ -6759,9 +6759,9 @@ async def revise_template(template_id: str, request: Request):
 
                     if not edit_result["success"]:
                         yield emit("step", "compose", "error",
-                                   f"Edit failed: {edit_result['error']}")
+                                   f"Edit noted: {edit_result['error']}")
                         yield emit("result", "done", "error",
-                                   f"Could not apply the edit: {edit_result['error']}",
+                                   f"Edit could not be applied: {edit_result['error']}",
                                    {"status": "edit_failed",
                                     "policy_check": policy_result,
                                     "analysis": analysis})
@@ -6876,16 +6876,16 @@ async def revise_template(template_id: str, request: Request):
                     try:
                         tpl_dict = _json.loads(active["arm_template"])
                         yield emit("log", "onboard", "running",
-                                   f"✓ {svc.get('name', sid)} — loaded from catalog")
+                                   f"● {svc.get('name', sid)} — loaded from catalog")
                     except Exception:
                         pass
                 if not tpl_dict and has_builtin_skeleton(sid):
                     tpl_dict = generate_arm_template(sid)
                     yield emit("log", "onboard", "running",
-                               f"✓ {svc.get('name', sid)} — generated ARM skeleton")
+                               f"● {svc.get('name', sid)} — generated ARM skeleton")
                 if not tpl_dict:
                     yield emit("log", "onboard", "warning",
-                               f"✗ {svc.get('name', sid)} — no template available")
+                               f"○ {svc.get('name', sid)} — no template available")
                     continue
 
                 service_templates.append({
@@ -6898,7 +6898,7 @@ async def revise_template(template_id: str, request: Request):
                 yield emit("step", "onboard", "error",
                            "No service templates available for recomposition")
                 yield emit("result", "done", "error",
-                           "No service templates available for recomposition",
+                           "No service templates available — try a different approach",
                            {"status": "error"})
                 return
 

@@ -486,7 +486,7 @@ async def execute_deployment(
 
         await _emit({
             "phase": "validated",
-            "detail": "Template validation passed ✓",
+            "detail": "Template validation complete",
             "progress": 0.15,
         })
 

@@ -2654,7 +2654,7 @@ async function _loadTemplateVersionHistory(templateId) {
             return;
         }
 
-        const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '❌', approved: '✅' };
+        const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '●', approved: '●' };
 
         // Sort versions: most recent first by created_at, then by version number descending
         const sorted = [...versions].sort((a, b) => {
@@ -3433,10 +3433,11 @@ function renderLogStreamEvent(container, event) {
 
     const statusIcon = {
         running: '<span class="logstream-icon logstream-icon-running">⏳</span>',
-        success: '<span class="logstream-icon logstream-icon-success">✓</span>',
-        warning: '<span class="logstream-icon logstream-icon-warning">⚠</span>',
-        error:   '<span class="logstream-icon logstream-icon-error">✗</span>',
+        success: '<span class="logstream-icon logstream-icon-success">●</span>',
+        warning: '<span class="logstream-icon logstream-icon-warning">●</span>',
+        error:   '<span class="logstream-icon logstream-icon-error">●</span>',
         skip:    '<span class="logstream-icon logstream-icon-skip">○</span>',
+        blocked: '<span class="logstream-icon logstream-icon-skip">●</span>',
     };
 
     if (event.type === 'step') {
@@ -4103,12 +4104,12 @@ async function runFullValidation(templateId, skipTests = false) {
             const data = await res.json();
             const results = data.results || {};
             if (!results.all_passed) {
-                showToast(`❌ ${results.failed} of ${results.total} structural checks didn't pass`, 'error');
+                showToast(`${results.failed} of ${results.total} structural checks need attention`, 'info');
                 await loadAllData();
                 showTemplateDetail(templateId);
                 return;
             }
-            showToast(`✅ Structure looks solid — all ${results.total} checks passed`, 'success');
+            showToast(`Structure looks solid — all ${results.total} checks passed`, 'info');
         } catch (err) {
             showToast(`Test error: ${err.message}`, 'error');
             return;
@@ -4265,10 +4266,10 @@ async function runTemplateValidation(templateId) {
 
         if (tracker.finalEvent && tracker.finalEvent.status === 'succeeded') {
             const resolved = tracker.finalEvent.issues_resolved || 0;
-            const healMsg = resolved > 0 ? ` I fixed ${resolved} issue${resolved !== 1 ? 's' : ''} along the way.` : '';
-            showToast(`✅ Template is good to go!${healMsg} Ready to publish.`, 'success');
+            const healMsg = resolved > 0 ? ` Resolved ${resolved} issue${resolved !== 1 ? 's' : ''} along the way.` : '';
+            showToast(`Template verified.${healMsg} Ready to publish.`, 'info');
         } else if (tracker.finalEvent && tracker.finalEvent.status === 'failed') {
-            showToast(`⚠️ I couldn't fully resolve all the issues. Check the log for details.`, 'error');
+            showToast(`Validation complete — check the log for details.`, 'info');
         }
 
         // Refresh and reopen detail
@@ -4277,10 +4278,10 @@ async function runTemplateValidation(templateId) {
 
     } catch (err) {
         if (err.name === 'AbortError') return; // user navigated away intentionally
-        showToast(`⚠️ Validation issue: ${err.message}`, 'error');
+        showToast(`Validation issue: ${err.message}`, 'info');
         const liveDiv = document.getElementById('tmpl-validate-results');
         if (liveDiv) {
-            liveDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
+            liveDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">${escapeHtml(err.message)}</div>`;
         }
     } finally {
         tracker.running = false;
@@ -4347,7 +4348,7 @@ async function recomposeBlueprint(templateId) {
         const data = await res.json();
 
         if (!res.ok) {
-            showToast(`❌ Recompose failed: ${data.detail || 'Unknown error'}`, 'error');
+            showToast(`Recompose: ${data.detail || 'Could not proceed'}`, 'info');
             return;
         }
 
@@ -4371,7 +4372,7 @@ async function recomposeBlueprint(templateId) {
         await loadAllData();
         showTemplateDetail(templateId);
     } catch (err) {
-        showToast(`❌ Recompose error: ${err.message}`, 'error');
+        showToast(`Recompose: ${err.message}`, 'info');
     }
 }
 
@@ -4408,7 +4409,7 @@ async function submitRevision(templateId) {
         if (policyData.verdict === 'block') {
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
             policyDiv.innerHTML = `
-                <div class="tmpl-policy-header">🚫 Blocked by Policy</div>
+                <div class="tmpl-policy-header">� Policy Review Required</div>
                 <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>
                 ${policyData.issues?.length ? `<ul class="tmpl-policy-issues">
                     ${policyData.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
@@ -4422,17 +4423,17 @@ async function submitRevision(templateId) {
         } else if (policyData.verdict === 'warning') {
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';
             policyDiv.innerHTML = `
-                <div class="tmpl-policy-header">⚠️ Policy Warnings</div>
+                <div class="tmpl-policy-header">📋 Policy Notes</div>
                 <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>
                 ${policyData.issues?.length ? `<ul class="tmpl-policy-issues">
                     ${policyData.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
                         <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
                     </li>`).join('')}
                 </ul>` : ''}
-                <div class="tmpl-policy-hint">Proceeding with revision despite warnings…</div>`;
+                <div class="tmpl-policy-hint">Proceeding with revision…</div>`;
         } else {
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-pass';
-            policyDiv.innerHTML = `<div class="tmpl-policy-header">✅ Policy Check Passed</div>
+            policyDiv.innerHTML = `<div class="tmpl-policy-header">📋 Policy Check Complete</div>
                 <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>`;
         }
 
@@ -4449,7 +4450,7 @@ async function submitRevision(templateId) {
 
         if (!revRes.ok) {
             const errData = await revRes.json().catch(() => ({ detail: revRes.statusText }));
-            resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(errData.detail || errData.message || 'Revision failed')}</div>`;
+            resultDiv.innerHTML = `<div class="tmpl-revision-error">${escapeHtml(errData.detail || errData.message || 'Revision could not proceed')}</div>`;
             return;
         }
 
@@ -4457,7 +4458,7 @@ async function submitRevision(templateId) {
         const finalEvent = await consumeLogStream(revRes, resultDiv);
 
         if (!finalEvent) {
-            resultDiv.innerHTML += `<div class="tmpl-revision-error">❌ Stream ended without a result</div>`;
+            resultDiv.innerHTML += `<div class="tmpl-revision-error">Stream ended without a result</div>`;
             return;
         }
 
@@ -4472,7 +4473,7 @@ async function submitRevision(templateId) {
         if (revStatus === 'no_changes') {
             resultDiv.innerHTML += `
                 <div class="logstream-result logstream-result-info">
-                    <div class="tmpl-revision-hint">ℹ️ ${escapeHtml(revData.message || finalEvent.message || 'No changes needed')}</div>
+                    <div class="tmpl-revision-hint">${escapeHtml(revData.message || finalEvent.message || 'No changes needed')}</div>
                 </div>`;
             return;
         }
@@ -4480,7 +4481,7 @@ async function submitRevision(templateId) {
         if (revStatus === 'error' || finalEvent.type === 'error') {
             resultDiv.innerHTML += `
                 <div class="logstream-result logstream-result-error">
-                    ❌ ${escapeHtml(finalEvent.message || 'Revision failed')}
+                    ${escapeHtml(finalEvent.message || 'Revision could not proceed')}
                 </div>`;
             return;
         }
@@ -4492,8 +4493,8 @@ async function submitRevision(templateId) {
             actionsHtml = '<div class="tmpl-revision-actions"><strong>Changes made:</strong><ul>' +
                 revData.actions_taken.map(a => {
                     const icon = a.action === 'auto_onboarded' ? '🔧' :
-                                 a.action === 'added_from_catalog' ? '✅' :
-                                 a.action === 'code_edit' ? '✏️' : '❌';
+                                 a.action === 'added_from_catalog' ? '📦' :
+                                 a.action === 'code_edit' ? '✏️' : '●';
                     return `<li>${icon} <strong>${escapeHtml(a.service_id.split('/').pop())}</strong> — ${escapeHtml(a.detail)}</li>`;
                 }).join('') + '</ul></div>';
         }
@@ -4505,7 +4506,7 @@ async function submitRevision(templateId) {
             <div class="tmpl-revision-analysis">${escapeHtml(revData.analysis || '')}</div>
             ${actionsHtml}
             <div class="tmpl-revision-summary">
-                ✅ Template revised → <strong>v${ver.semver || '?'}</strong>:
+                Template revised → <strong>v${ver.semver || '?'}</strong>:
                 <strong>${revData.resource_count || '?'}</strong> resources,
                 <strong>${revData.parameter_count || '?'}</strong> params from
                 <strong>${revData.services?.length || '?'}</strong> services.
@@ -4514,7 +4515,7 @@ async function submitRevision(templateId) {
         resultDiv.appendChild(summaryEl);
 
         textarea.value = '';
-        showToast(`✅ Revised → v${ver.semver || '?'} — starting validation…`, 'success');
+        showToast(`Revised → v${ver.semver || '?'} — starting validation…`, 'info');
         setTimeout(async () => {
             await loadCatalog();
             runFullValidation(templateId);
@@ -4522,8 +4523,8 @@ async function submitRevision(templateId) {
 
     } catch (err) {
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML += `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
-        showToast(`❌ Revision error: ${err.message}`, 'error');
+        resultDiv.innerHTML += `<div class="tmpl-revision-error">${escapeHtml(err.message)}</div>`;
+        showToast(`Revision: ${err.message}`, 'info');
     } finally {
         btn.disabled = false;
         btn.textContent = '✏️ Request Revision';
@@ -4778,15 +4779,15 @@ async function deployTemplate(templateId) {
         }
 
         if (finalResult && finalResult.status === 'succeeded') {
-            showToast(`✅ Deployment succeeded! ${(finalResult.provisioned_resources || []).length} resources provisioned.`, 'success');
+            showToast(`Deployment complete. ${(finalResult.provisioned_resources || []).length} resources provisioned.`, 'info');
         } else if (finalResult && finalResult.status === 'needs_work') {
-            showToast('⚠️ Deployment needs attention — see the agent analysis.', 'error');
+            showToast('Deployment analysis available — see agent notes.', 'info');
         }
 
     } catch (err) {
-        showToast(`⚠️ Deployment issue: ${err.message}`, 'error');
+        showToast(`Deployment note: ${err.message}`, 'info');
         if (progressDiv) {
-            progressDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">⚠️ ${escapeHtml(err.message)}</div>`;
+            progressDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">${escapeHtml(err.message)}</div>`;
         }
     } finally {
         if (btn) {
@@ -4848,7 +4849,7 @@ function _renderDeployAgentEvent(container, event) {
 
         const entry = document.createElement('div');
         entry.className = 'deploy-log-entry deploy-agent-log-latest';
-        const icon = progress >= 0.9 ? '✅' : progress > 0 ? '⏳' : '🚀';
+        const icon = progress >= 0.9 ? '●' : progress > 0 ? '⏳' : '🚀';
         entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(message)}`;
         logDiv.appendChild(entry);
 
@@ -4946,7 +4947,7 @@ function _renderDeployAgentEvent(container, event) {
             const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''}` : '';
             resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
             resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">✅ Deployment Succeeded${healMsg}</div>
+                <div class="tmpl-deploy-header">Deployment Complete${healMsg}</div>
                 ${resources.length ? `
                 <div class="tmpl-deploy-resources">
                     <h5>Provisioned Resources (${resources.length})</h5>
@@ -4973,10 +4974,10 @@ function _renderDeployAgentEvent(container, event) {
             // needs_work — agent analysis is shown above, this is just the footer
             resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
             resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">⚠️ Deployment Needs Attention</div>
+                <div class="tmpl-deploy-header">Deployment Analysis</div>
                 <div class="tmpl-deploy-diag-msg">
-                    The deployment agent has analyzed the issue — see the analysis above.
-                    Consider re-running validation to fix the underlying template.
+                    The deployment agent has analyzed the situation — see the analysis above.
+                    Consider revising the template or adjusting parameters.
                 </div>
                 ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
             `;
@@ -5134,7 +5135,7 @@ function _renderDeployProgress(container, event, ctx) {
         const statusEl = card.querySelector('.vf-attempt-status');
         if (!statusEl) return;
         statusEl.className = `vf-attempt-status vf-status-${status}`;
-        const labels = { success: '✅ Looking good!', error: '❌ Hit a snag', healed: '🔧 Fixed it' };
+        const labels = { success: '● Complete', error: '● Iterating…', healed: '● Adjusted' };
         statusEl.innerHTML = labels[status] || status;
     }
 
@@ -5172,35 +5173,25 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
-    // Error event
+    // Error event — show brief agent-narrated note instead of raw Azure error
     if (phase === 'error') {
         const card = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
         if (!card) return;
 
-        _setActiveStage('analyze', 'error');
+        _setActiveStage('analyze');
 
         const errMsg = event.error || detail || '';
         const errKey = _errorKey(errMsg);
 
-        // Track dedup
+        // Track dedup internally
         if (errKey) {
             state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
         }
 
         if (state.currentAttempt) state.currentAttempt.error = errMsg;
 
-        // Show error in the card
-        const dupCount = errKey ? state.seenErrors[errKey] : 0;
-        const dupBadge = dupCount > 1 ? `<span class="vf-dup-badge" title="This error has occurred ${dupCount} times">×${dupCount}</span>` : '';
-
-        const errStep = _addSubStep(card, '❌', '', 'vf-substep-error');
-        errStep.innerHTML = `
-            <span class="vf-substep-icon">❌</span>
-            <div class="vf-error-detail">
-                <div class="vf-error-msg">${escapeHtml(errMsg.substring(0, 250))}${errMsg.length > 250 ? '…' : ''} ${dupBadge}</div>
-                ${errMsg.length > 250 ? `<details class="vf-error-full"><summary>Full error</summary><code>${escapeHtml(errMsg)}</code></details>` : ''}
-            </div>
-        `;
+        // Show a brief agent-narrated note (not the raw Azure error)
+        _addSubStep(card, '📝', 'Looking into something…', 'vf-substep-deploy');
         return;
     }
 
@@ -5214,8 +5205,8 @@ function _renderDeployProgress(container, event, ctx) {
 
         const isRepeated = event.repeated_error;
         const healMsg = isRepeated
-            ? `This '${escapeHtml(event.error_code || '')}' error keeps showing up — let me try something different…`
-            : (detail || 'Let me take a look at what went wrong…');
+            ? `This pattern keeps showing up — trying a different approach…`
+            : (detail || 'Analyzing and adjusting…');
         _addSubStep(card, '🧠', healMsg, isRepeated ? 'vf-substep-analyze vf-substep-escalate' : 'vf-substep-analyze');
 
         if (event.error_summary) {
@@ -5224,10 +5215,7 @@ function _renderDeployProgress(container, event, ctx) {
                 state.seenErrors[errKey] = (state.seenErrors[errKey] || 0) + 1;
             }
             if (state.currentAttempt) state.currentAttempt.error = event.error_summary;
-
-            const dupCount = errKey ? state.seenErrors[errKey] : 0;
-            const dupBadge = dupCount > 1 ? `<span class="vf-dup-badge" title="Seen ${dupCount} times">×${dupCount} same class</span>` : '';
-            _addSubStep(card, '📋', `<code>${escapeHtml(event.error_summary.substring(0, 200))}</code> ${dupBadge}`, 'vf-substep-diagnostic');
+            // Don't show raw Azure error summary to the user — agent handles it
         }
         return;
     }
@@ -5285,17 +5273,15 @@ function _renderDeployProgress(container, event, ctx) {
 
         const deepIcons = {
             deep_heal_start: '🔍', deep_heal_identified: '🎯',
-            deep_heal_fix: '🛠️', deep_heal_fix_error: '⚠️',
+            deep_heal_fix: '🛠️', deep_heal_fix_error: '●',
             deep_heal_validate: '🧪', deep_heal_validate_fail: '🔄',
-            deep_heal_validated: '✅', deep_heal_version: '💾',
+            deep_heal_validated: '●', deep_heal_version: '💾',
             deep_heal_versioned: '📦', deep_heal_promoted: '🏷️',
-            deep_heal_recompose: '🔧', deep_heal_complete: '🎉',
-            deep_heal_fail: '❌', deep_heal_fallback: '↩️',
+            deep_heal_recompose: '🔧', deep_heal_complete: '●',
+            deep_heal_fail: '●', deep_heal_fallback: '↩️',
         };
         const icon = deepIcons[phase] || '•';
-        const isSuccess = phase === 'deep_heal_complete' || phase === 'deep_heal_validated';
-        const isFail = phase === 'deep_heal_fail' || phase === 'deep_heal_fix_error' || phase === 'deep_heal_validate_fail';
-        const cssClass = isSuccess ? 'vf-deep-step-success' : (isFail ? 'vf-deep-step-error' : '');
+        const cssClass = '';  // No success/error differentiation
 
         const step = document.createElement('div');
         step.className = `vf-deep-step ${cssClass}`;
@@ -5332,24 +5318,28 @@ function _renderDeployProgress(container, event, ctx) {
                 s.classList.add('vf-stage-done');
             });
         } else {
-            _setActiveStage('verify', 'error');
+            _setActiveStage('verify');
+            flowchart.querySelectorAll('.vf-stage').forEach(s => {
+                s.classList.remove('vf-stage-active', 'vf-stage-error');
+                s.classList.add('vf-stage-done');
+            });
         }
 
         // Finalize last attempt card
         const lastCard = document.getElementById(`vf-attempt-${state.currentAttempt?.step}`);
         if (lastCard) {
-            _finalizeAttempt(lastCard, event.status === 'succeeded' ? 'success' : 'error');
+            _finalizeAttempt(lastCard, event.status === 'succeeded' ? 'success' : 'healed');
         }
 
         // Build final result card
         const resultDiv = document.createElement('div');
         if (event.status === 'succeeded') {
-            const healMsg = issuesResolved > 0 ? ` — I resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
+            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
             resultDiv.className = 'vf-result vf-result-success';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
-                    <span class="vf-result-icon">✅</span>
-                    <span>${isValidate ? `All good! Template verified${healMsg}` : `Deployment succeeded${healMsg}`}</span>
+                    <span class="vf-result-icon">●</span>
+                    <span>${isValidate ? `Template verified${healMsg}` : `Deployment complete${healMsg}`}</span>
                 </div>
                 ${resources.length ? `
                 <div class="vf-result-section">
@@ -5395,27 +5385,20 @@ function _renderDeployProgress(container, event, ctx) {
             resultDiv.className = 'vf-result vf-result-fail';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
-                    <span class="vf-result-icon">${isValidate ? '🔧' : '⚠️'}</span>
-                    <span>${isValidate ? 'I couldn\'t fully resolve this one' : 'Something went wrong with the deployment'}</span>
+                    <span class="vf-result-icon">●</span>
+                    <span>${isValidate ? 'Still working through some details' : 'Deployment needs a few adjustments'}</span>
                 </div>
                 <div class="vf-result-body">
                     ${isValidate
-                        ? '<p>I gave it my best shot with self-healing, but some issues remain. Take a look at the log above to see what happened.</p>'
-                        : '<p>The deployment didn\'t go through. You might want to re-validate the template or check the parameters.</p>'}
-                    ${event.error ? `
-                    <details class="vf-error-details" open>
-                        <summary>What Azure told me</summary>
-                        <code>${escapeHtml(event.error)}</code>
-                    </details>` : ''}
-                    ${dedupHtml}
+                        ? '<p>The agent worked through several iterations. Take a look at the log above to see the progress.</p>'
+                        : '<p>The deployment needs some adjustments. You might want to revise the template or check the parameters.</p>'}
                     ${healHistory.length ? `
                     <details class="vf-heal-summary">
-                        <summary>🔄 ${healHistory.length} fix${healHistory.length !== 1 ? 'es' : ''} I tried</summary>
+                        <summary>🔄 ${healHistory.length} iteration${healHistory.length !== 1 ? 's' : ''} attempted</summary>
                         <div class="vf-heal-list">
                             ${healHistory.map(h => `
                                 <div class="vf-heal-entry">
                                     <div class="vf-heal-num">Step ${h.step || '?'}</div>
-                                    <div class="vf-heal-error">❌ ${escapeHtml(h.error || '')}</div>
                                     <div class="vf-heal-fix">🔧 ${escapeHtml(h.fix_summary || '')}</div>
                                 </div>
                             `).join('')}
@@ -5435,7 +5418,7 @@ function _renderDeployProgress(container, event, ctx) {
     // ── Cleanup events ──
     if (phase === 'cleanup' || phase === 'cleanup_done' || phase === 'cleanup_warning') {
         const cleanupEl = document.createElement('div');
-        const icon = phase === 'cleanup_done' ? '✅' : (phase === 'cleanup_warning' ? '⚠️' : '🧹');
+        const icon = '🧹';  // always neutral cleanup icon
         cleanupEl.className = 'vf-cleanup';
         cleanupEl.innerHTML = `${icon} ${escapeHtml(detail)}`;
         timeline.appendChild(cleanupEl);
@@ -5446,7 +5429,7 @@ function _renderDeployProgress(container, event, ctx) {
     const pct = Math.round(progress * 100);
     const phaseIcons = {
         starting: '🚀', resource_group: '📁', validating: '🔍',
-        validated: '✅', deploying: '⚙️', provisioning: '📦',
+        validated: '●', deploying: '⚙️', provisioning: '📦',
     };
     const icon = phaseIcons[phase] || '⏳';
     liveProgress.innerHTML = `
@@ -5458,7 +5441,7 @@ function _renderDeployProgress(container, event, ctx) {
         <div class="vf-resource-chips">
             ${event.resources.map(r => `
                 <span class="vf-res-chip vf-res-${r.state.toLowerCase()}">
-                    ${r.state === 'Succeeded' ? '✅' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
+                    ${r.state === 'Succeeded' ? '●' : r.state === 'Running' ? '⏳' : '⏸️'} ${escapeHtml(r.name)}
                 </span>
             `).join('')}
         </div>` : ''}
@@ -5467,7 +5450,7 @@ function _renderDeployProgress(container, event, ctx) {
 
 /** Auto-heal a failed template — system fixes it, not the user */
 async function autoHealTemplate(templateId) {
-    showToast('🔧 Let me use the Copilot SDK to fix this automatically…', 'info');
+    showToast('🔧 Using the Copilot SDK to adjust this automatically…', 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/auto-heal`, {
@@ -5483,9 +5466,9 @@ async function autoHealTemplate(templateId) {
         }
 
         if (data.status === 'no_issues') {
-            showToast('ℹ️ Actually, everything looks fine — no issues to fix!', 'info');
+            showToast('Everything looks fine — no adjustments needed.', 'info');
         } else if (data.all_passed) {
-            showToast(`✅ Fixed it! All ${data.retest?.total || ''} tests pass now. Let me run the full validation…`, 'success');
+            showToast(`All ${data.retest?.total || ''} tests pass now. Running full validation…`, 'info');
             // Auto-chain to ARM validation after successful heal
             await loadAllData();
             showTemplateDetail(templateId);
@@ -5495,7 +5478,7 @@ async function autoHealTemplate(templateId) {
             runTemplateValidation(templateId);
             return;
         } else {
-            showToast(`🔧 I fixed some things — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. You might want to use Request Revision for the rest.`, 'warning');
+            showToast(`Adjusted some things — ${data.retest?.passed || 0}/${data.retest?.total || 0} tests pass now. You might want to use Request Revision for the rest.`, 'info');
         }
 
         await loadAllData();
@@ -5525,7 +5508,7 @@ async function runTemplateTest(templateId) {
         const results = data.results || {};
 
         if (results.all_passed) {
-            showToast(`✅ All ${results.total} tests passed — starting validation…`, 'success');
+            showToast(`All ${results.total} tests passed — starting validation…`, 'info');
             // Auto-chain to ARM validation
             await loadAllData();
             showTemplateDetail(templateId);
@@ -5535,7 +5518,7 @@ async function runTemplateTest(templateId) {
             runTemplateValidation(templateId);
             return;
         } else {
-            showToast(`❌ ${results.failed} of ${results.total} tests failed`, 'error');
+            showToast(`${results.failed} of ${results.total} tests need attention`, 'info');
         }
 
         // Refresh data and re-open detail
@@ -5593,8 +5576,8 @@ function renderApprovalTracker(requests) {
     }
 
     const statusIcons = {
-        submitted: '📨', in_review: '🔍', approved: '✅',
-        conditional: '⚠️', denied: '❌', deferred: '⏳',
+        submitted: '📨', in_review: '🔍', approved: '●',
+        conditional: '●', denied: '●', deferred: '⏳',
     };
 
     tracker.innerHTML = `
