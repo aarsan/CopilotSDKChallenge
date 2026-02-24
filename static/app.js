@@ -3330,8 +3330,29 @@ function _adoHandleEvent(container, event, state) {
                 const r = event.result;
                 const summary = el.querySelector('.ado-job-result');
                 if (summary) {
-                    summary.innerHTML = `<span class="ado-job-result-ver">v${escapeHtml(r.new_semver || '')}</span>
+                    let html = `<span class="ado-job-result-ver">v${escapeHtml(r.new_semver || '')}</span>
                         <span class="ado-job-result-changes">${r.changes_made?.length || 0} change(s) applied</span>`;
+                    // Deploy proof
+                    const dp = r.deploy_proof;
+                    if (dp && !dp.error) {
+                        html += `
+                        <div class="ado-deploy-proof">
+                            <div class="ado-proof-title">🔒 Deployment Validation Proof</div>
+                            <div class="ado-proof-grid">
+                                <div class="ado-proof-item"><span class="ado-proof-label">Subscription</span><span class="ado-proof-value">${escapeHtml(dp.subscription_id || '')}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Resource Group</span><span class="ado-proof-value">${escapeHtml(dp.resource_group || '')}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Deployment</span><span class="ado-proof-value">${escapeHtml(dp.deployment_name || '')}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Region</span><span class="ado-proof-value">${escapeHtml(dp.region || '')}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Started</span><span class="ado-proof-value">${dp.started_at ? new Date(dp.started_at).toLocaleString() : '—'}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Completed</span><span class="ado-proof-value">${dp.completed_at ? new Date(dp.completed_at).toLocaleString() : '—'}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Cleanup</span><span class="ado-proof-value">${dp.cleanup_initiated_at ? new Date(dp.cleanup_initiated_at).toLocaleString() : '—'}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Status</span><span class="ado-proof-value ado-proof-status-${dp.what_if_status === 'success' ? 'ok' : 'warn'}">${escapeHtml(dp.what_if_status || '?')}</span></div>
+                                <div class="ado-proof-item"><span class="ado-proof-label">Resources</span><span class="ado-proof-value">${dp.total_changes || 0} operation(s)</span></div>
+                            </div>
+                            ${dp.change_counts ? `<div class="ado-proof-counts">${Object.entries(dp.change_counts).map(([k,v]) => `<span class="ado-proof-count ado-proof-count-${k.toLowerCase()}">${k}: ${v}</span>`).join('')}</div>` : ''}
+                        </div>`;
+                    }
+                    summary.innerHTML = html;
                     summary.classList.remove('hidden');
                 }
             }

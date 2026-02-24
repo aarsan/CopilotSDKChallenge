@@ -7603,6 +7603,92 @@ body {
 
 .ado-error-icon { font-size: 1rem; }
 
+/* ── Deploy Proof Card ── */
+.ado-deploy-proof {
+    width: 100%;
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, var(--border-muted));
+    background: color-mix(in srgb, var(--accent-blue) 3%, var(--surface-primary));
+}
+
+.ado-proof-title {
+    font-weight: 700;
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    margin-bottom: 0.4rem;
+    letter-spacing: 0.02em;
+}
+
+.ado-proof-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.25rem 0.75rem;
+}
+
+.ado-proof-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+}
+
+.ado-proof-label {
+    font-size: 0.58rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.ado-proof-value {
+    font-size: 0.68rem;
+    font-family: 'SFMono-Regular', 'Cascadia Code', 'Consolas', monospace;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.ado-proof-status-ok { color: #3fb950; font-weight: 700; }
+.ado-proof-status-warn { color: #d29922; font-weight: 700; }
+
+.ado-proof-counts {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 0.35rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid var(--border-muted);
+}
+
+.ado-proof-count {
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+    color: var(--text-secondary);
+}
+
+.ado-proof-count-create {
+    background: color-mix(in srgb, #3fb950 12%, transparent);
+    color: #3fb950;
+}
+
+.ado-proof-count-modify {
+    background: color-mix(in srgb, #d29922 12%, transparent);
+    color: #d29922;
+}
+
+.ado-proof-count-delete {
+    background: color-mix(in srgb, #f85149 12%, transparent);
+    color: #f85149;
+}
+
+.ado-proof-count-nochange {
+    background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+    color: var(--text-muted);
+}
+
 /* ── Template Test Results ──────────────────────────────────── */
 .test-summary {
     display: flex;

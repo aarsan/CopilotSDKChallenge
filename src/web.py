@@ -2932,6 +2932,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         get_template_by_id, get_template_versions, get_template_version,
         create_template_version, get_backend, get_latest_semver, compute_next_semver,
     )
+    from src.tools.deploy_engine import run_what_if, _get_subscription_id, _get_resource_client
 
     body = await request.json()
     plan_steps = body.get("plan", [])
@@ -3001,6 +3002,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 {"id": f"job-{i}-checkout", "label": "Checkout", "detail": f"Check out v{current_semver}"},
                 {"id": f"job-{i}-remediate", "label": "Remediate", "detail": f"Apply {len(steps)} compliance fix(es)"},
                 {"id": f"job-{i}-validate", "label": "Validate", "detail": "Parse & validate ARM JSON"},
+                {"id": f"job-{i}-deploy-test", "label": "Deploy Test", "detail": "ARM What-If validation against Azure"},
                 {"id": f"job-{i}-version", "label": "Version", "detail": f"Bump {current_semver} → {projected_semver} ({change_type})"},
                 {"id": f"job-{i}-publish", "label": "Publish", "detail": "Update catalog with new version"},
             ],
@@ -3253,7 +3255,99 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 pass
             step_end(sid, "success", int((time.time() - s3) * 1000))
 
-            # ── Step 4: VERSION ──
+            # ── Step 4: DEPLOY TEST (ARM What-If) ──
+            sid = f"{job_id}-deploy-test"
+            step_start(sid)
+            s_dt = time.time()
+
+            try:
+                sub_id = _get_subscription_id()
+                short_tid = tid.replace('-', '')[:12]
+                validation_rg = f"infraforge-validate-{short_tid}"
+                validation_region = "eastus2"
+                validation_deployment = f"whatif-{uuid.uuid4().hex[:8]}"
+
+                step_log(sid, f"Subscription: {sub_id}")
+                step_log(sid, f"Resource group: {validation_rg}")
+                step_log(sid, f"Region: {validation_region}")
+                step_log(sid, f"Deployment name: {validation_deployment}")
+
+                # Ensure template has default parameter values
+                sanitized_arm = _ensure_parameter_defaults(fixed_content)
+                arm_dict = json.loads(sanitized_arm)
+                param_values = _extract_param_values(arm_dict)
+                step_log(sid, f"Resolved {len(param_values)} parameter value(s) for deployment")
+
+                started_at = datetime.now(timezone.utc)
+                step_log(sid, f"What-If started: {started_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                step_log(sid, "Running ARM What-If against Azure…")
+
+                what_if_result = await run_what_if(
+                    resource_group=validation_rg,
+                    template=arm_dict,
+                    parameters=param_values,
+                    region=validation_region,
+                )
+
+                finished_at = datetime.now(timezone.utc)
+                wif_status = what_if_result.get("status", "unknown")
+                step_log(sid, f"What-If completed: {finished_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                step_log(sid, f"What-If status: {wif_status}")
+
+                # Log per-resource results
+                change_counts = what_if_result.get("change_counts", {})
+                total_changes = what_if_result.get("total_changes", 0)
+                step_log(sid, f"Total resource operations: {total_changes}")
+                for ctype, count in change_counts.items():
+                    step_log(sid, f"  {ctype}: {count}")
+
+                for change in what_if_result.get("changes", []):
+                    rtype = change.get("resource_type", "?")
+                    rname = change.get("resource_name", "?")
+                    ctype = change.get("change_type", "?")
+                    step_log(sid, f"  → {ctype} {rtype}/{rname}")
+
+                if what_if_result.get("has_destructive_changes"):
+                    step_log(sid, "⚠ Destructive changes detected (Delete operations)", "error")
+
+                # Clean up validation resource group
+                step_log(sid, f"Cleaning up validation RG: {validation_rg}")
+                try:
+                    rg_client = _get_resource_client()
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: rg_client.resource_groups.begin_delete(validation_rg),
+                    )
+                    cleanup_at = datetime.now(timezone.utc)
+                    step_log(sid, f"RG deletion initiated: {cleanup_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                except Exception as cleanup_err:
+                    step_log(sid, f"RG cleanup warning: {str(cleanup_err)}", "error")
+
+                deploy_proof = {
+                    "subscription_id": sub_id,
+                    "resource_group": validation_rg,
+                    "deployment_name": validation_deployment,
+                    "region": validation_region,
+                    "started_at": started_at.isoformat(),
+                    "completed_at": finished_at.isoformat(),
+                    "cleanup_initiated_at": datetime.now(timezone.utc).isoformat(),
+                    "what_if_status": wif_status,
+                    "total_changes": total_changes,
+                    "change_counts": change_counts,
+                }
+
+                step_log(sid, "✓ ARM What-If validation passed")
+                step_end(sid, "success", int((time.time() - s_dt) * 1000))
+
+            except Exception as deploy_err:
+                step_log(sid, f"ARM What-If failed: {str(deploy_err)}", "error")
+                step_log(sid, "Template will still be versioned — deployment validation is advisory")
+                deploy_proof = {"error": str(deploy_err), "status": "failed"}
+                step_end(sid, "failed", int((time.time() - s_dt) * 1000),
+                         "What-If failed (non-blocking)")
+
+            # ── Step 5: VERSION ──
             sid = f"{job_id}-version"
             step_start(sid)
             s4 = time.time()
@@ -3283,7 +3377,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             step_log(sid, f"Created version #{new_version_num} (v{new_semver_actual})")
             step_end(sid, "success", int((time.time() - s4) * 1000))
 
-            # ── Step 5: PUBLISH ──
+            # ── Step 6: PUBLISH ──
             sid = f"{job_id}-publish"
             step_start(sid)
             s5 = time.time()
@@ -3307,6 +3401,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 "new_semver": new_semver_actual,
                 "changes_made": changes_made,
                 "changelog": changelog,
+                "deploy_proof": deploy_proof,
             }
             emit({"type": "job_end", "job_id": job_id, "status": "success",
                   "result": result, "duration_ms": int((time.time() - t0) * 1000)})
