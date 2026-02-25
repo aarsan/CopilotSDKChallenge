@@ -4853,6 +4853,7 @@ body {
 .obs-deploy-card.obs-deploy-failed { border-left-color: var(--accent-red); }
 .obs-deploy-card.obs-deploy-running { border-left-color: var(--accent-blue); }
 .obs-deploy-card.obs-deploy-pending { border-left-color: var(--accent-yellow); }
+.obs-deploy-card.obs-deploy-torn-down { border-left-color: var(--text-secondary); opacity: 0.7; }
 
 .obs-deploy-header {
     display: flex;
@@ -4908,6 +4909,7 @@ body {
 .obs-deploy-badge.obs-deploy-failed { background: rgba(248, 81, 73, 0.15); color: var(--accent-red); }
 .obs-deploy-badge.obs-deploy-running { background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); }
 .obs-deploy-badge.obs-deploy-pending { background: rgba(210, 153, 34, 0.15); color: var(--accent-yellow); }
+.obs-deploy-badge.obs-deploy-torn-down { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
 
 .obs-deploy-time {
     font-size: 0.75rem;
@@ -4989,6 +4991,40 @@ body {
 
 .obs-output-val {
     color: var(--text-secondary);
+}
+
+/* ── Deployment Actions / Teardown ──────────────────────────── */
+.obs-deploy-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.65rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-primary);
+}
+
+.obs-teardown-btn {
+    font-size: 0.72rem !important;
+    padding: 0.3rem 0.75rem !important;
+    border-radius: 5px;
+    transition: all 0.15s;
+}
+
+.obs-teardown-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.obs-deploy-torn-info {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-primary);
+    font-style: italic;
+}
+
+.obs-stat-torn {
+    color: var(--text-secondary) !important;
 }
 
 

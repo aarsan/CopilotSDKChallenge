@@ -138,9 +138,14 @@ the change summary (creates, modifies, deletes) before proceeding.
 No CLI deps needed. Creates resource group, validates, deploys in incremental mode, and \
 returns provisioned resources + template outputs. Progress is streamed live.
 
-10. **SAVE and REGISTER** — Save outputs and offer to register new templates.
+10. **TEARDOWN** — Use `teardown_deployment` to tear down (delete) a previously deployed \
+infrastructure by removing its Azure resource group and all resources within it. Use \
+`get_deployment_status` first to list deployments and find the deployment ID. This is \
+a destructive operation — confirm with the user before proceeding.
 
-11. **PUBLISH** — Use `publish_to_github` to create a repo and PR.
+11. **SAVE and REGISTER** — Save outputs and offer to register new templates.
+
+12. **PUBLISH** — Use `publish_to_github` to create a repo and PR.
 
 ## SERVICE APPROVAL LIFECYCLE
 

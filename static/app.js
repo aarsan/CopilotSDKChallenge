@@ -9953,10 +9953,12 @@ function _renderDeploymentFeed(deployments) {
     const total = deployments.length;
     const succeeded = deployments.filter(d => d.status === 'succeeded').length;
     const failed = deployments.filter(d => d.status === 'failed').length;
+    const tornDown = deployments.filter(d => d.status === 'torn_down').length;
     const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
     el('obs-deployments-total', total);
     el('obs-deployments-succeeded', succeeded);
     el('obs-deployments-failed', failed);
+    el('obs-deployments-torn-down', tornDown);
 
     if (deployments.length === 0) {
         feed.innerHTML = `
@@ -9978,10 +9980,14 @@ function _renderDeploymentRunCard(dep) {
             statusClass = 'obs-deploy-succeeded'; statusIcon = '✅'; statusLabel = 'Succeeded'; break;
         case 'failed':
             statusClass = 'obs-deploy-failed'; statusIcon = '❌'; statusLabel = 'Failed'; break;
+        case 'torn_down':
+            statusClass = 'obs-deploy-torn-down'; statusIcon = '🗑️'; statusLabel = 'Torn Down'; break;
         case 'deploying':
             statusClass = 'obs-deploy-running'; statusIcon = '⏳'; statusLabel = 'Deploying'; break;
         case 'validating':
             statusClass = 'obs-deploy-running'; statusIcon = '🔍'; statusLabel = 'Validating'; break;
+        case 'tearing_down':
+            statusClass = 'obs-deploy-running'; statusIcon = '🔄'; statusLabel = 'Tearing Down'; break;
         default:
             statusClass = 'obs-deploy-pending'; statusIcon = '⏳'; statusLabel = dep.status || 'Pending';
     }
@@ -10035,6 +10041,17 @@ function _renderDeploymentRunCard(dep) {
     // Deployment ID (short)
     const shortId = dep.deployment_id ? dep.deployment_id.substring(0, 20) : '';
 
+    // Teardown button — only for succeeded or failed deployments
+    let teardownHtml = '';
+    if (dep.status === 'succeeded' || dep.status === 'failed') {
+        teardownHtml = `<div class="obs-deploy-actions"><button class="btn btn-sm btn-danger obs-teardown-btn" onclick="teardownDeployment('${escapeHtml(dep.deployment_id)}')" title="Delete all resources in this deployment">🗑️ Tear Down</button></div>`;
+    } else if (dep.status === 'torn_down') {
+        const tdAt = dep.torn_down_at ? new Date(dep.torn_down_at).toLocaleString() : '';
+        teardownHtml = `<div class="obs-deploy-torn-info">🗑️ Torn down ${tdAt ? 'on ' + tdAt : ''}</div>`;
+    } else if (dep.status === 'tearing_down') {
+        teardownHtml = `<div class="obs-deploy-torn-info">🔄 Teardown in progress…</div>`;
+    }
+
     return `
     <div class="obs-deploy-card ${statusClass}">
         <div class="obs-deploy-header">
@@ -10058,6 +10075,7 @@ function _renderDeploymentRunCard(dep) {
         ${resourcesHtml}
         ${errorHtml}
         ${outputsHtml}
+        ${teardownHtml}
     </div>`;
 }
 
@@ -10069,6 +10087,33 @@ function _formatDuration(ms) {
     if (mins < 60) return `${mins}m ${remSecs}s`;
     const hours = Math.floor(mins / 60);
     return `${hours}h ${mins % 60}m`;
+}
+
+async function teardownDeployment(deploymentId) {
+    if (!confirm('⚠️ This will permanently delete the resource group and ALL resources in this deployment. This cannot be undone.\n\nContinue?')) {
+        return;
+    }
+    // Find and disable the button
+    const btns = document.querySelectorAll('.obs-teardown-btn');
+    btns.forEach(b => {
+        if (b.onclick && b.getAttribute('onclick')?.includes(deploymentId)) {
+            b.disabled = true;
+            b.textContent = '🔄 Tearing down…';
+        }
+    });
+
+    try {
+        const res = await fetch(`/api/deployments/${deploymentId}/teardown`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            alert(`Teardown failed: ${data.detail || 'Unknown error'}`);
+            return;
+        }
+        // Refresh the deployment list
+        await loadDeploymentHistory();
+    } catch (err) {
+        alert(`Teardown failed: ${err.message}`);
+    }
 }
 
 // ── Service Validation Activity (existing) ──────────────────

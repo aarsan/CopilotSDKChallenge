@@ -12290,6 +12290,19 @@ async def stream_deployment_progress(deployment_id: str):
     return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/deployments/{deployment_id}/teardown")
+async def teardown_deployment_endpoint(deployment_id: str):
+    """Tear down a deployment by deleting its resource group."""
+    from src.tools.deploy_engine import execute_teardown
+
+    result = await execute_teardown(deployment_id=deployment_id)
+
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return JSONResponse(result)
+
+
 # ── Approval Management API ──────────────────────────────────
 
 @app.get("/api/approvals")

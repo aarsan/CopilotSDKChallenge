@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=145">
+    <link rel="stylesheet" href="/static/styles.css?v=146">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -520,6 +520,10 @@
                             <span class="obs-stat-label">Failed</span>
                         </div>
                         <div class="obs-stat">
+                            <span class="obs-stat-num obs-stat-torn" id="obs-deployments-torn-down">0</span>
+                            <span class="obs-stat-label">Torn Down</span>
+                        </div>
+                        <div class="obs-stat">
                             <span class="obs-stat-num activity-pulse" id="activity-running">0</span>
                             <span class="obs-stat-label">Running</span>
                         </div>
@@ -1023,7 +1027,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=145"></script>
+    <script src="/static/app.js?v=146"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

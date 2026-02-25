@@ -1100,3 +1100,192 @@ async def get_deployment_status(params: GetDeploymentStatusParams) -> str:
                 f"({d['status']}) — {d['started_at']}"
             )
         return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# TEARDOWN / CLEANUP
+# ══════════════════════════════════════════════════════════════
+
+async def execute_teardown(
+    deployment_id: str,
+    on_progress: ProgressCallback = None,
+) -> dict:
+    """Tear down a deployment by deleting its resource group.
+
+    Looks up the deployment record (in-memory or DB), then deletes the
+    entire resource group via the Azure SDK.  Updates the deployment
+    status to 'torn_down' with a timestamp.
+
+    Returns a summary dict.
+    """
+    from src.database import get_deployment, update_deployment_status
+
+    # ── Resolve deployment record ─────────────────────────
+    record_dict = None
+
+    # Check in-memory first
+    mem_record = deploy_manager.deployments.get(deployment_id)
+    if mem_record:
+        record_dict = mem_record.to_dict()
+    else:
+        # Fall back to DB
+        record_dict = await get_deployment(deployment_id)
+
+    if not record_dict:
+        return {"status": "error", "error": f"Deployment '{deployment_id}' not found."}
+
+    resource_group = record_dict["resource_group"]
+    subscription_id = record_dict.get("subscription_id", "")
+    status = record_dict["status"]
+
+    if status == "torn_down":
+        return {
+            "status": "already_torn_down",
+            "message": f"Deployment '{deployment_id}' was already torn down.",
+            "resource_group": resource_group,
+        }
+
+    if status in ("deploying", "validating", "pending"):
+        return {
+            "status": "error",
+            "error": f"Cannot tear down a deployment that is still {status}. Wait for it to complete.",
+        }
+
+    async def _emit(data: dict):
+        if on_progress:
+            await on_progress(data)
+
+    # ── Delete the resource group ─────────────────────────
+    try:
+        await _emit({
+            "phase": "teardown",
+            "detail": f"Deleting resource group '{resource_group}'…",
+            "progress": 0.1,
+        })
+
+        client = _get_resource_client()
+        loop = asyncio.get_event_loop()
+
+        # Check if the RG exists first
+        try:
+            rg = await loop.run_in_executor(
+                None,
+                lambda: client.resource_groups.get(resource_group),
+            )
+        except Exception:
+            # RG doesn't exist — mark as torn down anyway
+            now = datetime.now(timezone.utc).isoformat()
+            await update_deployment_status(deployment_id, "torn_down", torn_down_at=now)
+            if mem_record:
+                mem_record.status = "torn_down"
+            return {
+                "status": "torn_down",
+                "message": f"Resource group '{resource_group}' no longer exists. Marked as torn down.",
+                "resource_group": resource_group,
+            }
+
+        await _emit({
+            "phase": "teardown",
+            "detail": f"Resource group '{resource_group}' found. Starting deletion…",
+            "progress": 0.2,
+        })
+
+        # Begin the delete (long-running operation)
+        poller = await loop.run_in_executor(
+            None,
+            lambda: client.resource_groups.begin_delete(resource_group),
+        )
+
+        await _emit({
+            "phase": "teardown",
+            "detail": f"Deletion in progress for '{resource_group}'… This may take a few minutes.",
+            "progress": 0.5,
+        })
+
+        # Wait for completion
+        await loop.run_in_executor(None, poller.result)
+
+        await _emit({
+            "phase": "done",
+            "detail": f"Resource group '{resource_group}' deleted successfully.",
+            "progress": 1.0,
+        })
+
+        # Update DB status
+        now = datetime.now(timezone.utc).isoformat()
+        await update_deployment_status(deployment_id, "torn_down", torn_down_at=now)
+
+        # Update in-memory record
+        if mem_record:
+            mem_record.status = "torn_down"
+
+        resources = record_dict.get("provisioned_resources", [])
+        return {
+            "status": "torn_down",
+            "message": f"Successfully deleted resource group '{resource_group}' and all {len(resources)} resources.",
+            "resource_group": resource_group,
+            "resources_deleted": len(resources),
+            "torn_down_at": now,
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Teardown failed for {deployment_id}: {error_msg}")
+        await _emit({
+            "phase": "error",
+            "detail": f"Teardown failed: {error_msg}",
+            "progress": 0,
+        })
+        return {
+            "status": "error",
+            "error": f"Failed to delete resource group '{resource_group}': {error_msg}",
+        }
+
+
+class TeardownDeploymentParams(BaseModel):
+    deployment_id: str = Field(
+        description=(
+            "The deployment ID to tear down. This deletes the entire resource "
+            "group and all resources that were provisioned. Use "
+            "get_deployment_status to find deployment IDs."
+        )
+    )
+
+
+@define_tool(description=(
+    "Tear down (delete) a previously deployed infrastructure by removing its "
+    "Azure resource group and all resources within it. This is a destructive "
+    "operation — all resources in the resource group will be permanently deleted. "
+    "The deployment must be in 'succeeded' or 'failed' status. Use "
+    "get_deployment_status first to list deployments and find the deployment ID."
+))
+async def teardown_deployment(params: TeardownDeploymentParams) -> str:
+    """Tear down a deployment by deleting its resource group."""
+
+    async def _agent_progress(event: dict):
+        phase = event.get("phase", "")
+        detail = event.get("detail", "")
+        logger.info(f"[Teardown] {phase}: {detail}")
+
+    result = await execute_teardown(
+        deployment_id=params.deployment_id,
+        on_progress=_agent_progress,
+    )
+
+    if result["status"] == "torn_down":
+        lines = [
+            "## 🗑️ Teardown Complete",
+            "",
+            f"- **Resource Group:** `{result['resource_group']}`",
+            f"- **Resources Deleted:** {result.get('resources_deleted', 'N/A')}",
+            f"- **Torn Down At:** {result.get('torn_down_at', '')}",
+            "",
+            result.get("message", ""),
+        ]
+        return "\n".join(lines)
+
+    elif result["status"] == "already_torn_down":
+        return f"ℹ️ {result['message']}"
+
+    else:
+        return f"❌ {result.get('error', 'Teardown failed.')}"

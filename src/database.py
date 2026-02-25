@@ -465,6 +465,22 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE deployments ADD template_name NVARCHAR(200) DEFAULT ''
     """,
+    # ── Deployment subscription_id tracking (migration) ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'subscription_id'
+    )
+    ALTER TABLE deployments ADD subscription_id NVARCHAR(100) DEFAULT ''
+    """,
+    # ── Deployment torn_down tracking (migration) ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'torn_down_at'
+    )
+    ALTER TABLE deployments ADD torn_down_at NVARCHAR(50)
+    """,
     # ── Service Artifacts (3-gate approval) ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_artifacts')
@@ -1930,8 +1946,8 @@ async def save_deployment(deployment: dict) -> None:
             status, phase, progress, detail, template_hash,
             initiated_by, started_at, completed_at, error,
             resources_json, what_if_json, outputs_json,
-            template_id, template_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            template_id, template_name, subscription_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             deployment["deployment_id"],
             deployment["deployment_name"],
@@ -1951,6 +1967,7 @@ async def save_deployment(deployment: dict) -> None:
             json.dumps(deployment.get("outputs", {})),
             deployment.get("template_id", ""),
             deployment.get("template_name", ""),
+            deployment.get("subscription_id", ""),
         ),
     )
 
@@ -1986,6 +2003,8 @@ async def get_deployments(
         d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
         d.setdefault("template_id", "")
         d.setdefault("template_name", "")
+        d.setdefault("subscription_id", "")
+        d.setdefault("torn_down_at", None)
         result.append(d)
     return result
 
@@ -2005,7 +2024,29 @@ async def get_deployment(deployment_id: str) -> Optional[dict]:
     d["outputs"] = json.loads(d.pop("outputs_json", None) or "{}")
     d.setdefault("template_id", "")
     d.setdefault("template_name", "")
+    d.setdefault("subscription_id", "")
+    d.setdefault("torn_down_at", None)
     return d
+
+
+async def update_deployment_status(
+    deployment_id: str,
+    status: str,
+    torn_down_at: Optional[str] = None,
+) -> bool:
+    """Update a deployment's status (e.g. to 'torn_down')."""
+    backend = await get_backend()
+    if torn_down_at:
+        await backend.execute_write(
+            "UPDATE deployments SET status = ?, torn_down_at = ? WHERE deployment_id = ?",
+            (status, torn_down_at, deployment_id),
+        )
+    else:
+        await backend.execute_write(
+            "UPDATE deployments SET status = ? WHERE deployment_id = ?",
+            (status, deployment_id),
+        )
+    return True
 
 
 # ══════════════════════════════════════════════════════════════

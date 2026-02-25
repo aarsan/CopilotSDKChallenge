@@ -32,6 +32,7 @@ from src.tools.deploy_engine import (
     validate_deployment,
     deploy_infrastructure,
     get_deployment_status,
+    teardown_deployment,
 )
 
 
@@ -78,6 +79,7 @@ def get_all_tools() -> list:
         validate_deployment,
         deploy_infrastructure,
         get_deployment_status,
+        teardown_deployment,
         # Output
         save_output_to_file,
         # Publishing
