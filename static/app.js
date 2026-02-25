@@ -984,7 +984,7 @@ function renderServiceTable(services) {
         let versionHtml;
         if (versionLabel && update) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
-                + `<span class="version-badge version-update" title="Template uses ${escapeHtml(update.template_api_version)} — Azure offers ${escapeHtml(update.latest_api_version)}">⬆ update</span>`;
+                + `<span class="version-badge version-update version-update-clickable" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(svc.id)}')">⬆ update</span>`;
         } else if (versionLabel) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
@@ -1207,6 +1207,20 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
     ];
 
+    // Update pipeline steps (shown when API version update available)
+    const updatePipelineSteps = [
+        { icon: '📥', label: 'Checkout', desc: 'Read current active ARM template' },
+        { icon: '🔄', label: 'Update', desc: 'Rewrite API version references to latest Azure version' },
+        { icon: '📋', label: 'Static Check', desc: 'Static validation against org governance policies' },
+        { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
+        { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
+        { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
+        { icon: '🧹', label: 'Cleanup', desc: 'Delete validation resource group' },
+        { icon: '✅', label: 'Publish', desc: 'New version promoted to active' },
+    ];
+
+    const showUpdatePipeline = apiVersionStatus && apiVersionStatus.newer_available;
+
     // Distinguish governance approval from full onboarding
     const displayStatus = (status === 'approved' && !activeVersion)
         ? 'approved_not_onboarded' : status;
@@ -1223,6 +1237,21 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         </div>
 
         ${_renderApiVersionAdvisory(apiVersionStatus)}
+
+        ${showUpdatePipeline ? `
+        <div class="onboard-pipeline update-pipeline">
+            <div class="pipeline-label">⬆ API Version Update Pipeline ${_copilotBadge()}</div>
+            <div class="pipeline-steps">
+                ${updatePipelineSteps.map(s => `
+                    <div class="pipeline-step" title="${s.desc}">
+                        <span class="pipeline-step-icon">${s.icon}</span>
+                        <span class="pipeline-step-label">${s.label}</span>
+                    </div>
+                `).join('<span class="pipeline-arrow">→</span>')}
+            </div>
+            <p class="pipeline-desc">Updates template to latest Azure API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Target: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code></p>
+        </div>
+        ` : ''}
 
         <div class="onboard-pipeline">
             <div class="pipeline-label">Onboarding Pipeline ${_copilotBadge()}</div>
@@ -1245,17 +1274,24 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <span class="model-selector-hint" id="model-selector-hint"></span>
         </div>
 
-        ${_renderOnboardButton(svc, status, latestVersion)}
+        ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus)}
 
         ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
 }
 
-function _renderOnboardButton(svc, status, latestVersion) {
+function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
+    // API Version Update button — shown when service is onboarded AND newer version available
+    const updateBtn = (apiVersionStatus && apiVersionStatus.newer_available && status === 'approved' && latestVersion)
+        ? `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}')">
+               ⬆ Update API Version (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
+           </button>`
+        : '';
+
     // Governance-approved AND has a validated version → fully onboarded
     if (status === 'approved' && latestVersion) {
         return `
-        <div class="validation-card validation-succeeded">
+        <div class="validation-card validation-succeeded" id="validation-card">
             <div class="validation-header">
                 <span class="validation-icon">✅</span>
                 <span class="validation-title">Service Onboarded — v${latestVersion.version}</span>
@@ -1265,10 +1301,12 @@ function _renderOnboardButton(svc, status, latestVersion) {
                 ${latestVersion.validated_at ? `Validated: ${latestVersion.validated_at.substring(0, 10)}` : ''}
             </div>
             <div class="validation-actions">
+                ${updateBtn}
                 <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
                     🔄 Re-validate (New Version)
                 </button>
             </div>
+            <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
@@ -2045,6 +2083,202 @@ async function triggerOnboarding(serviceId) {
         if (detail) detail.textContent = `Error: ${err.message}`;
         const cardEl = document.getElementById('validation-card');
         if (cardEl) cardEl.className = 'validation-card validation-failed';
+    }
+}
+
+async function triggerApiVersionUpdate(serviceId) {
+    const card = document.getElementById('validation-card');
+    const modelSelect = document.getElementById('onboard-model-select');
+    const selectedModel = modelSelect ? modelSelect.value : '';
+
+    if (card) {
+        card.className = 'validation-card validation-running';
+        card.innerHTML = `
+            <div class="validation-header">
+                <span class="validation-icon validation-spinner">⬆</span>
+                <span class="validation-title">API Version Update In Progress…</span>
+            </div>
+            <div class="validation-model-badge" id="validation-model-badge"></div>
+            <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+            <div class="validation-progress">
+                <div class="validation-progress-track">
+                    <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="validation-detail" id="validation-detail">Initializing API version update pipeline…</div>
+            <div class="validation-log" id="validation-log">
+                <div class="validation-log-header">
+                    <span>Update Log</span>
+                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
+                </div>
+            </div>
+        `;
+    }
+
+    try {
+        const body = {};
+        if (selectedModel) body.model = selectedModel;
+
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/update-api-version`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'API version update failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    _handleUpdateEvent(event);
+                } catch (e) {}
+            }
+        }
+
+        if (buffer.trim()) {
+            try {
+                _handleUpdateEvent(JSON.parse(buffer));
+            } catch (e) {}
+        }
+
+        await loadAllData();
+        await showServiceDetail(serviceId);
+
+    } catch (err) {
+        showToast(`API version update failed: ${err.message}`, 'error');
+        const detail = document.getElementById('validation-detail');
+        if (detail) detail.textContent = `Error: ${err.message}`;
+        const cardEl = document.getElementById('validation-card');
+        if (cardEl) cardEl.className = 'validation-card validation-failed';
+    }
+}
+
+function _handleUpdateEvent(event) {
+    const progressFill = document.getElementById('validation-progress-fill');
+    const detailEl = document.getElementById('validation-detail');
+    const logEl = document.getElementById('validation-log');
+    const badge = document.getElementById('validation-attempt-badge');
+    const modelBadge = document.getElementById('validation-model-badge');
+    const card = document.getElementById('validation-card');
+
+    if (event.progress && progressFill) {
+        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
+    }
+    if (event.detail && detailEl) {
+        detailEl.textContent = event.detail;
+    }
+    if (event.step && badge) {
+        badge.textContent = event.step > 1 ? `Attempt ${event.step}` : '';
+        if (event.step > 1) badge.classList.add('visible');
+    }
+
+    if (event.phase === 'init_model' && event.model && modelBadge) {
+        modelBadge.textContent = `🤖 ${event.model.display || event.model.id || event.model}`;
+        modelBadge.classList.add('visible');
+    }
+
+    // Icons per phase
+    let icon = '▸';
+    let logClass = event.type || 'progress';
+
+    switch (event.type) {
+        case 'error':       icon = '❌'; break;
+        case 'done':        icon = '✅'; break;
+        case 'healing':     icon = '🤖'; break;
+        case 'healing_done': icon = '🔧'; break;
+        default:
+            if (event.phase === 'checkout')                icon = '📥';
+            else if (event.phase === 'checkout_complete')  icon = '✓';
+            else if (event.phase === 'updating')           icon = '🔄';
+            else if (event.phase === 'update_complete')    icon = '✓';
+            else if (event.phase === 'saved')              icon = '💾';
+            else if (event.phase === 'init_model')         icon = '🤖';
+            else if (event.phase === 'static_policy_check')   icon = '📋';
+            else if (event.phase === 'static_policy_complete') icon = '✓';
+            else if (event.phase === 'static_policy_failed')   icon = '⚠️';
+            else if (event.phase === 'what_if')            icon = '🔍';
+            else if (event.phase === 'what_if_complete')   icon = '✓';
+            else if (event.phase === 'what_if_failed')     icon = '💥';
+            else if (event.phase === 'deploying')          icon = '🚀';
+            else if (event.phase === 'deploy_complete')    icon = '📦';
+            else if (event.phase === 'deploy_failed')      icon = '💥';
+            else if (event.phase === 'policy_testing')     icon = '🛡️';
+            else if (event.phase === 'policy_testing_complete') icon = '✓';
+            else if (event.phase === 'cleanup')            icon = '🧹';
+            else if (event.phase === 'cleanup_complete')   icon = '✓';
+            else if (event.phase === 'promoting')          icon = '🏆';
+            else if (event.phase === 'fixing_template')    icon = '🔧';
+            else if (event.phase === 'template_fixed')     icon = '🔧';
+            break;
+    }
+
+    if (logEl && event.detail) {
+        const logLine = document.createElement('div');
+        logLine.className = `validation-log-line validation-log-${logClass}`;
+        if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
+        logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
+        logEl.appendChild(logLine);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Update header text
+    const header = card?.querySelector('.validation-title');
+    const iconEl = card?.querySelector('.validation-icon');
+
+    if (event.phase === 'checkout' && header) {
+        header.textContent = 'Checking Out Template…';
+        if (iconEl) { iconEl.textContent = '📥'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'updating' && header) {
+        header.textContent = 'Updating API Version…';
+        if (iconEl) { iconEl.textContent = '🔄'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'static_policy_check' && header) {
+        header.textContent = 'Checking Governance Policies…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'what_if' && header) {
+        header.textContent = 'Running ARM What-If Analysis…';
+        if (iconEl) { iconEl.textContent = '🔍'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'deploying' && header) {
+        header.textContent = 'Deploying to Validation RG…';
+        if (iconEl) { iconEl.textContent = '🚀'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'policy_testing' && header) {
+        header.textContent = 'Testing Runtime Compliance…';
+        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'cleanup' && header) {
+        header.textContent = 'Cleaning Up…';
+        if (iconEl) { iconEl.textContent = '🧹'; }
+    } else if (event.phase === 'promoting' && header) {
+        header.textContent = 'Publishing New Version…';
+        if (iconEl) { iconEl.textContent = '🏆'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.type === 'healing' && header) {
+        header.textContent = 'Auto-Healing — AI Fixing Template…';
+        if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
+    }
+
+    // Final states
+    if (event.type === 'done' && card) {
+        card.className = 'validation-card validation-succeeded';
+        if (header) header.textContent = `API Version Updated — v${event.new_semver || '?'}`;
+        if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
+    } else if (event.type === 'error' && card) {
+        card.className = 'validation-card validation-failed';
+        if (header) header.textContent = 'API Version Update Failed';
+        if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
     }
 }
 

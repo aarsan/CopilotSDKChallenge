@@ -3114,6 +3114,26 @@ body {
     font-size: 0.65rem;
     cursor: help;
 }
+.version-badge.version-update-clickable {
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+.version-badge.version-update-clickable:hover {
+    background: rgba(59, 130, 246, 0.25);
+    transform: scale(1.05);
+}
+
+/* Update pipeline accent */
+.onboard-pipeline.update-pipeline .pipeline-label {
+    color: var(--accent-blue);
+}
+.onboard-pipeline.update-pipeline .pipeline-step {
+    border-color: rgba(59, 130, 246, 0.25);
+}
+.onboard-pipeline.update-pipeline .pipeline-step:hover {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.08);
+}
 
 /* Azure API version badge in service table */
 .azure-api-badge {
