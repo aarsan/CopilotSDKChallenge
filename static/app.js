@@ -1780,20 +1780,20 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
 
 function _renderVersionHistory(versions, activeVersion) {
     const approvedVersions = versions.filter(v => v.status === 'approved');
-    const draftVersions = versions.filter(v => v.status === 'draft');
+    const draftVersions = versions.filter(v => v.status === 'draft' || v.status === 'failed');
     const totalCount = versions.length;
     const approvedCount = approvedVersions.length;
     const draftCount = draftVersions.length;
 
     let html = '';
 
-    // ── Draft versions (pending validation) ──
+    // ── Draft / failed versions ──
     if (draftCount > 0) {
         html += `
         <div class="version-history version-history-drafts">
             <div class="version-history-header version-history-header-draft">
                 <span>📝 Draft Versions (Pending Validation)</span>
-                <span class="version-count">${draftCount} draft${draftCount === 1 ? '' : 's'}</span>
+                <span class="version-count">${draftCount} draft${draftCount === 1 ? '' : 's'}${draftCount > 1 ? ` <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteAllDraftVersions('${escapeHtml(draftVersions[0].service_id)}')">🗑 Clear All</button>` : ''}</span>
             </div>
             <div class="version-list">
                 ${draftVersions.map(v => {
@@ -1803,12 +1803,17 @@ function _renderVersionHistory(versions, activeVersion) {
                             ? (v.arm_template.length / 1024).toFixed(1)
                             : '?';
                     const displayVer = v.semver || `${v.version}.0.0`;
+                    const isFailed = v.status === 'failed';
+                    const statusIcon = isFailed ? '❌' : '📝';
+                    const statusLabel = isFailed ? 'failed' : 'draft';
+                    const statusClass = isFailed ? 'version-status-failed' : 'version-status-draft';
+                    const itemClass = isFailed ? 'version-item-failed' : 'version-item-draft';
 
                     return `
-                    <div class="version-item version-item-draft" onclick="toggleVersionDetail(this)">
+                    <div class="version-item ${itemClass}" onclick="toggleVersionDetail(this)">
                         <div class="version-item-header">
                             <span class="version-item-badge version-badge-draft">v${displayVer}</span>
-                            <span class="version-item-status version-status-draft">📝 draft</span>
+                            <span class="version-item-status ${statusClass}">${statusIcon} ${statusLabel}</span>
                             ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
                             <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                             <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
@@ -1821,14 +1826,17 @@ function _renderVersionHistory(versions, activeVersion) {
                                 <strong>Template:</strong> ${sizeKB} KB
                             </div>
                             <div class="version-detail-actions">
-                                <button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); triggerDraftValidation('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
+                                ${isFailed ? '' : `<button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); triggerDraftValidation('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
                                     🚀 Validate & Promote
-                                </button>
+                                </button>`}
                                 <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
                                     👁 View Template
                                 </button>
                                 <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
                                     ⬇ Download
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteDraftVersion('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
+                                    🗑 Delete
                                 </button>
                             </div>
                         </div>
@@ -2217,6 +2225,39 @@ async function submitTemplateModification() {
 function toggleVersionDetail(el) {
     const detail = el.querySelector('.version-item-detail');
     if (detail) detail.classList.toggle('hidden');
+}
+
+async function deleteDraftVersion(serviceId, version, semver) {
+    if (!confirm(`Delete draft v${semver}? This cannot be undone.`)) return;
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Delete failed');
+        }
+        showToast(`Deleted draft v${semver}`, 'info');
+        await loadAllData();
+        await showServiceDetail(serviceId);
+    } catch (err) {
+        showToast(`Failed to delete: ${err.message}`, 'error');
+    }
+}
+
+async function deleteAllDraftVersions(serviceId) {
+    if (!confirm('Delete ALL draft and failed versions? This cannot be undone.')) return;
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/drafts`, { method: 'DELETE' });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Delete failed');
+        }
+        const data = await res.json();
+        showToast(`Deleted ${data.deleted || 0} draft/failed version(s)`, 'info');
+        await loadAllData();
+        await showServiceDetail(serviceId);
+    } catch (err) {
+        showToast(`Failed to delete: ${err.message}`, 'error');
+    }
 }
 
 async function triggerDraftValidation(serviceId, version, semver) {

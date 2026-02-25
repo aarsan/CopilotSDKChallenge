@@ -3871,6 +3871,17 @@ body {
     color: var(--accent-amber) !important;
     font-weight: 500;
 }
+.version-item-failed {
+    border-left: 3px solid var(--accent-red) !important;
+    background: rgba(239, 68, 68, 0.04);
+}
+.version-item-failed:hover {
+    background: rgba(239, 68, 68, 0.08);
+}
+.version-status-failed {
+    color: var(--accent-red) !important;
+    font-weight: 500;
+}
 
 /* ── Template Modify Section ──────────────────────────────── */
 .template-modify-section {

@@ -6876,6 +6876,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
         set_active_service_version, fail_service_validation,
         get_governance_policies_as_dict,
         update_service_version_deployment_info,
+        delete_service_versions_by_status,
     )
     from src.tools.static_policy_validator import (
         validate_template, validate_template_against_standards,
@@ -6936,6 +6937,17 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "type": "llm_reasoning", "phase": "init_model",
                     "detail": f"  {task_key}: {info['display']} — {info['reason'][:80]}",
                     "progress": 0.01,
+                }) + "\n"
+
+            # ── Cleanup stale drafts/failed from previous runs ────
+            _cleaned = await delete_service_versions_by_status(
+                service_id, ["draft", "failed"],
+            )
+            if _cleaned:
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup_drafts",
+                    "detail": f"🧹 Cleaned up {_cleaned} stale draft/failed version(s) from previous runs",
+                    "progress": 0.015,
                 }) + "\n"
 
             # ── Step 1: Checkout ──────────────────────────────────
@@ -7255,7 +7267,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     governance_policies = await get_governance_policies_as_dict()
                     arm_dict = json.loads(arm_template) if isinstance(arm_template, str) else arm_template
                     static_result = validate_template(arm_dict, governance_policies)
-                    svc_standards = get_standards_for_service(service_id)
+                    svc_standards = await get_standards_for_service(service_id)
                     std_results = validate_template_against_standards(arm_dict, svc_standards)
                     # Merge standard violations into static result
                     if std_results.get("violations"):
@@ -10258,6 +10270,49 @@ async def get_service_version_detail(service_id: str, version: int):
         raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
 
     return JSONResponse(match)
+
+
+@app.delete("/api/services/{service_id:path}/versions/{version:int}")
+async def delete_service_version_endpoint(service_id: str, version: int):
+    """Delete a single draft or failed service version. Cannot delete the active version."""
+    from src.database import get_service, get_backend
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    if svc.get("active_version") == version:
+        raise HTTPException(status_code=400, detail="Cannot delete the active version")
+
+    backend = await get_backend()
+    # Only allow deleting draft or failed versions
+    rows = await backend.execute(
+        "SELECT status FROM service_versions WHERE service_id = ? AND version = ?",
+        (service_id, version),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found")
+    if rows[0]["status"] not in ("draft", "failed"):
+        raise HTTPException(status_code=400, detail=f"Cannot delete version with status '{rows[0]['status']}'")
+
+    await backend.execute_write(
+        "DELETE FROM service_versions WHERE service_id = ? AND version = ?",
+        (service_id, version),
+    )
+    return JSONResponse({"deleted": True, "version": version})
+
+
+@app.delete("/api/services/{service_id:path}/versions/drafts")
+async def delete_all_draft_versions_endpoint(service_id: str):
+    """Delete all draft and failed versions for a service."""
+    from src.database import get_service, delete_service_versions_by_status
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    count = await delete_service_versions_by_status(service_id, ["draft", "failed"])
+    return JSONResponse({"deleted": count})
 
 
 @app.post("/api/services/{service_id:path}/versions/{version:int}/modify")

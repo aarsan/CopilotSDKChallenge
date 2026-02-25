@@ -2483,6 +2483,45 @@ async def update_service_version_deployment_info(
     return count > 0
 
 
+async def delete_service_versions_by_status(
+    service_id: str,
+    statuses: list[str],
+    *,
+    keep_version: int | None = None,
+) -> int:
+    """Delete service versions matching any of the given statuses.
+
+    Useful for cleaning up leftover draft/failed versions before a new pipeline run.
+    Never deletes the active version.  If *keep_version* is given, that version
+    is also excluded from deletion.
+    """
+    backend = await get_backend()
+    placeholders = ", ".join("?" for _ in statuses)
+    params: list = [service_id] + statuses
+
+    extra = ""
+    if keep_version is not None:
+        extra += " AND version <> ?"
+        params.append(keep_version)
+
+    # Safety: don't delete the active version
+    svc_rows = await backend.execute(
+        "SELECT active_version FROM services WHERE id = ?", (service_id,)
+    )
+    active_ver = svc_rows[0]["active_version"] if svc_rows and svc_rows[0].get("active_version") else None
+    if active_ver is not None:
+        extra += " AND version <> ?"
+        params.append(active_ver)
+
+    count = await backend.execute_write(
+        f"DELETE FROM service_versions WHERE service_id = ? AND status IN ({placeholders}){extra}",
+        tuple(params),
+    )
+    if count:
+        logger.info(f"Deleted {count} version(s) for {service_id} with status in {statuses}")
+    return count
+
+
 async def set_active_service_version(service_id: str, version: int) -> bool:
     """Set the active (deployed) version for a service.
 
