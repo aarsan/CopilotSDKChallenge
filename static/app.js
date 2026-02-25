@@ -1130,8 +1130,14 @@ function applyServiceFilters() {
 
 let _currentVersions = null;
 let _pendingApiUpdate = null;
+let _apiUpdateAbort = null;  // AbortController for cancelling previous update fetches
 
 async function startApiVersionUpdateFromTable(serviceId) {
+    // Abort any previous in-flight update so we don't get stuck
+    if (_apiUpdateAbort) {
+        try { _apiUpdateAbort.abort(); } catch (_) {}
+    }
+    _apiUpdateRunning = false;
     _pendingApiUpdate = serviceId;
     await showServiceDetail(serviceId);
 }
@@ -1176,7 +1182,8 @@ async function showServiceDetail(serviceId) {
         // Auto-trigger API version update if requested from table badge
         if (_pendingApiUpdate === serviceId) {
             _pendingApiUpdate = null;
-            setTimeout(() => triggerApiVersionUpdate(serviceId), 300);
+            // Use requestAnimationFrame for minimal delay — just enough for DOM to settle
+            requestAnimationFrame(() => triggerApiVersionUpdate(serviceId));
         }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
@@ -2105,13 +2112,26 @@ async function triggerApiVersionUpdate(serviceId) {
         return;
     }
     _apiUpdateRunning = true;
+    _apiUpdateAbort = new AbortController();
     console.log('[update] triggerApiVersionUpdate started for', serviceId);
 
-    const card = document.getElementById('validation-card');
+    // Ensure the card shows running state — even if showServiceDetail already rendered the green card
+    let card = document.getElementById('validation-card');
     const modelSelect = document.getElementById('onboard-model-select');
     const selectedModel = modelSelect ? modelSelect.value : '';
 
     console.log('[update] validation-card element:', card ? 'found' : 'NOT FOUND');
+
+    // If no card exists, create one in the detail body
+    if (!card) {
+        const body = document.getElementById('detail-service-body');
+        if (body) {
+            const div = document.createElement('div');
+            div.id = 'validation-card';
+            body.insertBefore(div, body.firstChild);
+            card = div;
+        }
+    }
 
     if (card) {
         card.className = 'validation-card validation-running';
@@ -2145,6 +2165,7 @@ async function triggerApiVersionUpdate(serviceId) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: _apiUpdateAbort ? _apiUpdateAbort.signal : undefined,
         });
 
         console.log('[update] fetch response status:', res.status);
@@ -2205,6 +2226,7 @@ async function triggerApiVersionUpdate(serviceId) {
         if (cardEl) cardEl.className = 'validation-card validation-failed';
     } finally {
         _apiUpdateRunning = false;
+        _apiUpdateAbort = null;
     }
 }
 
