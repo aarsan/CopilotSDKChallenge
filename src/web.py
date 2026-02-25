@@ -10273,118 +10273,153 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             timeout=90,
         )
 
+    # ── Resource-type hints for intelligent healing ───────────
+
+    def _get_resource_type_hints(res_types: set[str]) -> str:
+        """Return Azure-specific deployment knowledge for resource types in the template.
+
+        This gives the reasoning LLM concrete technical knowledge about common
+        failure patterns so it can reason about root causes more effectively.
+        """
+        hints = []
+        _HINTS = {
+            "microsoft.network/virtualnetworks/subnets": (
+                "SUBNETS: Subnets can be deployed in two ways:\n"
+                "  (a) As a nested 'subnets' array property INSIDE the VNet resource — "
+                "simpler, avoids dependency issues, recommended for single-template deploys.\n"
+                "  (b) As a separate child resource of type 'Microsoft.Network/virtualNetworks/subnets' — "
+                "requires an explicit dependsOn on the parent VNet and correct 'name' format: "
+                "'vnetName/subnetName' (NOT just 'subnetName').\n"
+                "Common failures: address space conflicts (subnet prefix must be within VNet's "
+                "address space), missing NSG/route table references, duplicate subnet names."
+            ),
+            "microsoft.network/virtualnetworks": (
+                "VNETS: addressPrefixes is required. If subnets are defined, each subnet's "
+                "addressPrefix must fall within the VNet's address space. Don't overlap subnets. "
+                "For simple templates, define subnets inline in the 'subnets' property array."
+            ),
+            "microsoft.network/networksecuritygroups": (
+                "NSGS: Security rules need unique priorities (100-4096). 'direction' must be "
+                "'Inbound' or 'Outbound'. 'access' must be 'Allow' or 'Deny'. 'protocol' "
+                "must be 'Tcp', 'Udp', 'Icmp', or '*'. Use '*' for sourceAddressPrefix to "
+                "mean any source."
+            ),
+            "microsoft.keyvault/vaults": (
+                "KEY VAULT: Requires 'tenantId' (use [subscription().tenantId]). "
+                "accessPolicies or enableRbacAuthorization required. Name must be globally "
+                "unique (3-24 chars, alphanumeric + hyphens). Enable soft delete and purge "
+                "protection for production."
+            ),
+            "microsoft.storage/storageaccounts": (
+                "STORAGE: Name MUST be 3-24 lowercase alphanumeric (NO hyphens, NO underscores). "
+                "Globally unique. 'kind' is required: 'StorageV2' is recommended. "
+                "'sku.name' is required: 'Standard_LRS', 'Standard_GRS', etc."
+            ),
+            "microsoft.web/sites": (
+                "APP SERVICE: Requires a 'serverFarmId' pointing to an App Service Plan. "
+                "If the plan doesn't exist in the template, add a Microsoft.Web/serverfarms resource. "
+                "Use 'siteConfig' for runtime settings."
+            ),
+            "microsoft.containerservice/managedclusters": (
+                "AKS: 'agentPoolProfiles' array is required with at least one pool. "
+                "Each pool needs 'name', 'count', 'vmSize', 'mode' ('System' for the first). "
+                "dnsPrefix is required and must be unique."
+            ),
+            "microsoft.sql/servers": (
+                "SQL SERVER: 'administratorLogin' and 'administratorLoginPassword' are required "
+                "unless using AAD-only auth. Server name must be globally unique, lowercase."
+            ),
+            "microsoft.network/applicationgateways": (
+                "APP GATEWAY: Complex resource with many required sub-blocks: "
+                "gatewayIPConfigurations, frontendIPConfigurations, frontendPorts, "
+                "backendAddressPools, backendHttpSettingsCollection, httpListeners, "
+                "requestRoutingRules. Requires an existing subnet (not the same as any "
+                "other resource's subnet). Use a dedicated 'AppGatewaySubnet'."
+            ),
+        }
+        for rt in res_types:
+            rt_lower = rt.lower()
+            if rt_lower in _HINTS:
+                hints.append(_HINTS[rt_lower])
+            # Also check parent type
+            if "/" in rt_lower:
+                parent = "/".join(rt_lower.rsplit("/", 1)[:-1])
+                if parent in _HINTS and _HINTS[parent] not in hints:
+                    hints.append(_HINTS[parent])
+        return "\n\n".join(hints)
+
     # ── Copilot fix helper ────────────────────────────────────
 
     async def _copilot_fix(content: str, error: str, standards_ctx: str = "",
                            planning_context: str = "",
-                           previous_attempts: list[dict] | None = None) -> str:
-        """Ask the Copilot SDK to fix an ARM template.
+                           previous_attempts: list[dict] | None = None) -> tuple[str, str]:
+        """Two-phase reasoning + fixing for ARM templates.
 
-        Uses the CODE_FIXING model (gpt-4.1) for surgical error repair.
-        Includes the architecture plan so the healer knows the template's intent.
-        Tracks previous attempts so each iteration tries a DIFFERENT strategy.
+        Phase 1 (PLANNING model): Analyze the failure, review all previous
+        attempts, and produce a root-cause analysis + strategy document that
+        describes a SPECIFIC DIFFERENT approach to try.
+
+        Phase 2 (CODE_FIXING model): Apply the strategy to produce a corrected
+        ARM template.
+
+        Returns (fixed_template, strategy_text) so the caller can store the
+        strategy in heal_history for subsequent iterations to reason over.
         """
-        fix_model = get_model_for_task(Task.CODE_FIXING)
         attempt_num = len(previous_attempts) + 1 if previous_attempts else 1
-        logger.info(f"[ModelRouter] _copilot_fix → model={fix_model}, attempt={attempt_num}")
+        fix_model = get_model_for_task(Task.CODE_FIXING)
+        plan_model = get_model_for_task(Task.PLANNING)
+        logger.info(f"[ModelRouter] _copilot_fix → analysis={plan_model}, fix={fix_model}, attempt={attempt_num}")
 
-        prompt = (
-            "The following ARM template failed Azure deployment validation.\n\n"
+        # ── Phase 1: Root Cause Analysis + Strategy ──────────
+        analysis_prompt = (
+            f"You are debugging an ARM template deployment failure (attempt {attempt_num}).\n\n"
             f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
-            f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+            f"--- CURRENT TEMPLATE (abbreviated) ---\n{content[:8000]}\n--- END TEMPLATE ---\n\n"
         )
-
-        # Include parameter values so the LLM can see what was sent to ARM
-        try:
-            _fix_tpl2 = json.loads(content)
-            _fix_params2 = _extract_param_values(_fix_tpl2)
-            if _fix_params2:
-                prompt += (
-                    "--- PARAMETER VALUES SENT TO ARM ---\n"
-                    f"{json.dumps(_fix_params2, indent=2, default=str)}\n"
-                    "--- END PARAMETER VALUES ---\n\n"
-                    "IMPORTANT: These are the actual values sent to Azure. "
-                    "If the error is caused by one of these values (invalid "
-                    "name, bad format), fix the corresponding parameter's "
-                    "\"defaultValue\" in the template.\n\n"
-                )
-        except Exception:
-            pass
-
-        # ── Previous attempt history (prevents repeating the same fix) ──
-        if previous_attempts:
-            prompt += "--- PREVIOUS FAILED ATTEMPTS (DO NOT repeat these fixes) ---\n"
-            for pa in previous_attempts:
-                prompt += (
-                    f"Step {pa.get('step', '?')}: Error was: {pa['error'][:300]}\n"
-                    f"  Fix tried: {pa['fix_summary']}\n"
-                    f"  Result: STILL FAILED — do something DIFFERENT\n\n"
-                )
-            prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
 
         if planning_context:
-            prompt += (
-                f"--- ARCHITECTURE PLAN (what this template is supposed to achieve) ---\n"
-                f"{planning_context}\n--- END PLAN ---\n\n"
+            analysis_prompt += (
+                f"--- ARCHITECTURE INTENT ---\n{planning_context[:3000]}\n--- END INTENT ---\n\n"
             )
-        if standards_ctx:
-            prompt += (
-                f"--- ORGANIZATION STANDARDS (MUST be satisfied) ---\n{standards_ctx}\n"
-                "--- END STANDARDS ---\n\n"
-            )
-        prompt += (
-            "Fix the template so it deploys successfully. Return ONLY the "
-            "corrected raw JSON — no markdown fences, no explanation.\n\n"
-            "CRITICAL RULES (in priority order):\n\n"
-            "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-            "   - If the error mentions an invalid resource name, the name likely "
-            "     comes from a parameter defaultValue. Find that parameter and fix "
-            "     its defaultValue to comply with Azure naming rules.\n"
-            "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
-            "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
-            "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
-            "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
-            "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
-            "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
-            "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
-            "   EXCEPTION: Globally-scoped resources MUST use location \"global\":\n"
-            "   * Microsoft.Network/dnszones → \"global\"\n"
-            "   * Microsoft.Network/trafficManagerProfiles → \"global\"\n"
-            "   * Microsoft.Cdn/profiles → \"global\"\n\n"
-            "3. STRUCTURAL FIXES:\n"
-            "   - Keep the same resource intent and resource names.\n"
-            "   - Fix schema issues, missing required properties, invalid API versions.\n"
-            "   - If diagnosticSettings requires an external dependency, REMOVE it.\n"
-            "   - Ensure ALL resources have tags: environment, owner, costCenter, project.\n"
-            "   - NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID — "
-            "     use [subscription().subscriptionId] instead.\n"
-            "   - If the error mentions 'LinkedAuthorizationFailed', use "
-            "     [subscription().subscriptionId] in resourceId() expressions.\n"
-            "   - If a resource requires complex external deps (VPN gateways, "
-            "     ExpressRoute), SIMPLIFY by removing those references.\n"
-            "   - NEVER add properties that require subscription-level feature registration. "
-            "     If the error mentions 'feature is not enabled', REMOVE the property.\n"
+
+        if previous_attempts:
+            analysis_prompt += "--- PREVIOUS FAILED ATTEMPTS ---\n"
+            for pa in previous_attempts:
+                analysis_prompt += (
+                    f"Attempt {pa.get('step', '?')} (phase: {pa.get('phase', '?')}):\n"
+                    f"  Error: {pa['error'][:400]}\n"
+                    f"  Strategy tried: {pa.get('strategy', pa.get('fix_summary', 'unknown'))}\n"
+                    f"  Structural changes: {pa.get('fix_summary', 'unknown')}\n"
+                    f"  Result: STILL FAILED\n\n"
+                )
+            analysis_prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
+
+        analysis_prompt += (
+            "Produce a ROOT CAUSE ANALYSIS followed by a STRATEGY.\n\n"
+            "Format your response EXACTLY as:\n\n"
+            "ROOT CAUSE:\n"
+            "<1-3 sentences explaining WHY the template fails — the actual technical root cause>\n\n"
+            "WHAT WAS TRIED AND WHY IT FAILED:\n"
+            "<For each previous attempt, explain why that specific fix didn't address the root cause>\n\n"
+            "STRATEGY FOR THIS ATTEMPT:\n"
+            "<A specific, concrete, DIFFERENT approach to fix the template. "
+            "Name the exact resources, properties, API versions, or structural "
+            "changes you would make. This must be meaningfully different from all "
+            "previous strategies.>\n\n"
+            "Be specific. Don't say 'try a different API version' — say which "
+            "version and why. Don't say 'restructure dependencies' — say exactly "
+            "how to restructure and what the new dependency chain looks like.\n"
         )
 
-        # ── Escalation strategies for later attempts ──
-        if attempt_num >= 4:
-            prompt += (
-                f"\nESCALATION — multiple strategies have failed, drastic measures needed:\n"
-                "- SIMPLIFY the template: remove optional/nice-to-have resources\n"
-                "- Remove diagnosticSettings, locks, autoscale rules if they are causing issues\n"
-                "- Use the SIMPLEST valid configuration for each resource\n"
-                "- Strip down to ONLY the primary resource with minimal properties\n"
-                "- Use well-known, stable API versions (prefer 2023-xx-xx or 2024-xx-xx)\n"
-            )
-        elif attempt_num >= 2:
-            prompt += (
-                f"\nPrevious fix(es) did NOT work.\n"
-                "You MUST try a FUNDAMENTALLY DIFFERENT approach:\n"
-                "- Try a different API version for the failing resource\n"
-                "- Restructure resource dependencies\n"
-                "- Remove or replace the problematic sub-resource\n"
-                "- Check if required properties changed in newer API versions\n"
-            )
+        # Add resource-type-specific knowledge for common failure patterns
+        try:
+            _tpl = json.loads(content)
+            _res_types = {r.get("type", "").lower() for r in _tpl.get("resources", []) if isinstance(r, dict)}
+            _type_hints = _get_resource_type_hints(_res_types)
+            if _type_hints:
+                analysis_prompt += f"\n--- RESOURCE-TYPE-SPECIFIC KNOWLEDGE ---\n{_type_hints}\n"
+        except Exception:
+            pass
 
         from src.copilot_helpers import copilot_send
 
@@ -10392,11 +10427,66 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         if _client is None:
             raise RuntimeError("Copilot SDK not available")
 
+        strategy_text = await copilot_send(
+            _client,
+            model=plan_model,
+            system_prompt=(
+                "You are a senior Azure infrastructure engineer debugging ARM template "
+                "deployment failures. You think like a developer — you analyze errors deeply, "
+                "identify root causes, and propose concrete, specific fixes. When previous "
+                "attempts have failed, you reason about WHY they failed and try a fundamentally "
+                "different approach, not a variation of the same thing."
+            ),
+            prompt=analysis_prompt,
+            timeout=60,
+        )
+
+        logger.info(f"[Healer] Phase 1 strategy (attempt {attempt_num}): {strategy_text[:300]}")
+
+        # ── Phase 2: Apply the Strategy ──────────────────────
+        fix_prompt = (
+            f"Fix this ARM template following the STRATEGY below.\n\n"
+            f"--- STRATEGY (from root cause analysis) ---\n{strategy_text}\n--- END STRATEGY ---\n\n"
+            f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
+            f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+        )
+
+        # Include parameter values
+        try:
+            _fix_tpl2 = json.loads(content)
+            _fix_params2 = _extract_param_values(_fix_tpl2)
+            if _fix_params2:
+                fix_prompt += (
+                    "--- PARAMETER VALUES SENT TO ARM ---\n"
+                    f"{json.dumps(_fix_params2, indent=2, default=str)}\n"
+                    "--- END PARAMETER VALUES ---\n\n"
+                )
+        except Exception:
+            pass
+
+        if standards_ctx:
+            fix_prompt += (
+                f"--- ORGANIZATION STANDARDS (MUST be satisfied) ---\n{standards_ctx}\n"
+                "--- END STANDARDS ---\n\n"
+            )
+
+        fix_prompt += (
+            "FOLLOW the strategy above. Apply the SPECIFIC changes it recommends.\n"
+            "Return ONLY the corrected raw JSON — no markdown fences, no explanation.\n\n"
+            "CRITICAL RULES:\n"
+            "1. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
+            "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
+            "   EXCEPTION: Globally-scoped resources MUST use location \"global\".\n"
+            "2. Ensure EVERY parameter has a \"defaultValue\".\n"
+            "3. Add tags: environment, owner, costCenter, project on every resource.\n"
+            "4. NEVER use placeholder GUIDs like '00000000-0000-0000-0000-000000000000'.\n"
+        )
+
         fixed = await copilot_send(
             _client,
             model=fix_model,
             system_prompt=DEEP_TEMPLATE_HEALER.system_prompt,
-            prompt=prompt,
+            prompt=fix_prompt,
             timeout=90,
         )
         if fixed.startswith("```"):
@@ -10465,7 +10555,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         fixed = _ensure_parameter_defaults(fixed)
         fixed = _sanitize_placeholder_guids(fixed)
 
-        return fixed
+        return fixed, strategy_text
 
     # ── Cleanup helper ────────────────────────────────────────
 
@@ -11273,14 +11363,16 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         yield json.dumps({"type": "error", "phase": "parsing", "step": attempt, "detail": error_msg}) + "\n"
                         return
                     yield json.dumps({"type": "healing", "phase": "fixing_template", "step": attempt,
-                        "detail": f"JSON parse error — invoking {get_model_display(Task.CODE_FIXING)} to analyze error and resolve…", "progress": att_base + 0.02}) + "\n"
+                        "detail": f"JSON parse error — {get_model_display(Task.PLANNING)} analyzing root cause…", "progress": att_base + 0.02}) + "\n"
                     _pre_fix = current_template
-                    current_template = await _copilot_fix(current_template, error_msg, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
-                    heal_history.append({"step": len(heal_history) + 1, "phase": "parsing", "error": error_msg, "fix_summary": _summarize_fix(_pre_fix, current_template)})
+                    current_template, _strategy = await _copilot_fix(current_template, error_msg, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
+                    yield json.dumps({"type": "llm_reasoning", "phase": "strategy", "step": attempt,
+                        "detail": f"Strategy: {_strategy[:300]}"}) + "\n"
+                    heal_history.append({"step": len(heal_history) + 1, "phase": "parsing", "error": error_msg, "fix_summary": _summarize_fix(_pre_fix, current_template), "strategy": _strategy})
                     tmpl_meta = _extract_meta(current_template)
                     await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
                     yield json.dumps({"type": "healing_done", "phase": "template_fixed", "step": attempt,
-                        "detail": f"{get_model_display(Task.CODE_FIXING)} rewrote template — retrying…", "progress": att_base + 0.03}) + "\n"
+                        "detail": f"{get_model_display(Task.CODE_FIXING)} applied strategy — retrying…", "progress": att_base + 0.03}) + "\n"
                     continue
 
                 # ── 3. Static Policy Check ────────────────────
@@ -11325,15 +11417,17 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     failed_checks = [c for c in report.results if not c.passed and c.enforcement == "block"]
                     fix_prompt = build_remediation_prompt(current_template, failed_checks)
                     yield json.dumps({"type": "healing", "phase": "fixing_template", "step": attempt,
-                        "detail": f"Policy violations detected — {get_model_display(Task.CODE_FIXING)} auto-healing template for {len(failed_checks)} blocker(s), analyzing error and resolving…",
+                        "detail": f"Policy violations detected ({len(failed_checks)} blocker(s)) — {get_model_display(Task.PLANNING)} analyzing root cause and devising strategy…",
                         "progress": att_base + 0.07}) + "\n"
                     _pre_fix = current_template
-                    current_template = await _copilot_fix(current_template, fix_prompt, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
-                    heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": fix_prompt[:500], "fix_summary": _summarize_fix(_pre_fix, current_template)})
+                    current_template, _strategy = await _copilot_fix(current_template, fix_prompt, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
+                    yield json.dumps({"type": "llm_reasoning", "phase": "strategy", "step": attempt,
+                        "detail": f"Strategy: {_strategy[:500]}"}) + "\n"
+                    heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": fix_prompt[:500], "fix_summary": _summarize_fix(_pre_fix, current_template), "strategy": _strategy})
                     tmpl_meta = _extract_meta(current_template)
                     await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
                     yield json.dumps({"type": "healing_done", "phase": "template_fixed", "step": attempt,
-                        "detail": f"{get_model_display(Task.CODE_FIXING)} remediated template — retrying…", "progress": att_base + 0.08}) + "\n"
+                        "detail": f"{get_model_display(Task.CODE_FIXING)} applied strategy — retrying…", "progress": att_base + 0.08}) + "\n"
                     continue
 
                 yield json.dumps({
@@ -11385,15 +11479,17 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         return
 
                     yield json.dumps({"type": "healing", "phase": "fixing_template", "step": attempt,
-                        "detail": f"What-If rejected by ARM — invoking {get_model_display(Task.CODE_FIXING)} to analyze error and resolve… Error: {errors[:300]}",
+                        "detail": f"What-If rejected — {get_model_display(Task.PLANNING)} analyzing root cause… Error: {errors[:200]}",
                         "progress": att_base + 0.12}) + "\n"
                     _pre_fix = current_template
-                    current_template = await _copilot_fix(current_template, errors, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
-                    heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": errors[:500], "fix_summary": _summarize_fix(_pre_fix, current_template)})
+                    current_template, _strategy = await _copilot_fix(current_template, errors, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
+                    yield json.dumps({"type": "llm_reasoning", "phase": "strategy", "step": attempt,
+                        "detail": f"Strategy: {_strategy[:500]}"}) + "\n"
+                    heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": errors[:500], "fix_summary": _summarize_fix(_pre_fix, current_template), "strategy": _strategy})
                     tmpl_meta = _extract_meta(current_template)
                     await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
                     yield json.dumps({"type": "healing_done", "phase": "template_fixed", "step": attempt,
-                        "detail": f"{get_model_display(Task.CODE_FIXING)} rewrote template — retrying…", "progress": att_base + 0.13}) + "\n"
+                        "detail": f"{get_model_display(Task.CODE_FIXING)} applied strategy — retrying…", "progress": att_base + 0.13}) + "\n"
                     continue
 
                 change_summary = ", ".join(f"{v} {k}" for k, v in wif.get("change_counts", {}).items())
@@ -11465,15 +11561,17 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         return
 
                     yield json.dumps({"type": "healing", "phase": "fixing_template", "step": attempt,
-                        "detail": f"Deployment failed — {get_model_display(Task.CODE_FIXING)} analyzing error and resolving… Error: {deploy_error[:300]}",
+                        "detail": f"Deployment failed — {get_model_display(Task.PLANNING)} analyzing root cause… Error: {deploy_error[:200]}",
                         "progress": att_base + 0.21}) + "\n"
                     _pre_fix = current_template
-                    current_template = await _copilot_fix(current_template, deploy_error, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
-                    heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": deploy_error[:500], "fix_summary": _summarize_fix(_pre_fix, current_template)})
+                    current_template, _strategy = await _copilot_fix(current_template, deploy_error, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
+                    yield json.dumps({"type": "llm_reasoning", "phase": "strategy", "step": attempt,
+                        "detail": f"Strategy: {_strategy[:500]}"}) + "\n"
+                    heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": deploy_error[:500], "fix_summary": _summarize_fix(_pre_fix, current_template), "strategy": _strategy})
                     tmpl_meta = _extract_meta(current_template)
                     await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
                     yield json.dumps({"type": "healing_done", "phase": "template_fixed", "step": attempt,
-                        "detail": f"{get_model_display(Task.CODE_FIXING)} rewrote template — redeploying…", "progress": att_base + 0.22}) + "\n"
+                        "detail": f"{get_model_display(Task.CODE_FIXING)} applied strategy — redeploying…", "progress": att_base + 0.22}) + "\n"
                     continue
 
                 # Deploy succeeded!
@@ -11609,17 +11707,19 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         fix_error = f"Runtime policy violation: {violation_desc}. The policy requires: {_policy_str}"
                         yield json.dumps({
                             "type": "healing", "phase": "fixing_template", "step": attempt,
-                            "detail": f"Policy violations on {len(violations)} resource(s) — {get_model_display(Task.CODE_FIXING)} analyzing and resolving…",
+                            "detail": f"Policy violations on {len(violations)} resource(s) — {get_model_display(Task.PLANNING)} analyzing root cause…",
                             "progress": att_base + 0.30,
                         }) + "\n"
                         _pre_fix = current_template
-                        current_template = await _copilot_fix(current_template, fix_error, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
-                        heal_history.append({"step": len(heal_history) + 1, "phase": "policy_compliance", "error": fix_error[:500], "fix_summary": _summarize_fix(_pre_fix, current_template)})
+                        current_template, _strategy = await _copilot_fix(current_template, fix_error, standards_ctx, planning_context=planning_response, previous_attempts=heal_history)
+                        yield json.dumps({"type": "llm_reasoning", "phase": "strategy", "step": attempt,
+                            "detail": f"Strategy: {_strategy[:500]}"}) + "\n"
+                        heal_history.append({"step": len(heal_history) + 1, "phase": "policy_compliance", "error": fix_error[:500], "fix_summary": _summarize_fix(_pre_fix, current_template), "strategy": _strategy})
                         tmpl_meta = _extract_meta(current_template)
                         await update_service_version_template(service_id, version_num, current_template, "copilot-healed")
                         yield json.dumps({
                             "type": "healing_done", "phase": "template_fixed", "step": attempt,
-                            "detail": f"{get_model_display(Task.CODE_FIXING)} rewrote template for policy compliance — redeploying…",
+                            "detail": f"{get_model_display(Task.CODE_FIXING)} applied strategy for policy compliance — redeploying…",
                             "progress": att_base + 0.31,
                         }) + "\n"
                         continue
