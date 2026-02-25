@@ -6579,7 +6579,7 @@ async def check_service_updates():
     2. Compares each service's ARM template apiVersion against Azure's latest
     3. Returns update list + all_api_versions map for the frontend to populate the column
     """
-    from src.database import get_all_services, get_service_versions, bulk_update_api_versions
+    from src.database import get_all_services, get_service_versions, bulk_update_api_versions, get_backend
 
     try:
         services = await get_all_services()
@@ -6611,16 +6611,18 @@ async def check_service_updates():
                 }
 
         # ── Step 3: Compare template apiVersions against Azure's latest ──
+        # Also extract template_api_version for ALL onboarded services
         updates: list[dict] = []
         total_checked = 0
+        template_api_map: dict[str, str] = {}   # service_id → template apiVersion
+        template_api_db_updates: list[tuple] = []
+
+        backend = await get_backend()
 
         for svc in services:
-            latest_api = svc.get("latest_api_version")
             active_ver_num = svc.get("active_version")
-            if not latest_api or active_ver_num is None:
+            if active_ver_num is None:
                 continue
-
-            total_checked += 1
 
             # Fetch versions and find the active one
             versions = await get_service_versions(svc["id"])
@@ -6650,6 +6652,18 @@ async def check_service_updates():
                 continue
 
             template_api = template_api_versions[0]
+            template_api_map[svc["id"]] = template_api
+
+            # Queue DB update if template_api_version changed
+            if svc.get("template_api_version") != template_api:
+                template_api_db_updates.append((template_api, svc["id"]))
+
+            # Only compare against Azure if we have latest_api_version
+            latest_api = svc.get("latest_api_version")
+            if not latest_api:
+                continue
+
+            total_checked += 1
             if latest_api > template_api:
                 updates.append({
                     "id": svc["id"],
@@ -6661,11 +6675,21 @@ async def check_service_updates():
                     "default_api_version": svc.get("default_api_version"),
                 })
 
+        # Persist template_api_version for all services (backfill)
+        if template_api_db_updates:
+            for tmpl_api, sid in template_api_db_updates:
+                await backend.execute_write(
+                    "UPDATE services SET template_api_version = ? WHERE id = ?",
+                    (tmpl_api, sid),
+                )
+            logger.info(f"check-updates: backfilled template_api_version for {len(template_api_db_updates)} services")
+
         return JSONResponse({
             "updates": updates,
             "total_checked": total_checked,
             "updates_available": len(updates),
             "all_api_versions": all_api_versions,
+            "template_api_versions": template_api_map,
         })
     except Exception as e:
         logger.error(f"Failed to check service updates: {e}")
