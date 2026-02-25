@@ -6433,7 +6433,9 @@ body {
     margin-top: 0.2rem;
 }
 .tmpl-chip {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     font-size: 0.68rem;
     font-weight: 500;
     padding: 0.12rem 0.5rem;
@@ -6443,6 +6445,26 @@ body {
 .tmpl-chip-provides  { background: rgba(34,197,94,0.12); color: #16a34a; }
 .tmpl-chip-requires  { background: rgba(245,158,11,0.12); color: #d97706; }
 .tmpl-chip-optional  { background: rgba(148,163,184,0.12); color: #64748b; }
+
+/* Azure resource icons in chips and headers */
+.az-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    line-height: 0;
+}
+.az-chip-icon svg {
+    vertical-align: middle;
+}
+.tmpl-type-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.tmpl-type-icon svg {
+    vertical-align: middle;
+}
 
 .tmpl-card-footer {
     display: flex;

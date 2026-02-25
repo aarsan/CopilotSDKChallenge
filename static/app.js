@@ -2165,6 +2165,7 @@ function renderTemplateTable(templates) {
     grid.innerHTML = templates.map(tmpl => {
         const ttype = tmpl.template_type || 'workload';
         const icon = typeIcons[ttype] || '📋';
+        const primaryAzIcon = provides.length ? _azureIcon(provides[0], 28) : '';
         const status = tmpl.status || 'draft';
         const serviceIds = tmpl.service_ids || [];
         const provides = tmpl.provides || [];
@@ -2186,7 +2187,7 @@ function renderTemplateTable(templates) {
         <div class="tmpl-card tmpl-card-${ttype} tmpl-status-${status}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
             <div class="tmpl-card-header">
                 <div class="tmpl-card-title">
-                    <span class="tmpl-type-icon">${icon}</span>
+                    <span class="tmpl-type-icon">${primaryAzIcon || icon}</span>
                     <div>
                         <strong>${escapeHtml(tmpl.name)}</strong>
                         <div class="tmpl-card-id">${escapeHtml(tmpl.id)}</div>
@@ -2201,7 +2202,7 @@ function renderTemplateTable(templates) {
             ${tmpl.description ? `<p class="tmpl-card-desc">${escapeHtml(tmpl.description)}</p>` : ''}
             ${provides.length ? `
             <div class="tmpl-card-resources">
-                ${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`).join('')}
+                ${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides"><span class="az-chip-icon">${_azureIcon(p, 14)}</span>${_shortType(p)}</span>`).join('')}
             </div>` : ''}
             <div class="tmpl-card-footer">
                 <div class="tmpl-card-meta">
@@ -2218,6 +2219,84 @@ function _shortType(resourceType) {
     if (!resourceType) return '?';
     const parts = resourceType.split('/');
     return parts[parts.length - 1];
+}
+
+/**
+ * Return an inline SVG icon for an Azure resource type.
+ * Uses Azure's official color palette with distinctive shapes per service.
+ * Falls back to a generic Azure diamond for unknown types.
+ */
+function _azureIcon(resourceType, size = 18) {
+    if (!resourceType) return '';
+    const key = resourceType.toLowerCase();
+
+    const icons = {
+        // ── Compute ──
+        'microsoft.compute/virtualmachines': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="14" height="10" rx="1.5" fill="#0078D4"/><rect x="4" y="5" width="10" height="6" rx="0.5" fill="#50E6FF"/><rect x="6" y="14" width="6" height="1.5" rx="0.5" fill="#0078D4"/><rect x="5" y="15" width="8" height="1" rx="0.5" fill="#005BA1"/></svg>`,
+        'microsoft.compute/virtualmachinescalesets': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="5" width="12" height="8" rx="1.5" fill="#0078D4" opacity="0.4"/><rect x="3" y="4" width="12" height="8" rx="1.5" fill="#0078D4" opacity="0.7"/><rect x="2" y="3" width="12" height="8" rx="1.5" fill="#0078D4"/><rect x="4" y="5" width="8" height="4" rx="0.5" fill="#50E6FF"/></svg>`,
+        'microsoft.web/sites': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 2L15.5 5.5V12.5L9 16L2.5 12.5V5.5L9 2Z" fill="#0078D4"/><path d="M9 5L12.5 7V11L9 13L5.5 11V7L9 5Z" fill="#50E6FF"/></svg>`,
+        'microsoft.web/serverfarms': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="14" height="4" rx="1" fill="#0078D4"/><rect x="2" y="8" width="14" height="4" rx="1" fill="#005BA1"/><circle cx="5" cy="5" r="1" fill="#50E6FF"/><circle cx="5" cy="10" r="1" fill="#50E6FF"/><rect x="7" y="13" width="4" height="2" rx="0.5" fill="#0078D4"/></svg>`,
+        'microsoft.containerservice/managedclusters': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 1L16 5V13L9 17L2 13V5L9 1Z" fill="#326CE5"/><path d="M9 5.5L12 7.5V11.5L9 13.5L6 11.5V7.5L9 5.5Z" fill="#fff"/><circle cx="9" cy="9.5" r="1.5" fill="#326CE5"/></svg>`,
+        'microsoft.containerinstance/containergroups': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="4" width="14" height="10" rx="1.5" fill="#0078D4"/><path d="M5 7h8M5 9.5h8M5 12h5" stroke="#50E6FF" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+        'microsoft.app/containerapps': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="14" height="14" rx="3" fill="#0078D4"/><path d="M6 6h6v6H6z" fill="#50E6FF" rx="1"/><path d="M8 8h2v2H8z" fill="#fff"/></svg>`,
+
+        // ── Networking ──
+        'microsoft.network/virtualnetworks': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="4" cy="4" r="2.5" fill="#0078D4"/><circle cx="14" cy="4" r="2.5" fill="#0078D4"/><circle cx="9" cy="14" r="2.5" fill="#0078D4"/><line x1="4" y1="6" x2="9" y2="12" stroke="#50E6FF" stroke-width="1.5"/><line x1="14" y1="6" x2="9" y2="12" stroke="#50E6FF" stroke-width="1.5"/><line x1="6" y1="4" x2="12" y2="4" stroke="#50E6FF" stroke-width="1.5"/></svg>`,
+        'microsoft.network/networksecuritygroups': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="14" height="14" rx="2" fill="#0078D4"/><path d="M9 5L13 7.5V11.5L9 14L5 11.5V7.5L9 5Z" fill="#50E6FF"/><path d="M9 7.5V11M7.5 9.5H10.5" stroke="#0078D4" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+        'microsoft.network/applicationgateways': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="6" y="2" width="6" height="14" rx="1.5" fill="#0078D4"/><path d="M2 6h4M2 9h4M2 12h4M12 6h4M12 9h4M12 12h4" stroke="#50E6FF" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+        'microsoft.network/publicipaddresses': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="7" fill="#0078D4"/><ellipse cx="9" cy="9" rx="3" ry="7" fill="none" stroke="#50E6FF" stroke-width="1.2"/><line x1="2" y1="9" x2="16" y2="9" stroke="#50E6FF" stroke-width="1.2"/></svg>`,
+        'microsoft.network/loadbalancers': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="4" r="2.5" fill="#0078D4"/><rect x="3" y="12" width="4" height="4" rx="1" fill="#0078D4"/><rect x="11" y="12" width="4" height="4" rx="1" fill="#0078D4"/><line x1="9" y1="6.5" x2="5" y2="12" stroke="#50E6FF" stroke-width="1.3"/><line x1="9" y1="6.5" x2="13" y2="12" stroke="#50E6FF" stroke-width="1.3"/></svg>`,
+        'microsoft.network/dnszones': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="14" height="12" rx="2" fill="#0078D4"/><text x="9" y="11.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#50E6FF" font-family="sans-serif">DNS</text></svg>`,
+        'microsoft.network/privatednszones': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="14" height="12" rx="2" fill="#005BA1"/><text x="9" y="11.5" text-anchor="middle" font-size="7" font-weight="bold" fill="#50E6FF" font-family="sans-serif">DNS</text><circle cx="14" cy="4" r="2.5" fill="#FFB900"/><path d="M13.2 3.2l1.6 1.6M14.8 3.2l-1.6 1.6" stroke="#fff" stroke-width="0.8"/></svg>`,
+        'microsoft.network/frontdoors': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 4h12l-2 10H5L3 4Z" fill="#0078D4"/><path d="M5 6h8l-1.5 6H6.5L5 6Z" fill="#50E6FF"/></svg>`,
+
+        // ── Databases ──
+        'microsoft.sql/servers': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#0078D4"/><path d="M3 4.5v9c0 1.38 2.69 2.5 6 2.5s6-1.12 6-2.5v-9" stroke="#0078D4" stroke-width="0" fill="#005BA1"/><ellipse cx="9" cy="13.5" rx="6" ry="2.5" fill="#0078D4"/><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#50E6FF"/></svg>`,
+        'microsoft.sql/servers/databases': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#0078D4"/><path d="M3 4.5v9c0 1.38 2.69 2.5 6 2.5s6-1.12 6-2.5v-9" stroke="#0078D4" stroke-width="0" fill="#005BA1"/><ellipse cx="9" cy="13.5" rx="6" ry="2.5" fill="#0078D4"/><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#50E6FF"/></svg>`,
+        'microsoft.dbforpostgresql/flexibleservers': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#336791"/><path d="M3 4.5v9c0 1.38 2.69 2.5 6 2.5s6-1.12 6-2.5v-9" fill="#264F73"/><ellipse cx="9" cy="13.5" rx="6" ry="2.5" fill="#336791"/><ellipse cx="9" cy="4.5" rx="6" ry="2.5" fill="#50B0E0"/></svg>`,
+        'microsoft.documentdb/databaseaccounts': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="7" fill="#0078D4"/><path d="M5 7c0-1 1.8-2 4-2s4 1 4 2v4c0 1-1.8 2-4 2s-4-1-4-2V7z" fill="#50E6FF"/><ellipse cx="9" cy="7" rx="4" ry="2" fill="#fff" opacity="0.5"/></svg>`,
+        'microsoft.cache/redis': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 2L16 6V12L9 16L2 12V6L9 2Z" fill="#C6302B"/><path d="M9 5L13 7.5V11L9 13.5L5 11V7.5L9 5Z" fill="#FF6B6B"/><path d="M9 7.5L11 9L9 10.5L7 9L9 7.5Z" fill="#fff"/></svg>`,
+
+        // ── Storage ──
+        'microsoft.storage/storageaccounts': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="3" width="14" height="4" rx="1" fill="#0078D4"/><rect x="2" y="8" width="14" height="4" rx="1" fill="#005BA1"/><rect x="2" y="13" width="14" height="3" rx="1" fill="#003D73"/><circle cx="13" cy="5" r="1" fill="#50E6FF"/><circle cx="13" cy="10" r="1" fill="#50E6FF"/><circle cx="13" cy="14.5" r="1" fill="#50E6FF"/></svg>`,
+
+        // ── Security ──
+        'microsoft.keyvault/vaults': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 2L15 5.5V12.5L9 16L3 12.5V5.5L9 2Z" fill="#FFB900"/><circle cx="9" cy="8" r="2.5" fill="#fff"/><rect x="8.2" y="10" width="1.6" height="4" rx="0.5" fill="#fff"/><circle cx="9" cy="8" r="1" fill="#FFB900"/></svg>`,
+        'microsoft.managedidentity/userassignedidentities': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="6" r="3.5" fill="#0078D4"/><path d="M3 15c0-3.31 2.69-5 6-5s6 1.69 6 5" fill="#50E6FF"/><circle cx="9" cy="6" r="2" fill="#fff"/></svg>`,
+
+        // ── Monitoring ──
+        'microsoft.operationalinsights/workspaces': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="14" height="14" rx="2" fill="#0078D4"/><polyline points="4,12 7,8 10,10 14,5" stroke="#50E6FF" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+        'microsoft.insights/components': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="7" fill="#68217A"/><polyline points="5,11 8,7 10,9 13,5" stroke="#fff" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="13" cy="5" r="1.2" fill="#50E6FF"/></svg>`,
+        'microsoft.insights/actiongroups': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 2l2 4h-4l2-4z" fill="#68217A"/><rect x="3" y="8" width="12" height="7" rx="1.5" fill="#68217A"/><path d="M3 9l6 4 6-4" stroke="#fff" stroke-width="1.2" fill="none"/></svg>`,
+
+        // ── AI ──
+        'microsoft.machinelearningservices/workspaces': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="14" height="14" rx="3" fill="#0078D4"/><circle cx="6" cy="12" r="1.5" fill="#50E6FF"/><circle cx="9" cy="7" r="1.5" fill="#50E6FF"/><circle cx="12" cy="11" r="1.5" fill="#50E6FF"/><line x1="6" y1="12" x2="9" y2="7" stroke="#fff" stroke-width="0.8"/><line x1="9" y1="7" x2="12" y2="11" stroke="#fff" stroke-width="0.8"/><line x1="6" y1="12" x2="12" y2="11" stroke="#fff" stroke-width="0.8"/></svg>`,
+        'microsoft.cognitiveservices/accounts': `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="7" fill="#0078D4"/><path d="M6 8c0-1.66 1.34-3 3-3s3 1.34 3 3c0 1.3-.8 2.4-2 2.8V13H8v-2.2C6.8 10.4 6 9.3 6 8z" fill="#50E6FF"/><circle cx="8" cy="7.5" r="0.7" fill="#0078D4"/><circle cx="10" cy="7.5" r="0.7" fill="#0078D4"/></svg>`,
+    };
+
+    // Try exact match
+    if (icons[key]) return icons[key];
+
+    // Try partial match (e.g. "microsoft.network/virtualnetworks" inside a longer path)
+    for (const [k, v] of Object.entries(icons)) {
+        if (key.includes(k) || k.includes(key)) return v;
+    }
+
+    // Fallback: category-based generic icon
+    if (key.includes('microsoft.compute')) return icons['microsoft.compute/virtualmachines'];
+    if (key.includes('microsoft.network')) return icons['microsoft.network/virtualnetworks'];
+    if (key.includes('microsoft.sql') || key.includes('microsoft.db') || key.includes('microsoft.documentdb'))
+        return icons['microsoft.sql/servers'];
+    if (key.includes('microsoft.storage')) return icons['microsoft.storage/storageaccounts'];
+    if (key.includes('microsoft.keyvault') || key.includes('microsoft.managedidentity'))
+        return icons['microsoft.keyvault/vaults'];
+    if (key.includes('microsoft.web') || key.includes('microsoft.app'))
+        return icons['microsoft.web/sites'];
+    if (key.includes('microsoft.insights') || key.includes('microsoft.operationalinsights'))
+        return icons['microsoft.operationalinsights/workspaces'];
+
+    // Generic Azure diamond
+    return `<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 1L17 9L9 17L1 9L9 1Z" fill="#0078D4"/><path d="M9 5L13 9L9 13L5 9L9 5Z" fill="#50E6FF"/></svg>`;
 }
 
 function filterTemplateType(typeFilter) {
@@ -2455,7 +2534,7 @@ function showTemplateDetail(templateId) {
                 ${provides.length ? `
                 <div class="detail-section">
                     <h4>Creates (Provides)</h4>
-                    <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides">${escapeHtml(p)}</span>`).join('')}</div>
+                    <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides"><span class="az-chip-icon">${_azureIcon(p, 14)}</span>${escapeHtml(p)}</span>`).join('')}</div>
                 </div>` : ''}
 
                 ${requires.length ? `
@@ -2464,7 +2543,7 @@ function showTemplateDetail(templateId) {
                     <div class="tmpl-dep-list">
                         ${requires.map(r => `
                             <div class="tmpl-dep-item tmpl-dep-required">
-                                <strong>${_shortType(r.type || r)}</strong>
+                                <strong><span class="az-chip-icon">${_azureIcon(r.type || r, 14)}</span>${_shortType(r.type || r)}</strong>
                                 <span>${escapeHtml(r.reason || '')}</span>
                                 <code>${escapeHtml(r.parameter || '')}</code>
                             </div>
@@ -6446,14 +6525,14 @@ async function _runComposeDependencyAnalysis() {
 
         if (analysis.provides?.length) {
             html += '<div class="dep-block"><h5>✅ Creates (Provides)</h5><div class="dep-chips">';
-            analysis.provides.forEach(p => { html += `<span class="tmpl-chip tmpl-chip-provides">${_shortType(p)}</span>`; });
+            analysis.provides.forEach(p => { html += `<span class="tmpl-chip tmpl-chip-provides"><span class="az-chip-icon">${_azureIcon(p, 14)}</span>${_shortType(p)}</span>`; });
             html += '</div></div>';
         }
 
         if (analysis.auto_created?.length) {
             html += '<div class="dep-block"><h5>🔧 Auto-Created Supporting Resources</h5>';
             analysis.auto_created.forEach(a => {
-                html += `<div class="dep-detail-item dep-auto"><code>${_shortType(a.type)}</code> — ${escapeHtml(a.reason)}</div>`;
+                html += `<div class="dep-detail-item dep-auto"><code><span class="az-chip-icon">${_azureIcon(a.type, 14)}</span>${_shortType(a.type)}</code> — ${escapeHtml(a.reason)}</div>`;
             });
             html += '</div>';
         }
@@ -6470,7 +6549,7 @@ async function _runComposeDependencyAnalysis() {
         if (analysis.optional_refs?.length) {
             html += '<div class="dep-block"><h5>📎 Optional References</h5>';
             analysis.optional_refs.forEach(o => {
-                html += `<div class="dep-detail-item dep-optional"><code>${_shortType(o.type)}</code> — ${escapeHtml(o.reason)}</div>`;
+                html += `<div class="dep-detail-item dep-optional"><code><span class="az-chip-icon">${_azureIcon(o.type, 14)}</span>${_shortType(o.type)}</code> — ${escapeHtml(o.reason)}</div>`;
             });
             html += '</div>';
         }
