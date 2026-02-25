@@ -11042,6 +11042,12 @@ details[open] > .tmpl-deploy-group-optional {
     color: var(--text-secondary);
     font-size: 0.78rem;
 }
+.tmpl-policy-discuss-btn {
+    margin-top: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
 
 /* ── Revision Result Panels ────────────────────────── */
 .tmpl-revision-loading {

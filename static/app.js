@@ -7138,6 +7138,10 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function escapeAttr(text) {
+    return text.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // ── Onboarding: Modals ──────────────────────────────────────
 
 function openGovernanceEditor(serviceId) {
@@ -7630,6 +7634,10 @@ async function submitPromptCompose() {
             policyDiv.style.display = 'block';
             const pr = data.policy_check;
             if (pr.verdict === 'block') {
+                // Build a context-rich prompt for the chat AI
+                const issuesSummary = (pr.issues || []).map(i => `- ${i.rule}: ${i.message}`).join('\n');
+                const chatPrompt = `I tried to create infrastructure with this request:\n\n"${prompt}"\n\nBut it was blocked by organizational policy:\n${issuesSummary}\n\nPlease suggest a compliant configuration that satisfies my requirements while meeting all policy constraints. Let's discuss the options before creating anything.`;
+
                 policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
                 policyDiv.innerHTML = `
                     <div class="tmpl-policy-header">🚫 Blocked by Policy</div>
@@ -7639,7 +7647,11 @@ async function submitPromptCompose() {
                             <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
                         </li>`).join('')}
                     </ul>` : ''}
-                    <div class="tmpl-policy-hint">Revise your request to comply with organizational policies.</div>`;
+                    <div class="tmpl-policy-hint">Let's work together to find a compliant configuration.</div>
+                    <button class="btn btn-primary btn-sm tmpl-policy-discuss-btn"
+                        onclick="closeModal('modal-template-onboard'); navigateToChat(${escapeAttr(JSON.stringify(chatPrompt))})">
+                        💬 Discuss Compliant Options
+                    </button>`;
                 resultDiv.style.display = 'none';
                 return;
             } else if (pr.verdict === 'warning') {
