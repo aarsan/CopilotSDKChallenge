@@ -705,6 +705,21 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE catalog_templates ADD compliance_profile_json NVARCHAR(MAX) DEFAULT NULL
     """,
+    # ── Azure API version tracking on services ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('services') AND name = 'latest_api_version'
+    )
+    ALTER TABLE services ADD latest_api_version NVARCHAR(20) DEFAULT NULL
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('services') AND name = 'default_api_version'
+    )
+    ALTER TABLE services ADD default_api_version NVARCHAR(20) DEFAULT NULL
+    """,
 ]
 
 
@@ -1269,6 +1284,48 @@ async def bulk_insert_services(services: list[dict]) -> int:
             conn.close()
 
     return await asyncio.get_event_loop().run_in_executor(None, _run)
+
+
+async def bulk_update_api_versions(
+    updates: list[dict],
+) -> int:
+    """Bulk-update latest_api_version and default_api_version on existing services.
+
+    Each dict in *updates* must have: id, latest_api_version, default_api_version.
+    Returns the number of rows actually updated.
+    """
+    if not updates:
+        return 0
+
+    import asyncio
+
+    backend = await get_backend()
+
+    def _run():
+        conn = backend._get_connection()
+        try:
+            cursor = conn.cursor()
+            count = 0
+            for rec in updates:
+                cursor.execute(
+                    """UPDATE services
+                       SET latest_api_version = ?, default_api_version = ?
+                       WHERE id = ?""",
+                    (
+                        rec.get("latest_api_version"),
+                        rec.get("default_api_version"),
+                        rec["id"],
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    count += 1
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    return await asyncio.get_event_loop().run_in_executor(None, _run)
+
 
 async def upsert_service(svc: dict) -> None:
     """Insert or replace a service in the catalog."""

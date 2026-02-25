@@ -197,6 +197,69 @@ def _summarize_fix(before: str, after: str) -> str:
     return "; ".join(changes[:5])
 
 
+def _build_api_version_status(svc: dict, versions: list[dict]) -> dict | None:
+    """Compare the apiVersion in the active ARM template against Azure's latest.
+
+    Returns an advisory dict like:
+        {
+            "template_api_version": "2023-09-01",
+            "latest_stable": "2025-07-01",
+            "default": "2024-05-01",
+            "newer_available": True,
+        }
+    or None if comparison isn't possible (no active template, no Azure data).
+    """
+    latest_api = svc.get("latest_api_version")
+    default_api = svc.get("default_api_version")
+    if not latest_api:
+        return None  # No Azure API version data stored yet
+
+    # Find the active version's ARM template
+    active_ver_num = svc.get("active_version")
+    if active_ver_num is None:
+        return None
+
+    active_ver = next(
+        (v for v in versions if v.get("version") == active_ver_num),
+        None,
+    )
+    if not active_ver:
+        return None
+
+    arm_str = active_ver.get("arm_template")
+    if not arm_str:
+        return None
+
+    try:
+        tpl = json.loads(arm_str)
+    except Exception:
+        return None
+
+    # Extract apiVersion(s) from the template's resources
+    resources = tpl.get("resources", [])
+    template_api_versions = list({
+        r.get("apiVersion", "")
+        for r in resources
+        if isinstance(r, dict) and r.get("apiVersion")
+    })
+    if not template_api_versions:
+        return None
+
+    # Use the newest apiVersion found in the template for comparison
+    template_api_versions.sort(reverse=True)
+    template_api = template_api_versions[0]
+
+    # Simple string comparison works for YYYY-MM-DD versions
+    newer_available = latest_api > template_api
+
+    return {
+        "template_api_version": template_api,
+        "latest_stable": latest_api,
+        "default": default_api,
+        "newer_available": newer_available,
+    }
+
+
 def _build_param_defaults() -> dict[str, object]:
     """Build parameter defaults using real Azure context where possible."""
     import os as _os
@@ -8781,10 +8844,15 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
             vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
             vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
             versions_summary.append(vs)
+
+        # ── API version advisory ──
+        api_version_status = _build_api_version_status(svc, versions)
+
         return JSONResponse({
             "service_id": service_id,
             "active_version": svc.get("active_version"),
             "versions": versions_summary,
+            "api_version_status": api_version_status,
         })
     except HTTPException:
         raise

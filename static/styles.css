@@ -2878,6 +2878,42 @@ body {
     border: 1px solid var(--border-subtle);
 }
 
+/* ── API Version Advisory Banner ── */
+.api-version-advisory {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.7rem 1rem;
+    margin-bottom: 1rem;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.25);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.api-version-advisory-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+.api-version-advisory-title {
+    font-weight: 600;
+    color: var(--accent-blue);
+    margin-bottom: 0.2rem;
+    font-size: 0.8rem;
+}
+.api-version-advisory-detail {
+    line-height: 1.45;
+}
+.api-version-advisory-detail code {
+    background: rgba(96, 165, 250, 0.12);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--accent-blue);
+}
+
 .onboard-pipeline {
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
