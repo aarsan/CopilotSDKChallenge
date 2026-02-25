@@ -983,8 +983,9 @@ function renderServiceTable(services) {
 
         let versionHtml;
         if (versionLabel && update) {
+            const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
-                + `<span class="version-badge version-update version-update-clickable" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}')">⬆ update</span>`;
+                + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}')">⬆ update</span>`;
         } else if (versionLabel) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
@@ -1132,7 +1133,17 @@ let _currentVersions = null;
 let _pendingApiUpdate = null;
 let _apiUpdateAbort = null;  // AbortController for cancelling previous update fetches
 
-async function startApiVersionUpdateFromTable(serviceId) {
+async function startApiVersionUpdateFromTable(serviceId, badgeId) {
+    // Immediate visual feedback on the badge
+    if (badgeId) {
+        const badge = document.getElementById(badgeId);
+        if (badge) {
+            badge.classList.add('version-update-running');
+            badge.innerHTML = '<span class="update-badge-spinner"></span> Updating…';
+            badge.onclick = null;  // prevent re-click
+            badge.style.pointerEvents = 'none';
+        }
+    }
     // Abort any previous in-flight update so we don't get stuck
     if (_apiUpdateAbort) {
         try { _apiUpdateAbort.abort(); } catch (_) {}

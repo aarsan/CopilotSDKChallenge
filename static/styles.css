@@ -3122,6 +3122,27 @@ body {
     background: rgba(59, 130, 246, 0.25);
     transform: scale(1.05);
 }
+.version-badge.version-update-running {
+    background: rgba(59, 130, 246, 0.25);
+    color: var(--accent-blue);
+    pointer-events: none;
+    cursor: wait;
+    opacity: 0.9;
+}
+.update-badge-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid rgba(59, 130, 246, 0.3);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: update-badge-spin 0.6s linear infinite;
+    vertical-align: middle;
+    margin-right: 3px;
+}
+@keyframes update-badge-spin {
+    to { transform: rotate(360deg); }
+}
 
 /* Update pipeline accent */
 .onboard-pipeline.update-pipeline .pipeline-label {
