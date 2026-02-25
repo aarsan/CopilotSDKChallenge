@@ -1314,6 +1314,7 @@ let _pendingApiUpdate = null;
 let _pendingApiUpdateTarget = null;  // Target version for the update (null = latest)
 let _apiUpdateAbort = null;  // AbortController for drawer-initiated updates
 let _runningTableUpdates = new Map();  // serviceId → AbortController for concurrent table updates
+let _openDrawerServiceId = null;  // currently open service detail drawer
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion) {
     // If this service already has a table update running, ignore
@@ -1332,9 +1333,15 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
         badge.title = 'Click to view update progress';
     }
 
+    // If drawer is open for this service, switch validation card to running state
+    const _drawerOpen = _openDrawerServiceId === serviceId;
+    if (_drawerOpen) {
+        _initRunningCardForTableUpdate(targetVersion);
+    }
+
     // Fire the update directly from the table — no drawer needed
     const abort = new AbortController();
-    _runningTableUpdates.set(serviceId, abort);
+    _runningTableUpdates.set(serviceId, { abort, targetVersion });
 
     try {
         const body = {};
@@ -1344,7 +1351,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
-            signal: abort.signal,
+            signal: abort.signal, // from _runningTableUpdates entry
         });
 
         if (!res.ok) {
@@ -1398,6 +1405,8 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                     const event = JSON.parse(line);
                     if (event.type === 'error') failed = true;
                     updateBadge(event);
+                    // Forward to drawer if open for this service
+                    if (_openDrawerServiceId === serviceId) _handleUpdateEvent(event);
                 } catch (e) {}
             }
         }
@@ -1406,6 +1415,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                 const last = JSON.parse(buffer);
                 if (last.type === 'error') failed = true;
                 updateBadge(last);
+                if (_openDrawerServiceId === serviceId) _handleUpdateEvent(last);
             } catch (e) {}
         }
 
@@ -1426,9 +1436,49 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
     }
 }
 
+/** Convert the validation-card to a running state when a table update starts while the drawer is open */
+function _initRunningCardForTableUpdate(targetVersion) {
+    let card = document.getElementById('validation-card');
+    if (!card) {
+        const body = document.getElementById('detail-service-body');
+        if (body) {
+            const div = document.createElement('div');
+            div.id = 'validation-card';
+            body.insertBefore(div, body.firstChild);
+            card = div;
+        }
+    }
+    if (!card) return;
+
+    const targetLabel = targetVersion ? `to ${targetVersion}` : 'to latest';
+    card.className = 'validation-card validation-running';
+    card.innerHTML = `
+        <div class="validation-header">
+            <span class="validation-icon validation-spinner">⬆</span>
+            <span class="validation-title">API Version Update ${targetLabel} In Progress…</span>
+        </div>
+        <div class="validation-model-badge" id="validation-model-badge"></div>
+        <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+        <div class="validation-progress">
+            <div class="validation-progress-track">
+                <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+            </div>
+        </div>
+        <div class="validation-detail" id="validation-detail">Initializing API version update pipeline…</div>
+        <div class="validation-log" id="validation-log">
+            <div class="validation-log-header">
+                <span>Update Log</span>
+                <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
+            </div>
+        </div>
+    `;
+}
+
 async function showServiceDetail(serviceId) {
     const svc = allServices.find(s => s.id === serviceId);
     if (!svc) return;
+
+    _openDrawerServiceId = serviceId;
 
     const status = svc.status || 'not_approved';
     const drawer = document.getElementById('service-detail-drawer');
@@ -1463,6 +1513,13 @@ async function showServiceDetail(serviceId) {
         _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
+
+        // If a table-initiated update is already running for this service,
+        // switch the freshly-rendered card to running state so new events appear
+        const runningEntry = _runningTableUpdates.get(serviceId);
+        if (runningEntry) {
+            _initRunningCardForTableUpdate(runningEntry.targetVersion);
+        }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
             <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="showServiceDetail('${escapeHtml(serviceId)}')">🔄 Retry</button>`;
@@ -2859,6 +2916,7 @@ function toggleReasoningVisibility() {
 }
 
 function closeServiceDetail() {
+    _openDrawerServiceId = null;
     document.getElementById('service-detail-drawer').classList.add('hidden');
 }
 
