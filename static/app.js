@@ -2149,6 +2149,7 @@ async function triggerApiVersionUpdate(serviceId) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let _updateFailed = false;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -2162,6 +2163,7 @@ async function triggerApiVersionUpdate(serviceId) {
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
+                    if (event.type === 'error') _updateFailed = true;
                     _handleUpdateEvent(event);
                 } catch (e) {}
             }
@@ -2169,12 +2171,20 @@ async function triggerApiVersionUpdate(serviceId) {
 
         if (buffer.trim()) {
             try {
-                _handleUpdateEvent(JSON.parse(buffer));
+                const last = JSON.parse(buffer);
+                if (last.type === 'error') _updateFailed = true;
+                _handleUpdateEvent(last);
             } catch (e) {}
         }
 
-        await loadAllData();
-        await showServiceDetail(serviceId);
+        // Only reload & re-render drawer on success — on error, keep the error card visible
+        if (!_updateFailed) {
+            await loadAllData();
+            await showServiceDetail(serviceId);
+        } else {
+            // Refresh data in background but don't re-render the drawer
+            await loadAllData();
+        }
 
     } catch (err) {
         showToast(`API version update failed: ${err.message}`, 'error');

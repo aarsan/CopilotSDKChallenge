@@ -6847,7 +6847,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 (service_id,),
             )
             new_ver = (_vrows[0]["max_ver"] if _vrows and _vrows[0]["max_ver"] else 0) + 1
-            source_semver = active_ver.get("semver", f"{active_ver_num}.0.0")
+            source_semver = active_ver.get("semver") or f"{active_ver_num}.0.0"
             source_parts = source_semver.split(".")
             try:
                 major = int(source_parts[0])
@@ -6910,7 +6910,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 }) + "\n"
 
                 try:
-                    governance_policies = await get_governance_policies_as_dict(service_id)
+                    governance_policies = await get_governance_policies_as_dict()
                     static_result = validate_template(arm_template, governance_policies)
                     svc_standards = get_standards_for_service(service_id)
                     std_results = validate_template_against_standards(arm_template, svc_standards)
