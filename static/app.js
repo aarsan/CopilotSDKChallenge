@@ -656,6 +656,7 @@ async function loadAllData() {
         }
 
         // Render tables
+        _populateServiceUpdatesFromCache();
         renderServiceTable(allServices);
         renderTemplateTable(allTemplates);
 
@@ -953,6 +954,53 @@ const statusLabels = {
     validation_failed: '⛔ Validation Failed',
 };
 
+/** Auto-populate _serviceUpdates from cached DB data — no Azure call needed */
+function _populateServiceUpdatesFromCache() {
+    // Don't overwrite if the user just ran a live check (preserves richer data)
+    if (_lastApiVersionCheck && (Date.now() - _lastApiVersionCheck < 5000)) return;
+
+    const cached = {};
+    allServices.forEach(svc => {
+        if (!svc.active_version || !svc.latest_api_version || !svc.template_api_version) return;
+        if (svc.latest_api_version > svc.template_api_version) {
+            cached[svc.id] = {
+                id: svc.id,
+                name: svc.name,
+                category: svc.category,
+                active_version: svc.active_version,
+                template_api_version: svc.template_api_version,
+                latest_api_version: svc.latest_api_version,
+                default_api_version: svc.default_api_version,
+            };
+        }
+    });
+    if (Object.keys(cached).length > 0 || Object.keys(_serviceUpdates).length === 0) {
+        _serviceUpdates = cached;
+    }
+    _updateCheckButton();
+}
+
+let _lastApiVersionCheck = null;
+
+/** Update the check-for-updates button to reflect current state */
+function _updateCheckButton() {
+    const btn = document.getElementById('btn-check-updates');
+    if (!btn) return;
+    const count = Object.keys(_serviceUpdates).length;
+    const badge = document.getElementById('update-count-badge');
+
+    if (count > 0) {
+        btn.innerHTML = `<span class="update-btn-icon">⬆</span> ${count} Update${count !== 1 ? 's' : ''} Found`;
+        btn.classList.add('has-updates');
+        if (badge) { badge.textContent = count; badge.classList.remove('hidden'); }
+    }
+
+    if (_lastApiVersionCheck) {
+        const ago = _timeAgo(new Date(_lastApiVersionCheck).toISOString());
+        btn.title = `Last checked: ${ago}. Click to refresh from Azure.`;
+    }
+}
+
 function renderServiceTable(services) {
     const tbody = document.getElementById('catalog-tbody');
 
@@ -992,11 +1040,21 @@ function renderServiceTable(services) {
             versionHtml = `<span class="version-badge version-none" title="No approved version">—</span>`;
         }
 
-        // Azure API version column
+        // Azure API version column — show latest stable + recommended indicator
         const azureApi = svc.latest_api_version;
-        const azureApiHtml = azureApi
-            ? `<span class="azure-api-badge" title="Latest stable Azure API version">${escapeHtml(azureApi)}</span>`
-            : `<span class="azure-api-badge azure-api-none" title="Run Azure Sync to populate">—</span>`;
+        const defaultApi = svc.default_api_version;
+        const tplApiCurrent = svc.template_api_version;
+        let azureApiHtml;
+        if (azureApi) {
+            const isRecommended = defaultApi && defaultApi === azureApi;
+            const isCurrent = tplApiCurrent && tplApiCurrent >= azureApi;
+            let indicators = '';
+            if (isRecommended) indicators += '<span class="azure-api-rec" title="Microsoft recommended default">★</span>';
+            if (isCurrent) indicators += '<span class="azure-api-current" title="Template is on this version">✓</span>';
+            azureApiHtml = `<span class="azure-api-badge${isCurrent ? ' azure-api-match' : ''}" title="${isRecommended ? 'Recommended' : 'Latest stable'}: ${escapeHtml(azureApi)}${defaultApi && defaultApi !== azureApi ? '  •  Default: ' + escapeHtml(defaultApi) : ''}">${escapeHtml(azureApi)}${indicators}</span>`;
+        } else {
+            azureApiHtml = `<span class="azure-api-badge azure-api-none" title="Run Check for Updates to populate">—</span>`;
+        }
 
         return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
             <td>
@@ -1049,6 +1107,8 @@ async function checkForUpdates() {
         }
 
         const count = data.updates_available || 0;
+        _lastApiVersionCheck = Date.now();
+
         if (count > 0) {
             btn.innerHTML = `<span class="update-btn-icon">⬆</span> ${count} Update${count !== 1 ? 's' : ''} Found`;
             btn.classList.add('has-updates');
@@ -1060,6 +1120,7 @@ async function checkForUpdates() {
             btn.innerHTML = '<span class="update-btn-icon">✓</span> All Up to Date';
             btn.classList.remove('has-updates');
         }
+        _updateCheckButton();
 
         // Re-render table to show update badges
         applyServiceFilters();

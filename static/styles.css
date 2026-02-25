@@ -3179,6 +3179,21 @@ body {
 .azure-api-badge.azure-api-none {
     color: var(--text-muted);
 }
+.azure-api-badge.azure-api-match {
+    color: var(--accent-green);
+}
+.azure-api-rec {
+    color: #f59e0b;
+    font-size: 0.65rem;
+    margin-left: 3px;
+    vertical-align: super;
+}
+.azure-api-current {
+    color: var(--accent-green);
+    font-size: 0.65rem;
+    margin-left: 2px;
+    vertical-align: super;
+}
 
 /* ── API Version Advisory Banner ── */
 .api-version-advisory {
