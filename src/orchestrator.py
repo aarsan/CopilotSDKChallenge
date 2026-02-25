@@ -498,7 +498,7 @@ async def analyze_template_feedback(
             f"--- USER FEEDBACK ---\n"
             f"{user_message}\n"
             f"--- END FEEDBACK ---\n\n"
-            f"--- KNOWN AZURE RESOURCE TYPES ---\n"
+            f"--- KNOWN AZURE RESOURCE TYPES (prefer these when possible) ---\n"
             f"{json.dumps(known_types)}\n"
             f"--- END KNOWN TYPES ---\n\n"
             "The user's feedback can be one of TWO categories:\n"
@@ -522,7 +522,9 @@ async def analyze_template_feedback(
             "RULES:\n"
             "- For category A: populate missing_resource_types, set needs_code_edit=false\n"
             "- For category B: set missing_resource_types=[], needs_code_edit=true, and write a clear edit_instruction\n"
-            "- Only include resource types from the KNOWN AZURE RESOURCE TYPES list\n"
+            "- PREFER resource types from the KNOWN AZURE RESOURCE TYPES list when a match exists\n"
+            "- If the user requests a service NOT in the known list, still include it using the \n"
+            "  correct Microsoft.* ARM resource type (e.g. Microsoft.Network/azureFirewalls)\n"
             "- Do NOT include resource types already in the template's current services\n"
             "- Return ONLY the raw JSON — no markdown fences, no extra text\n"
         )
@@ -621,6 +623,16 @@ async def analyze_template_feedback(
                 "log analytics": "Microsoft.OperationalInsights/workspaces",
                 "postgresql": "Microsoft.DBforPostgreSQL/flexibleServers",
                 "postgres": "Microsoft.DBforPostgreSQL/flexibleServers",
+                "firewall": "Microsoft.Network/azureFirewalls",
+                "azure firewall": "Microsoft.Network/azureFirewalls",
+                "bastion": "Microsoft.Network/bastionHosts",
+                "private endpoint": "Microsoft.Network/privateEndpoints",
+                "private dns": "Microsoft.Network/privateDnsZones",
+                "event hub": "Microsoft.EventHub/namespaces",
+                "eventhub": "Microsoft.EventHub/namespaces",
+                "service bus": "Microsoft.ServiceBus/namespaces",
+                "event grid": "Microsoft.EventGrid/topics",
+                "signalr": "Microsoft.SignalRService/signalR",
             }
 
             for keyword, rtype in keyword_map.items():

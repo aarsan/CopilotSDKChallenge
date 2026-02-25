@@ -137,6 +137,31 @@ RESOURCE_DEPENDENCIES: dict[str, list[dict]] = {
         {"type": "Microsoft.Network/virtualNetworks/subnets", "reason": "Dedicated subnet for App Gateway", "required": True},
         {"type": "Microsoft.Network/publicIPAddresses", "reason": "Frontend public IP", "required": True, "created_by_template": True},
     ],
+    "Microsoft.Network/azureFirewalls": [
+        {"type": "Microsoft.Network/virtualNetworks", "reason": "Azure Firewall requires a dedicated AzureFirewallSubnet", "required": True},
+        {"type": "Microsoft.Network/virtualNetworks/subnets", "reason": "Dedicated subnet named AzureFirewallSubnet", "required": True},
+        {"type": "Microsoft.Network/publicIPAddresses", "reason": "Public IP for firewall's frontend", "required": True, "created_by_template": True},
+        {"type": "Microsoft.Network/firewallPolicies", "reason": "Firewall policy for rule management", "required": False},
+    ],
+    "Microsoft.Network/firewallPolicies": [],  # Foundation
+    "Microsoft.Network/loadBalancers": [
+        {"type": "Microsoft.Network/virtualNetworks", "reason": "Backend pool needs a VNet", "required": False},
+        {"type": "Microsoft.Network/publicIPAddresses", "reason": "Frontend public IP for public LB", "required": False},
+    ],
+    "Microsoft.Network/bastionHosts": [
+        {"type": "Microsoft.Network/virtualNetworks", "reason": "Bastion requires a dedicated AzureBastionSubnet", "required": True},
+        {"type": "Microsoft.Network/virtualNetworks/subnets", "reason": "Dedicated subnet named AzureBastionSubnet", "required": True},
+        {"type": "Microsoft.Network/publicIPAddresses", "reason": "Public IP for Bastion", "required": True, "created_by_template": True},
+    ],
+    "Microsoft.Network/privateDnsZones": [],  # Foundation
+    "Microsoft.Network/privateEndpoints": [
+        {"type": "Microsoft.Network/virtualNetworks", "reason": "Private endpoint needs a VNet/subnet", "required": True},
+    ],
+    "Microsoft.ContainerRegistry/registries": [],  # Foundation
+    "Microsoft.SignalRService/signalR": [],  # Foundation
+    "Microsoft.EventHub/namespaces": [],  # Foundation
+    "Microsoft.ServiceBus/namespaces": [],  # Foundation
+    "Microsoft.EventGrid/topics": [],  # Foundation
 
     # ── AI ──
     "Microsoft.CognitiveServices/accounts": [
