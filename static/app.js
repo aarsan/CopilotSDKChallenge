@@ -1135,13 +1135,16 @@ let _apiUpdateAbort = null;  // AbortController for cancelling previous update f
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId) {
     // Immediate visual feedback on the badge
+    _apiUpdateBadgeId = badgeId || null;
     if (badgeId) {
         const badge = document.getElementById(badgeId);
         if (badge) {
             badge.classList.add('version-update-running');
             badge.innerHTML = '<span class="update-badge-spinner"></span> Updating…';
-            badge.onclick = null;  // prevent re-click
-            badge.style.pointerEvents = 'none';
+            // Re-wire click to open the detail drawer (observability view)
+            badge.onclick = (e) => { e.stopPropagation(); showServiceDetail(serviceId); };
+            badge.style.pointerEvents = '';
+            badge.title = 'Click to view update progress';
         }
     }
     // Abort any previous in-flight update so we don't get stuck
@@ -2116,6 +2119,7 @@ async function triggerOnboarding(serviceId) {
 }
 
 let _apiUpdateRunning = false;
+let _apiUpdateBadgeId = null;  // badge element ID for live status updates in table
 
 async function triggerApiVersionUpdate(serviceId) {
     if (_apiUpdateRunning) {
@@ -2241,6 +2245,41 @@ async function triggerApiVersionUpdate(serviceId) {
     }
 }
 
+/** Update the table's update badge with live pipeline status */
+function _updateTableBadge(event) {
+    if (!_apiUpdateBadgeId) return;
+    const tblBadge = document.getElementById(_apiUpdateBadgeId);
+    if (!tblBadge) return;
+
+    // Map phases to short labels
+    const phaseLabels = {
+        checkout: 'Checking out…', checkout_complete: 'Checked out',
+        updating: 'Rewriting…', update_complete: 'Rewritten',
+        saved: 'Saved draft',
+        static_policy_check: 'Policy check…', static_policy_complete: 'Policies OK',
+        static_policy_failed: 'Policy issues',
+        what_if: 'What-If…', what_if_complete: 'What-If OK', what_if_failed: 'What-If issue',
+        deploying: 'Deploying…', deploy_complete: 'Deployed', deploy_failed: 'Deploy issue',
+        policy_testing: 'Compliance…', policy_testing_complete: 'Compliant',
+        cleanup: 'Cleaning up…', cleanup_complete: 'Cleaned up',
+        promoting: 'Publishing…', fixing_template: 'Healing…',
+    };
+
+    if (event.type === 'done') {
+        tblBadge.classList.remove('version-update-running');
+        tblBadge.classList.add('version-update-done');
+        tblBadge.innerHTML = '✓ Updated';
+        _apiUpdateBadgeId = null;
+    } else if (event.type === 'error') {
+        tblBadge.classList.remove('version-update-running');
+        tblBadge.classList.add('version-update-error');
+        tblBadge.innerHTML = '⚠ Failed';
+        _apiUpdateBadgeId = null;
+    } else if (event.phase && phaseLabels[event.phase]) {
+        tblBadge.innerHTML = `<span class="update-badge-spinner"></span> ${phaseLabels[event.phase]}`;
+    }
+}
+
 function _handleUpdateEvent(event) {
     const progressFill = document.getElementById('validation-progress-fill');
     const detailEl = document.getElementById('validation-detail');
@@ -2248,6 +2287,9 @@ function _handleUpdateEvent(event) {
     const badge = document.getElementById('validation-attempt-badge');
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
+
+    // Update the table badge with live status
+    _updateTableBadge(event);
 
     if (event.progress && progressFill) {
         progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;

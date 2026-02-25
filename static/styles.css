@@ -3143,6 +3143,17 @@ body {
 @keyframes update-badge-spin {
     to { transform: rotate(360deg); }
 }
+.version-badge.version-update-done {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--accent-green);
+    border-color: rgba(16, 185, 129, 0.3);
+}
+.version-badge.version-update-error {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--accent-red);
+    border-color: rgba(239, 68, 68, 0.3);
+    cursor: pointer;
+}
 
 /* Update pipeline accent */
 .onboard-pipeline.update-pipeline .pipeline-label {
