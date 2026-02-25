@@ -3114,6 +3114,19 @@ body {
     cursor: help;
 }
 
+/* Azure API version badge in service table */
+.azure-api-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 500;
+    font-family: var(--font-mono, 'Cascadia Code', 'Fira Code', monospace);
+    color: var(--text-secondary);
+    letter-spacing: -0.02em;
+}
+.azure-api-badge.azure-api-none {
+    color: var(--text-muted);
+}
+
 /* ── API Version Advisory Banner ── */
 .api-version-advisory {
     display: flex;

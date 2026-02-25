@@ -967,7 +967,7 @@ function renderServiceTable(services) {
     }
 
     if (!services.length) {
-        tbody.innerHTML = '<tr><td colspan="4" class="catalog-loading">No services match your filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="catalog-loading">No services match your filters</td></tr>';
         return;
     }
 
@@ -987,6 +987,12 @@ function renderServiceTable(services) {
             versionHtml = `<span class="version-badge version-none" title="No approved version">—</span>`;
         }
 
+        // Azure API version column
+        const azureApi = svc.latest_api_version;
+        const azureApiHtml = azureApi
+            ? `<span class="azure-api-badge" title="Latest stable Azure API version">${escapeHtml(azureApi)}</span>`
+            : `<span class="azure-api-badge azure-api-none" title="Run Azure Sync to populate">—</span>`;
+
         return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
@@ -994,6 +1000,7 @@ function renderServiceTable(services) {
             </td>
             <td><span class="category-badge">${escapeHtml(svc.category)}</span></td>
             <td>${versionHtml}</td>
+            <td>${azureApiHtml}</td>
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
         </tr>`;
     }).join('');
