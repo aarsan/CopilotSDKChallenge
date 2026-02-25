@@ -2232,6 +2232,7 @@ async function changeGlobalModel(modelId) {
 }
 
 const MAX_AUTO_RETRIES = 3;
+const AUTO_RETRY_DELAY_MS = 8000;
 let _onboardRetryCount = 0;
 
 async function triggerOnboarding(serviceId, _isAutoRetry = false) {
@@ -2300,21 +2301,53 @@ async function triggerOnboarding(serviceId, _isAutoRetry = false) {
                 try {
                     const event = JSON.parse(line);
                     _handleValidationEvent(event);
+                    if (event.type === 'error') streamEndedWithError = true;
                 } catch (e) {}
             }
         }
 
         if (buffer.trim()) {
             try {
-                _handleValidationEvent(JSON.parse(buffer));
+                const lastEvent = JSON.parse(buffer);
+                _handleValidationEvent(lastEvent);
+                if (lastEvent.type === 'error') streamEndedWithError = true;
             } catch (e) {}
+        }
+
+        // ── Auto-retry on failure ──────────────────────────────
+        if (streamEndedWithError && _onboardRetryCount < MAX_AUTO_RETRIES) {
+            _onboardRetryCount++;
+            const nextRetry = _onboardRetryCount;
+            console.log(`[onboard] auto-retry ${nextRetry}/${MAX_AUTO_RETRIES} in ${AUTO_RETRY_DELAY_MS / 1000}s…`);
+
+            const detailEl = document.getElementById('validation-detail');
+            if (detailEl) detailEl.textContent = `Auto-retrying in ${AUTO_RETRY_DELAY_MS / 1000}s… (attempt ${nextRetry}/${MAX_AUTO_RETRIES})`;
+
+            // Add countdown to log
+            const logEl = document.getElementById('validation-log');
+            if (logEl) {
+                const retryLine = document.createElement('div');
+                retryLine.className = 'validation-log-line validation-log-healing';
+                retryLine.innerHTML = `<span class="log-icon">🔄</span> <span class="log-text">Pipeline failed — auto-retrying (${nextRetry}/${MAX_AUTO_RETRIES}) in ${AUTO_RETRY_DELAY_MS / 1000}s…</span>`;
+                logEl.appendChild(retryLine);
+            }
+
+            await new Promise(r => setTimeout(r, AUTO_RETRY_DELAY_MS));
+            return triggerOnboarding(serviceId, true);
         }
 
         await loadAllData();
         await showServiceDetail(serviceId);
 
     } catch (err) {
-        showToast(`Onboarding failed: ${err.message}`, 'error');
+        // Network / fetch errors also trigger auto-retry
+        if (_onboardRetryCount < MAX_AUTO_RETRIES) {
+            _onboardRetryCount++;
+            console.log(`[onboard] auto-retry ${_onboardRetryCount}/${MAX_AUTO_RETRIES} after fetch error: ${err.message}`);
+            await new Promise(r => setTimeout(r, AUTO_RETRY_DELAY_MS));
+            return triggerOnboarding(serviceId, true);
+        }
+        showToast(`Onboarding failed after ${MAX_AUTO_RETRIES} retries: ${err.message}`, 'error');
         const detail = document.getElementById('validation-detail');
         if (detail) detail.textContent = `Error: ${err.message}`;
         const cardEl = document.getElementById('validation-card');
