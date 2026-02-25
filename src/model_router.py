@@ -37,9 +37,9 @@ the task requires — reasoning depth, code quality, or speed.
 ┌─────────────────────┬──────────────────┬────────────────────────────────────┐
 │ Task                │ Model            │ Why                                │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
-│ PLANNING            │ o3-mini          │ Architecture planning needs deep   │
-│                     │                  │ chain-of-thought reasoning about   │
-│                     │                  │ dependencies, security, trade-offs │
+│ PLANNING            │ claude-sonnet-4  │ Architecture planning + root cause │
+│                     │                  │ analysis — consistent with the     │
+│                     │                  │ generation & fixing models         │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
 │ CODE_GENERATION     │ claude-sonnet-4  │ ARM/Bicep/Terraform generation     │
 │                     │                  │ needs precise, correct code with   │
@@ -53,9 +53,9 @@ the task requires — reasoning depth, code quality, or speed.
 │                     │                  │ structure + reasoning about what   │
 │                     │                  │ the policy should enforce          │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
-│ VALIDATION_ANALYSIS │ o3-mini          │ Analyzing What-If results, deploy  │
+│ VALIDATION_ANALYSIS │ claude-sonnet-4  │ Analyzing What-If results, deploy  │
 │                     │                  │ errors, and policy violations      │
-│                     │                  │ needs reasoning, not generation    │
+│                     │                  │ consistent with planning model     │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
 │ CHAT                │ (user-selected)  │ Interactive conversation uses      │
 │                     │                  │ whatever the user picked in the UI │
@@ -141,14 +141,15 @@ class ModelAssignment:
 # This is the single source of truth for model selection.
 TASK_MODEL_MAP: dict[Task, ModelAssignment] = {
     Task.PLANNING: ModelAssignment(
-        model_id="o3-mini",
-        reason="Architecture planning requires deep chain-of-thought reasoning "
-               "about resource dependencies, security trade-offs, and compliance.",
+        model_id="claude-sonnet-4",
+        reason="Architecture planning and root-cause analysis benefit from the "
+               "same model used for generation and fixing — consistent reasoning "
+               "style produces better alignment between plan and output.",
     ),
     Task.VALIDATION_ANALYSIS: ModelAssignment(
-        model_id="o3-mini",
-        reason="Analyzing deployment errors and policy violations requires reasoning "
-               "about what went wrong and what the correct fix strategy should be.",
+        model_id="claude-sonnet-4",
+        reason="Analyzing deployment errors and policy violations needs the same "
+               "reasoning model used for planning and fixing for consistency.",
     ),
     Task.CODE_GENERATION: ModelAssignment(
         model_id="claude-sonnet-4",
