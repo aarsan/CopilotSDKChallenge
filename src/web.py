@@ -197,6 +197,30 @@ def _summarize_fix(before: str, after: str) -> str:
     return "; ".join(changes[:5])
 
 
+def _friendly_error(exc: Exception) -> str:
+    """Convert raw Python exceptions into user-friendly messages for the UI."""
+    msg = str(exc)
+    ml = msg.lower()
+    if "too many values to unpack" in ml or "not enough values" in ml:
+        return "The AI auto-healer encountered an internal issue. Please retry — this is typically transient."
+    if "pyodbc" in ml or ("sql" in ml and "timeout" in ml):
+        return "Database connection timed out. Please wait a moment and retry."
+    if "login timeout" in ml or "tcp provider" in ml:
+        return "Database connection failed — the server may be temporarily unavailable. Please retry in a few seconds."
+    if ("copilot" in ml or "sdk" in ml) and ("not available" in ml or "client" in ml):
+        return "The AI service (Copilot SDK) is temporarily unavailable. Please retry."
+    if "timeout" in ml or "timed out" in ml:
+        return "The operation timed out. This can happen with complex templates — please retry."
+    if "rate limit" in ml or "429" in msg:
+        return "AI service rate limit reached. Please wait 30 seconds and retry."
+    if "401" in msg or "unauthorized" in ml or "authentication" in ml:
+        return "Authentication error with a backend service. Please refresh the page and retry."
+    # Fallback — truncate long messages
+    if len(msg) > 200:
+        msg = msg[:200] + "…"
+    return f"Onboarding encountered an unexpected error. Please retry. (Detail: {msg})"
+
+
 def _build_api_version_status(svc: dict, versions: list[dict]) -> dict | None:
     """Compare the apiVersion in the active ARM template against Azure's latest.
 
@@ -9822,7 +9846,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 await fail_service_validation(service_id, str(e))
             except Exception:
                 pass
-            yield json.dumps({"type": "error", "phase": "unknown", "detail": str(e)}) + "\n"
+            yield json.dumps({"type": "error", "phase": "unknown", "detail": _friendly_error(e)}) + "\n"
         except (GeneratorExit, asyncio.CancelledError):
             # Client disconnected — clean up and mark failed so user can retry
             logger.warning(f"Validation stream cancelled (client disconnect) for {service_id}")
@@ -10502,7 +10526,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         # Guard: if healer returned empty or non-JSON, return original
         if not fixed:
             logger.warning("Copilot healer returned empty response — keeping original template")
-            return content
+            return content, strategy_text
 
         # Try to extract JSON if healer wrapped it in text
         if not fixed.startswith("{"):
@@ -10513,14 +10537,14 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 fixed = fixed[_json_start:_json_end + 1]
             else:
                 logger.warning("Copilot healer returned non-JSON text — keeping original template")
-                return content
+                return content, strategy_text
 
         # Validate it's actually valid JSON before returning
         try:
             json.loads(fixed)
         except json.JSONDecodeError:
             logger.warning("Copilot healer returned invalid JSON — keeping original template")
-            return content
+            return content, strategy_text
 
         # Guard: ensure healer didn't corrupt the location parameter
         # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
@@ -11887,7 +11911,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 await fail_service_validation(service_id, str(e))
             except Exception:
                 pass
-            yield json.dumps({"type": "error", "phase": "unknown", "detail": str(e)}) + "\n"
+            # Show user-friendly messages instead of raw Python exceptions
+            _user_msg = _friendly_error(e)
+            yield json.dumps({"type": "error", "phase": "unknown", "detail": _user_msg}) + "\n"
         except (GeneratorExit, asyncio.CancelledError):
             logger.warning(f"Onboarding cancelled for {service_id}")
             try:
