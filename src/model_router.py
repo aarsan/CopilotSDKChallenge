@@ -45,9 +45,9 @@ the task requires — reasoning depth, code quality, or speed.
 │                     │                  │ needs precise, correct code with   │
 │                     │                  │ strong instruction adherence       │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
-│ CODE_FIXING         │ gpt-4.1          │ Template healing (copilot_fix)     │
-│                     │                  │ needs strong instruction following │
-│                     │                  │ + error message comprehension      │
+│ CODE_FIXING         │ claude-sonnet-4  │ Template healing (copilot_fix)     │
+│                     │                  │ needs strong instruction adherence │
+│                     │                  │ to apply policy-required changes   │
 ├─────────────────────┼──────────────────┼────────────────────────────────────┤
 │ POLICY_GENERATION   │ claude-sonnet-4  │ Policy JSON requires precise       │
 │                     │                  │ structure + reasoning about what   │
@@ -161,9 +161,10 @@ TASK_MODEL_MAP: dict[Task, ModelAssignment] = {
                "with reasoning about what security controls to enforce.",
     ),
     Task.CODE_FIXING: ModelAssignment(
-        model_id="gpt-4.1",
-        reason="Template healing needs strong error comprehension and the ability "
-               "to surgically fix JSON while preserving intent.",
+        model_id="claude-sonnet-4",
+        reason="Template healing needs strong instruction adherence to reliably "
+               "apply policy-required changes (tags, regions, structure) without "
+               "regressing other parts of the template.",
     ),
     Task.CHAT: ModelAssignment(
         model_id="__user_selected__",  # Sentinel — resolved at runtime
