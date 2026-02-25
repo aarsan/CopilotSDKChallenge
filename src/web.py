@@ -538,86 +538,62 @@ async def _copilot_heal_template(
             "- Check if required properties changed in newer API versions\n"
         )
 
-    session = None
+    from src.copilot_helpers import copilot_send
+
+    _client = await ensure_copilot_client()
+    if _client is None:
+        raise RuntimeError("Copilot SDK not available")
+
+    fixed = await copilot_send(
+        _client,
+        model=get_model_for_task(TEMPLATE_HEALER.task),
+        system_prompt=TEMPLATE_HEALER.system_prompt,
+        prompt=prompt,
+        timeout=90,
+    )
+    if fixed.startswith("```"):
+        lines = fixed.split("\n")[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        fixed = "\n".join(lines).strip()
+
+    # Guard: ensure healer didn't corrupt the location parameter
+    # NOTE: some resource types (DNS zones, Traffic Manager, Front Door, etc.)
+    # legitimately use location "global" — don't override those.
+    _GLOBAL_LOCATION_TYPES = {
+        "microsoft.network/dnszones",
+        "microsoft.network/trafficmanagerprofiles",
+        "microsoft.cdn/profiles",
+        "microsoft.network/frontdoors",
+        "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+    }
     try:
-        _client = await ensure_copilot_client()
-        if _client is None:
-            raise RuntimeError("Copilot SDK not available")
-        session = await _client.create_session({
-            "model": get_model_for_task(TEMPLATE_HEALER.task),
-            "streaming": True,
-            "tools": [],
-            "system_message": {"content": TEMPLATE_HEALER.system_prompt},
-        })
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=90)
-        finally:
-            unsub()
-
-        fixed = "".join(chunks).strip()
-        if fixed.startswith("```"):
-            lines = fixed.split("\n")[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            fixed = "\n".join(lines).strip()
-
-        # Guard: ensure healer didn't corrupt the location parameter
-        # NOTE: some resource types (DNS zones, Traffic Manager, Front Door, etc.)
-        # legitimately use location "global" — don't override those.
-        _GLOBAL_LOCATION_TYPES = {
-            "microsoft.network/dnszones",
-            "microsoft.network/trafficmanagerprofiles",
-            "microsoft.cdn/profiles",
-            "microsoft.network/frontdoors",
-            "microsoft.network/frontdoorwebapplicationfirewallpolicies",
-        }
-        try:
-            _ft = json.loads(fixed)
-            _params = _ft.get("parameters", {})
-            _loc = _params.get("location", {})
-            _dv = _loc.get("defaultValue", "")
-            if isinstance(_dv, str) and _dv and not _dv.startswith("["):
-                _loc["defaultValue"] = "[resourceGroup().location]"
-                fixed = json.dumps(_ft, indent=2)
-            for _res in _ft.get("resources", []):
-                _rtype = (_res.get("type") or "").lower()
-                _rloc = _res.get("location", "")
-                # Skip resources that should use "global"
-                if _rtype in _GLOBAL_LOCATION_TYPES:
-                    if isinstance(_rloc, str) and _rloc.lower() != "global":
-                        _res["location"] = "global"
-                        fixed = json.dumps(_ft, indent=2)
-                    continue
-                if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
-                    _res["location"] = "[parameters('location')]"
+        _ft = json.loads(fixed)
+        _params = _ft.get("parameters", {})
+        _loc = _params.get("location", {})
+        _dv = _loc.get("defaultValue", "")
+        if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+            _loc["defaultValue"] = "[resourceGroup().location]"
+            fixed = json.dumps(_ft, indent=2)
+        for _res in _ft.get("resources", []):
+            _rtype = (_res.get("type") or "").lower()
+            _rloc = _res.get("location", "")
+            # Skip resources that should use "global"
+            if _rtype in _GLOBAL_LOCATION_TYPES:
+                if isinstance(_rloc, str) and _rloc.lower() != "global":
+                    _res["location"] = "global"
                     fixed = json.dumps(_ft, indent=2)
-        except (json.JSONDecodeError, AttributeError):
-            pass
+                continue
+            if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                _res["location"] = "[parameters('location')]"
+                fixed = json.dumps(_ft, indent=2)
+    except (json.JSONDecodeError, AttributeError):
+        pass
 
-        fixed = _ensure_parameter_defaults(fixed)
-        fixed = _sanitize_placeholder_guids(fixed)
-        fixed = _sanitize_dns_zone_names(fixed)
-        return fixed
-    finally:
-        if session:
-            try:
-                await session.destroy()
-            except Exception:
-                pass
+    fixed = _ensure_parameter_defaults(fixed)
+    fixed = _sanitize_placeholder_guids(fixed)
+    fixed = _sanitize_dns_zone_names(fixed)
+    return fixed
 
 
 # ── Deep healing engine for composed/blueprint templates ──────
@@ -698,43 +674,25 @@ async def _deep_heal_composed_template(
     if not culprit_sid:
         # If can't detect from error, try o3-mini reasoning
         try:
+            from src.copilot_helpers import copilot_send
             _client = await ensure_copilot_client()
             if _client:
-                session = await _client.create_session({
-                    "model": get_model_for_task(ERROR_CULPRIT_DETECTOR.task),
-                    "streaming": True, "tools": [],
-                    "system_message": {"content": ERROR_CULPRIT_DETECTOR.system_prompt},
-                })
-                chunks = []
-                done_ev = asyncio.Event()
-                def _on_ev(ev):
-                    try:
-                        if ev.type.value == "assistant.message_delta":
-                            chunks.append(ev.data.delta_content or "")
-                        elif ev.type.value in ("assistant.message", "session.idle"):
-                            done_ev.set()
-                    except Exception:
-                        done_ev.set()
-                unsub = session.on(_on_ev)
-                try:
-                    await session.send({"prompt": (
+                resp = await copilot_send(
+                    _client,
+                    model=get_model_for_task(ERROR_CULPRIT_DETECTOR.task),
+                    system_prompt=ERROR_CULPRIT_DETECTOR.system_prompt,
+                    prompt=(
                         f"Error: {error_msg[:500]}\n\n"
                         f"Service templates: {', '.join(service_ids)}\n\n"
                         "Which service template is causing this error? "
                         "Reply with ONLY the exact service ID from the list above."
-                    )})
-                    await asyncio.wait_for(done_ev.wait(), timeout=30)
-                finally:
-                    unsub()
-                resp = "".join(chunks).strip()
+                    ),
+                    timeout=30,
+                )
                 for sid in service_ids:
                     if sid.lower() in resp.lower():
                         culprit_sid = sid
                         break
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
         except Exception:
             pass
 
@@ -3232,32 +3190,13 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
     model = get_model_for_task(Task.PLANNING)
 
+    from src.copilot_helpers import copilot_send
+
     MAX_PLAN_RETRIES = 3
     plan = None
     last_error = ""
 
     for attempt in range(1, MAX_PLAN_RETRIES + 1):
-        session = await client.create_session({
-            "model": model,
-            "streaming": True,
-            "tools": [],
-            "system_message": {
-                "content": REMEDIATION_PLANNER.system_prompt
-            },
-        })
-
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
         retry_prompt = prompt
         if attempt > 1 and last_error:
             retry_prompt += (
@@ -3265,14 +3204,13 @@ async def compliance_remediate_plan(template_id: str, request: Request):
                 "Return ONLY valid raw JSON. No markdown fences, no ```json, no text.\n"
             )
 
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": retry_prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=90)
-        finally:
-            unsub()
-
-        raw = "".join(chunks).strip()
+        raw = await copilot_send(
+            client,
+            model=model,
+            system_prompt=REMEDIATION_PLANNER.system_prompt,
+            prompt=retry_prompt,
+            timeout=90,
+        )
 
         # Robust JSON extraction
         if raw.startswith("```"):
@@ -3743,53 +3681,39 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                     if attempt > 1:
                         step_log(sid, f"Retry {attempt}/{MAX_AI_RETRIES} — re-sending to AI…")
 
-                    session = await client.create_session({
-                        "model": model,
-                        "streaming": True,
-                        "tools": [],
-                        "system_message": {
-                            "content": REMEDIATION_EXECUTOR.system_prompt
-                        },
-                    })
+                    # Progress-reporting callback for send_and_wait
+                    _chunk_chars = [0]
+                    _token_count = [0]
 
-                    chunks: list[str] = []
-                    done_ev = asyncio.Event()
-                    token_count = [0]
-
-                    def on_event(ev):
+                    def on_progress(ev, _sid=sid):
                         try:
                             if ev.type.value == "assistant.message_delta":
-                                chunks.append(ev.data.delta_content or "")
-                                token_count[0] += 1
-                            elif ev.type.value in ("assistant.message", "session.idle"):
-                                done_ev.set()
+                                delta = ev.data.delta_content or ""
+                                _chunk_chars[0] += len(delta)
+                                _token_count[0] += 1
+                                if _token_count[0] % 50 == 0:
+                                    step_log(_sid, f"Generating… {_token_count[0]} chunks received ({_chunk_chars[0]:,} chars)")
                         except Exception:
-                            done_ev.set()
+                            pass
 
-                    unsub = session.on(on_event)
-                    try:
-                        retry_prompt = prompt
-                        if attempt > 1 and last_parse_error:
-                            retry_prompt += (
-                                f"\n\nPREVIOUS ATTEMPT FAILED: {last_parse_error}\n"
-                                "You MUST return ONLY valid raw JSON. No markdown fences, "
-                                "no ```json blocks, no commentary before or after the JSON.\n"
-                            )
-                        await session.send({"prompt": retry_prompt})
-                        last_report = 0
-                        while not done_ev.is_set():
-                            try:
-                                await asyncio.wait_for(asyncio.shield(done_ev.wait()), timeout=4)
-                            except asyncio.TimeoutError:
-                                pass
-                            if token_count[0] > last_report:
-                                step_log(sid, f"Generating… {token_count[0]} chunks received ({len(''.join(chunks)):,} chars)")
-                                last_report = token_count[0]
-                    finally:
-                        unsub()
+                    retry_prompt = prompt
+                    if attempt > 1 and last_parse_error:
+                        retry_prompt += (
+                            f"\n\nPREVIOUS ATTEMPT FAILED: {last_parse_error}\n"
+                            "You MUST return ONLY valid raw JSON. No markdown fences, "
+                            "no ```json blocks, no commentary before or after the JSON.\n"
+                        )
 
-                    raw = "".join(chunks).strip()
-                    step_log(sid, f"AI response: {len(raw):,} chars, {token_count[0]} chunks")
+                    from src.copilot_helpers import copilot_send
+                    raw = await copilot_send(
+                        client,
+                        model=model,
+                        system_prompt=REMEDIATION_EXECUTOR.system_prompt,
+                        prompt=retry_prompt,
+                        timeout=300,
+                        on_event=on_progress,
+                    )
+                    step_log(sid, f"AI response: {len(raw):,} chars, {_token_count[0]} chunks")
 
                     if not raw:
                         last_parse_error = "Empty response from AI"
@@ -5796,12 +5720,7 @@ async def _get_deploy_agent_analysis(
         if not client:
             return _fallback_deploy_analysis(error, heal_history)
 
-        session = await client.create_session({
-            "model": get_model_for_task(Task.VALIDATION_ANALYSIS),
-            "streaming": True,
-            "tools": [],
-            "system_message": {"content": DEPLOY_AGENT_PROMPT.format(attempts=attempts)},
-        })
+        from src.copilot_helpers import copilot_send
 
         prompt = (
             f"A deployment of **{template_name}** to resource group "
@@ -5812,30 +5731,14 @@ async def _get_deploy_agent_analysis(
             f"Explain what happened and what to do next."
         )
 
-        chunks: list[str] = []
-        done = asyncio.Event()
-
-        def on_event(event):
-            try:
-                if event.type.value == "assistant.message_delta":
-                    chunks.append(event.data.delta_content or "")
-                elif event.type.value in ("assistant.message", "session.idle"):
-                    done.set()
-            except Exception:
-                done.set()
-
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done.wait(), timeout=30)
-        finally:
-            unsub()
-            try:
-                await session.destroy()
-            except Exception:
-                pass
-
-        return "".join(chunks) or _fallback_deploy_analysis(error, heal_history)
+        result = await copilot_send(
+            client,
+            model=get_model_for_task(Task.VALIDATION_ANALYSIS),
+            system_prompt=DEPLOY_AGENT_PROMPT.format(attempts=attempts),
+            prompt=prompt,
+            timeout=30,
+        )
+        return result or _fallback_deploy_analysis(error, heal_history)
 
     except Exception as e:
         logger.error(f"Deploy agent analysis failed: {e}")
@@ -7895,95 +7798,73 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 "Fix the policy. Return ONLY the corrected raw JSON."
             )
 
-        session = None
-        try:
-            _client = await ensure_copilot_client()
-            if _client is None:
-                raise RuntimeError("Copilot SDK not available")
-            session = await _client.create_session({
-                "model": get_model_for_task(POLICY_FIXER.task), "streaming": True, "tools": [],
-                "system_message": {"content": POLICY_FIXER.system_prompt},
-            })
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
+        from src.copilot_helpers import copilot_send
 
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
+        _client = await ensure_copilot_client()
+        if _client is None:
+            raise RuntimeError("Copilot SDK not available")
 
-            unsub = session.on(on_event)
+        fixed = await copilot_send(
+            _client,
+            model=get_model_for_task(POLICY_FIXER.task),
+            system_prompt=POLICY_FIXER.system_prompt,
+            prompt=prompt,
+            timeout=90,
+        )
+        if fixed.startswith("```"):
+            lines = fixed.split("\n")[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            fixed = "\n".join(lines).strip()
+
+        # ── Guard: ensure healer didn't corrupt the location parameter ──
+        # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
+        _GLOBAL_LOCATION_TYPES_INNER = {
+            "microsoft.network/dnszones",
+            "microsoft.network/trafficmanagerprofiles",
+            "microsoft.cdn/profiles",
+            "microsoft.network/frontdoors",
+            "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+        }
+        if artifact_type == "template":
             try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=90)
-            finally:
-                unsub()
-
-            fixed = "".join(chunks).strip()
-            if fixed.startswith("```"):
-                lines = fixed.split("\n")[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                fixed = "\n".join(lines).strip()
-
-            # ── Guard: ensure healer didn't corrupt the location parameter ──
-            # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
-            _GLOBAL_LOCATION_TYPES_INNER = {
-                "microsoft.network/dnszones",
-                "microsoft.network/trafficmanagerprofiles",
-                "microsoft.cdn/profiles",
-                "microsoft.network/frontdoors",
-                "microsoft.network/frontdoorwebapplicationfirewallpolicies",
-            }
-            if artifact_type == "template":
-                try:
-                    _ft = json.loads(fixed)
-                    _params = _ft.get("parameters", {})
-                    _loc = _params.get("location", {})
-                    _dv = _loc.get("defaultValue", "")
-                    # If the healer hardcoded a region, restore the ARM expression
-                    if isinstance(_dv, str) and _dv and not _dv.startswith("["):
-                        _loc["defaultValue"] = "[resourceGroup().location]"
+                _ft = json.loads(fixed)
+                _params = _ft.get("parameters", {})
+                _loc = _params.get("location", {})
+                _dv = _loc.get("defaultValue", "")
+                # If the healer hardcoded a region, restore the ARM expression
+                if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+                    _loc["defaultValue"] = "[resourceGroup().location]"
+                    logger.warning(
+                        f"Copilot healer corrupted location default to '{_dv}' — "
+                        "restored to [resourceGroup().location]"
+                    )
+                    fixed = json.dumps(_ft, indent=2)
+                # Also check each resource's location property
+                for _res in _ft.get("resources", []):
+                    _rtype = (_res.get("type") or "").lower()
+                    _rloc = _res.get("location", "")
+                    if _rtype in _GLOBAL_LOCATION_TYPES_INNER:
+                        if isinstance(_rloc, str) and _rloc.lower() != "global":
+                            _res["location"] = "global"
+                            fixed = json.dumps(_ft, indent=2)
+                        continue
+                    if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                        _res["location"] = "[parameters('location')]"
                         logger.warning(
-                            f"Copilot healer corrupted location default to '{_dv}' — "
-                            "restored to [resourceGroup().location]"
+                            f"Copilot healer hardcoded resource location to '{_rloc}' — "
+                            "restored to [parameters('location')]"
                         )
                         fixed = json.dumps(_ft, indent=2)
-                    # Also check each resource's location property
-                    for _res in _ft.get("resources", []):
-                        _rtype = (_res.get("type") or "").lower()
-                        _rloc = _res.get("location", "")
-                        if _rtype in _GLOBAL_LOCATION_TYPES_INNER:
-                            if isinstance(_rloc, str) and _rloc.lower() != "global":
-                                _res["location"] = "global"
-                                fixed = json.dumps(_ft, indent=2)
-                            continue
-                        if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
-                            _res["location"] = "[parameters('location')]"
-                            logger.warning(
-                                f"Copilot healer hardcoded resource location to '{_rloc}' — "
-                                "restored to [parameters('location')]"
-                            )
-                            fixed = json.dumps(_ft, indent=2)
-                except (json.JSONDecodeError, AttributeError):
-                    pass  # if it's not valid JSON yet, the parse step will catch it
+            except (json.JSONDecodeError, AttributeError):
+                pass  # if it's not valid JSON yet, the parse step will catch it
 
-            # ── Guard: ensure every param has a defaultValue ──
-            if artifact_type == "template":
-                fixed = _ensure_parameter_defaults(fixed)
-                fixed = _sanitize_placeholder_guids(fixed)
+        # ── Guard: ensure every param has a defaultValue ──
+        if artifact_type == "template":
+            fixed = _ensure_parameter_defaults(fixed)
+            fixed = _sanitize_placeholder_guids(fixed)
 
-            return fixed
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
+        return fixed
 
     # ── Policy compliance tester ──────────────────────────────
 
@@ -8776,47 +8657,19 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
         _artifact_model = get_model_for_task(_artifact_task)
         logger.info(f"[ModelRouter] artifact generation type={artifact_type} → model={_artifact_model}")
 
-        session = None
         try:
-            # Create a temporary Copilot session for this generation
             _client = await ensure_copilot_client()
             if _client is None:
                 raise RuntimeError("Copilot SDK not available")
-            session = await _client.create_session({
-                "model": _artifact_model,
-                "streaming": True,
-                "tools": [],  # No tools needed for pure generation
-                "system_message": {
-                    "content": ARTIFACT_GENERATOR.system_prompt
-                },
-            })
 
-            response_chunks: list[str] = []
-            done_event = asyncio.Event()
-
-            def on_event(event):
-                try:
-                    if event.type.value == "assistant.message_delta":
-                        delta = event.data.delta_content or ""
-                        response_chunks.append(delta)
-                    elif event.type.value in ("assistant.message", "session.idle"):
-                        done_event.set()
-                except Exception as e:
-                    logger.error(f"Generation event error: {e}")
-                    done_event.set()
-
-            unsubscribe = session.on(on_event)
-
-            try:
-                await session.send({"prompt": generation_prompt})
-                await asyncio.wait_for(done_event.wait(), timeout=60)
-            except asyncio.TimeoutError:
-                yield json.dumps({"type": "error", "message": "Generation timed out"}) + "\n"
-                return
-            finally:
-                unsubscribe()
-
-            full_content = "".join(response_chunks).strip()
+            from src.copilot_helpers import copilot_send
+            full_content = await copilot_send(
+                _client,
+                model=_artifact_model,
+                system_prompt=ARTIFACT_GENERATOR.system_prompt,
+                prompt=generation_prompt,
+                timeout=60,
+            )
 
             # Strip markdown code fences if the model wrapped them anyway
             if full_content.startswith("```"):
@@ -8830,15 +8683,11 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
 
             yield json.dumps({"type": "done", "content": full_content}) + "\n"
 
+        except asyncio.TimeoutError:
+            yield json.dumps({"type": "error", "message": "Generation timed out"}) + "\n"
         except Exception as e:
             logger.error(f"Artifact generation failed: {e}")
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
 
     return StreamingResponse(
         stream_generation(),
@@ -9139,40 +8988,18 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         """
         task_model = get_model_for_task(task)
         logger.info(f"[ModelRouter] _llm_reason task={task.value} → model={task_model}")
-        session = None
-        try:
-            _client = await ensure_copilot_client()
-            if _client is None:
-                raise RuntimeError("Copilot SDK not available")
-            session = await _client.create_session({
-                "model": task_model, "streaming": True, "tools": [],
-                "system_message": {"content": system_msg or LLM_REASONER.system_prompt},
-            })
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
+        from src.copilot_helpers import copilot_send
 
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=90)
-            finally:
-                unsub()
-            return "".join(chunks).strip()
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
+        _client = await ensure_copilot_client()
+        if _client is None:
+            raise RuntimeError("Copilot SDK not available")
+        return await copilot_send(
+            _client,
+            model=task_model,
+            system_prompt=system_msg or LLM_REASONER.system_prompt,
+            prompt=prompt,
+            timeout=90,
+        )
 
     # ── Copilot fix helper ────────────────────────────────────
 
@@ -9287,108 +9114,86 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 "- Check if required properties changed in newer API versions\n"
             )
 
-        session = None
+        from src.copilot_helpers import copilot_send
+
+        _client = await ensure_copilot_client()
+        if _client is None:
+            raise RuntimeError("Copilot SDK not available")
+
+        fixed = await copilot_send(
+            _client,
+            model=fix_model,
+            system_prompt=DEEP_TEMPLATE_HEALER.system_prompt,
+            prompt=prompt,
+            timeout=90,
+        )
+        if fixed.startswith("```"):
+            lines = fixed.split("\n")[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            fixed = "\n".join(lines).strip()
+
+        # Guard: if healer returned empty or non-JSON, return original
+        if not fixed:
+            logger.warning("Copilot healer returned empty response — keeping original template")
+            return content
+
+        # Try to extract JSON if healer wrapped it in text
+        if not fixed.startswith("{"):
+            # Try to find JSON object in the response
+            _json_start = fixed.find("{")
+            _json_end = fixed.rfind("}")
+            if _json_start >= 0 and _json_end > _json_start:
+                fixed = fixed[_json_start:_json_end + 1]
+            else:
+                logger.warning("Copilot healer returned non-JSON text — keeping original template")
+                return content
+
+        # Validate it's actually valid JSON before returning
         try:
-            _client = await ensure_copilot_client()
-            if _client is None:
-                raise RuntimeError("Copilot SDK not available")
-            session = await _client.create_session({
-                "model": fix_model, "streaming": True, "tools": [],
-                "system_message": {"content": DEEP_TEMPLATE_HEALER.system_prompt},
-            })
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
+            json.loads(fixed)
+        except json.JSONDecodeError:
+            logger.warning("Copilot healer returned invalid JSON — keeping original template")
+            return content
 
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=90)
-            finally:
-                unsub()
-
-            fixed = "".join(chunks).strip()
-            if fixed.startswith("```"):
-                lines = fixed.split("\n")[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                fixed = "\n".join(lines).strip()
-
-            # Guard: if healer returned empty or non-JSON, return original
-            if not fixed:
-                logger.warning("Copilot healer returned empty response — keeping original template")
-                return content
-
-            # Try to extract JSON if healer wrapped it in text
-            if not fixed.startswith("{"):
-                # Try to find JSON object in the response
-                _json_start = fixed.find("{")
-                _json_end = fixed.rfind("}")
-                if _json_start >= 0 and _json_end > _json_start:
-                    fixed = fixed[_json_start:_json_end + 1]
-                else:
-                    logger.warning("Copilot healer returned non-JSON text — keeping original template")
-                    return content
-
-            # Validate it's actually valid JSON before returning
-            try:
-                json.loads(fixed)
-            except json.JSONDecodeError:
-                logger.warning("Copilot healer returned invalid JSON — keeping original template")
-                return content
-
-            # Guard: ensure healer didn't corrupt the location parameter
-            # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
-            _GLOBAL_LOCATION_TYPES_TOOL = {
-                "microsoft.network/dnszones",
-                "microsoft.network/trafficmanagerprofiles",
-                "microsoft.cdn/profiles",
-                "microsoft.network/frontdoors",
-                "microsoft.network/frontdoorwebapplicationfirewallpolicies",
-            }
-            try:
-                _ft = json.loads(fixed)
-                _params = _ft.get("parameters", {})
-                _loc = _params.get("location", {})
-                _dv = _loc.get("defaultValue", "")
-                if isinstance(_dv, str) and _dv and not _dv.startswith("["):
-                    _loc["defaultValue"] = "[resourceGroup().location]"
-                    logger.warning(f"Copilot healer corrupted location to '{_dv}' — restored")
-                    fixed = json.dumps(_ft, indent=2)
-                for _res in _ft.get("resources", []):
-                    _rtype = (_res.get("type") or "").lower()
-                    _rloc = _res.get("location", "")
-                    if _rtype in _GLOBAL_LOCATION_TYPES_TOOL:
-                        if isinstance(_rloc, str) and _rloc.lower() != "global":
-                            _res["location"] = "global"
-                            fixed = json.dumps(_ft, indent=2)
-                        continue
-                    if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
-                        _res["location"] = "[parameters('location')]"
-                        logger.warning(f"Copilot healer hardcoded resource location to '{_rloc}' — restored")
+        # Guard: ensure healer didn't corrupt the location parameter
+        # NOTE: some resources (DNS zones, Traffic Manager, etc.) use "global"
+        _GLOBAL_LOCATION_TYPES_TOOL = {
+            "microsoft.network/dnszones",
+            "microsoft.network/trafficmanagerprofiles",
+            "microsoft.cdn/profiles",
+            "microsoft.network/frontdoors",
+            "microsoft.network/frontdoorwebapplicationfirewallpolicies",
+        }
+        try:
+            _ft = json.loads(fixed)
+            _params = _ft.get("parameters", {})
+            _loc = _params.get("location", {})
+            _dv = _loc.get("defaultValue", "")
+            if isinstance(_dv, str) and _dv and not _dv.startswith("["):
+                _loc["defaultValue"] = "[resourceGroup().location]"
+                logger.warning(f"Copilot healer corrupted location to '{_dv}' — restored")
+                fixed = json.dumps(_ft, indent=2)
+            for _res in _ft.get("resources", []):
+                _rtype = (_res.get("type") or "").lower()
+                _rloc = _res.get("location", "")
+                if _rtype in _GLOBAL_LOCATION_TYPES_TOOL:
+                    if isinstance(_rloc, str) and _rloc.lower() != "global":
+                        _res["location"] = "global"
                         fixed = json.dumps(_ft, indent=2)
-            except (json.JSONDecodeError, AttributeError):
-                pass
+                    continue
+                if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
+                    _res["location"] = "[parameters('location')]"
+                    logger.warning(f"Copilot healer hardcoded resource location to '{_rloc}' — restored")
+                    fixed = json.dumps(_ft, indent=2)
+        except (json.JSONDecodeError, AttributeError):
+            pass
 
-            # ── Guard: ensure every param has a defaultValue ──
-            fixed = _ensure_parameter_defaults(fixed)
-            fixed = _sanitize_placeholder_guids(fixed)
+        # ── Guard: ensure every param has a defaultValue ──
+        fixed = _ensure_parameter_defaults(fixed)
+        fixed = _sanitize_placeholder_guids(fixed)
 
-            return fixed
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
+        return fixed
 
     # ── Cleanup helper ────────────────────────────────────────
 

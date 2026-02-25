@@ -928,8 +928,6 @@ async def modify_arm_template_with_copilot(
     Raises:
         ValueError: If the LLM fails to produce a valid ARM template after retries
     """
-    import asyncio
-
     prompt = (
         f"You are modifying an existing ARM template for Azure resource type '{resource_type}'.\n\n"
         f"--- CURRENT ARM TEMPLATE ---\n"
@@ -949,22 +947,14 @@ async def modify_arm_template_with_copilot(
         "still return the template with a best-effort change and add a comment in the template metadata\n"
     )
 
-    session = None
+    from src.copilot_helpers import copilot_send
+    from src.agents import ARM_MODIFIER
+
     max_attempts = 3
     last_error = ""
 
     for attempt in range(1, max_attempts + 1):
         try:
-            from src.agents import ARM_MODIFIER
-            session = await copilot_client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": ARM_MODIFIER.system_prompt
-                },
-            })
-
             actual_prompt = prompt
             if attempt > 1:
                 actual_prompt += (
@@ -973,27 +963,14 @@ async def modify_arm_template_with_copilot(
                     "No markdown fences, no explanation text."
                 )
 
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": actual_prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=90)
-            finally:
-                unsub()
-
-            result = "".join(chunks).strip()
-            result = _extract_json_from_llm_response(result)
+            raw = await copilot_send(
+                copilot_client,
+                model=model,
+                system_prompt=ARM_MODIFIER.system_prompt,
+                prompt=actual_prompt,
+                timeout=90,
+            )
+            result = _extract_json_from_llm_response(raw)
 
             parsed = json.loads(result)
 
@@ -1009,13 +986,6 @@ async def modify_arm_template_with_copilot(
             if attempt == max_attempts:
                 logger.error(f"Copilot failed to modify ARM template for {resource_type} after {max_attempts} attempts")
                 raise ValueError(f"Failed to modify ARM template for {resource_type}: {last_error}")
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
-                session = None
 
 
 async def generate_arm_template_with_copilot(
@@ -1040,8 +1010,6 @@ async def generate_arm_template_with_copilot(
         standards_context: Optional organization standards context to inject
         planning_context: Architecture plan from the reasoning model (PLAN phase)
     """
-    import asyncio
-
     prompt = (
         f"Generate a minimal ARM template (JSON) for deploying the Azure resource type "
         f"'{resource_type}' (service: {service_name}).\n\n"
@@ -1090,22 +1058,14 @@ async def generate_arm_template_with_copilot(
             f"--- END STANDARDS ---\n"
         )
 
-    session = None
+    from src.copilot_helpers import copilot_send
+    from src.agents import ARM_GENERATOR
+
     max_attempts = 3
     last_error = ""
 
     for attempt in range(1, max_attempts + 1):
         try:
-            from src.agents import ARM_GENERATOR
-            session = await copilot_client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": ARM_GENERATOR.system_prompt
-                },
-            })
-
             actual_prompt = prompt
             if attempt > 1:
                 actual_prompt += (
@@ -1114,27 +1074,14 @@ async def generate_arm_template_with_copilot(
                     "No markdown fences, no explanation text, no comments."
                 )
 
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": actual_prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=60)
-            finally:
-                unsub()
-
-            result = "".join(chunks).strip()
-            result = _extract_json_from_llm_response(result)
+            raw = await copilot_send(
+                copilot_client,
+                model=model,
+                system_prompt=ARM_GENERATOR.system_prompt,
+                prompt=actual_prompt,
+                timeout=60,
+            )
+            result = _extract_json_from_llm_response(raw)
 
             # Validate it's valid JSON
             parsed = json.loads(result)
@@ -1152,13 +1099,6 @@ async def generate_arm_template_with_copilot(
             if attempt == max_attempts:
                 logger.error(f"Copilot returned invalid JSON for {resource_type} after {max_attempts} attempts")
                 raise ValueError(f"Failed to generate valid ARM template for {resource_type}")
-        finally:
-            if session:
-                try:
-                    await session.destroy()
-                except Exception:
-                    pass
-                session = None
 
 
 def _extract_json_from_llm_response(text: str) -> str:

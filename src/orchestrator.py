@@ -523,39 +523,17 @@ async def analyze_template_feedback(
         )
 
         try:
-            from src.model_router import Task, get_model_for_task
+            from src.copilot_helpers import copilot_send, get_model_for_task
             from src.agents import GAP_ANALYST
             model = get_model_for_task(GAP_ANALYST.task)
 
-            session = await copilot_client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": GAP_ANALYST.system_prompt
-                },
-            })
-
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=60)
-            finally:
-                unsub()
-
-            raw = "".join(chunks).strip()
+            raw = await copilot_send(
+                copilot_client,
+                model=model,
+                system_prompt=GAP_ANALYST.system_prompt,
+                prompt=prompt,
+                timeout=60,
+            )
             # Strip markdown fences if present
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -812,39 +790,17 @@ async def apply_template_code_edit(
         }
 
     try:
-        from src.model_router import Task, get_model_for_task
+        from src.copilot_helpers import copilot_send, get_model_for_task
         from src.agents import ARM_TEMPLATE_EDITOR
         model = get_model_for_task(ARM_TEMPLATE_EDITOR.task)
 
-        session = await copilot_client.create_session({
-            "model": model,
-            "streaming": True,
-            "tools": [],
-            "system_message": {
-                "content": ARM_TEMPLATE_EDITOR.system_prompt
-            },
-        })
-
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=90)
-        finally:
-            unsub()
-
-        raw = "".join(chunks).strip()
+        raw = await copilot_send(
+            copilot_client,
+            model=model,
+            system_prompt=ARM_TEMPLATE_EDITOR.system_prompt,
+            prompt=prompt,
+            timeout=90,
+        )
         # Strip markdown fences
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -958,7 +914,7 @@ async def check_revision_policy(
     # ── LLM-based policy check ────────────────────────────────
     if copilot_client:
         try:
-            from src.model_router import Task, get_model_for_task
+            from src.copilot_helpers import copilot_send, get_model_for_task
             from src.agents import POLICY_CHECKER
             model = get_model_for_task(POLICY_CHECKER.task)
 
@@ -1004,35 +960,13 @@ async def check_revision_policy(
                 "- Return ONLY raw JSON — no markdown fences\n"
             )
 
-            session = await copilot_client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": POLICY_CHECKER.system_prompt
-                },
-            })
-
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=30)
-            finally:
-                unsub()
-
-            raw = "".join(chunks).strip()
+            raw = await copilot_send(
+                copilot_client,
+                model=model,
+                system_prompt=POLICY_CHECKER.system_prompt,
+                prompt=prompt,
+                timeout=30,
+            )
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             if raw.endswith("```"):
@@ -1148,7 +1082,7 @@ async def determine_services_from_prompt(
         await _emit("Analyzing your request to determine required services…")
 
         try:
-            from src.model_router import Task, get_model_for_task
+            from src.copilot_helpers import copilot_send, get_model_for_task
             from src.agents import REQUEST_PARSER
             model = get_model_for_task(REQUEST_PARSER.task)
 
@@ -1180,35 +1114,13 @@ async def determine_services_from_prompt(
                 "- Return ONLY raw JSON — no markdown fences\n"
             )
 
-            session = await copilot_client.create_session({
-                "model": model,
-                "streaming": True,
-                "tools": [],
-                "system_message": {
-                    "content": REQUEST_PARSER.system_prompt
-                },
-            })
-
-            chunks: list[str] = []
-            done_ev = asyncio.Event()
-
-            def on_event(ev):
-                try:
-                    if ev.type.value == "assistant.message_delta":
-                        chunks.append(ev.data.delta_content or "")
-                    elif ev.type.value in ("assistant.message", "session.idle"):
-                        done_ev.set()
-                except Exception:
-                    done_ev.set()
-
-            unsub = session.on(on_event)
-            try:
-                await session.send({"prompt": prompt})
-                await asyncio.wait_for(done_ev.wait(), timeout=60)
-            finally:
-                unsub()
-
-            raw = "".join(chunks).strip()
+            raw = await copilot_send(
+                copilot_client,
+                model=model,
+                system_prompt=REQUEST_PARSER.system_prompt,
+                prompt=prompt,
+                timeout=60,
+            )
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             if raw.endswith("```"):

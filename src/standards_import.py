@@ -15,7 +15,6 @@ Usage:
     # → list[dict] ready for create_standard()
 """
 
-import asyncio
 import json
 import logging
 import re
@@ -76,45 +75,19 @@ async def import_standards_from_text(
     prompt = _USER_PROMPT_TEMPLATE.format(content=content)
 
     # ── Call the LLM ──────────────────────────────────────────
-    session = None
+    from src.copilot_helpers import copilot_send
+
     try:
-        session = await copilot_client.create_session({
-            "model": "gpt-4.1",
-            "streaming": True,
-            "tools": [],
-            "system_message": {"content": _SYSTEM_PROMPT},
-        })
-
-        chunks: list[str] = []
-        done_ev = asyncio.Event()
-
-        def on_event(ev):
-            try:
-                if ev.type.value == "assistant.message_delta":
-                    chunks.append(ev.data.delta_content or "")
-                elif ev.type.value in ("assistant.message", "session.idle"):
-                    done_ev.set()
-            except Exception:
-                done_ev.set()
-
-        unsub = session.on(on_event)
-        try:
-            await session.send({"prompt": prompt})
-            await asyncio.wait_for(done_ev.wait(), timeout=120)
-        finally:
-            unsub()
-
-        raw = "".join(chunks).strip()
-
+        raw = await copilot_send(
+            copilot_client,
+            model="gpt-4.1",
+            system_prompt=_SYSTEM_PROMPT,
+            prompt=prompt,
+            timeout=120,
+        )
     except Exception as e:
         logger.error(f"Standards import LLM call failed: {e}")
         raise RuntimeError(f"LLM call failed: {e}") from e
-    finally:
-        if session:
-            try:
-                await session.close()
-            except Exception:
-                pass
 
     # ── Parse the LLM response ────────────────────────────────
     standards = _parse_standards_response(raw)
