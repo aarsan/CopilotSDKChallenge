@@ -1114,6 +1114,7 @@ def _stamp_template_metadata(
     *,
     service_id: str,
     version_int: int,
+    semver: str | None = None,
     gen_source: str = "unknown",
     region: str = "eastus2",
 ) -> str:
@@ -1135,7 +1136,8 @@ def _stamp_template_metadata(
     except (json.JSONDecodeError, TypeError):
         return template_json
 
-    semver = _version_to_semver(version_int)
+    if not semver:
+        semver = _version_to_semver(version_int)
 
     # Update contentVersion to match our semver
     tmpl["contentVersion"] = semver
@@ -7202,6 +7204,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 updated_template,
                 service_id=service_id,
                 version_int=new_ver,
+                semver=new_semver,
                 gen_source=f"api-version-update ({model_id})",
                 region=region,
             )
@@ -10423,6 +10426,7 @@ async def modify_service_version(service_id: str, version: int, request: Request
                 modified_template,
                 service_id=service_id,
                 version_int=new_ver,
+                semver=new_semver,
                 gen_source=f"llm-modify ({model_id})",
                 region="eastus2",
             )
