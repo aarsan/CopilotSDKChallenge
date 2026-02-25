@@ -336,13 +336,16 @@ async def promote_healed_service(
         promote_service_after_validation,
     )
 
+    semver_str = f"{version_num}.0.0"
+
     async def _emit(msg: str):
-        logger.info(f"[promote {service_id} v{version_num}] {msg}")
+        logger.info(f"[promote {service_id} v{semver_str}] {msg}")
         if progress_callback:
             await progress_callback({
                 "phase": "promote",
                 "service_id": service_id,
                 "version": version_num,
+                "semver": semver_str,
                 "detail": msg,
             })
 
@@ -357,11 +360,11 @@ async def promote_healed_service(
                WHERE service_id = ? AND version = ?""",
             (now, service_id, version_num),
         )
-        await _emit(f"Version v{version_num} status → validated")
+        await _emit(f"Version v{semver_str} status → validated")
 
         # Step 2: Set as active version
         await set_active_service_version(service_id, version_num)
-        await _emit(f"Set v{version_num} as active version")
+        await _emit(f"Set v{semver_str} as active version")
 
         # Step 3: Promote service
         await promote_service_after_validation(service_id, {
@@ -374,6 +377,7 @@ async def promote_healed_service(
             "status": "promoted",
             "service_id": service_id,
             "version": version_num,
+            "semver": semver_str,
         }
 
     except Exception as e:
@@ -382,6 +386,7 @@ async def promote_healed_service(
             "status": "failed",
             "service_id": service_id,
             "version": version_num,
+            "semver": semver_str,
             "error": str(e),
         }
 

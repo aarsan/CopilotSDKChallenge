@@ -5797,7 +5797,7 @@ async def publish_template(template_id: str, request: Request):
     """
     from src.database import (
         get_template_by_id, get_template_versions,
-        promote_template_version,
+        promote_template_version, get_latest_semver,
     )
 
     tmpl = await get_template_by_id(template_id)
@@ -5831,9 +5831,13 @@ async def publish_template(template_id: str, request: Request):
             detail="Cannot publish — version must have passed ARM validation (status: validated)",
         )
 
+    # Fetch semver for the published version
+    _pub_semver = await get_latest_semver(template_id) or f"{version}.0.0"
+
     return JSONResponse({
         "status": "ok",
         "published_version": version,
+        "published_semver": _pub_semver,
         "template_id": template_id,
     })
 
@@ -11341,9 +11345,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 att_base = (attempt - 1) / MAX_HEAL_ATTEMPTS
 
                 if attempt == 1:
-                    step_desc = f"Validating ARM template v{version_num} ({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s))"
+                    step_desc = f"Validating ARM template v{_semver} ({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s))"
                 else:
-                    step_desc = f"Verifying corrected template v{version_num} ({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s)) — resolved {len(heal_history)} issue{'s' if len(heal_history) != 1 else ''} so far"
+                    step_desc = f"Verifying corrected template v{_semver} ({tmpl_meta['size_kb']} KB, {tmpl_meta['resource_count']} resource(s)) — resolved {len(heal_history)} issue{'s' if len(heal_history) != 1 else ''} so far"
 
                 yield json.dumps({
                     "type": "iteration_start", "step": attempt,
@@ -11833,7 +11837,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
                 yield json.dumps({
                     "type": "progress", "phase": "promoting", "step": attempt,
-                    "detail": f"Promoting {svc['name']} v{version_num} → approved…",
+                    "detail": f"Promoting {svc['name']} v{_semver} → approved…",
                     "progress": 0.97,
                 }) + "\n"
 
@@ -11859,7 +11863,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "type": "done", "phase": "approved", "step": attempt,
                     "issues_resolved": issues_resolved,
                     "version": version_num,
-                    "detail": f"🎉 {svc['name']} v{version_num} approved! "
+                    "semver": _semver,
+                    "detail": f"🎉 {svc['name']} v{_semver} approved! "
                               f"{len(resource_details)} resource(s) validated, "
                               f"{report.passed_checks}/{report.total_checks} static policy checks passed"
                               f"{_policy_str}"

@@ -1533,7 +1533,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
         <div class="validation-card validation-succeeded" id="validation-card">
             <div class="validation-header">
                 <span class="validation-icon">✅</span>
-                <span class="validation-title">Service Onboarded — v${latestVersion.version}</span>
+                <span class="validation-title">Service Onboarded — v${latestVersion.semver || latestVersion.version + '.0.0'}</span>
             </div>
             <div class="validation-detail">
                 This service has a validated ARM template and is approved for deployment.
@@ -2713,7 +2713,7 @@ function _handleValidationEvent(event) {
     // Final states
     if (event.type === 'done' && card) {
         card.className = 'validation-card validation-succeeded';
-        if (header) header.textContent = `Service Approved — v${event.version || '?'}`;
+        if (header) header.textContent = `Service Approved — v${event.semver || event.version + '.0.0'}`;
         if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
         if (badge && event.issues_resolved > 0) {
             badge.textContent = `Resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}`;
@@ -2797,7 +2797,7 @@ function renderTemplateTable(templates) {
         const serviceIds = tmpl.service_ids || [];
         const provides = tmpl.provides || [];
         const primaryAzIcon = provides.length ? _azureIcon(provides[0], 28) : '';
-        const semver = tmpl.latest_semver || (tmpl.active_version ? `v${tmpl.active_version}` : null);
+        const semver = tmpl.latest_semver || (tmpl.active_version ? `${tmpl.active_version}.0.0` : null);
         const progress = statusProgress[status] || 1;
         const isPublished = status === 'approved';
         const isFailed = status === 'failed';
@@ -5094,7 +5094,7 @@ function _renderRemediationResults(data) {
                 <div class="remed-result-body">
                     <div class="remed-result-name">${escapeHtml(r.template_name || r.template_id)}</div>
                     <div class="remed-result-detail">
-                        New version <strong>v${r.new_version}</strong> (${escapeHtml(r.new_semver || '')})
+                        New version <strong>v${r.new_semver || r.new_version + '.0.0'}</strong>
                     </div>
                     <div class="remed-result-changelog">${escapeHtml(r.changelog || '')}</div>
                 </div>
@@ -5394,7 +5394,7 @@ async function recomposeBlueprint(templateId) {
         if (svcVersions.length) {
             detail += `\nService templates used:\n`;
             for (const sv of svcVersions) {
-                const svVer = sv.semver || (sv.version ? `v${sv.version}` : 'latest');
+                const svVer = sv.semver || (sv.version ? `${sv.version}.0.0` : 'latest');
                 detail += `  • ${sv.name || sv.service_id} (${svVer}, ${sv.source})\n`;
             }
         }
@@ -5583,7 +5583,7 @@ async function publishTemplate(templateId) {
         }
 
         const data = await res.json();
-        showToast(`🎉 Template published! v${data.published_version} is now active in the catalog.`, 'success');
+        showToast(`🎉 Template published! v${data.published_semver || data.published_version + '.0.0'} is now active in the catalog.`, 'success');
 
         await loadAllData();
         showTemplateDetail(templateId);
