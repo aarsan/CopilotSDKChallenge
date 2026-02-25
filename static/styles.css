@@ -4635,6 +4635,77 @@ body {
     word-break: break-word;
 }
 
+/* Agent Analysis Card — rich failure explanation */
+.validation-agent-analysis {
+    background: rgba(88, 166, 255, 0.06);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    margin: 0.6rem 0;
+}
+.agent-analysis-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+}
+.agent-analysis-icon {
+    font-size: 1.1rem;
+}
+.agent-analysis-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #58a6ff;
+}
+.agent-analysis-downgrade {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: 6px;
+    padding: 0.45rem 0.65rem;
+    font-size: 0.75rem;
+    color: #f59e0b;
+    margin-bottom: 0.5rem;
+    line-height: 1.45;
+}
+.agent-analysis-body {
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+.agent-analysis-body p {
+    margin: 0.3rem 0;
+}
+.agent-analysis-body strong {
+    color: var(--text-primary);
+}
+.agent-analysis-body code {
+    background: var(--bg-tertiary);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.72rem;
+}
+.agent-analysis-body ul, .agent-analysis-body ol {
+    padding-left: 1.2rem;
+    margin: 0.3rem 0;
+}
+.agent-analysis-meta {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+}
+.agent-analysis-chip {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
+}
+
 /* Attempt badge */
 .validation-attempt-badge {
     display: none;

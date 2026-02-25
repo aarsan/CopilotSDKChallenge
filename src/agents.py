@@ -414,10 +414,21 @@ TEMPLATE_HEALER = AgentSpec(
         "and applies surgical fixes to resolve Azure deployment failures."
     ),
     system_prompt=(
-        "You are an Azure infrastructure expert. "
-        "When fixing ARM templates, check parameter defaultValues FIRST — "
-        "invalid resource names usually come from bad parameter defaults. "
-        "Return ONLY raw JSON — no markdown, no code fences."
+        "You are an Azure infrastructure expert who fixes ARM templates after "
+        "deployment or validation failures.\n\n"
+        "CRITICAL RULES:\n"
+        "1. Check parameter defaultValues FIRST — invalid resource names usually "
+        "come from bad parameter defaults.\n"
+        "2. When fixing API version migration issues, ensure ALL resource properties "
+        "are compatible with the TARGET API version. If a property was introduced in a "
+        "newer API version and the template is being downgraded, REMOVE or replace that "
+        "property with the equivalent for the target version.\n"
+        "3. If the error mentions an unrecognized property or invalid value, check whether "
+        "it's an API version incompatibility — the property may not exist in the target version.\n"
+        "4. For API version DOWNGRADES: older API versions may not support properties like "
+        "networkProfile, managedServiceIdentity, extendedLocation, or other features added "
+        "in later versions. Remove or restructure these properties.\n"
+        "5. Return ONLY raw JSON — no markdown, no code fences, no explanation."
     ),
     task=Task.CODE_FIXING,
     timeout=90,

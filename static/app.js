@@ -2597,6 +2597,7 @@ function _handleUpdateEvent(event) {
         case 'done':        icon = '✅'; break;
         case 'healing':     icon = '🤖'; break;
         case 'healing_done': icon = '🔧'; break;
+        case 'agent_analysis': icon = '🧠'; logClass = 'analysis'; break;
         default:
             if (event.phase === 'checkout')                icon = '📥';
             else if (event.phase === 'checkout_complete')  icon = '✓';
@@ -2607,6 +2608,8 @@ function _handleUpdateEvent(event) {
             else if (event.phase === 'static_policy_check')   icon = '📋';
             else if (event.phase === 'static_policy_complete') icon = '✓';
             else if (event.phase === 'static_policy_failed')   icon = '⚠️';
+            else if (event.phase === 'healing_failed')     icon = '⚠️';
+            else if (event.phase === 'analyzing_failure')  icon = '🧠';
             else if (event.phase === 'what_if')            icon = '🔍';
             else if (event.phase === 'what_if_complete')   icon = '✓';
             else if (event.phase === 'what_if_failed')     icon = '💥';
@@ -2629,7 +2632,29 @@ function _handleUpdateEvent(event) {
         const logLine = document.createElement('div');
         logLine.className = `validation-log-line validation-log-${logClass}`;
         if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
-        logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
+
+        // Agent analysis gets rendered as a rich card, not a plain log line
+        if (event.type === 'agent_analysis') {
+            logLine.className = 'validation-agent-analysis';
+            const downgradeWarning = event.is_downgrade
+                ? `<div class="agent-analysis-downgrade">⚠️ This is an API version <strong>downgrade</strong> — the target version is older than the current one. Azure may reject properties that don't exist in older API versions.</div>`
+                : '';
+            logLine.innerHTML = `
+                <div class="agent-analysis-header">
+                    <span class="agent-analysis-icon">🧠</span>
+                    <span class="agent-analysis-title">Deployment Agent Analysis</span>
+                </div>
+                ${downgradeWarning}
+                <div class="agent-analysis-body">${renderMarkdown(event.detail)}</div>
+                <div class="agent-analysis-meta">
+                    ${event.from_api ? `<span class="agent-analysis-chip">${escapeHtml(event.from_api)} → ${escapeHtml(event.to_api)}</span>` : ''}
+                    <span class="agent-analysis-chip">${event.attempts || '?'} attempt(s)</span>
+                </div>
+            `;
+        } else {
+            logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
+        }
+
         logEl.appendChild(logLine);
         logEl.scrollTop = logEl.scrollHeight;
     }
@@ -2665,6 +2690,12 @@ function _handleUpdateEvent(event) {
     } else if (event.type === 'healing' && header) {
         header.textContent = 'Auto-Healing — AI Fixing Template…';
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.phase === 'analyzing_failure' && header) {
+        header.textContent = 'Analyzing Failure…';
+        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
+    } else if (event.type === 'agent_analysis' && header) {
+        header.textContent = 'Update Failed — See Analysis Below';
+        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.remove('validation-spinner'); }
     }
 
     // Final states

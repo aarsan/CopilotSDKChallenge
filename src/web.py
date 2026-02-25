@@ -7217,6 +7217,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             # Copilot SDK auto-healing with migration plan context and heal history
             _client = None  # lazy-init only when healing needed
             heal_history: list[dict] = []  # track previous attempts to avoid repeating the same fix
+            _last_error = ""  # track last error for failure analysis
 
             arm_template = updated_template
             attempt = 0
@@ -7302,10 +7303,24 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             if cleaned.startswith("```"):
                                 lines = cleaned.split("\n")
                                 cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                            json.loads(cleaned)
+                            try:
+                                json.loads(cleaned)
+                            except (json.JSONDecodeError, ValueError) as je:
+                                _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
+                                logger.warning(f"Static policy heal parse failed: {je}")
+                                _last_error = _heal_err
+                                heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": _heal_err, "fix_summary": "Heal produced invalid JSON"})
+                                yield json.dumps({
+                                    "type": "progress", "phase": "healing_failed",
+                                    "step": attempt,
+                                    "detail": f"⚠ Auto-heal produced invalid JSON — will retry" if attempt < MAX_HEAL_ATTEMPTS else f"⚠ Auto-heal produced invalid JSON",
+                                    "progress": 0.35 + (attempt - 1) * 0.15,
+                                }) + "\n"
+                                continue
                             _pre_template = arm_template
                             arm_template = cleaned
-                            heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": "; ".join(str(v) for v in violations[:3]), "fix_summary": f"Fixed {len(violations)} policy violation(s)"})
+                            _last_error = "; ".join(str(v) for v in violations[:3])
+                            heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": _last_error, "fix_summary": f"Fixed {len(violations)} policy violation(s)"})
                             await update_service_version_template(service_id, new_ver, arm_template)
                             yield json.dumps({
                                 "type": "healing_done", "phase": "template_fixed",
@@ -7316,6 +7331,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             continue
                 except Exception as e:
                     logger.warning(f"Static policy check failed: {e}")
+                    _last_error = str(e)
 
                 # ── What-If ──────────────────────────────────────
                 yield json.dumps({
@@ -7386,6 +7402,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 except Exception as e:
                     what_if_error = str(e)
                     logger.warning(f"What-If failed: {e}")
+                    _last_error = what_if_error
                     yield json.dumps({
                         "type": "progress", "phase": "what_if_failed",
                         "step": attempt,
@@ -7422,7 +7439,20 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
                             cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                        json.loads(cleaned)
+                        try:
+                            json.loads(cleaned)
+                        except (json.JSONDecodeError, ValueError) as je:
+                            _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
+                            logger.warning(f"What-If heal parse failed: {je}")
+                            _last_error = _heal_err
+                            heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": _heal_err, "fix_summary": "Heal produced invalid JSON"})
+                            yield json.dumps({
+                                "type": "progress", "phase": "healing_failed",
+                                "step": attempt,
+                                "detail": f"⚠ Auto-heal produced invalid JSON — will retry" if attempt < MAX_HEAL_ATTEMPTS else f"⚠ Auto-heal produced invalid JSON",
+                                "progress": 0.48 + (attempt - 1) * 0.15,
+                            }) + "\n"
+                            continue
                         arm_template = cleaned
                         heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": what_if_error[:300], "fix_summary": "Fixed What-If validation failure"})
                         await update_service_version_template(service_id, new_ver, arm_template)
@@ -7485,6 +7515,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     }) + "\n"
                 except Exception as e:
                     deploy_error = str(e)
+                    _last_error = deploy_error
                     logger.warning(f"Deployment failed: {e}")
                     yield json.dumps({
                         "type": "progress", "phase": "deploy_failed",
@@ -7522,7 +7553,20 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
                             cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                        json.loads(cleaned)
+                        try:
+                            json.loads(cleaned)
+                        except (json.JSONDecodeError, ValueError) as je:
+                            _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
+                            logger.warning(f"Deploy heal parse failed: {je}")
+                            _last_error = _heal_err
+                            heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": _heal_err, "fix_summary": "Heal produced invalid JSON"})
+                            yield json.dumps({
+                                "type": "progress", "phase": "healing_failed",
+                                "step": attempt,
+                                "detail": f"⚠ Auto-heal produced invalid JSON — will retry" if attempt < MAX_HEAL_ATTEMPTS else f"⚠ Auto-heal produced invalid JSON",
+                                "progress": 0.65 + (attempt - 1) * 0.15,
+                            }) + "\n"
+                            continue
                         arm_template = cleaned
                         heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": deploy_error[:300], "fix_summary": "Fixed deployment failure"})
                         await update_service_version_template(service_id, new_ver, arm_template)
@@ -7673,9 +7717,54 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             if not promoted:
                 await update_service_version_status(service_id, new_ver, "failed")
                 await fail_service_validation(service_id)
+
+                # ── Failure analysis: explain WHY the update failed ──
+                yield json.dumps({
+                    "type": "progress", "phase": "analyzing_failure",
+                    "detail": f"🧠 Analyzing why the update failed — preparing explanation…",
+                    "progress": 0.95,
+                }) + "\n"
+
+                _analysis_error = _last_error or "Unknown error"
+                _is_downgrade = target_api < current_api
+                try:
+                    analysis = await _get_deploy_agent_analysis(
+                        _analysis_error,
+                        f"{service_id} (API {current_api} → {target_api}{'  ↓ DOWNGRADE' if _is_downgrade else ''})",
+                        rg_name,
+                        region,
+                        heal_history=[{
+                            "attempt": h.get("step", i + 1),
+                            "phase": h.get("phase", "unknown"),
+                            "error": h.get("error", ""),
+                            "fix_summary": h.get("fix_summary", ""),
+                        } for i, h in enumerate(heal_history)],
+                    )
+                except Exception as _ae:
+                    logger.warning(f"Failure analysis failed: {_ae}")
+                    analysis = (
+                        f"The API version update from `{current_api}` to `{target_api}` "
+                        f"failed after {MAX_HEAL_ATTEMPTS} attempt(s).\n\n"
+                        f"**Last error:** {_analysis_error[:300]}\n\n"
+                        + (f"**Note:** This is a **downgrade** — the target API version `{target_api}` "
+                           f"is older than the current `{current_api}`. Azure may reject templates "
+                           f"that use features introduced in newer API versions.\n\n" if _is_downgrade else "")
+                        + "**Next steps:** Try a different target version, or discuss in chat for alternatives."
+                    )
+
+                yield json.dumps({
+                    "type": "agent_analysis", "phase": "failed",
+                    "detail": analysis,
+                    "progress": 1.0,
+                    "from_api": current_api,
+                    "to_api": target_api,
+                    "is_downgrade": _is_downgrade,
+                    "attempts": MAX_HEAL_ATTEMPTS,
+                }) + "\n"
+
                 yield json.dumps({
                     "type": "error", "phase": "failed",
-                    "detail": f"✗ Update failed after {MAX_HEAL_ATTEMPTS} attempts",
+                    "detail": f"✗ Update failed after {MAX_HEAL_ATTEMPTS} attempts — see analysis above",
                     "progress": 1.0,
                 }) + "\n"
 
