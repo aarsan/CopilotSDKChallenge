@@ -6499,6 +6499,80 @@ async def delete_service_endpoint(service_id: str):
     return JSONResponse({"status": "ok", "deleted": service_id})
 
 
+# ── Service Update Check (bulk API-version comparison) ───────
+
+@app.get("/api/catalog/services/check-updates")
+async def check_service_updates():
+    """Compare each onboarded service's ARM template apiVersion against Azure's latest.
+
+    Returns a list of services that have a newer Azure API version available,
+    along with the version details for each.
+    """
+    from src.database import get_all_services, get_service_versions
+
+    try:
+        services = await get_all_services()
+        updates: list[dict] = []
+
+        for svc in services:
+            # Only check services that have both an active version and Azure API data
+            latest_api = svc.get("latest_api_version")
+            active_ver_num = svc.get("active_version")
+            if not latest_api or active_ver_num is None:
+                continue
+
+            # Fetch versions and find the active one
+            versions = await get_service_versions(svc["id"])
+            active_ver = next(
+                (v for v in versions if v.get("version") == active_ver_num), None
+            )
+            if not active_ver:
+                continue
+
+            arm_str = active_ver.get("arm_template")
+            if not arm_str:
+                continue
+
+            try:
+                tpl = json.loads(arm_str)
+            except Exception:
+                continue
+
+            # Extract apiVersions from template resources
+            resources = tpl.get("resources", [])
+            template_api_versions = sorted(
+                {r.get("apiVersion", "") for r in resources
+                 if isinstance(r, dict) and r.get("apiVersion")},
+                reverse=True,
+            )
+            if not template_api_versions:
+                continue
+
+            template_api = template_api_versions[0]
+            if latest_api > template_api:
+                updates.append({
+                    "id": svc["id"],
+                    "name": svc.get("name", svc["id"]),
+                    "category": svc.get("category", "other"),
+                    "active_version": active_ver_num,
+                    "template_api_version": template_api,
+                    "latest_api_version": latest_api,
+                    "default_api_version": svc.get("default_api_version"),
+                })
+
+        return JSONResponse({
+            "updates": updates,
+            "total_checked": sum(
+                1 for s in services
+                if s.get("latest_api_version") and s.get("active_version") is not None
+            ),
+            "updates_available": len(updates),
+        })
+    except Exception as e:
+        logger.error(f"Failed to check service updates: {e}")
+        return JSONResponse({"updates": [], "total_checked": 0, "updates_available": 0})
+
+
 @app.get("/api/catalog/services/sync")
 async def sync_services_from_azure():
     """Stream real-time progress of Azure resource provider sync via SSE.

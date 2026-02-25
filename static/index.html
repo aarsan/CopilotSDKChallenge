@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=107">
+    <link rel="stylesheet" href="/static/styles.css?v=108">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -386,8 +386,16 @@
                         </div>
                     </div>
 
-                    <!-- Results Summary -->
-                    <div class="results-summary" id="service-results-summary"></div>
+                    <!-- Results Summary + Check for Updates -->
+                    <div class="results-summary-bar">
+                        <div class="results-summary" id="service-results-summary"></div>
+                        <div class="update-check-area" id="update-check-area">
+                            <button class="btn btn-sm btn-check-updates" id="btn-check-updates" onclick="checkForUpdates()" title="Compare onboarded service API versions against Azure's latest">
+                                <span class="update-btn-icon">⬆</span> Check for Updates
+                            </button>
+                            <span class="update-count-badge hidden" id="update-count-badge"></span>
+                        </div>
+                    </div>
 
                     <!-- Service Table -->
                     <div class="catalog-table-wrap full-height">
@@ -956,7 +964,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=107"></script>
+    <script src="/static/app.js?v=108"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

@@ -26,6 +26,7 @@ let currentPage = 'dashboard';
 // Data
 let allServices = [];
 let allTemplates = [];
+let _serviceUpdates = {};  // serviceId → update info from check-updates
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -958,7 +959,11 @@ function renderServiceTable(services) {
     // Update results summary
     const summary = document.getElementById('service-results-summary');
     if (summary) {
-        summary.textContent = `Showing ${services.length} of ${allServices.length} services`;
+        const updateCount = Object.keys(_serviceUpdates).length;
+        const updateSuffix = updateCount > 0
+            ? ` — <span class="svc-update-summary">${updateCount} update${updateCount !== 1 ? 's' : ''} available</span>`
+            : '';
+        summary.innerHTML = `Showing ${services.length} of ${allServices.length} services${updateSuffix}`;
     }
 
     if (!services.length) {
@@ -969,11 +974,18 @@ function renderServiceTable(services) {
     tbody.innerHTML = services.map(svc => {
         const status = svc.status || 'not_approved';
         const activeVer = svc.active_version;
+        const update = _serviceUpdates[svc.id];
 
-        // Version indicator instead of gates
-        const versionHtml = activeVer
-            ? `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`
-            : `<span class="version-badge version-none" title="No approved version">—</span>`;
+        // Version indicator with optional update badge
+        let versionHtml;
+        if (activeVer && update) {
+            versionHtml = `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`
+                + `<span class="version-badge version-update" title="Template uses API ${escapeHtml(update.template_api_version)} — Azure offers ${escapeHtml(update.latest_api_version)}">⬆ update</span>`;
+        } else if (activeVer) {
+            versionHtml = `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`;
+        } else {
+            versionHtml = `<span class="version-badge version-none" title="No approved version">—</span>`;
+        }
 
         return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
             <td>
@@ -985,6 +997,46 @@ function renderServiceTable(services) {
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
         </tr>`;
     }).join('');
+}
+
+async function checkForUpdates() {
+    const btn = document.getElementById('btn-check-updates');
+    const badge = document.getElementById('update-count-badge');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="update-btn-icon spin">⟳</span> Checking…';
+    badge?.classList.add('hidden');
+
+    try {
+        const res = await fetch('/api/catalog/services/check-updates');
+        const data = await res.json();
+
+        // Build lookup map
+        _serviceUpdates = {};
+        (data.updates || []).forEach(u => { _serviceUpdates[u.id] = u; });
+
+        const count = data.updates_available || 0;
+        if (count > 0) {
+            btn.innerHTML = `<span class="update-btn-icon">⬆</span> ${count} Update${count !== 1 ? 's' : ''} Found`;
+            btn.classList.add('has-updates');
+            if (badge) {
+                badge.textContent = count;
+                badge.classList.remove('hidden');
+            }
+        } else {
+            btn.innerHTML = '<span class="update-btn-icon">✓</span> All Up to Date';
+            btn.classList.remove('has-updates');
+        }
+
+        // Re-render table to show update badges
+        applyServiceFilters();
+    } catch (err) {
+        console.warn('Failed to check for updates:', err);
+        btn.innerHTML = '<span class="update-btn-icon">⬆</span> Check Failed';
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 function filterServices(category) {

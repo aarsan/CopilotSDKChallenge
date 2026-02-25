@@ -562,11 +562,94 @@ body {
 
 /* Results Summary */
 
+.results-summary-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    padding: 0 0.25rem;
+    gap: 1rem;
+}
+
 .results-summary {
     font-size: 0.8125rem;
     color: var(--text-muted);
-    margin-bottom: 0.75rem;
-    padding: 0 0.25rem;
+}
+
+.svc-update-summary {
+    color: var(--accent-blue);
+    font-weight: 600;
+}
+
+.update-check-area {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.btn-check-updates {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-check-updates:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
+}
+
+.btn-check-updates.has-updates {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
+}
+
+.btn-check-updates:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.update-btn-icon {
+    font-size: 0.85rem;
+}
+
+.update-btn-icon.spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.update-count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.3rem;
+    height: 1.3rem;
+    padding: 0 0.35rem;
+    border-radius: 10px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.update-count-badge.hidden {
+    display: none;
 }
 
 /* ── Chat Page ────────────────────────────────────────────── */
@@ -3021,6 +3104,14 @@ body {
     background: var(--bg-tertiary);
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
+}
+.version-badge.version-update {
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--accent-blue);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    margin-left: 0.3rem;
+    font-size: 0.65rem;
+    cursor: help;
 }
 
 /* ── API Version Advisory Banner ── */
