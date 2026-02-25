@@ -3467,6 +3467,18 @@ body {
     color: var(--text-muted);
     border: 1px solid var(--border-subtle);
 }
+.version-badge.version-semver {
+    background: rgba(99, 102, 241, 0.12);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+.version-badge.version-semver-int {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
 .version-badge.version-update {
     background: rgba(59, 130, 246, 0.12);
     color: var(--accent-blue);

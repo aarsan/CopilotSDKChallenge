@@ -1471,6 +1471,15 @@ async def get_all_services(
     all_artifacts = await backend.execute(
         "SELECT service_id, artifact_type, status FROM service_artifacts", ())
 
+    # 2b. Batch-fetch semver for each service's active version
+    all_semvers = await backend.execute(
+        "SELECT sv.service_id, sv.semver FROM service_versions sv "
+        "INNER JOIN services s ON sv.service_id = s.id AND sv.version = s.active_version "
+        "WHERE sv.semver IS NOT NULL",
+        (),
+    )
+    semver_map: dict[str, str] = {r["service_id"]: r["semver"] for r in all_semvers}
+
     # Group by service_id for O(1) lookup
     from collections import defaultdict
     skus_map: dict[str, list[str]] = defaultdict(list)
@@ -1513,6 +1522,9 @@ async def get_all_services(
         svc["gates_approved"] = sum(
             1 for s in svc["gates"].values() if s == "approved"
         )
+
+        # Semver for active version
+        svc["latest_semver"] = semver_map.get(svc_id)
 
         result.append(svc)
 

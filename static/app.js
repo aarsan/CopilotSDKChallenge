@@ -1015,7 +1015,7 @@ function renderServiceTable(services) {
     }
 
     if (!services.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="catalog-loading">No services match your filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="catalog-loading">No services match your filters</td></tr>';
         return;
     }
 
@@ -1097,6 +1097,7 @@ function renderServiceTable(services) {
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
             </td>
             <td><span class="category-badge">${escapeHtml(svc.category)}</span></td>
+            <td>${svc.latest_semver ? `<span class="version-badge version-semver">${escapeHtml(svc.latest_semver)}</span>` : (svc.active_version ? `<span class="version-badge version-semver-int">v${svc.active_version}</span>` : '<span class="version-badge version-none">—</span>')}</td>
             <td>${versionHtml}</td>
             <td>${azureApiHtml}</td>
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
