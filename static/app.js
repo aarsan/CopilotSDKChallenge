@@ -1489,12 +1489,9 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <p class="pipeline-desc">All steps run automatically with Copilot SDK-powered auto-healing. Validated against organization governance standards &amp; policies.</p>
         </div>
 
-        <div class="onboard-model-selector" id="model-selector-container">
-            <label class="model-selector-label">🤖 LLM Model</label>
-            <select id="onboard-model-select" class="model-select">
-                <option value="">Loading models…</option>
-            </select>
-            <span class="model-selector-hint" id="model-selector-hint"></span>
+        <div class="model-routing-display" id="model-routing-container">
+            <span class="model-routing-label">🤖 Model Routing</span>
+            <div class="model-routing-chips" id="model-routing-chips">Loading…</div>
         </div>
 
         ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus)}
@@ -2092,8 +2089,6 @@ async function triggerDraftValidation(serviceId, version, semver) {
 
     // Trigger the onboard pipeline with use_version to skip generation
     const card = document.getElementById('validation-card');
-    const modelSelect = document.getElementById('onboard-model-select');
-    const selectedModel = modelSelect ? modelSelect.value : '';
 
     if (card) {
         card.className = 'validation-card validation-running';
@@ -2121,7 +2116,6 @@ async function triggerDraftValidation(serviceId, version, semver) {
 
     try {
         const body = { use_version: version };
-        if (selectedModel) body.model = selectedModel;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
             method: 'POST',
@@ -2198,37 +2192,27 @@ async function loadModelSettings() {
 }
 
 function _populateModelSelector() {
-    const select = document.getElementById('onboard-model-select');
-    const hint = document.getElementById('model-selector-hint');
-    if (!select) return;
+    const container = document.getElementById('model-routing-chips');
+    if (!container) return;
 
-    const providerGroups = {};
-    for (const m of availableModels) {
-        if (!providerGroups[m.provider]) providerGroups[m.provider] = [];
-        providerGroups[m.provider].push(m);
-    }
-
-    let html = '';
-    for (const [provider, models] of Object.entries(providerGroups)) {
-        html += `<optgroup label="${provider}">`;
-        for (const m of models) {
-            const selected = m.id === activeModel ? 'selected' : '';
-            const tier = m.tier ? ` [${m.tier}]` : '';
-            html += `<option value="${m.id}" ${selected}>${m.name}${tier}</option>`;
-        }
-        html += '</optgroup>';
-    }
-    select.innerHTML = html;
-
-    const activeMeta = availableModels.find(m => m.id === activeModel);
-    if (hint && activeMeta) {
-        hint.textContent = activeMeta.description || '';
-    }
-
-    select.addEventListener('change', () => {
-        const selected = availableModels.find(m => m.id === select.value);
-        if (hint && selected) hint.textContent = selected.description || '';
-    });
+    // Fetch the routing table from the API
+    fetch('/api/settings/model-routing')
+        .then(r => r.json())
+        .then(data => {
+            const table = data.routing_table || [];
+            // Show only the key pipeline tasks
+            const show = ['Planning', 'Code Generation', 'Code Fixing', 'Policy Generation'];
+            const chips = table
+                .filter(t => show.includes(t.task_label))
+                .map(t => {
+                    const short = t.task_label.replace('Code ', '').replace('Policy ', 'Policy ');
+                    return `<span class="model-routing-chip" title="${t.reason}">${short}: <strong>${t.model_name}</strong></span>`;
+                });
+            container.innerHTML = chips.join('') || '<span class="model-routing-chip">No routing configured</span>';
+        })
+        .catch(() => {
+            container.innerHTML = '<span class="model-routing-chip">Could not load routing</span>';
+        });
 }
 
 async function changeGlobalModel(modelId) {
@@ -2247,17 +2231,24 @@ async function changeGlobalModel(modelId) {
     }
 }
 
-async function triggerOnboarding(serviceId) {
+const MAX_AUTO_RETRIES = 3;
+let _onboardRetryCount = 0;
+
+async function triggerOnboarding(serviceId, _isAutoRetry = false) {
     const card = document.getElementById('validation-card');
-    const modelSelect = document.getElementById('onboard-model-select');
-    const selectedModel = modelSelect ? modelSelect.value : '';
+
+    if (!_isAutoRetry) {
+        _onboardRetryCount = 0;  // reset on manual trigger
+    }
+
+    const retryLabel = _onboardRetryCount > 0 ? ` (auto-retry ${_onboardRetryCount}/${MAX_AUTO_RETRIES})` : '';
 
     if (card) {
         card.className = 'validation-card validation-running';
         card.innerHTML = `
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⏳</span>
-                <span class="validation-title">Onboarding In Progress…</span>
+                <span class="validation-title">Onboarding In Progress…${retryLabel}</span>
             </div>
             <div class="validation-model-badge" id="validation-model-badge"></div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
@@ -2266,7 +2257,7 @@ async function triggerOnboarding(serviceId) {
                     <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
                 </div>
             </div>
-            <div class="validation-detail" id="validation-detail">Initializing onboarding pipeline…</div>
+            <div class="validation-detail" id="validation-detail">Initializing onboarding pipeline…${retryLabel}</div>
             <div class="validation-log" id="validation-log">
                 <div class="validation-log-header">
                     <span>Onboarding Log</span>
@@ -2276,9 +2267,10 @@ async function triggerOnboarding(serviceId) {
         `;
     }
 
+    let streamEndedWithError = false;
+
     try {
         const body = {};
-        if (selectedModel) body.model = selectedModel;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
             method: 'POST',
@@ -2344,8 +2336,6 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
 
     // Ensure the card shows running state — even if showServiceDetail already rendered the green card
     let card = document.getElementById('validation-card');
-    const modelSelect = document.getElementById('onboard-model-select');
-    const selectedModel = modelSelect ? modelSelect.value : '';
 
     console.log('[update] validation-card element:', card ? 'found' : 'NOT FOUND');
 
@@ -2387,7 +2377,6 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
 
     try {
         const body = {};
-        if (selectedModel) body.model = selectedModel;
         if (targetVersion) body.target_version = targetVersion;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/update-api-version`, {

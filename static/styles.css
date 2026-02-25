@@ -4276,63 +4276,47 @@ body {
     display: inline-block;
 }
 
-/* Model selector in service detail */
-.onboard-model-selector {
+/* Model routing display in service detail */
+.model-routing-display {
     display: flex;
     align-items: center;
     gap: 0.65rem;
-    padding: 0.65rem 0.85rem;
+    padding: 0.55rem 0.85rem;
     margin: 0.5rem 0;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
+    flex-wrap: wrap;
 }
 
-.model-selector-label {
+.model-routing-label {
     font-size: 0.75rem;
     font-weight: 600;
     color: var(--text-secondary);
     white-space: nowrap;
 }
 
-.model-select {
+.model-routing-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
     flex: 1;
-    background: var(--bg-card);
-    color: var(--text-primary);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 0.35rem 0.55rem;
-    font-size: 0.78rem;
-    font-family: inherit;
-    cursor: pointer;
-    max-width: 250px;
 }
 
-.model-select:focus {
-    outline: none;
-    border-color: var(--accent-blue);
-    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
-}
-
-.model-select optgroup {
-    font-weight: 600;
+.model-routing-chip {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.55rem;
+    background: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.15);
+    border-radius: 12px;
     color: var(--text-secondary);
-}
-
-.model-select option {
-    background: var(--bg-card);
-    color: var(--text-primary);
-    padding: 0.25rem;
-}
-
-.model-selector-hint {
-    font-size: 0.68rem;
-    color: var(--text-muted);
-    font-style: italic;
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.model-routing-chip strong {
+    color: var(--text-primary);
+    font-weight: 600;
 }
 
 /* Log header with toggle button */
