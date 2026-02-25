@@ -976,13 +976,17 @@ function renderServiceTable(services) {
         const activeVer = svc.active_version;
         const update = _serviceUpdates[svc.id];
 
-        // Version indicator with optional update badge
+        // Version display: show template API version (e.g. 2025-04-01) instead of vN
+        const tplApi = svc.template_api_version
+            || (update ? update.template_api_version : null);
+        const versionLabel = tplApi || (activeVer ? `v${activeVer}` : null);
+
         let versionHtml;
-        if (activeVer && update) {
-            versionHtml = `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`
-                + `<span class="version-badge version-update" title="Template uses API ${escapeHtml(update.template_api_version)} — Azure offers ${escapeHtml(update.latest_api_version)}">⬆ update</span>`;
-        } else if (activeVer) {
-            versionHtml = `<span class="version-badge version-active" title="Active version">v${activeVer}</span>`;
+        if (versionLabel && update) {
+            versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
+                + `<span class="version-badge version-update" title="Template uses ${escapeHtml(update.template_api_version)} — Azure offers ${escapeHtml(update.latest_api_version)}">⬆ update</span>`;
+        } else if (versionLabel) {
+            versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
             versionHtml = `<span class="version-badge version-none" title="No approved version">—</span>`;
         }
@@ -1032,6 +1036,14 @@ async function checkForUpdates() {
                     svc.latest_api_version = info.latest_api_version;
                     svc.default_api_version = info.default_api_version;
                 }
+            });
+        }
+
+        // Merge template API versions (the apiVersion from the ARM template)
+        const tplMap = data.template_api_versions || {};
+        if (Object.keys(tplMap).length > 0) {
+            allServices.forEach(svc => {
+                if (tplMap[svc.id]) svc.template_api_version = tplMap[svc.id];
             });
         }
 
@@ -1134,7 +1146,7 @@ async function showServiceDetail(serviceId) {
             <span class="status-badge ${status}">${statusLabels[status] || status}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
-            ${svc.active_version ? `<span class="version-badge version-active">Active: v${svc.active_version}</span>` : ''}
+            ${svc.active_version ? `<span class="version-badge version-active">Active: ${svc.template_api_version || ('v' + svc.active_version)}</span>` : ''}
         </div>
         <div class="gate-loading">Loading versions…</div>
     `;
@@ -1207,7 +1219,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <span class="status-badge ${displayStatus}">${displayLabel}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
-            ${activeVersion ? `<span class="version-badge version-active">Active: v${activeVersion}</span>` : ''}
+            ${activeVersion ? `<span class="version-badge version-active">Active: ${svc.template_api_version || ('v' + activeVersion)}</span>` : ''}
         </div>
 
         ${_renderApiVersionAdvisory(apiVersionStatus)}
@@ -6410,7 +6422,7 @@ function _renderComposeServiceList(services) {
                 </select>
             </div>` : `
             <div class="compose-version-picker">
-                <span class="version-badge version-active">v${svc.active_version || '?'}</span>
+                <span class="version-badge version-active">${svc.template_api_version || ('v' + (svc.active_version || '?'))}</span>
             </div>`}
         </div>`;
     }).join('');

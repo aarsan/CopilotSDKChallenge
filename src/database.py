@@ -720,6 +720,14 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE services ADD default_api_version NVARCHAR(20) DEFAULT NULL
     """,
+    # ── Template API version (apiVersion from the active ARM template) ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('services') AND name = 'template_api_version'
+    )
+    ALTER TABLE services ADD template_api_version NVARCHAR(20) DEFAULT NULL
+    """,
 ]
 
 
@@ -2401,19 +2409,40 @@ async def update_service_version_deployment_info(
 async def set_active_service_version(service_id: str, version: int) -> bool:
     """Set the active (deployed) version for a service.
 
-    Also promotes the service to 'approved' status.
+    Also promotes the service to 'approved' status and extracts the
+    template's API version from the ARM template for display.
     """
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
 
+    # Extract template_api_version from the ARM template
+    template_api = None
+    ver_row = await get_service_version(service_id, version)
+    if ver_row:
+        arm_str = ver_row.get("arm_template", "")
+        if arm_str:
+            try:
+                tpl = json.loads(arm_str)
+                resources = tpl.get("resources", [])
+                api_versions = sorted(
+                    {r.get("apiVersion", "") for r in resources
+                     if isinstance(r, dict) and r.get("apiVersion")},
+                    reverse=True,
+                )
+                if api_versions:
+                    template_api = api_versions[0]
+            except Exception:
+                pass
+
     count = await backend.execute_write(
         """UPDATE services
            SET active_version = ?, status = 'approved',
-               approved_date = ?, reviewed_by = 'Deployment Validated'
+               approved_date = ?, reviewed_by = 'Deployment Validated',
+               template_api_version = ?
            WHERE id = ?""",
-        (version, now, service_id),
+        (version, now, template_api, service_id),
     )
-    logger.info(f"Service {service_id} active_version set to v{version}")
+    logger.info(f"Service {service_id} active_version set to v{version} (template API: {template_api})")
     return count > 0
 
 
