@@ -984,7 +984,7 @@ function renderServiceTable(services) {
         let versionHtml;
         if (versionLabel && update) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
-                + `<span class="version-badge version-update version-update-clickable" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(svc.id)}')">⬆ update</span>`;
+                + `<span class="version-badge version-update version-update-clickable" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}')">⬆ update</span>`;
         } else if (versionLabel) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
@@ -1129,6 +1129,12 @@ function applyServiceFilters() {
 // ── Service Detail Drawer (Versioned Onboarding) ────────────
 
 let _currentVersions = null;
+let _pendingApiUpdate = null;
+
+async function startApiVersionUpdateFromTable(serviceId) {
+    _pendingApiUpdate = serviceId;
+    await showServiceDetail(serviceId);
+}
 
 async function showServiceDetail(serviceId) {
     const svc = allServices.find(s => s.id === serviceId);
@@ -1167,6 +1173,11 @@ async function showServiceDetail(serviceId) {
         _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
+        // Auto-trigger API version update if requested from table badge
+        if (_pendingApiUpdate === serviceId) {
+            _pendingApiUpdate = null;
+            setTimeout(() => triggerApiVersionUpdate(serviceId), 300);
+        }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
             <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="showServiceDetail('${escapeHtml(serviceId)}')">🔄 Retry</button>`;
