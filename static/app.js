@@ -1494,13 +1494,13 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <div class="model-routing-chips" id="model-routing-chips">Loading…</div>
         </div>
 
-        ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus)}
+        ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersion)}
 
         ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
 }
 
-function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
+function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
     // API Version Update buttons — shown when service is onboarded AND newer version available
     let updateBtn = '';
     if (apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status === 'approved' && latestVersion) {
@@ -1529,16 +1529,28 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
 
     // Governance-approved AND has a validated version → fully onboarded
     if (status === 'approved' && latestVersion) {
+        // Use the active version for display, not the latest (which may be a failed re-onboarding attempt)
+        const activeVer = activeVersionNum
+            ? (versions || []).find(v => v.version === activeVersionNum)
+            : null;
+        const displayVer = activeVer || latestVersion;
+        const hasFailedLatest = latestVersion.status === 'failed' && activeVer && latestVersion.version !== activeVer.version;
+
         return `
         <div class="validation-card validation-succeeded" id="validation-card">
             <div class="validation-header">
                 <span class="validation-icon">✅</span>
-                <span class="validation-title">Service Onboarded — v${latestVersion.semver || latestVersion.version + '.0.0'}</span>
+                <span class="validation-title">Service Onboarded — v${displayVer.semver || displayVer.version + '.0.0'}</span>
             </div>
             <div class="validation-detail">
                 This service has a validated ARM template and is approved for deployment.
-                ${latestVersion.validated_at ? `Validated: ${latestVersion.validated_at.substring(0, 10)}` : ''}
+                ${displayVer.validated_at ? `Validated: ${displayVer.validated_at.substring(0, 10)}` : ''}
             </div>
+            ${hasFailedLatest ? `
+            <div class="validation-detail" style="color: var(--warning); margin-top: 0.4rem;">
+                ⚠️ A newer version (v${latestVersion.semver || latestVersion.version + '.0.0'}) failed validation.
+                The active version is still v${displayVer.semver || displayVer.version + '.0.0'}.
+            </div>` : ''}
             <div class="validation-actions">
                 ${updateBtn}
                 <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">

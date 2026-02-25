@@ -2231,7 +2231,13 @@ async def fail_service_validation(
     service_id: str,
     error: str,
 ) -> bool:
-    """Mark a service as failed validation — back to not_approved with error."""
+    """Mark a service as failed validation.
+
+    If the service already has an active (approved) version, we keep
+    the service status as 'approved' — a failed re-onboarding attempt
+    should NOT demote a service that already has a working version.
+    Only services without an active version get set to 'validation_failed'.
+    """
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -2241,14 +2247,31 @@ async def fail_service_validation(
         "error": error,
     })
 
-    await backend.execute_write(
-        """UPDATE services
-           SET status = 'validation_failed',
-               review_notes = ?
-           WHERE id = ?""",
-        (notes, service_id),
+    # Guard: don't demote a service that already has an active version
+    rows = await backend.execute(
+        "SELECT active_version, status FROM services WHERE id = ?",
+        (service_id,),
     )
-    logger.info(f"Service {service_id} failed deployment validation: {error}")
+    has_active = rows and rows[0].get("active_version") is not None
+
+    if has_active:
+        # Preserve status — only update review_notes so the error is recorded
+        await backend.execute_write(
+            """UPDATE services
+               SET review_notes = ?
+               WHERE id = ?""",
+            (notes, service_id),
+        )
+        logger.info(f"Service {service_id} failed validation but has active version — status preserved: {error}")
+    else:
+        await backend.execute_write(
+            """UPDATE services
+               SET status = 'validation_failed',
+                   review_notes = ?
+               WHERE id = ?""",
+            (notes, service_id),
+        )
+        logger.info(f"Service {service_id} failed deployment validation: {error}")
     return True
 
 
