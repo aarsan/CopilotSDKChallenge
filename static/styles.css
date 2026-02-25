@@ -9689,7 +9689,7 @@ details[open] > .tmpl-deploy-group-optional {
     flex-direction: column;
     align-items: center;
     gap: 0;
-    max-height: 600px;
+    max-height: 800px;
     overflow-y: auto;
     padding: 0.25rem 0;
     position: relative;
@@ -9727,7 +9727,7 @@ details[open] > .tmpl-deploy-group-optional {
 /* ── Flow node — a single process step ── */
 .vf-flow-node {
     width: 100%;
-    max-width: 560px;
+    max-width: 720px;
     border: 1px solid var(--border-default);
     border-radius: 10px;
     background: var(--bg-primary);
@@ -9751,15 +9751,15 @@ details[open] > .tmpl-deploy-group-optional {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
+    padding: 0.6rem 1rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
 }
 .vf-node-icon {
-    width: 26px; height: 26px;
+    width: 30px; height: 30px;
     border-radius: 6px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.85rem;
+    font-size: 0.95rem;
     background: rgba(59,130,246,0.1);
     flex-shrink: 0;
 }
@@ -9767,13 +9767,13 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-node-icon-green  { background: rgba(63,185,80,0.1); }
 .vf-node-title {
     flex: 1;
-    font-weight: 600; font-size: 0.78rem;
+    font-weight: 600; font-size: 0.88rem;
     color: var(--text-primary);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .vf-node-badge {
-    font-size: 0.65rem; font-weight: 600;
-    padding: 0.12rem 0.45rem; border-radius: 4px;
+    font-size: 0.72rem; font-weight: 600;
+    padding: 0.15rem 0.5rem; border-radius: 4px;
     display: flex; align-items: center; gap: 0.25rem;
     flex-shrink: 0;
 }
@@ -9797,13 +9797,13 @@ details[open] > .tmpl-deploy-group-optional {
 
 /* ── Node body — activity log ── */
 .vf-node-body {
-    padding: 0.4rem 0.6rem;
-    display: flex; flex-direction: column; gap: 0.25rem;
+    padding: 0.5rem 0.85rem;
+    display: flex; flex-direction: column; gap: 0.3rem;
 }
 .vf-activity {
-    display: flex; align-items: flex-start; gap: 0.35rem;
-    font-size: 0.76rem; padding: 0.2rem 0.4rem;
-    border-radius: 5px; line-height: 1.4;
+    display: flex; align-items: flex-start; gap: 0.4rem;
+    font-size: 0.84rem; padding: 0.25rem 0.5rem;
+    border-radius: 5px; line-height: 1.45;
     color: var(--text-primary);
 }
 .vf-activity-icon {
@@ -9814,7 +9814,7 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-activity-deploy  { background: rgba(59,130,246,0.04); }
 .vf-activity-analyze { background: rgba(139,92,246,0.05); color: var(--accent-purple); }
 .vf-activity-fix     { background: rgba(59,130,246,0.05); border-left: 3px solid var(--accent-blue); }
-.vf-activity-info    { background: transparent; color: var(--text-secondary); font-size: 0.73rem; }
+.vf-activity-info    { background: transparent; color: var(--text-secondary); font-size: 0.8rem; }
 .vf-activity-issue   {
     background: rgba(234,179,8,0.06);
     border-left: 3px solid rgba(234,179,8,0.5);
@@ -9824,7 +9824,7 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-activity-history {
     background: rgba(139,92,246,0.03);
     color: var(--text-secondary);
-    font-size: 0.73rem;
+    font-size: 0.8rem;
     font-style: italic;
 }
 .vf-activity-escalate {
@@ -9861,7 +9861,7 @@ details[open] > .tmpl-deploy-group-optional {
     display: flex;
     gap: 1rem;
     width: 100%;
-    max-width: 700px;
+    max-width: 860px;
     overflow-x: auto;
     padding: 0.25rem 0.5rem;
     position: relative;
@@ -9875,7 +9875,7 @@ details[open] > .tmpl-deploy-group-optional {
     justify-content: center;
     height: 32px;
     width: 100%;
-    max-width: 700px;
+    max-width: 860px;
 }
 .vf-branch-connector::before {
     content: '';
@@ -9906,8 +9906,8 @@ details[open] > .tmpl-deploy-group-optional {
 /* Branch sub-process node */
 .vf-branch-node {
     flex: 1;
-    min-width: 220px;
-    max-width: 320px;
+    min-width: 280px;
+    max-width: 400px;
     border: 1px solid rgba(139,92,246,0.25);
     border-radius: 10px;
     background: var(--bg-primary);
@@ -9932,21 +9932,21 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-branch-header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.4rem 0.6rem;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
     background: rgba(139,92,246,0.06);
     border-bottom: 1px solid rgba(139,92,246,0.12);
 }
 .vf-branch-icon {
-    width: 22px; height: 22px; border-radius: 5px;
+    width: 26px; height: 26px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.75rem;
+    font-size: 0.85rem;
     background: rgba(139,92,246,0.12);
     flex-shrink: 0;
 }
 .vf-branch-title {
     flex: 1;
-    font-weight: 600; font-size: 0.73rem;
+    font-weight: 600; font-size: 0.82rem;
     color: var(--text-primary);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -9970,20 +9970,20 @@ details[open] > .tmpl-deploy-group-optional {
 
 /* Branch node body — compact activity log */
 .vf-branch-body {
-    padding: 0.35rem 0.5rem;
-    display: flex; flex-direction: column; gap: 0.15rem;
+    padding: 0.45rem 0.65rem;
+    display: flex; flex-direction: column; gap: 0.2rem;
     flex: 1;
-    font-size: 0.72rem;
-    max-height: 200px;
+    font-size: 0.8rem;
+    max-height: 280px;
     overflow-y: auto;
 }
 .vf-branch-step {
-    display: flex; align-items: flex-start; gap: 0.3rem;
-    padding: 0.15rem 0.3rem; border-radius: 4px;
+    display: flex; align-items: flex-start; gap: 0.35rem;
+    padding: 0.2rem 0.4rem; border-radius: 4px;
     color: var(--text-secondary);
-    line-height: 1.4;
+    line-height: 1.45;
 }
-.vf-branch-step-icon { flex-shrink: 0; font-size: 0.72rem; }
+.vf-branch-step-icon { flex-shrink: 0; font-size: 0.8rem; }
 
 /* Merge connector — lines come back together after branch */
 .vf-merge-connector {
@@ -9993,7 +9993,7 @@ details[open] > .tmpl-deploy-group-optional {
     justify-content: center;
     height: 32px;
     width: 100%;
-    max-width: 700px;
+    max-width: 860px;
 }
 .vf-merge-connector-bar {
     position: absolute;
@@ -10024,7 +10024,7 @@ details[open] > .tmpl-deploy-group-optional {
 /* ── Final result card ── */
 .vf-result {
     border-radius: 10px; padding: 1rem; margin-top: 0;
-    width: 100%; max-width: 560px;
+    width: 100%; max-width: 720px;
 }
 .vf-result-success {
     background: rgba(63,185,80,0.06);
@@ -10076,7 +10076,7 @@ details[open] > .tmpl-deploy-group-optional {
 /* ── Live progress bar ── */
 .vf-live-progress { min-height: 0; display: flex; flex-direction: column; align-items: center; }
 .vf-progress-bar {
-    height: 4px; width: 100%; max-width: 560px;
+    height: 4px; width: 100%; max-width: 720px;
     background: var(--bg-tertiary); border-radius: 2px;
     overflow: hidden; margin-bottom: 0.3rem;
 }
@@ -10095,9 +10095,9 @@ details[open] > .tmpl-deploy-group-optional {
 
 /* Cleanup line */
 .vf-cleanup {
-    font-size: 0.72rem; color: var(--text-muted);
+    font-size: 0.78rem; color: var(--text-muted);
     font-style: italic; padding: 0.25rem 0.5rem;
-    text-align: center; max-width: 560px;
+    text-align: center; max-width: 720px;
 }
 
 /* ═══════════════════════════════════════════════════════════
