@@ -788,6 +788,48 @@ async def init_db() -> None:
     except Exception as exc:
         logger.warning(f"Template lifecycle migration skipped: {exc}")
 
+    # ── Backfill template_api_version for services missing it ──
+    try:
+        rows = await backend.execute(
+            "SELECT id, active_version FROM services "
+            "WHERE active_version IS NOT NULL AND template_api_version IS NULL",
+            (),
+        )
+        if rows:
+            backfilled = 0
+            for row in rows:
+                sid, ver = row["id"], row["active_version"]
+                ver_rows = await backend.execute(
+                    "SELECT arm_template FROM service_versions "
+                    "WHERE service_id = ? AND version = ?",
+                    (sid, ver),
+                )
+                if not ver_rows:
+                    continue
+                arm_str = ver_rows[0].get("arm_template", "")
+                if not arm_str:
+                    continue
+                try:
+                    tpl = json.loads(arm_str)
+                    resources = tpl.get("resources", [])
+                    api_versions = sorted(
+                        {r.get("apiVersion", "") for r in resources
+                         if isinstance(r, dict) and r.get("apiVersion")},
+                        reverse=True,
+                    )
+                    if api_versions:
+                        await backend.execute_write(
+                            "UPDATE services SET template_api_version = ? WHERE id = ?",
+                            (api_versions[0], sid),
+                        )
+                        backfilled += 1
+                except Exception:
+                    pass
+            if backfilled:
+                logger.info(f"Backfilled template_api_version for {backfilled} services")
+    except Exception as exc:
+        logger.warning(f"template_api_version backfill skipped: {exc}")
+
 
 # ══════════════════════════════════════════════════════════════
 # USER SESSIONS
