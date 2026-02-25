@@ -12,6 +12,89 @@ function _copilotBadge(full) {
         : '<span class="copilot-badge">✦ Copilot SDK</span>';
 }
 
+// ── Workflow Pipeline Renderer ──────────────────────────────
+/**
+ * Render a standardized dot-line workflow pipeline.
+ *
+ * @param {Array<{key?: string, icon?: string, label: string, desc?: string}>} steps
+ * @param {Object} opts
+ * @param {string}  [opts.activeKey]     - key of the currently-active step
+ * @param {Array}   [opts.completedKeys] - array of completed step keys
+ * @param {string}  [opts.failedKey]     - key of the failed step
+ * @param {number}  [opts.progress]      - 1-based index: steps <= progress are done
+ * @param {boolean} [opts.allDone]       - mark every step done (e.g. approved template)
+ * @param {boolean} [opts.compact]       - use smaller dot variant
+ * @param {string}  [opts.title]         - optional pipeline title (shows boxed wrapper)
+ * @param {string}  [opts.titleAccent]   - 'amber' etc. for accent coloring
+ * @param {string}  [opts.desc]          - optional description below pipeline
+ * @param {boolean} [opts.copilotBadge]  - show copilot badge in title
+ * @returns {string} HTML string
+ */
+function _wfPipeline(steps, opts = {}) {
+    const {
+        activeKey, completedKeys = [], failedKey,
+        progress, allDone, compact,
+        title, titleAccent, desc, copilotBadge
+    } = opts;
+
+    const icons = {
+        done: '✓',
+        fail: '✕',
+    };
+
+    const items = steps.map((s, i) => {
+        const key = s.key || s.label;
+        let state = 'wf-pending';
+
+        if (allDone) {
+            state = 'wf-done';
+        } else if (progress != null) {
+            // Progress-based (lifecycle cards): 1-indexed
+            const step = i + 1;
+            if (failedKey && step === progress) state = 'wf-failed';
+            else if (step < progress || (step <= progress && !failedKey)) state = 'wf-done';
+        } else {
+            // Key-based (activity pipelines)
+            if (completedKeys.includes(key)) state = 'wf-done';
+            else if (key === activeKey) state = 'wf-active';
+            else if (key === failedKey) state = 'wf-failed';
+        }
+
+        const dotContent = state === 'wf-done' ? icons.done
+            : state === 'wf-failed' ? icons.fail
+            : (s.icon || `${i + 1}`);
+
+        const node = `<div class="wf-node ${state}" title="${s.desc || s.label}">` +
+            `<div class="wf-dot"><span class="wf-dot-inner">${dotContent}</span></div>` +
+            `<span class="wf-label">${s.label}</span>` +
+            `</div>`;
+
+        // Connector before this node (not for the first)
+        if (i === 0) return node;
+
+        // Connector state: done if THIS node is done/active, active if this node is active
+        let connState = '';
+        if (state === 'wf-done' || allDone) connState = 'wf-done';
+        else if (state === 'wf-active') connState = 'wf-active';
+        else if (state === 'wf-failed') connState = 'wf-failed';
+
+        return `<div class="wf-connector ${connState}"></div>${node}`;
+    }).join('');
+
+    const compactCls = compact ? ' wf-compact' : '';
+    const pipeline = `<div class="wf-pipeline${compactCls}">${items}</div>`;
+
+    if (!title && !desc) return pipeline;
+
+    const accentCls = titleAccent ? ` wf-accent-${titleAccent}` : '';
+    const badge = copilotBadge ? ` ${_copilotBadge()}` : '';
+    return `<div class="wf-pipeline-box${accentCls}">` +
+        (title ? `<div class="wf-pipeline-title">${title}${badge}</div>` : '') +
+        pipeline +
+        (desc ? `<div class="wf-pipeline-desc">${desc}</div>` : '') +
+        `</div>`;
+}
+
 // ── State ───────────────────────────────────────────────────
 let sessionToken = null;
 let currentUser = null;
@@ -1462,33 +1545,18 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
 
         ${_renderApiVersionAdvisory(apiVersionStatus)}
 
-        ${showUpdatePipeline ? `
-        <div class="onboard-pipeline update-pipeline">
-            <div class="pipeline-label">⬆ API Version Update Pipeline ${_copilotBadge()}</div>
-            <div class="pipeline-steps">
-                ${updatePipelineSteps.map(s => `
-                    <div class="pipeline-step" title="${s.desc}">
-                        <span class="pipeline-step-icon">${s.icon}</span>
-                        <span class="pipeline-step-label">${s.label}</span>
-                    </div>
-                `).join('<span class="pipeline-arrow">→</span>')}
-            </div>
-            <p class="pipeline-desc">Updates template API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Latest: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code>${apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable ? ` · Recommended: <code>${escapeHtml(apiVersionStatus.default)}</code> <span class="azure-api-rec">★</span>` : ''}</p>
-        </div>
-        ` : ''}
+        ${showUpdatePipeline ? _wfPipeline(updatePipelineSteps, {
+            title: '⬆ API Version Update Pipeline',
+            titleAccent: 'amber',
+            copilotBadge: true,
+            desc: `Updates template API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Latest: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code>${apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable ? ` · Recommended: <code>${escapeHtml(apiVersionStatus.default)}</code> <span class="azure-api-rec">★</span>` : ''}`,
+        }) : ''}
 
-        <div class="onboard-pipeline">
-            <div class="pipeline-label">Onboarding Pipeline ${_copilotBadge()}</div>
-            <div class="pipeline-steps">
-                ${pipelineSteps.map(s => `
-                    <div class="pipeline-step" title="${s.desc}">
-                        <span class="pipeline-step-icon">${s.icon}</span>
-                        <span class="pipeline-step-label">${s.label}</span>
-                    </div>
-                `).join('<span class="pipeline-arrow">→</span>')}
-            </div>
-            <p class="pipeline-desc">All steps run automatically with Copilot SDK-powered auto-healing. Validated against organization governance standards &amp; policies.</p>
-        </div>
+        ${_wfPipeline(pipelineSteps, {
+            title: 'Onboarding Pipeline',
+            copilotBadge: true,
+            desc: 'All steps run automatically with Copilot SDK-powered auto-healing. Validated against organization governance standards &amp; policies.',
+        })}
 
         <div class="model-routing-display" id="model-routing-container">
             <span class="model-routing-label">🤖 Model Routing</span>
@@ -2822,14 +2890,10 @@ function renderTemplateTable(templates) {
         const isPublished = status === 'approved';
         const isFailed = status === 'failed';
 
-        const lifecycleHtml = lifecycleStages.map((stage, i) => {
-            const step = i + 1;
-            let cls = 'lc-pending';
-            if (step <= progress && !isFailed) cls = 'lc-done';
-            else if (isFailed && step === progress) cls = 'lc-failed';
-            else if (isFailed && step < progress) cls = 'lc-done';
-            return `<span class="lc-step ${cls}" title="${stage}">${stage}</span>`;
-        }).join('<span class="lc-sep">›</span>');
+        const lifecycleHtml = _wfPipeline(
+            lifecycleStages.map(s => ({ label: s })),
+            { progress, allDone: isPublished, failedKey: isFailed ? 'fail' : undefined, compact: true }
+        );
 
         return `
         <div class="tmpl-card tmpl-card-${ttype} tmpl-status-${status}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
@@ -9855,14 +9919,12 @@ function _renderActivityCard(job) {
 
     let pipelineHtml = '';
     if (isRunning || status === 'approved' || status === 'validation_failed') {
-        const stepItems = pipelineSteps.map(s => {
-            let cls = 'activity-step-pending';
-            if (completedSteps.includes(s.key) || status === 'approved') cls = 'activity-step-done';
-            else if (isRunning && activeStep === s.key) cls = 'activity-step-active';
-            else if (status === 'validation_failed' && activeStep === s.key) cls = 'activity-step-failed';
-            return `<div class="activity-step ${cls}" title="${s.label}"><span class="activity-step-icon">${s.icon}</span><span class="activity-step-label">${s.label}</span></div>`;
-        }).join('<div class="activity-step-connector"></div>');
-        pipelineHtml = `<div class="activity-pipeline">${stepItems}</div>`;
+        pipelineHtml = _wfPipeline(pipelineSteps, {
+            activeKey: isRunning ? activeStep : undefined,
+            completedKeys: completedSteps,
+            failedKey: status === 'validation_failed' ? activeStep : undefined,
+            allDone: status === 'approved',
+        });
     }
 
     // ── Current detail text (shown prominently) ──────────────

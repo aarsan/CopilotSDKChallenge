@@ -3536,17 +3536,6 @@ body {
     cursor: pointer;
 }
 
-/* Update pipeline accent */
-.onboard-pipeline.update-pipeline .pipeline-label {
-    color: var(--accent-blue);
-}
-.onboard-pipeline.update-pipeline .pipeline-step {
-    border-color: rgba(59, 130, 246, 0.25);
-}
-.onboard-pipeline.update-pipeline .pipeline-step:hover {
-    border-color: var(--accent-blue);
-    background: rgba(59, 130, 246, 0.08);
-}
 
 /* Azure API version badge in service table */
 .azure-api-stack {
@@ -3636,58 +3625,7 @@ body {
     font-style: italic;
 }
 
-.onboard-pipeline {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 1.25rem;
-}
-.pipeline-label {
-    font-size: 0.72rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-    margin-bottom: 0.75rem;
-}
-.pipeline-steps {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-}
-.pipeline-step {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.2rem;
-    padding: 0.4rem 0.6rem;
-    border-radius: 8px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    min-width: 64px;
-}
-.pipeline-step-icon {
-    font-size: 1.1rem;
-}
-.pipeline-step-label {
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-.pipeline-arrow {
-    font-size: 1rem;
-    color: var(--text-muted);
-}
-.pipeline-desc {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: 0.75rem;
-    line-height: 1.5;
-}
+
 
 /* ── Version History ──────────────────────────────────────── */
 
@@ -5222,76 +5160,7 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Step Pipeline ──────────────────────────────────────────── */
-.activity-pipeline {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    margin: 0.5rem 0 0.5rem 0;
-    padding: 0.4rem 0;
-    overflow-x: auto;
-}
 
-.activity-step {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.15rem;
-    padding: 0.25rem 0.4rem;
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
-    transition: all 0.2s;
-}
-
-.activity-step-icon {
-    font-size: 0.85rem;
-    line-height: 1;
-}
-
-.activity-step-label {
-    font-size: 0.6rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    white-space: nowrap;
-}
-
-.activity-step-pending {
-    opacity: 0.35;
-}
-.activity-step-pending .activity-step-label { color: var(--text-muted); }
-
-.activity-step-active {
-    opacity: 1;
-    background: rgba(88, 166, 255, 0.12);
-    border: 1px solid rgba(88, 166, 255, 0.3);
-}
-.activity-step-active .activity-step-label { color: var(--accent-blue); }
-.activity-step-active .activity-step-icon { animation: step-pulse 1.5s ease-in-out infinite; }
-
-@keyframes step-pulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.2); }
-}
-
-.activity-step-done {
-    opacity: 1;
-}
-.activity-step-done .activity-step-label { color: var(--accent-green); }
-
-.activity-step-failed {
-    opacity: 1;
-    background: rgba(248, 81, 73, 0.12);
-    border: 1px solid rgba(248, 81, 73, 0.3);
-}
-.activity-step-failed .activity-step-label { color: var(--accent-red); }
-
-.activity-step-connector {
-    width: 16px;
-    height: 2px;
-    background: var(--border-muted);
-    flex-shrink: 0;
-}
 
 /* ── Template Metadata Chips ────────────────────────────────── */
 .activity-meta-chips {
@@ -6944,35 +6813,9 @@ body {
 
 /* ── Lifecycle progress bar ─────────────────────── */
 .tmpl-lifecycle {
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
-    font-size: 0.65rem;
-    letter-spacing: 0.02em;
+    margin: 0.15rem 0;
 }
-.lc-step {
-    padding: 0.15rem 0.4rem;
-    border-radius: 3px;
-    font-weight: 500;
-    white-space: nowrap;
-}
-.lc-sep {
-    color: var(--text-secondary);
-    opacity: 0.4;
-    font-size: 0.7rem;
-}
-.lc-done {
-    color: #22c55e;
-    background: rgba(34,197,94,0.1);
-}
-.lc-pending {
-    color: var(--text-secondary);
-    opacity: 0.5;
-}
-.lc-failed {
-    color: #f85149;
-    background: rgba(248,81,73,0.1);
-}
+
 
 .tmpl-card-header {
     display: flex;
@@ -11186,4 +11029,230 @@ details[open] > .tmpl-deploy-group-optional {
     font-size: 0.78rem;
     color: var(--text-secondary);
     font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   WORKFLOW PIPELINE — Standardized component system
+   Usage: .wf-pipeline > (.wf-node + .wf-connector)*
+   States: .wf-done, .wf-active, .wf-pending, .wf-failed, .wf-skipped
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Pipeline container ─────────────────────────────────────── */
+.wf-pipeline {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    padding: 0.6rem 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+/* ── Node: the dot + label group ────────────────────────────── */
+.wf-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+}
+
+/* ── The dot (circle) ───────────────────────────────────────── */
+.wf-dot {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    border: 2px solid var(--border-subtle);
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    transition: all 0.3s ease;
+    position: relative;
+}
+.wf-dot-inner {
+    line-height: 1;
+    font-size: 0.85rem;
+}
+
+/* ── Node label ─────────────────────────────────────────────── */
+.wf-label {
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    white-space: nowrap;
+    transition: color 0.3s ease;
+    max-width: 72px;
+    text-align: center;
+    line-height: 1.25;
+}
+
+/* ── Connector line between nodes ───────────────────────────── */
+.wf-connector {
+    width: 28px;
+    height: 2px;
+    background: var(--border-subtle);
+    flex-shrink: 0;
+    margin-top: 15px; /* vertically center with dot */
+    transition: background 0.3s ease;
+    position: relative;
+}
+
+/* ── STATE: Done (completed step) ───────────────────────────── */
+.wf-node.wf-done .wf-dot {
+    background: rgba(34, 197, 94, 0.15);
+    border-color: #22c55e;
+    color: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.2);
+}
+.wf-node.wf-done .wf-label {
+    color: #22c55e;
+}
+.wf-connector.wf-done {
+    background: linear-gradient(90deg, #22c55e, #22c55e);
+    height: 2px;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.3);
+}
+
+/* ── STATE: Active (currently running) ──────────────────────── */
+.wf-node.wf-active .wf-dot {
+    background: rgba(88, 166, 255, 0.15);
+    border-color: #58a6ff;
+    color: #58a6ff;
+    box-shadow: 0 0 12px rgba(88, 166, 255, 0.35), 0 0 24px rgba(88, 166, 255, 0.15);
+    animation: wf-glow 2s ease-in-out infinite;
+}
+.wf-node.wf-active .wf-label {
+    color: #58a6ff;
+}
+.wf-connector.wf-active {
+    background: linear-gradient(90deg, #22c55e, #58a6ff);
+    height: 2px;
+    box-shadow: 0 0 6px rgba(88, 166, 255, 0.3);
+}
+
+@keyframes wf-glow {
+    0%, 100% {
+        box-shadow: 0 0 12px rgba(88, 166, 255, 0.35), 0 0 24px rgba(88, 166, 255, 0.15);
+    }
+    50% {
+        box-shadow: 0 0 18px rgba(88, 166, 255, 0.5), 0 0 36px rgba(88, 166, 255, 0.25);
+    }
+}
+
+/* ── STATE: Pending (not yet reached) ───────────────────────── */
+.wf-node.wf-pending .wf-dot {
+    background: var(--bg-tertiary);
+    border-color: var(--border-subtle);
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+.wf-node.wf-pending .wf-label {
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+/* ── STATE: Failed ──────────────────────────────────────────── */
+.wf-node.wf-failed .wf-dot {
+    background: rgba(248, 81, 73, 0.15);
+    border-color: #f85149;
+    color: #f85149;
+    box-shadow: 0 0 12px rgba(248, 81, 73, 0.3);
+    animation: wf-glow-fail 2s ease-in-out infinite;
+}
+.wf-node.wf-failed .wf-label {
+    color: #f85149;
+}
+.wf-connector.wf-failed {
+    background: linear-gradient(90deg, #22c55e, #f85149);
+    height: 2px;
+}
+
+@keyframes wf-glow-fail {
+    0%, 100% {
+        box-shadow: 0 0 12px rgba(248, 81, 73, 0.3);
+    }
+    50% {
+        box-shadow: 0 0 18px rgba(248, 81, 73, 0.45), 0 0 30px rgba(248, 81, 73, 0.2);
+    }
+}
+
+/* ── STATE: Skipped ─────────────────────────────────────────── */
+.wf-node.wf-skipped .wf-dot {
+    background: var(--bg-tertiary);
+    border-color: var(--border-subtle);
+    color: var(--text-muted);
+    border-style: dashed;
+    opacity: 0.4;
+}
+.wf-node.wf-skipped .wf-label {
+    color: var(--text-muted);
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+
+/* ── Pipeline variants ──────────────────────────────────────── */
+
+/* Compact: smaller dots for inline/card usage */
+.wf-pipeline.wf-compact .wf-dot {
+    width: 22px;
+    height: 22px;
+    font-size: 0.6rem;
+}
+.wf-pipeline.wf-compact .wf-dot-inner {
+    font-size: 0.65rem;
+}
+.wf-pipeline.wf-compact .wf-label {
+    font-size: 0.55rem;
+    max-width: 56px;
+}
+.wf-pipeline.wf-compact .wf-connector {
+    width: 18px;
+    margin-top: 10px;
+}
+
+/* Boxed: wraps pipeline in a styled container (for service detail) */
+.wf-pipeline-box {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+}
+.wf-pipeline-box .wf-pipeline-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.wf-pipeline-box .wf-pipeline-desc {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.6rem;
+    line-height: 1.5;
+}
+
+/* Accent variants for update pipelines */
+.wf-pipeline-box.wf-accent-amber .wf-pipeline-title {
+    color: #d97706;
+}
+.wf-pipeline-box.wf-accent-amber .wf-node.wf-active .wf-dot {
+    background: rgba(245, 158, 11, 0.15);
+    border-color: #f59e0b;
+    color: #f59e0b;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+}
+.wf-pipeline-box.wf-accent-amber .wf-node.wf-active .wf-label {
+    color: #f59e0b;
 }
