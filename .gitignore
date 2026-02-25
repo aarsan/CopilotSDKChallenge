@@ -32,6 +32,10 @@ Thumbs.db
 # Copilot CLI
 .copilot/
 
+# Runtime database (not used — app uses Azure SQL)
+*.db
+!requirements*.db
+
 # Server logs
 server.log
 server_err.log
