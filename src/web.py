@@ -5028,15 +5028,18 @@ async def recompose_blueprint(template_id: str):
 
 @app.get("/api/catalog/templates/{template_id}/composition")
 async def get_template_composition(template_id: str):
-    """Get the services that compose this template, with version info.
+    """Get the services that compose this template, with version info,
+    dependency edges, and upgrade availability.
 
     Returns each service's name, current version in the template,
-    latest available version, and whether an upgrade is available.
+    latest available version, whether an upgrade is available, and
+    the dependency graph edges between components.
     """
     from src.database import (
         get_template_by_id, get_service, get_active_service_version,
         get_service_versions, get_latest_semver,
     )
+    from src.template_engine import RESOURCE_DEPENDENCIES
 
     tmpl = await get_template_by_id(template_id)
     if not tmpl:
@@ -5046,6 +5049,8 @@ async def get_template_composition(template_id: str):
     template_semver = await get_latest_semver(template_id)
 
     service_ids = tmpl.get("service_ids", [])
+    provides = set(tmpl.get("provides", []))
+    requires = tmpl.get("requires", [])
     components = []
 
     for sid in service_ids:
@@ -5057,7 +5062,9 @@ async def get_template_composition(template_id: str):
                 "category": "",
                 "status": "unknown",
                 "current_version": None,
+                "current_semver": None,
                 "latest_version": None,
+                "latest_semver": None,
                 "upgrade_available": False,
             })
             continue
@@ -5071,10 +5078,6 @@ async def get_template_composition(template_id: str):
         latest_semver = all_versions[0].get("semver") if all_versions else active_semver
         latest_int = all_versions[0].get("version") if all_versions else active_int
 
-        # Use semver if available, fall back to integer version
-        current_display = active_semver or (f"v{active_int}" if active_int else None)
-        latest_display = latest_semver or (f"v{latest_int}" if latest_int else None)
-
         # Upgrade check: prefer integer comparison for reliability
         upgrade_available = (
             latest_int is not None and active_int is not None and latest_int > active_int
@@ -5085,10 +5088,42 @@ async def get_template_composition(template_id: str):
             "name": svc.get("name", sid.split("/")[-1]),
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
-            "current_version": current_display,
-            "latest_version": latest_display,
+            "current_version": active_int,
+            "current_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
+            "latest_version": latest_int,
+            "latest_semver": latest_semver or (f"{latest_int}.0.0" if latest_int else None),
             "upgrade_available": upgrade_available,
         })
+
+    # Build dependency edges between components
+    # Each edge: { from: service_id, to: service_id, reason: str, required: bool }
+    edges = []
+    component_ids = {c["service_id"] for c in components}
+    for sid in service_ids:
+        deps = RESOURCE_DEPENDENCIES.get(sid, [])
+        for dep in deps:
+            dep_type = dep["type"]
+            # Only include edges to other components in this template
+            if dep_type in component_ids:
+                edges.append({
+                    "from": sid,
+                    "to": dep_type,
+                    "reason": dep.get("reason", ""),
+                    "required": dep.get("required", False),
+                })
+            # Also check if any provides match (e.g. VNet provides subnets)
+            elif dep_type in provides and dep_type not in component_ids:
+                # Auto-created by another component
+                for other_sid in service_ids:
+                    other_deps = RESOURCE_DEPENDENCIES.get(other_sid, [])
+                    for od in other_deps:
+                        if od["type"] == dep_type and od.get("created_by_template"):
+                            edges.append({
+                                "from": sid,
+                                "to": other_sid,
+                                "reason": dep.get("reason", ""),
+                                "required": dep.get("required", False),
+                            })
 
     return JSONResponse({
         "template_id": template_id,
@@ -5096,6 +5131,9 @@ async def get_template_composition(template_id: str):
         "template_semver": template_semver,
         "template_status": tmpl.get("status", "draft"),
         "components": components,
+        "edges": edges,
+        "requires": requires,
+        "provides": sorted(provides),
     })
 
 

@@ -3333,7 +3333,8 @@ function _inferChangeType(createdBy, changelog) {
     return '';
 }
 
-/** Load composition info — which services compose this template, their versions, upgrade availability */
+/** Load composition info — which services compose this template, their versions, upgrade availability.
+ *  Renders a visual dependency graph with nodes, edges, pinned versions, and per-dep upgrade buttons. */
 async function _loadTemplateComposition(templateId) {
     const container = document.getElementById('tmpl-composition');
     if (!container) return;
@@ -3346,26 +3347,128 @@ async function _loadTemplateComposition(templateId) {
         }
         const data = await res.json();
         const components = data.components || [];
+        const edges = data.edges || [];
+        const requires = data.requires || [];
 
         if (!components.length) {
             container.innerHTML = '<div class="compose-empty">No services linked</div>';
             return;
         }
 
-        container.innerHTML = components.map(c => {
-            const shortName = c.name || c.service_id.split('/').pop();
-            const verDisplay = c.current_version || '—';
-            const upgradeHtml = c.upgrade_available
-                ? `<span class="comp-upgrade-badge" title="${c.latest_version} available">⬆ ${c.latest_version}</span>`
-                : '';
-            const statusClass = c.status === 'approved' ? 'comp-dep-ok' : 'comp-dep-warn';
+        // ── Build layered graph ──────────────────────────────
+        // Determine depth of each node via topological sort on edges
+        const depthMap = {};
+        const childrenOf = {};  // to → [from]  (nodes that depend ON a node)
+        const parentsOf = {};   // from → [to]   (nodes a node depends on)
+        for (const c of components) depthMap[c.service_id] = 0;
+        for (const e of edges) {
+            if (!childrenOf[e.to]) childrenOf[e.to] = [];
+            childrenOf[e.to].push(e.from);
+            if (!parentsOf[e.from]) parentsOf[e.from] = [];
+            parentsOf[e.from].push(e.to);
+        }
+        // BFS from roots (nodes with no parents)
+        const roots = components.filter(c => !(parentsOf[c.service_id]?.length));
+        const visited = new Set();
+        const queue = roots.map(c => ({ id: c.service_id, depth: 0 }));
+        while (queue.length) {
+            const { id, depth } = queue.shift();
+            if (visited.has(id)) continue;
+            visited.add(id);
+            depthMap[id] = Math.max(depthMap[id] || 0, depth);
+            for (const child of (childrenOf[id] || [])) {
+                // Children are at LOWER depth (foundations = high depth = bottom)
+                // Actually invert: dependents are above, dependencies below
+            }
+            for (const parent of (parentsOf[id] || [])) {
+                depthMap[parent] = Math.max(depthMap[parent] || 0, depth + 1);
+                queue.push({ id: parent, depth: depth + 1 });
+            }
+        }
+        // Sort components bottom-up: depth 0 at the bottom (foundations), higher depth on top
+        const maxDepth = Math.max(...Object.values(depthMap), 0);
+        const layers = [];
+        for (let d = maxDepth; d >= 0; d--) {
+            const layerNodes = components.filter(c => (depthMap[c.service_id] || 0) === d);
+            if (layerNodes.length) layers.push(layerNodes);
+        }
 
-            return `
-                <div class="comp-dep-item ${statusClass}">
-                    <div class="comp-dep-name">${escapeHtml(shortName)}</div>
-                    <div class="comp-dep-ver">${verDisplay} ${upgradeHtml}</div>
+        // ── Render graph ─────────────────────────────────────
+        const anyUpgrade = components.some(c => c.upgrade_available);
+
+        let html = '<div class="dep-graph">';
+
+        // Layers (top = dependents, bottom = foundations)
+        for (let li = 0; li < layers.length; li++) {
+            const layer = layers[li];
+            html += '<div class="dep-graph-layer">';
+            for (const c of layer) {
+                const shortName = c.name || c.service_id.split('/').pop();
+                const verDisplay = c.current_semver || '—';
+                const statusCls = c.status === 'approved' ? 'dep-node-ok' : 'dep-node-warn';
+                const upgradeCls = c.upgrade_available ? 'dep-node-upgradable' : '';
+
+                // Find edges FROM this node (what it depends on)
+                const myEdges = edges.filter(e => e.from === c.service_id);
+                const edgeAttr = myEdges.length
+                    ? `data-deps="${myEdges.map(e => e.to).join(',')}" data-reasons="${myEdges.map(e => e.reason).join('|')}"`
+                    : '';
+
+                html += `
+                    <div class="dep-node ${statusCls} ${upgradeCls}" data-sid="${escapeHtml(c.service_id)}" ${edgeAttr}>
+                        <div class="dep-node-icon">${_azureIcon(c.service_id, 18)}</div>
+                        <div class="dep-node-info">
+                            <div class="dep-node-name">${escapeHtml(shortName)}</div>
+                            <div class="dep-node-ver">
+                                <span class="dep-node-pinned" title="Pinned version in this template">📌 ${verDisplay}</span>
+                                ${c.upgrade_available
+                                    ? `<button class="dep-upgrade-btn" onclick="upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
+                                    : '<span class="dep-node-current">✓ latest</span>'}
+                            </div>
+                        </div>
+                    </div>`;
+            }
+            html += '</div>';
+
+            // Arrow connector between layers
+            if (li < layers.length - 1) {
+                html += '<div class="dep-graph-connector"><span class="dep-graph-arrow">↓</span></div>';
+            }
+        }
+
+        // External dependencies (requires not satisfied within the template)
+        if (requires.length) {
+            html += `
+                <div class="dep-graph-connector"><span class="dep-graph-arrow dep-graph-arrow-ext">↓ external</span></div>
+                <div class="dep-graph-layer dep-graph-layer-ext">
+                    ${requires.map(r => {
+                        const rType = r.type || r;
+                        return `
+                        <div class="dep-node dep-node-ext" data-sid="${escapeHtml(rType)}">
+                            <div class="dep-node-icon">${_azureIcon(rType, 18)}</div>
+                            <div class="dep-node-info">
+                                <div class="dep-node-name">${_shortType(rType)}</div>
+                                <div class="dep-node-ver"><span class="dep-node-ext-label">external dep</span></div>
+                            </div>
+                        </div>`;
+                    }).join('')}
                 </div>`;
-        }).join('');
+        }
+
+        html += '</div>';
+
+        // Recompose all button if any upgrades available
+        if (anyUpgrade) {
+            html += `
+                <div class="dep-graph-actions">
+                    <button class="btn btn-sm dep-upgrade-all-btn" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">
+                        🔄 Upgrade All Dependencies
+                    </button>
+                </div>`;
+        }
+
+        container.innerHTML = html;
+
         // Update the template version display with semver from the API
         const semver = data.template_semver;
         if (semver) {
@@ -3376,6 +3479,45 @@ async function _loadTemplateComposition(templateId) {
         }
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed: ${err.message}</div>`;
+    }
+}
+
+/** Upgrade a single dependency in a composed template.
+ *  Recomposes the full template (all deps get latest) and reports which triggered it. */
+async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
+    const shortName = serviceId.split('/').pop();
+    if (!confirm(`Upgrade "${shortName}" to ${targetVersion}?\n\nThis recomposes the template with the latest version of all service dependencies.`)) return;
+
+    // Show loading on the specific button
+    const btns = document.querySelectorAll(`.dep-upgrade-btn`);
+    btns.forEach(b => { b.disabled = true; });
+
+    showToast(`⬆ Upgrading ${shortName} → ${targetVersion}…`, 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/recompose`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ triggered_by: serviceId }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(`Upgrade: ${data.detail || 'Could not proceed'}`, 'info');
+            btns.forEach(b => { b.disabled = false; });
+            return;
+        }
+
+        const ver = data.version || {};
+        const semver = ver.semver || '?';
+        showToast(`✅ Template recomposed → v${semver}\n${shortName} upgraded to latest`, 'success', 6000);
+
+        // Refresh the detail view
+        await loadAllData();
+        showTemplateDetail(templateId);
+    } catch (err) {
+        showToast(`Upgrade: ${err.message}`, 'info');
+        btns.forEach(b => { b.disabled = false; });
     }
 }
 

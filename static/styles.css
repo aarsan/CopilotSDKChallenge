@@ -1579,6 +1579,159 @@ body {
     cursor: default;
 }
 
+/* ─── Dependency Graph ─────────────────────────────────────── */
+.dep-graph {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 0.5rem 0;
+}
+.dep-graph-layer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+    width: 100%;
+}
+.dep-graph-layer-ext {
+    opacity: 0.7;
+}
+.dep-graph-connector {
+    display: flex;
+    justify-content: center;
+    padding: 0.15rem 0;
+}
+.dep-graph-arrow {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    opacity: 0.6;
+    letter-spacing: 0.5px;
+}
+.dep-graph-arrow-ext {
+    font-size: 0.6rem;
+    font-style: italic;
+}
+
+/* ── Graph Nodes ─────────────────────────── */
+.dep-node {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-muted);
+    min-width: 120px;
+    max-width: 180px;
+    flex: 1 1 120px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    position: relative;
+}
+.dep-node:hover {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-primary);
+}
+.dep-node-ok {
+    border-left: 3px solid #16a34a;
+}
+.dep-node-warn {
+    border-left: 3px solid #d97706;
+}
+.dep-node-ext {
+    border-left: 3px dashed var(--text-muted);
+    opacity: 0.75;
+}
+.dep-node-upgradable {
+    border-color: rgba(59,130,246,0.4);
+    background: rgba(59,130,246,0.04);
+}
+.dep-node-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+    opacity: 0.85;
+}
+.dep-node-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+    flex: 1;
+}
+.dep-node-name {
+    font-size: 0.72rem;
+    font-weight: 650;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.dep-node-ver {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+}
+.dep-node-pinned {
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.dep-node-current {
+    font-size: 0.58rem;
+    color: #16a34a;
+    font-weight: 600;
+}
+.dep-node-ext-label {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* ── Upgrade Button ──────────────────────── */
+.dep-upgrade-btn {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(59,130,246,0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59,130,246,0.3);
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    white-space: nowrap;
+}
+.dep-upgrade-btn:hover {
+    background: rgba(59,130,246,0.3);
+    transform: scale(1.05);
+}
+.dep-upgrade-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ── Upgrade All ─────────────────────────── */
+.dep-graph-actions {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.5rem;
+}
+.dep-upgrade-all-btn {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.3rem 0.8rem;
+    border-radius: 6px;
+    background: rgba(59,130,246,0.12);
+    color: #60a5fa;
+    border: 1px solid rgba(59,130,246,0.25);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.dep-upgrade-all-btn:hover {
+    background: rgba(59,130,246,0.25);
+}
+
 /* Version Log — collapsible */
 .comp-verlog-section .comp-verlog-body {
     display: none;
