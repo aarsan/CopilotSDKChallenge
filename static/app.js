@@ -1032,15 +1032,24 @@ function renderServiceTable(services) {
         let versionHtml;
         if (versionLabel && update) {
             const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
-            versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
-                + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}')">⬆ update</span>`;
+            const hasRecOption = update.default_api_version && update.default_api_version !== update.latest_api_version
+                && update.default_api_version > update.template_api_version;
+            if (hasRecOption) {
+                // Two update targets: latest stable AND recommended
+                versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
+                    + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Update to latest stable: ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}', '${escapeHtml(update.latest_api_version)}')">⬆ latest</span>`
+                    + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}-rec" title="Update to Microsoft recommended: ${escapeHtml(update.default_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}-rec', '${escapeHtml(update.default_api_version)}')">★ rec</span>`;
+            } else {
+                versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
+                    + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}')">⬆ update</span>`;
+            }
         } else if (versionLabel) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
             versionHtml = `<span class="version-badge version-none" title="No approved version">—</span>`;
         }
 
-        // Azure API version column — show latest stable + recommended indicator
+        // Azure API version column — show latest stable + recommended (when different)
         const azureApi = svc.latest_api_version;
         const defaultApi = svc.default_api_version;
         const tplApiCurrent = svc.template_api_version;
@@ -1048,10 +1057,27 @@ function renderServiceTable(services) {
         if (azureApi) {
             const isRecommended = defaultApi && defaultApi === azureApi;
             const isCurrent = tplApiCurrent && tplApiCurrent >= azureApi;
-            let indicators = '';
-            if (isRecommended) indicators += '<span class="azure-api-rec" title="Microsoft recommended default">★</span>';
-            if (isCurrent) indicators += '<span class="azure-api-current" title="Template is on this version">✓</span>';
-            azureApiHtml = `<span class="azure-api-badge${isCurrent ? ' azure-api-match' : ''}" title="${isRecommended ? 'Recommended' : 'Latest stable'}: ${escapeHtml(azureApi)}${defaultApi && defaultApi !== azureApi ? '  •  Default: ' + escapeHtml(defaultApi) : ''}">${escapeHtml(azureApi)}${indicators}</span>`;
+            const isOnRecommended = defaultApi && tplApiCurrent && tplApiCurrent === defaultApi;
+            const hasSeparateDefault = defaultApi && defaultApi !== azureApi;
+            let lines = '';
+            // Line 1: Latest stable
+            lines += `<span class="azure-api-line">`;
+            lines += `<span class="azure-api-badge${isCurrent ? ' azure-api-match' : ''}" title="Latest stable API version">${escapeHtml(azureApi)}${isCurrent ? '<span class="azure-api-current" title="Template is on this version">✓</span>' : ''}</span>`;
+            lines += `<span class="azure-api-label">latest</span>`;
+            lines += `</span>`;
+            // Line 2: Recommended (only if different from latest)
+            if (hasSeparateDefault) {
+                lines += `<span class="azure-api-line">`;
+                lines += `<span class="azure-api-badge${isOnRecommended ? ' azure-api-match' : ''}" title="Microsoft recommended default">${escapeHtml(defaultApi)}<span class="azure-api-rec">★</span>${isOnRecommended ? '<span class="azure-api-current" title="Template is on recommended">✓</span>' : ''}</span>`;
+                lines += `<span class="azure-api-label">recommended</span>`;
+                lines += `</span>`;
+            } else if (isRecommended) {
+                // Latest IS the recommended — show star on the same line
+                lines = `<span class="azure-api-line">`;
+                lines += `<span class="azure-api-badge${isCurrent ? ' azure-api-match' : ''}" title="Latest stable & Microsoft recommended">${escapeHtml(azureApi)}<span class="azure-api-rec">★</span>${isCurrent ? '<span class="azure-api-current">✓</span>' : ''}</span>`;
+                lines += `</span>`;
+            }
+            azureApiHtml = `<div class="azure-api-stack">${lines}</div>`;
         } else {
             azureApiHtml = `<span class="azure-api-badge azure-api-none" title="Run Check for Updates to populate">—</span>`;
         }
@@ -1192,9 +1218,10 @@ function applyServiceFilters() {
 
 let _currentVersions = null;
 let _pendingApiUpdate = null;
+let _pendingApiUpdateTarget = null;  // Target version for the update (null = latest)
 let _apiUpdateAbort = null;  // AbortController for cancelling previous update fetches
 
-async function startApiVersionUpdateFromTable(serviceId, badgeId) {
+async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion) {
     // Immediate visual feedback on the badge
     _apiUpdateBadgeId = badgeId || null;
     if (badgeId) {
@@ -1214,6 +1241,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId) {
     }
     _apiUpdateRunning = false;
     _pendingApiUpdate = serviceId;
+    _pendingApiUpdateTarget = targetVersion || null;
     await showServiceDetail(serviceId);
 }
 
@@ -1257,8 +1285,10 @@ async function showServiceDetail(serviceId) {
         // Auto-trigger API version update if requested from table badge
         if (_pendingApiUpdate === serviceId) {
             _pendingApiUpdate = null;
+            const targetVer = _pendingApiUpdateTarget;
+            _pendingApiUpdateTarget = null;
             // Use requestAnimationFrame for minimal delay — just enough for DOM to settle
-            requestAnimationFrame(() => triggerApiVersionUpdate(serviceId));
+            requestAnimationFrame(() => triggerApiVersionUpdate(serviceId, targetVer));
         }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
@@ -1268,6 +1298,8 @@ async function showServiceDetail(serviceId) {
 
 function _renderApiVersionAdvisory(status) {
     if (!status || !status.newer_available) return '';
+    const hasSeparateDefault = status.default && status.default !== status.latest_stable
+        && status.default > status.template_api_version;
     return `
         <div class="api-version-advisory">
             <div class="api-version-advisory-icon">ℹ️</div>
@@ -1275,9 +1307,11 @@ function _renderApiVersionAdvisory(status) {
                 <div class="api-version-advisory-title">Newer Azure API version available</div>
                 <div class="api-version-advisory-detail">
                     Template uses <code>${escapeHtml(status.template_api_version)}</code>
-                    — Azure now offers <code>${escapeHtml(status.latest_stable)}</code>${status.default ? ` (default: <code>${escapeHtml(status.default)}</code>)` : ''}.
-                    Re-onboarding will pick up the latest version automatically.
+                    — Azure latest stable: <code>${escapeHtml(status.latest_stable)}</code>${hasSeparateDefault
+                        ? ` · Microsoft recommended: <code>${escapeHtml(status.default)}</code> <span class="azure-api-rec">★</span>`
+                        : (status.default === status.latest_stable ? ' <span class="azure-api-rec">★ recommended</span>' : '')}.
                 </div>
+                ${hasSeparateDefault ? `<div class="api-version-advisory-hint">★ The recommended version is Microsoft's default for new deployments — typically the safest choice for stability.</div>` : ''}
             </div>
         </div>`;
 }
@@ -1342,7 +1376,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
                     </div>
                 `).join('<span class="pipeline-arrow">→</span>')}
             </div>
-            <p class="pipeline-desc">Updates template to latest Azure API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Target: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code></p>
+            <p class="pipeline-desc">Updates template API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Latest: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code>${apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable ? ` · Recommended: <code>${escapeHtml(apiVersionStatus.default)}</code> <span class="azure-api-rec">★</span>` : ''}</p>
         </div>
         ` : ''}
 
@@ -1374,12 +1408,26 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
 }
 
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
-    // API Version Update button — shown when service is onboarded AND newer version available
-    const updateBtn = (apiVersionStatus && apiVersionStatus.newer_available && status === 'approved' && latestVersion)
-        ? `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}')">
-               ⬆ Update API Version (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
-           </button>`
-        : '';
+    // API Version Update buttons — shown when service is onboarded AND newer version available
+    let updateBtn = '';
+    if (apiVersionStatus && apiVersionStatus.newer_available && status === 'approved' && latestVersion) {
+        const hasSeparateRec = apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable
+            && apiVersionStatus.default > apiVersionStatus.template_api_version;
+        if (hasSeparateRec) {
+            // Two options: latest stable AND recommended
+            updateBtn = `
+                <button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.latest_stable)}')">
+                    ⬆ Update to Latest (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
+                </button>
+                <button class="btn btn-sm btn-accent btn-rec" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.default)}')">
+                    ★ Update to Recommended (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.default)})
+                </button>`;
+        } else {
+            updateBtn = `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}')">
+                   ⬆ Update API Version (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
+               </button>`;
+        }
+    }
 
     // Governance-approved AND has a validated version → fully onboarded
     if (status === 'approved' && latestVersion) {
@@ -2182,14 +2230,14 @@ async function triggerOnboarding(serviceId) {
 let _apiUpdateRunning = false;
 let _apiUpdateBadgeId = null;  // badge element ID for live status updates in table
 
-async function triggerApiVersionUpdate(serviceId) {
+async function triggerApiVersionUpdate(serviceId, targetVersion) {
     if (_apiUpdateRunning) {
         console.warn('[update] triggerApiVersionUpdate blocked — already running');
         return;
     }
     _apiUpdateRunning = true;
     _apiUpdateAbort = new AbortController();
-    console.log('[update] triggerApiVersionUpdate started for', serviceId);
+    console.log('[update] triggerApiVersionUpdate started for', serviceId, 'target:', targetVersion || 'latest');
 
     // Ensure the card shows running state — even if showServiceDetail already rendered the green card
     let card = document.getElementById('validation-card');
@@ -2209,12 +2257,13 @@ async function triggerApiVersionUpdate(serviceId) {
         }
     }
 
+    const targetLabel = targetVersion ? `to ${targetVersion}` : 'to latest';
     if (card) {
         card.className = 'validation-card validation-running';
         card.innerHTML = `
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⬆</span>
-                <span class="validation-title">API Version Update In Progress…</span>
+                <span class="validation-title">API Version Update ${targetLabel} In Progress…</span>
             </div>
             <div class="validation-model-badge" id="validation-model-badge"></div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
@@ -2236,6 +2285,7 @@ async function triggerApiVersionUpdate(serviceId) {
     try {
         const body = {};
         if (selectedModel) body.model = selectedModel;
+        if (targetVersion) body.target_version = targetVersion;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/update-api-version`, {
             method: 'POST',

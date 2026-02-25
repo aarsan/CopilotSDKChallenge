@@ -183,6 +183,13 @@ body {
     transform: translateY(-1px);
     box-shadow: var(--shadow-md);
 }
+.btn-accent.btn-rec {
+    background: #b45309;
+    border-color: #b45309;
+}
+.btn-accent.btn-rec:hover {
+    background: #d97706;
+}
 
 .action-cell {
     text-align: center;
@@ -3122,6 +3129,14 @@ body {
     background: rgba(59, 130, 246, 0.25);
     transform: scale(1.05);
 }
+.version-badge.version-update-rec {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    border-color: rgba(245, 158, 11, 0.3);
+}
+.version-badge.version-update-rec:hover {
+    background: rgba(245, 158, 11, 0.25);
+}
 .version-badge.version-update-running {
     background: rgba(59, 130, 246, 0.25);
     color: var(--accent-blue);
@@ -3168,6 +3183,24 @@ body {
 }
 
 /* Azure API version badge in service table */
+.azure-api-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.azure-api-line {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.azure-api-label {
+    font-size: 0.58rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    opacity: 0.7;
+}
 .azure-api-badge {
     display: inline-block;
     font-size: 0.72rem;
@@ -3229,6 +3262,12 @@ body {
     font-size: 0.74rem;
     font-weight: 600;
     color: var(--accent-blue);
+}
+.api-version-advisory-hint {
+    margin-top: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
 }
 
 .onboard-pipeline {

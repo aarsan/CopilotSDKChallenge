@@ -6750,6 +6750,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     except Exception:
         body = {}
 
+    # Allow caller to specify a target version (e.g. recommended vs latest)
+    target_api = body.get("target_version") or latest_api
     model_id = body.get("model", get_active_model())
     region = body.get("region", "eastus2")
 
@@ -6804,13 +6806,13 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "detail": f"✓ Template loaded — currently uses API version {current_api}",
                 "progress": 0.08,
                 "current_api_version": current_api,
-                "target_api_version": latest_api,
+                "target_api_version": target_api,
             }) + "\n"
 
             # ── Step 2: Update API Version (direct JSON replacement) ──
             yield json.dumps({
                 "type": "progress", "phase": "updating",
-                "detail": f"Updating API version from {current_api} → {latest_api}…",
+                "detail": f"Updating API version from {current_api} → {target_api}…",
                 "progress": 0.10,
             }) + "\n"
 
@@ -6827,12 +6829,12 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         count += _update_api_versions(r["resources"], target_api)
                 return count
 
-            updated_count = _update_api_versions(tpl.get("resources", []), latest_api)
+            updated_count = _update_api_versions(tpl.get("resources", []), target_api)
             updated_template = json.dumps(tpl, indent=2)
 
             yield json.dumps({
                 "type": "progress", "phase": "update_complete",
-                "detail": f"✓ Updated {updated_count} resource apiVersion(s) to {latest_api}",
+                "detail": f"✓ Updated {updated_count} resource apiVersion(s) to {target_api}",
                 "progress": 0.20,
             }) + "\n"
 
@@ -6871,7 +6873,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 version=new_ver,
                 semver=new_semver,
                 status="draft",
-                changelog=f"API version updated: {current_api} → {latest_api}",
+                changelog=f"API version updated: {current_api} → {target_api}",
                 created_by=f"api-version-update ({model_id})",
             )
 
@@ -7230,16 +7232,16 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
                 await update_service_version_status(service_id, new_ver, "approved",
                     validation_result={"api_version_update": True,
-                                       "from": current_api, "to": latest_api})
+                                       "from": current_api, "to": target_api})
                 await set_active_service_version(service_id, new_ver)
                 promoted = True
 
                 yield json.dumps({
                     "type": "done", "phase": "approved",
-                    "detail": f"✅ API version updated: {current_api} → {latest_api} (v{new_semver})",
+                    "detail": f"✅ API version updated: {current_api} → {target_api} (v{new_semver})",
                     "progress": 1.0,
                     "new_version": new_ver, "new_semver": new_semver,
-                    "from_api": current_api, "to_api": latest_api,
+                    "from_api": current_api, "to_api": target_api,
                 }) + "\n"
 
             if not promoted:
