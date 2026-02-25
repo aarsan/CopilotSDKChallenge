@@ -10986,6 +10986,113 @@ details[open] > .tmpl-deploy-group-optional {
     gap: 0.4rem;
 }
 
+/* ── Policy Guidance (compliant alternatives + exception requests) ── */
+.tmpl-policy-rationale {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+.tmpl-policy-alternative {
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    background: rgba(46, 204, 113, 0.06);
+    border-left: 3px solid var(--accent-green);
+}
+.tmpl-policy-alternative-header {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--accent-green);
+    margin-bottom: 0.3rem;
+}
+.tmpl-policy-alternative-body {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+.tmpl-policy-actions {
+    margin-top: 0.6rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+/* ── Policy Exception Request Form ── */
+.policy-exception-form {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: rgba(231, 76, 60, 0.04);
+    border: 1px solid rgba(231, 76, 60, 0.2);
+}
+.policy-exception-header {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--accent-amber);
+    margin-bottom: 0.3rem;
+}
+.policy-exception-desc {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    line-height: 1.4;
+}
+.policy-exception-rules {
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+}
+.policy-rule-chip {
+    background: rgba(231, 76, 60, 0.12);
+    color: var(--accent-red);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+}
+.policy-exception-textarea {
+    min-height: 70px;
+    resize: vertical;
+    font-size: 0.82rem;
+    margin-bottom: 0.5rem;
+}
+.policy-exception-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+.policy-exception-submitted {
+    text-align: center;
+    padding: 1rem;
+}
+.policy-exception-submitted-icon {
+    font-size: 1.8rem;
+    margin-bottom: 0.3rem;
+}
+.policy-exception-submitted-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--accent-green);
+    margin-bottom: 0.2rem;
+}
+.policy-exception-submitted-id {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    color: var(--accent-amber);
+    margin-bottom: 0.3rem;
+}
+.policy-exception-submitted-msg {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
 /* ── Revision Result Panels ────────────────────────── */
 .tmpl-revision-loading {
     padding: 0.6rem;

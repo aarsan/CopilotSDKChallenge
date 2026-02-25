@@ -5905,6 +5905,74 @@ async function recomposeBlueprint(templateId) {
     }
 }
 
+/** Show inline policy exception request form */
+function _showPolicyExceptionForm(templateId, userRequest, policyRules, container) {
+    const formId = 'policy-exception-form-' + Date.now();
+    const formHtml = `
+        <div class="policy-exception-form" id="${formId}">
+            <div class="policy-exception-header">⚠️ Request Policy Exception</div>
+            <div class="policy-exception-desc">
+                Submit a formal request to the platform team to grant an exception for the blocked policies.
+                Provide a business justification explaining why this exception is needed.
+            </div>
+            <div class="policy-exception-rules">
+                <strong>Policies to challenge:</strong> ${policyRules.map(r => `<span class="policy-rule-chip">${escapeHtml(r)}</span>`).join(' ')}
+            </div>
+            <textarea class="form-control policy-exception-textarea" id="${formId}-justification"
+                placeholder="Business justification — explain why this policy exception is needed for your project. Include impact if denied, security mitigations you'll implement, and timeline."
+                rows="4"></textarea>
+            <div class="policy-exception-actions">
+                <button class="btn btn-sm btn-danger" id="${formId}-submit">📨 Submit Exception Request</button>
+                <button class="btn btn-sm btn-secondary" id="${formId}-cancel">Cancel</button>
+            </div>
+        </div>`;
+
+    // Insert form after the policy card
+    const formDiv = document.createElement('div');
+    formDiv.innerHTML = formHtml;
+    container.parentNode.insertBefore(formDiv, container.nextSibling);
+
+    document.getElementById(`${formId}-cancel`).onclick = () => formDiv.remove();
+    document.getElementById(`${formId}-submit`).onclick = async () => {
+        const justification = document.getElementById(`${formId}-justification`).value.trim();
+        if (!justification) {
+            showToast('Business justification is required', 'warning');
+            return;
+        }
+        const submitBtn = document.getElementById(`${formId}-submit`);
+        submitBtn.disabled = true;
+        submitBtn.textContent = '⏳ Submitting…';
+        try {
+            const res = await fetch('/api/policy-exception-requests', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_request: userRequest,
+                    policy_rules: policyRules,
+                    justification: justification,
+                    template_id: templateId || '',
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Failed to submit');
+            formDiv.innerHTML = `
+                <div class="policy-exception-submitted">
+                    <div class="policy-exception-submitted-icon">📨</div>
+                    <div class="policy-exception-submitted-title">Exception Request Submitted</div>
+                    <div class="policy-exception-submitted-id">${escapeHtml(data.request_id)}</div>
+                    <div class="policy-exception-submitted-msg">${escapeHtml(data.message)}</div>
+                </div>`;
+            showToast(`Policy exception request ${data.request_id} submitted`, 'info');
+            // Refresh approval tracker
+            loadAllData();
+        } catch (err) {
+            showToast(`Failed: ${err.message}`, 'error');
+            submitBtn.disabled = false;
+            submitBtn.textContent = '📨 Submit Exception Request';
+        }
+    };
+}
+
 /** Submit a revision request for a template — policy check + LLM-driven recompose */
 async function submitRevision(templateId) {
     const textarea = document.getElementById('tmpl-revision-prompt');
@@ -5936,16 +6004,60 @@ async function submitRevision(templateId) {
         // Show policy result
         policyDiv.style.display = 'block';
         if (policyData.verdict === 'block') {
+            const issueRules = (policyData.issues || []).map(i => i.rule).filter(Boolean);
+            const hasAlternative = policyData.compliant_alternative;
+            const hasRationale = policyData.policy_rationale;
+
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
             policyDiv.innerHTML = `
-                <div class="tmpl-policy-header">� Policy Review Required</div>
+                <div class="tmpl-policy-header">🛡️ Policy Guidance</div>
                 <div class="tmpl-policy-summary">${escapeHtml(policyData.summary)}</div>
                 ${policyData.issues?.length ? `<ul class="tmpl-policy-issues">
                     ${policyData.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
                         <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
                     </li>`).join('')}
                 </ul>` : ''}
-                <div class="tmpl-policy-hint">Revise your request to comply with organizational policies.</div>`;
+                ${hasRationale ? `<div class="tmpl-policy-rationale">
+                    <strong>Why this policy exists:</strong> ${escapeHtml(policyData.policy_rationale)}
+                </div>` : ''}
+                ${hasAlternative ? `<div class="tmpl-policy-alternative">
+                    <div class="tmpl-policy-alternative-header">✅ What you CAN do instead</div>
+                    <div class="tmpl-policy-alternative-body">${escapeHtml(policyData.compliant_alternative)}</div>
+                </div>` : ''}
+                <div class="tmpl-policy-actions">
+                    ${hasAlternative ? `<button class="btn btn-primary btn-sm" id="policy-use-alternative-btn">
+                        ✅ Apply Compliant Alternative
+                    </button>` : ''}
+                    <button class="btn btn-sm btn-secondary" id="policy-discuss-btn">
+                        💬 Discuss Options
+                    </button>
+                    <button class="btn btn-sm btn-danger" id="policy-challenge-btn">
+                        ⚠️ Request Policy Exception
+                    </button>
+                </div>`;
+
+            // Wire up buttons
+            const altBtn = document.getElementById('policy-use-alternative-btn');
+            if (altBtn && hasAlternative) {
+                altBtn.onclick = () => {
+                    textarea.value = policyData.compliant_alternative;
+                    policyDiv.style.display = 'none';
+                    showToast('Alternative applied — click Request Revision to proceed', 'info');
+                };
+            }
+            const discussBtn = document.getElementById('policy-discuss-btn');
+            if (discussBtn) {
+                const issuesSummary = (policyData.issues || []).map(i => '- ' + i.rule + ': ' + i.message).join('\\n');
+                const chatPrompt = 'I tried to modify a template with this request:\\n\\n"' + prompt + '"\\n\\nBut it was blocked by organizational policy:\\n' + issuesSummary + '\\n\\nPlease suggest a compliant configuration that satisfies my requirements while meeting all policy constraints.';
+                discussBtn.onclick = () => {
+                    closeModal('modal-template-onboard');
+                    navigateToChat(chatPrompt);
+                };
+            }
+            const challengeBtn = document.getElementById('policy-challenge-btn');
+            if (challengeBtn) {
+                challengeBtn.onclick = () => _showPolicyExceptionForm(templateId, prompt, issueRules, policyDiv);
+            }
             btn.disabled = false;
             btn.textContent = '✏️ Request Revision';
             return;
@@ -7829,25 +7941,66 @@ async function submitPromptCompose() {
             policyDiv.style.display = 'block';
             const pr = data.policy_check;
             if (pr.verdict === 'block') {
-                // Build a context-rich prompt for the chat AI
-                const issuesSummary = (pr.issues || []).map(i => `- ${i.rule}: ${i.message}`).join('\n');
-                const chatPrompt = `I tried to create infrastructure with this request:\n\n"${prompt}"\n\nBut it was blocked by organizational policy:\n${issuesSummary}\n\nPlease suggest a compliant configuration that satisfies my requirements while meeting all policy constraints. Let's discuss the options before creating anything.`;
+                const issueRules = (pr.issues || []).map(i => i.rule).filter(Boolean);
+                const hasAlternative = pr.compliant_alternative;
+                const hasRationale = pr.policy_rationale;
 
                 policyDiv.className = 'tmpl-revision-policy tmpl-policy-block';
                 policyDiv.innerHTML = `
-                    <div class="tmpl-policy-header">🚫 Blocked by Policy</div>
+                    <div class="tmpl-policy-header">🛡️ Policy Guidance</div>
                     <div class="tmpl-policy-summary">${escapeHtml(pr.summary)}</div>
                     ${pr.issues?.length ? `<ul class="tmpl-policy-issues">
                         ${pr.issues.map(i => `<li class="tmpl-policy-issue-${i.severity}">
                             <strong>${escapeHtml(i.rule)}</strong>: ${escapeHtml(i.message)}
                         </li>`).join('')}
                     </ul>` : ''}
-                    <div class="tmpl-policy-hint">Let's work together to find a compliant configuration.</div>
-                    <button class="btn btn-primary btn-sm tmpl-policy-discuss-btn"
-                        onclick="closeModal('modal-template-onboard'); navigateToChat(${escapeAttr(JSON.stringify(chatPrompt))})">
-                        💬 Discuss Compliant Options
-                    </button>`;
+                    ${hasRationale ? `<div class="tmpl-policy-rationale">
+                        <strong>Why this policy exists:</strong> ${escapeHtml(pr.policy_rationale)}
+                    </div>` : ''}
+                    ${hasAlternative ? `<div class="tmpl-policy-alternative">
+                        <div class="tmpl-policy-alternative-header">✅ What you CAN do instead</div>
+                        <div class="tmpl-policy-alternative-body">${escapeHtml(pr.compliant_alternative)}</div>
+                    </div>` : ''}
+                    <div class="tmpl-policy-actions">
+                        ${hasAlternative ? `<button class="btn btn-primary btn-sm" id="compose-policy-alt-btn">
+                            ✅ Use Compliant Alternative
+                        </button>` : ''}
+                        <button class="btn btn-sm btn-secondary" id="compose-policy-discuss-btn">
+                            💬 Discuss Options
+                        </button>
+                        <button class="btn btn-sm btn-danger" id="compose-policy-challenge-btn">
+                            ⚠️ Request Policy Exception
+                        </button>
+                    </div>`;
+
+                const altBtn = document.getElementById('compose-policy-alt-btn');
+                if (altBtn && hasAlternative) {
+                    altBtn.onclick = () => {
+                        textarea.value = pr.compliant_alternative;
+                        policyDiv.style.display = 'none';
+                        resultDiv.style.display = 'none';
+                        showToast('Alternative applied — click Create to proceed', 'info');
+                        btn.disabled = false;
+                        btn.textContent = '🚀 Create Infrastructure';
+                    };
+                }
+                const discussBtn = document.getElementById('compose-policy-discuss-btn');
+                if (discussBtn) {
+                    const issuesSummary = (pr.issues || []).map(i => '- ' + i.rule + ': ' + i.message).join('\\n');
+                    const chatPrompt = 'I tried to create infrastructure with this request:\\n\\n"' + prompt + '"\\n\\nBut it was blocked by organizational policy:\\n' + issuesSummary + '\\n\\nPlease suggest a compliant configuration that satisfies my requirements while meeting all policy constraints.';
+                    discussBtn.onclick = () => {
+                        closeModal('modal-template-onboard');
+                        navigateToChat(chatPrompt);
+                    };
+                }
+                const challengeBtn = document.getElementById('compose-policy-challenge-btn');
+                if (challengeBtn) {
+                    challengeBtn.onclick = () => _showPolicyExceptionForm(null, prompt, issueRules, policyDiv);
+                }
+
                 resultDiv.style.display = 'none';
+                btn.disabled = false;
+                btn.textContent = '🚀 Create Infrastructure';
                 return;
             } else if (pr.verdict === 'warning') {
                 policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';

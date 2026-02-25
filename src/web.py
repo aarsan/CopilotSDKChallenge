@@ -12379,6 +12379,65 @@ async def review_approval(request_id: str, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/api/policy-exception-requests")
+async def submit_policy_exception_request(request: Request):
+    """Submit a policy exception request when a modification is blocked by policy.
+
+    Stores the request in the approval_requests table with a PER- prefix
+    so admins can review and potentially grant policy exceptions.
+    """
+    from src.database import save_approval_request
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    user_request = body.get("user_request", "").strip()
+    policy_rules = body.get("policy_rules", [])
+    justification = body.get("justification", "").strip()
+    template_id = body.get("template_id", "")
+    template_name = body.get("template_name", "")
+
+    if not user_request:
+        raise HTTPException(status_code=400, detail="user_request is required")
+    if not justification:
+        raise HTTPException(status_code=400, detail="justification is required")
+
+    # Build a structured business justification
+    rules_text = "\n".join(f"  - {r}" for r in policy_rules) if policy_rules else "  (no specific rules cited)"
+    biz_justification = (
+        f"POLICY EXCEPTION REQUEST\n"
+        f"========================\n"
+        f"Original request: {user_request}\n\n"
+        f"Blocked by policies:\n{rules_text}\n\n"
+        f"Business justification:\n{justification}\n\n"
+        f"Template: {template_name or template_id or 'N/A'}"
+    )
+
+    from datetime import datetime, timezone
+    request_id = f"PER-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+    await save_approval_request({
+        "id": request_id,
+        "service_name": f"Policy Exception: {', '.join(policy_rules[:3]) or 'governance'}",
+        "service_resource_type": template_id or "policy-exception",
+        "current_status": "policy_exception",
+        "risk_tier": "high",
+        "business_justification": biz_justification,
+        "project_name": template_name or "Template Modification",
+        "environment": "production",
+        "status": "submitted",
+    })
+
+    return JSONResponse({
+        "request_id": request_id,
+        "status": "submitted",
+        "message": f"Policy exception request {request_id} submitted for platform team review. "
+                   "Typical review time: 1–3 business days for policy exceptions.",
+    })
+
+
 # ── Governance API ───────────────────────────────────────────
 
 @app.get("/api/governance/security-standards")

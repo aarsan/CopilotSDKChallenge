@@ -956,12 +956,15 @@ async def check_revision_policy(
                 '  "issues": [\n'
                 '    {"severity": "block" or "warning", "rule": "policy rule name", "message": "human-readable explanation"}\n'
                 "  ],\n"
-                '  "summary": "One sentence overall assessment"\n'
+                '  "summary": "One sentence overall assessment",\n'
+                '  "compliant_alternative": "If verdict is block, describe what the user CAN do instead that satisfies both their requirements AND the policies. Be specific and actionable — e.g. suggest using a different service, SKU, or architecture pattern. If verdict is pass/warning, set to null.",\n'
+                '  "policy_rationale": "If verdict is block, briefly explain WHY this policy exists (security, cost, compliance) so the user can make an informed decision about whether to request an exception. If verdict is pass/warning, set to null."\n'
                 "}\n\n"
                 "RULES:\n"
                 "- verdict is 'block' if ANY issue has severity 'block'\n"
                 "- verdict is 'warning' if issues exist but none are blocking\n"
                 "- verdict is 'pass' if no issues found\n"
+                "- When blocking, ALWAYS provide a helpful compliant_alternative — don't just say no\n"
                 "- Return ONLY raw JSON — no markdown fences\n"
             )
 
@@ -984,6 +987,8 @@ async def check_revision_policy(
                 "verdict": result.get("verdict", "pass"),
                 "issues": result.get("issues", []),
                 "summary": result.get("summary", ""),
+                "compliant_alternative": result.get("compliant_alternative"),
+                "policy_rationale": result.get("policy_rationale"),
             }
 
         except asyncio.TimeoutError:
