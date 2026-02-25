@@ -9662,6 +9662,21 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
         for v in versions:
             vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
             vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+            # Extract API version(s) from the ARM template for display
+            arm_str = v.get("arm_template")
+            if arm_str:
+                try:
+                    tpl = json.loads(arm_str)
+                    api_versions = sorted(
+                        {r.get("apiVersion", "") for r in tpl.get("resources", [])
+                         if isinstance(r, dict) and r.get("apiVersion")},
+                        reverse=True,
+                    )
+                    vs["api_version"] = api_versions[0] if api_versions else None
+                except Exception:
+                    vs["api_version"] = None
+            else:
+                vs["api_version"] = None
             versions_summary.append(vs)
 
         # ── API version advisory ──

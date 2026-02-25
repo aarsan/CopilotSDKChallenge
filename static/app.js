@@ -1670,6 +1670,7 @@ function _renderVersionHistory(versions, activeVersion) {
                         <div class="version-item-header">
                             <span class="version-item-badge version-badge-draft">v${displayVer}</span>
                             <span class="version-item-status version-status-draft">📝 draft</span>
+                            ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
                             <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                             <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
                         </div>
@@ -1730,6 +1731,7 @@ function _renderVersionHistory(versions, activeVersion) {
                             <span class="version-item-badge">v${displayVer}</span>
                             <span class="version-item-status">✅ approved</span>
                             ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>'}
+                            ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
                             <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                             <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
                         </div>
