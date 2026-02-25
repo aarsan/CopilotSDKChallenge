@@ -544,7 +544,9 @@ def _check_tags_standard(std, rule, scope, severity, enforcement,
                 remediation=f"Add tags block with: {', '.join(required_tags)}",
             ))
         else:
-            missing = [t for t in required_tags if t not in tags]
+            # Case-insensitive tag comparison
+            actual_lower = {k.lower() for k in tags}
+            missing = [t for t in required_tags if t.lower() not in actual_lower]
             results.append(PolicyCheckResult(
                 rule_id=std["id"],
                 rule_name=std["name"],
@@ -554,7 +556,7 @@ def _check_tags_standard(std, rule, scope, severity, enforcement,
                 message=(
                     f"All {len(required_tags)} required tags present"
                     if not missing
-                    else f"Missing required tags: {', '.join(missing)}"
+                    else f"Missing tags: {', '.join(missing)}"
                 ),
                 resource_type=rtype,
                 resource_name=rname,

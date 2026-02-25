@@ -409,6 +409,87 @@ def _sanitize_placeholder_guids(template_json: str) -> str:
     return sanitized
 
 
+async def _inject_standard_tags(template_json: str, service_id: str = "*") -> str:
+    """Inject org-standard-required tags into every ARM resource.
+
+    Reads enabled tag-type standards from org_standards and ensures every
+    resource in the template has the required tags.  Missing tags are
+    assigned safe defaults (parameter references for well-known tags,
+    placeholder strings otherwise).  Existing tags are preserved.
+    """
+    from src.standards import get_all_standards
+
+    try:
+        tmpl = json.loads(template_json)
+    except (json.JSONDecodeError, TypeError):
+        return template_json
+
+    resources = tmpl.get("resources")
+    if not resources or not isinstance(resources, list):
+        return template_json
+
+    # Collect all required tags from enabled tag-type standards
+    all_standards = await get_all_standards(enabled_only=True)
+    required_tags: set[str] = set()
+    for std in all_standards:
+        rule = std.get("rule", {})
+        if rule.get("type") != "tags":
+            continue
+        # Scope check: does this standard apply to our service?
+        scope = std.get("scope", "*")
+        if scope != "*" and service_id != "*":
+            import fnmatch
+            if not fnmatch.fnmatch(service_id.lower(), scope.lower()):
+                continue
+        tags_list = rule.get("required_tags", [])
+        if isinstance(tags_list, str):
+            tags_list = tags_list.split()
+        required_tags.update(tags_list)
+
+    if not required_tags:
+        return template_json
+
+    # Sensible defaults for well-known tags
+    from datetime import datetime, timezone
+    tag_defaults = {
+        "environment": "[parameters('environment')]",
+        "owner": "[parameters('ownerEmail')]",
+        "costcenter": "[parameters('costCenter')]",
+        "project": "[parameters('projectName')]",
+        "managedby": "InfraForge",
+        "createdby": "InfraForge",
+        "createddate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "dataclassification": "internal",
+        "expirydate": "2027-12-31",
+        "supportcontact": "[parameters('ownerEmail')]",
+        "team": "[parameters('projectName')]",
+    }
+
+    patched = False
+    for res in resources:
+        if not isinstance(res, dict):
+            continue
+        tags = res.get("tags")
+        if tags is None:
+            tags = {}
+            res["tags"] = tags
+        if not isinstance(tags, dict):
+            continue  # ARM expression — can't inject
+
+        existing_lower = {k.lower(): k for k in tags}
+        for req_tag in required_tags:
+            if req_tag.lower() not in existing_lower:
+                # Use the default if known, otherwise a placeholder
+                default_val = tag_defaults.get(req_tag.lower(), f"TBD-{req_tag}")
+                tags[req_tag] = default_val
+                patched = True
+
+    if patched:
+        logger.info("Injected org-standard-required tags into ARM template resources")
+        return json.dumps(tmpl, indent=2)
+    return template_json
+
+
 def _sanitize_dns_zone_names(template_json: str) -> str:
     """Ensure DNS zone resources have valid FQDN names (at least 2 labels).
 
@@ -10948,6 +11029,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 # Mark version as validating
                 await update_service_version_status(service_id, use_version, "validating")
 
+                # Inject org-standard-required tags before validation
+                current_template = await _inject_standard_tags(current_template, service_id)
+
                 tmpl_meta = _extract_meta(current_template)
                 applicable_standards = await get_standards_for_service(service_id)
                 policy_standards_ctx = await build_policy_generation_context(service_id)
@@ -11192,6 +11276,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 current_template = _ensure_parameter_defaults(current_template)
                 # ── Replace placeholder subscription GUIDs ──
                 current_template = _sanitize_placeholder_guids(current_template)
+                # ── Inject org-standard-required tags into resources ──
+                current_template = await _inject_standard_tags(current_template, service_id)
 
                 tmpl_meta = _extract_meta(current_template)
 
