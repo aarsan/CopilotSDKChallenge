@@ -3479,8 +3479,10 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         job_id = f"job-{job_idx}"
         tname = jobs[job_idx]["label"]
         t0 = time.time()
+        job_log: list[dict] = []  # accumulate all events for persistence
 
         def emit(evt):
+            job_log.append(evt)
             event_queue.put_nowait(evt)
 
         def step_log(step_id, msg, level="info"):
@@ -4050,6 +4052,20 @@ async def compliance_remediate_execute(template_id: str, request: Request):
 
             step_log(sid, f"New template published: v{new_semver_actual}")
             step_end(sid, "success", int((time.time() - s5) * 1000))
+
+            # ── Persist remediation log onto the new version ──
+            if not is_service_dep and new_version_num != "?":
+                try:
+                    from src.database import update_template_validation_status
+                    await update_template_validation_status(
+                        tid,
+                        new_version_num,
+                        "draft",
+                        {"remediation_log": job_log,
+                         "deploy_proof": deploy_proof},
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Failed to persist remediation log for {tid} v{new_version_num}: {log_err}")
 
             # ── Job complete ──
             result = {
@@ -4969,10 +4985,19 @@ async def list_template_versions(template_id: str):
     versions = await get_template_versions(template_id)
 
     # Strip arm_template from list to keep payload small
+    # Also strip full remediation_log but expose a flag
     versions_summary = []
     for v in versions:
         vs = {k: val for k, val in v.items() if k != "arm_template"}
         vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+        # Flag whether this version has a retrievable remediation log
+        vr = v.get("validation_results") or {}
+        if isinstance(vr, dict) and vr.get("remediation_log"):
+            vs["has_remediation_log"] = True
+            # Strip the heavy log array from the list response
+            vs["validation_results"] = {
+                k: val for k, val in vr.items() if k != "remediation_log"
+            }
         versions_summary.append(vs)
 
     return JSONResponse({
