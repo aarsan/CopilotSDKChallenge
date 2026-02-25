@@ -251,12 +251,17 @@ def _build_api_version_status(svc: dict, versions: list[dict]) -> dict | None:
 
     # Simple string comparison works for YYYY-MM-DD versions
     newer_available = latest_api > template_api
+    # Recommended differs — even if template is ahead of recommended
+    recommended_differs = bool(
+        default_api and default_api != template_api and default_api != latest_api
+    )
 
     return {
         "template_api_version": template_api,
         "latest_stable": latest_api,
         "default": default_api,
         "newer_available": newer_available,
+        "recommended_differs": recommended_differs,
     }
 
 

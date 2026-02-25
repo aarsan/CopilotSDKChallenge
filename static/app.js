@@ -1029,20 +1029,29 @@ function renderServiceTable(services) {
             || (update ? update.template_api_version : null);
         const versionLabel = tplApi || (activeVer ? `v${activeVer}` : null);
 
+        // Check if recommended version differs from template (regardless of latest)
+        const recApi = svc.default_api_version;
+        const showRecBadge = recApi && recApi !== tplApi && recApi !== svc.latest_api_version;
+
         let versionHtml;
         if (versionLabel && update) {
             const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
-            const hasRecOption = update.default_api_version && update.default_api_version !== update.latest_api_version
-                && update.default_api_version > update.template_api_version;
-            if (hasRecOption) {
+            if (showRecBadge) {
                 // Two update targets: latest stable AND recommended
+                const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec';
                 versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
                     + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Update to latest stable: ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}', '${escapeHtml(update.latest_api_version)}')">⬆ latest</span>`
-                    + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}-rec" title="Update to Microsoft recommended: ${escapeHtml(update.default_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}-rec', '${escapeHtml(update.default_api_version)}')">★ rec</span>`;
+                    + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}-rec" title="${recApi < tplApi ? 'Downgrade' : 'Update'} to Microsoft recommended: ${escapeHtml(recApi)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}-rec', '${escapeHtml(recApi)}')">${recLabel}</span>`;
             } else {
                 versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
                     + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Click to update: ${escapeHtml(update.template_api_version)} → ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}')">⬆ update</span>`;
             }
+        } else if (versionLabel && showRecBadge) {
+            // No latest update available but recommended differs — show standalone rec badge
+            const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}-rec`;
+            const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec';
+            versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
+                + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}" title="${recApi < tplApi ? 'Downgrade' : 'Update'} to Microsoft recommended: ${escapeHtml(recApi)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}', '${escapeHtml(recApi)}')">${recLabel}</span>`;
         } else if (versionLabel) {
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`;
         } else {
@@ -1297,14 +1306,18 @@ async function showServiceDetail(serviceId) {
 }
 
 function _renderApiVersionAdvisory(status) {
-    if (!status || !status.newer_available) return '';
+    if (!status) return '';
+    if (!status.newer_available && !status.recommended_differs) return '';
     const hasSeparateDefault = status.default && status.default !== status.latest_stable
-        && status.default > status.template_api_version;
+        && status.default !== status.template_api_version;
+    const advisoryTitle = status.newer_available
+        ? 'Newer Azure API version available'
+        : 'Microsoft recommended version differs from template';
     return `
         <div class="api-version-advisory">
             <div class="api-version-advisory-icon">ℹ️</div>
             <div class="api-version-advisory-body">
-                <div class="api-version-advisory-title">Newer Azure API version available</div>
+                <div class="api-version-advisory-title">${advisoryTitle}</div>
                 <div class="api-version-advisory-detail">
                     Template uses <code>${escapeHtml(status.template_api_version)}</code>
                     — Azure latest stable: <code>${escapeHtml(status.latest_stable)}</code>${hasSeparateDefault
@@ -1346,7 +1359,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         { icon: '✅', label: 'Publish', desc: 'New version promoted to active' },
     ];
 
-    const showUpdatePipeline = apiVersionStatus && apiVersionStatus.newer_available;
+    const showUpdatePipeline = apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs);
 
     // Distinguish governance approval from full onboarding
     const displayStatus = (status === 'approved' && !activeVersion)
@@ -1410,19 +1423,24 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus) {
     // API Version Update buttons — shown when service is onboarded AND newer version available
     let updateBtn = '';
-    if (apiVersionStatus && apiVersionStatus.newer_available && status === 'approved' && latestVersion) {
+    if (apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status === 'approved' && latestVersion) {
         const hasSeparateRec = apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable
-            && apiVersionStatus.default > apiVersionStatus.template_api_version;
-        if (hasSeparateRec) {
-            // Two options: latest stable AND recommended
-            updateBtn = `
-                <button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.latest_stable)}')">
+            && apiVersionStatus.default !== apiVersionStatus.template_api_version;
+        const recIsDowngrade = hasSeparateRec && apiVersionStatus.default < apiVersionStatus.template_api_version;
+        const recActionLabel = recIsDowngrade ? '↓ Downgrade to Recommended' : '★ Update to Recommended';
+
+        // Show latest update button only if newer is available
+        const latestBtn = apiVersionStatus.newer_available
+            ? `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.latest_stable)}')">
                     ⬆ Update to Latest (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
-                </button>
+                </button>` : '';
+
+        if (hasSeparateRec) {
+            updateBtn = latestBtn + `
                 <button class="btn btn-sm btn-accent btn-rec" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.default)}')">
-                    ★ Update to Recommended (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.default)})
+                    ${recActionLabel} (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.default)})
                 </button>`;
-        } else {
+        } else if (apiVersionStatus.newer_available) {
             updateBtn = `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}')">
                    ⬆ Update API Version (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
