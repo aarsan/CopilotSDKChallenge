@@ -1104,7 +1104,7 @@ function renderServiceTable(services) {
     }).join('');
 }
 
-async function checkForUpdates() {
+async function checkForServiceUpdates() {
     const btn = document.getElementById('btn-check-updates');
     const badge = document.getElementById('update-count-badge');
     if (!btn) return;
@@ -3199,7 +3199,7 @@ function showTemplateDetail(templateId) {
                     <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
                 </div>` : ''}
 
-                ${(tmpl.service_ids && tmpl.service_ids.length) ? `
+                ${(!isStandalone || (tmpl.service_ids && tmpl.service_ids.length)) ? `
                 <!-- Check for Updates -->
                 <div class="detail-section tmpl-updates-section">
                     <div class="tmpl-updates-header">
