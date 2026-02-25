@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=134">
+    <link rel="stylesheet" href="/static/styles.css?v=135">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -485,8 +485,11 @@
                         </div>
                     </div>
 
-                    <!-- Results Summary -->
-                    <div class="results-summary" id="standards-results-summary"></div>
+                    <!-- Results Summary + Actions -->
+                    <div class="standards-toolbar-row">
+                        <div class="results-summary" id="standards-results-summary"></div>
+                        <button class="btn btn-sm btn-ghost btn-danger std-clear-all-btn" onclick="clearAllStandards()" title="Delete all standards">🗑️ Clear All</button>
+                    </div>
 
                     <!-- Standards List -->
                     <div class="standards-list" id="standards-list">
@@ -965,7 +968,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=134"></script>
+    <script src="/static/app.js?v=135"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

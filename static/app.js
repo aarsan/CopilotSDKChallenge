@@ -8616,6 +8616,7 @@ function _renderStandardsList() {
                         <input type="checkbox" ${std.enabled ? 'checked' : ''} onchange="toggleStandard('${escapeHtml(std.id)}', this.checked)" />
                         <span class="std-toggle-slider"></span>
                     </label>
+                    <button class="std-card-delete" onclick="event.stopPropagation(); deleteStandard('${escapeHtml(std.id)}')" title="Delete standard">✕</button>
                 </div>
             </div>
             <div class="std-card-body" onclick="showStandardDetail('${escapeHtml(std.id)}')">
@@ -8900,6 +8901,31 @@ async function deleteStandard(standardId) {
             throw new Error(err.detail || 'Failed to delete');
         }
         showToast(`Standard ${standardId} deleted`);
+        closeStandardDetail();
+        await loadStandards();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+
+async function clearAllStandards() {
+    const count = allStandards.length;
+    if (!count) { showToast('No standards to delete', 'info'); return; }
+    if (!confirm(`Delete ALL ${count} standards?\n\nThis permanently removes every standard and its version history. This cannot be undone.`)) return;
+
+    try {
+        const res = await fetch('/api/standards/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ all: true }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Failed' }));
+            throw new Error(err.detail || 'Failed to delete');
+        }
+        const data = await res.json();
+        showToast(`Deleted ${data.deleted} standards`, 'success');
         closeStandardDetail();
         await loadStandards();
     } catch (err) {

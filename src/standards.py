@@ -583,6 +583,33 @@ async def delete_standard(standard_id: str) -> bool:
     return count > 0
 
 
+async def delete_all_standards() -> int:
+    """Delete ALL standards and their version history. Returns count deleted."""
+    backend = await get_backend()
+    await backend.execute_write("DELETE FROM org_standards_history", ())
+    count = await backend.execute_write("DELETE FROM org_standards", ())
+    return count
+
+
+async def delete_standards_bulk(standard_ids: list[str]) -> int:
+    """Delete multiple standards by ID. Returns count deleted."""
+    if not standard_ids:
+        return 0
+    backend = await get_backend()
+    deleted = 0
+    for sid in standard_ids:
+        await backend.execute_write(
+            "DELETE FROM org_standards_history WHERE standard_id = ?",
+            (sid,),
+        )
+        c = await backend.execute_write(
+            "DELETE FROM org_standards WHERE id = ?",
+            (sid,),
+        )
+        deleted += c
+    return deleted
+
+
 async def get_standard_history(standard_id: str) -> list[dict]:
     """Get the version history for a standard."""
     backend = await get_backend()

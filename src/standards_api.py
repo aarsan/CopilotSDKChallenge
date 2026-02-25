@@ -15,6 +15,8 @@ from src.standards import (
     create_standard,
     update_standard,
     delete_standard,
+    delete_all_standards,
+    delete_standards_bulk,
     get_standard_history,
     get_standards_categories,
     get_standards_for_service,
@@ -181,6 +183,29 @@ async def delete_existing_standard(standard_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Standard not found")
     return JSONResponse({"deleted": True, "id": standard_id})
+
+
+# ── Bulk delete standards ────────────────────────────────────
+
+@router.post("/bulk-delete")
+async def bulk_delete_standards(request: dict):
+    """Delete multiple standards at once.
+
+    Body: { "ids": ["STD-001", "STD-002", ...] }
+    Or:   { "all": true }  — deletes ALL standards.
+    """
+    if request.get("all"):
+        count = await delete_all_standards()
+        logger.info(f"Deleted all standards ({count} removed)")
+        return JSONResponse({"deleted": count, "scope": "all"})
+
+    ids = request.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="Provide 'ids' array or 'all': true")
+
+    count = await delete_standards_bulk(ids)
+    logger.info(f"Bulk-deleted {count} of {len(ids)} requested standards")
+    return JSONResponse({"deleted": count, "requested": len(ids), "scope": "bulk"})
 
 
 # ── Standards for a specific service ─────────────────────────
