@@ -2097,7 +2097,12 @@ async function triggerOnboarding(serviceId) {
     }
 }
 
+let _apiUpdateRunning = false;
+
 async function triggerApiVersionUpdate(serviceId) {
+    if (_apiUpdateRunning) return;  // prevent double-trigger
+    _apiUpdateRunning = true;
+
     const card = document.getElementById('validation-card');
     const modelSelect = document.getElementById('onboard-model-select');
     const selectedModel = modelSelect ? modelSelect.value : '';
@@ -2177,6 +2182,8 @@ async function triggerApiVersionUpdate(serviceId) {
         if (detail) detail.textContent = `Error: ${err.message}`;
         const cardEl = document.getElementById('validation-card');
         if (cardEl) cardEl.className = 'validation-card validation-failed';
+    } finally {
+        _apiUpdateRunning = false;
     }
 }
 
