@@ -2280,8 +2280,15 @@ async function triggerOnboarding(serviceId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || 'Onboarding request failed');
+            let errMsg = 'Onboarding request failed';
+            try {
+                const err = await res.json();
+                errMsg = err.detail || errMsg;
+            } catch (_) {
+                const text = await res.text().catch(() => '');
+                errMsg = text || `Server error (${res.status})`;
+            }
+            throw new Error(errMsg);
         }
 
         const reader = res.body.getReader();
