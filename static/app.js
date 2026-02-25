@@ -3299,8 +3299,11 @@ function _renderComplianceScanReport(data) {
     if (data.violations > 0) {
         html += `
         <div class="scan-remediate-section">
+            <button class="btn btn-sm scan-auto-remediate-btn" onclick="autoRemediateLoop('${escapeHtml(data.template_id)}')">
+                🛡️ Auto-Remediate All
+            </button>
             <button class="btn btn-sm scan-remediate-btn" onclick="runComplianceRemediation('${escapeHtml(data.template_id)}')">
-                🔧 Generate Remediation Plan
+                🔧 Manual Plan
             </button>
             ${_copilotBadge()}
             <div id="scan-remediation-results"></div>
@@ -3338,6 +3341,196 @@ async function runComplianceRemediation(templateId) {
     } catch (err) {
         resultsEl.innerHTML = `<div class="scan-error">❌ Plan failed: ${escapeHtml(err.message)}</div>`;
     }
+}
+
+/* ── Auto-Remediation Loop ────────────────────────────────── */
+// Chains: scan → plan → execute → re-scan → repeat until clean or max rounds.
+let _autoRemediating = false;       // true while auto-loop is active
+let _autoRemediateRound = 0;        // current round (1-based)
+const _AUTO_REMEDIATE_MAX_ROUNDS = 3;
+
+async function autoRemediateLoop(templateId) {
+    const resultsEl = document.getElementById('scan-remediation-results');
+    if (!resultsEl) return;
+    if (_autoRemediating) return;   // prevent re-entry
+
+    _autoRemediating = true;
+    _autoRemediateRound = 0;
+
+    try {
+        for (let round = 1; round <= _AUTO_REMEDIATE_MAX_ROUNDS; round++) {
+            _autoRemediateRound = round;
+
+            // ── Step 1: Scan (skip on round 1 if we already have scan data) ──
+            if (round > 1 || !_lastScanData) {
+                resultsEl.innerHTML = `
+                <div class="scan-loading auto-round-banner">
+                    <div class="scan-loading-spinner"></div>
+                    <span>Round ${round}/${_AUTO_REMEDIATE_MAX_ROUNDS} — Scanning for remaining violations…</span>
+                </div>`;
+                _lastScanData = null;
+                try {
+                    const scanRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-scan`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({}),
+                    });
+                    if (!scanRes.ok) throw new Error('Scan failed');
+                    _lastScanData = await scanRes.json();
+                } catch (err) {
+                    resultsEl.innerHTML += `<div class="scan-error">❌ Scan failed: ${escapeHtml(err.message)}</div>`;
+                    break;
+                }
+            }
+
+            // ── Check: clean? ──
+            if (!_lastScanData || _lastScanData.violations === 0) {
+                resultsEl.innerHTML = `
+                <div class="auto-round-done auto-round-clean">
+                    <span class="auto-round-icon">🛡️</span>
+                    <span><strong>Fully compliant</strong> — 0 violations after ${round > 1 ? round - 1 : 0} remediation round(s). Score: ${_lastScanData ? _lastScanData.score : '?'}%</span>
+                </div>`;
+                // Refresh the scan UI
+                const scanResultsEl = document.getElementById('tmpl-scan-results');
+                if (scanResultsEl && _lastScanData) {
+                    scanResultsEl.innerHTML = _renderComplianceScanReport(_lastScanData);
+                }
+                break;
+            }
+
+            // ── Step 2: Plan ──
+            resultsEl.innerHTML = `
+            <div class="scan-loading auto-round-banner">
+                <div class="scan-loading-spinner"></div>
+                <span>Round ${round}/${_AUTO_REMEDIATE_MAX_ROUNDS} — Planning fixes for ${_lastScanData.violations} violation(s)…</span>
+            </div>`;
+
+            let planData;
+            try {
+                const planRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/plan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ scan_data: _lastScanData }),
+                });
+                if (!planRes.ok) throw new Error('Plan generation failed');
+                planData = await planRes.json();
+            } catch (err) {
+                resultsEl.innerHTML += `<div class="scan-error">❌ Plan failed: ${escapeHtml(err.message)}</div>`;
+                break;
+            }
+
+            if (!planData.plan || planData.plan.length === 0) {
+                resultsEl.innerHTML = `<div class="auto-round-done auto-round-info">✅ No remediation steps generated — scan may require manual review.</div>`;
+                break;
+            }
+
+            // ── Step 3: Execute ──
+            window._lastRemediationPlan = planData.plan;
+
+            // Create pipeline container for this round
+            const roundLabel = document.createElement('div');
+            roundLabel.className = 'auto-round-label';
+            roundLabel.innerHTML = `<span class="auto-round-badge">Round ${round}</span> Fixing ${planData.plan.length} step(s) from ${_lastScanData.violations} violation(s)`;
+            resultsEl.innerHTML = '';
+            resultsEl.appendChild(roundLabel);
+
+            // Remove old pipeline DOM to avoid ID collisions
+            const oldPipeline = document.getElementById('ado-pipeline');
+            if (oldPipeline) oldPipeline.remove();
+
+            const pipelineDiv = document.createElement('div');
+            pipelineDiv.className = 'ado-pipeline';
+            pipelineDiv.id = 'ado-pipeline';
+            resultsEl.appendChild(pipelineDiv);
+
+            // Execute and wait for pipeline_done
+            const pipelineDone = await _executeAndWait(templateId, planData.plan);
+
+            if (!pipelineDone || !pipelineDone.all_success) {
+                // Pipeline had errors — stop looping but don't hide the pipeline
+                const stopMsg = document.createElement('div');
+                stopMsg.className = 'auto-round-done auto-round-warn';
+                stopMsg.innerHTML = `⚠️ Pipeline completed with errors — stopping auto-remediation. Review results above.`;
+                resultsEl.appendChild(stopMsg);
+                break;
+            }
+
+            // Wait briefly for recomposition to settle
+            await new Promise(r => setTimeout(r, 1500));
+
+            // If this is the last round, do a final scan to show results
+            if (round === _AUTO_REMEDIATE_MAX_ROUNDS) {
+                const finalMsg = document.createElement('div');
+                finalMsg.className = 'auto-round-done auto-round-warn';
+                finalMsg.innerHTML = `⚠️ Reached max ${_AUTO_REMEDIATE_MAX_ROUNDS} rounds. Running final scan…`;
+                resultsEl.appendChild(finalMsg);
+
+                // Run final scan and render in the scan results area
+                await runComplianceScan(templateId);
+                break;
+            }
+            // Otherwise loop continues — next iteration will re-scan
+        }
+    } finally {
+        _autoRemediating = false;
+        _autoRemediateRound = 0;
+        // Refresh data
+        loadAllData().then(() => _loadTemplateVersionHistory(templateId));
+    }
+}
+
+/** Execute a remediation plan and return a Promise that resolves with the pipeline_done event data. */
+async function _executeAndWait(templateId, planSteps) {
+    const pipeline = document.getElementById('ado-pipeline');
+    if (!pipeline) return null;
+
+    return new Promise(async (resolve) => {
+        let pipelineDoneData = null;
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/compliance-remediate/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plan: planSteps, scan_data: _lastScanData }),
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Execution failed');
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let state = null;
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const event = JSON.parse(line);
+                        if (event.type === 'pipeline_done') {
+                            pipelineDoneData = event;
+                        }
+                        state = _adoHandleEvent(pipeline, event, state);
+                    } catch { /* skip malformed */ }
+                }
+            }
+            if (buffer.trim()) {
+                try {
+                    const event = JSON.parse(buffer);
+                    if (event.type === 'pipeline_done') pipelineDoneData = event;
+                    state = _adoHandleEvent(pipeline, event, state);
+                } catch {}
+            }
+        } catch (err) {
+            pipeline.innerHTML += `<div class="ado-error"><span class="ado-error-icon">❌</span><span>Pipeline failed: ${escapeHtml(err.message)}</span></div>`;
+        }
+        resolve(pipelineDoneData);
+    });
 }
 
 function _renderRemediationPlan(templateId, data) {
@@ -4035,15 +4228,18 @@ function _adoHandleEvent(container, event, state) {
                     scanResults.parentNode.insertBefore(pipelineEl, scanResults);
                 }
 
-                // Refresh template data so the detail view reflects new version
-                loadAllData().then(() => {
-                    const updatedTmpl = allTemplates.find(t => t.id === event.template_id);
-                    if (updatedTmpl) {
-                        _loadTemplateVersionHistory(event.template_id);
-                    }
-                });
-                // Re-scan compliance with delay to let publish settle
-                setTimeout(() => runComplianceScan(event.template_id), 800);
+                if (!_autoRemediating) {
+                    // Only auto-scan/refresh when NOT in auto-remediation mode
+                    // (the auto-loop handles its own scan cycle)
+                    loadAllData().then(() => {
+                        const updatedTmpl = allTemplates.find(t => t.id === event.template_id);
+                        if (updatedTmpl) {
+                            _loadTemplateVersionHistory(event.template_id);
+                        }
+                    });
+                    // Re-scan compliance with delay to let publish settle
+                    setTimeout(() => runComplianceScan(event.template_id), 800);
+                }
             }
             break;
         }
