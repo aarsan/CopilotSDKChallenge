@@ -6501,25 +6501,126 @@ async def delete_service_endpoint(service_id: str):
 
 # ── Service Update Check (bulk API-version comparison) ───────
 
+
+async def _refresh_api_versions(onboarded_ids: set[str]) -> list[dict]:
+    """Fetch latest API versions from Azure for a set of service IDs.
+
+    Does a single `providers.list()` call, extracts API versions only for
+    the resource types in ``onboarded_ids``, and returns a list of dicts
+    suitable for ``bulk_update_api_versions()``.
+
+    Raises on auth/network failure so the caller can fall back to cached data.
+    """
+    import os
+    import asyncio as _aio
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.resource import ResourceManagementClient
+
+    sub_id = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+    if not sub_id:
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                sub_id = r.stdout.strip()
+        except Exception:
+            pass
+    if not sub_id:
+        logger.warning("_refresh_api_versions: no subscription ID — skipping")
+        return []
+
+    cred = DefaultAzureCredential(
+        exclude_workload_identity_credential=True,
+        exclude_managed_identity_credential=True,
+    )
+    client = ResourceManagementClient(cred, sub_id)
+
+    # Build set of namespaces we actually need
+    needed_namespaces = {sid.split("/")[0].lower() for sid in onboarded_ids}
+
+    loop = _aio.get_event_loop()
+    providers = await loop.run_in_executor(None, lambda: list(client.providers.list()))
+
+    updates: list[dict] = []
+    for provider in providers:
+        ns = provider.namespace or ""
+        if ns.lower() not in needed_namespaces:
+            continue
+        for rt in (provider.resource_types or []):
+            type_name = rt.resource_type or ""
+            sid = f"{ns}/{type_name}"
+            if sid not in onboarded_ids:
+                continue
+
+            api_versions_list = rt.api_versions or []
+            latest_stable = next(
+                (v for v in api_versions_list if "preview" not in v.lower()),
+                api_versions_list[0] if api_versions_list else None,
+            )
+            default_ver = getattr(rt, "default_api_version", None)
+            if latest_stable:
+                updates.append({
+                    "id": sid,
+                    "latest_api_version": latest_stable,
+                    "default_api_version": default_ver,
+                })
+
+    return updates
+
+
 @app.get("/api/catalog/services/check-updates")
 async def check_service_updates():
-    """Compare each onboarded service's ARM template apiVersion against Azure's latest.
+    """Refresh Azure API versions for onboarded services, then compare against templates.
 
-    Returns a list of services that have a newer Azure API version available,
-    along with the version details for each.
+    1. Fetches latest API versions from Azure for onboarded services (lightweight)
+    2. Compares each service's ARM template apiVersion against Azure's latest
+    3. Returns update list + all_api_versions map for the frontend to populate the column
     """
-    from src.database import get_all_services, get_service_versions
+    from src.database import get_all_services, get_service_versions, bulk_update_api_versions
 
     try:
         services = await get_all_services()
+
+        # ── Step 1: Refresh API versions from Azure for onboarded services ──
+        onboarded_ids = {
+            s["id"] for s in services if s.get("active_version") is not None
+        }
+        if onboarded_ids:
+            try:
+                refreshed = await _refresh_api_versions(onboarded_ids)
+                if refreshed:
+                    await bulk_update_api_versions(refreshed)
+                    # Reload services so we have the updated values
+                    services = await get_all_services()
+                    logger.info(f"check-updates: refreshed API versions for {len(refreshed)} services")
+            except Exception as e:
+                logger.warning(f"Azure API version refresh failed (using cached data): {e}")
+
+        # ── Step 2: Build all_api_versions map for frontend ──
+        all_api_versions: dict[str, dict] = {}
+        for svc in services:
+            latest_api = svc.get("latest_api_version")
+            default_api = svc.get("default_api_version")
+            if latest_api:
+                all_api_versions[svc["id"]] = {
+                    "latest_api_version": latest_api,
+                    "default_api_version": default_api,
+                }
+
+        # ── Step 3: Compare template apiVersions against Azure's latest ──
         updates: list[dict] = []
+        total_checked = 0
 
         for svc in services:
-            # Only check services that have both an active version and Azure API data
             latest_api = svc.get("latest_api_version")
             active_ver_num = svc.get("active_version")
             if not latest_api or active_ver_num is None:
                 continue
+
+            total_checked += 1
 
             # Fetch versions and find the active one
             versions = await get_service_versions(svc["id"])
@@ -6562,15 +6663,16 @@ async def check_service_updates():
 
         return JSONResponse({
             "updates": updates,
-            "total_checked": sum(
-                1 for s in services
-                if s.get("latest_api_version") and s.get("active_version") is not None
-            ),
+            "total_checked": total_checked,
             "updates_available": len(updates),
+            "all_api_versions": all_api_versions,
         })
     except Exception as e:
         logger.error(f"Failed to check service updates: {e}")
-        return JSONResponse({"updates": [], "total_checked": 0, "updates_available": 0})
+        return JSONResponse({
+            "updates": [], "total_checked": 0,
+            "updates_available": 0, "all_api_versions": {},
+        })
 
 
 @app.get("/api/catalog/services/sync")

@@ -1023,6 +1023,18 @@ async function checkForUpdates() {
         _serviceUpdates = {};
         (data.updates || []).forEach(u => { _serviceUpdates[u.id] = u; });
 
+        // Merge latest API versions into allServices so the Azure API column populates
+        const apiMap = data.all_api_versions || {};
+        if (Object.keys(apiMap).length > 0) {
+            allServices.forEach(svc => {
+                const info = apiMap[svc.id];
+                if (info) {
+                    svc.latest_api_version = info.latest_api_version;
+                    svc.default_api_version = info.default_api_version;
+                }
+            });
+        }
+
         const count = data.updates_available || 0;
         if (count > 0) {
             btn.innerHTML = `<span class="update-btn-icon">⬆</span> ${count} Update${count !== 1 ? 's' : ''} Found`;
