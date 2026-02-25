@@ -2100,12 +2100,18 @@ async function triggerOnboarding(serviceId) {
 let _apiUpdateRunning = false;
 
 async function triggerApiVersionUpdate(serviceId) {
-    if (_apiUpdateRunning) return;  // prevent double-trigger
+    if (_apiUpdateRunning) {
+        console.warn('[update] triggerApiVersionUpdate blocked — already running');
+        return;
+    }
     _apiUpdateRunning = true;
+    console.log('[update] triggerApiVersionUpdate started for', serviceId);
 
     const card = document.getElementById('validation-card');
     const modelSelect = document.getElementById('onboard-model-select');
     const selectedModel = modelSelect ? modelSelect.value : '';
+
+    console.log('[update] validation-card element:', card ? 'found' : 'NOT FOUND');
 
     if (card) {
         card.className = 'validation-card validation-running';
@@ -2141,10 +2147,14 @@ async function triggerApiVersionUpdate(serviceId) {
             body: JSON.stringify(body),
         });
 
+        console.log('[update] fetch response status:', res.status);
+
         if (!res.ok) {
             const err = await res.json();
             throw new Error(err.detail || 'API version update failed');
         }
+
+        showToast('API version update pipeline started…', 'info');
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -2163,9 +2173,10 @@ async function triggerApiVersionUpdate(serviceId) {
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
+                    console.log('[update] event:', event.type, event.phase, event.detail?.substring(0, 80));
                     if (event.type === 'error') _updateFailed = true;
                     _handleUpdateEvent(event);
-                } catch (e) {}
+                } catch (e) { console.warn('[update] parse error:', e, line.substring(0, 100)); }
             }
         }
 

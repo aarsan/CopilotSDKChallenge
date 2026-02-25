@@ -6911,9 +6911,10 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
                 try:
                     governance_policies = await get_governance_policies_as_dict()
-                    static_result = validate_template(arm_template, governance_policies)
+                    arm_dict = json.loads(arm_template) if isinstance(arm_template, str) else arm_template
+                    static_result = validate_template(arm_dict, governance_policies)
                     svc_standards = get_standards_for_service(service_id)
-                    std_results = validate_template_against_standards(arm_template, svc_standards)
+                    std_results = validate_template_against_standards(arm_dict, svc_standards)
                     # Merge standard violations into static result
                     if std_results.get("violations"):
                         static_result.setdefault("violations", []).extend(std_results["violations"])
@@ -7003,6 +7004,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         k: {"value": v.get("defaultValue", "")}
                         for k, v in tpl_obj.get("parameters", {}).items()
                         if "defaultValue" in v
+                        and not (isinstance(v.get("defaultValue"), str)
+                                 and v["defaultValue"].startswith("[") and v["defaultValue"].endswith("]"))
                     }
 
                     what_if_params = _DWI(properties=_DP(
@@ -7088,6 +7091,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         k: {"value": v.get("defaultValue", "")}
                         for k, v in tpl_obj.get("parameters", {}).items()
                         if "defaultValue" in v
+                        and not (isinstance(v.get("defaultValue"), str)
+                                 and v["defaultValue"].startswith("[") and v["defaultValue"].endswith("]"))
                     }
 
                     deploy_name = f"infraforge-update-{_run_id}"
