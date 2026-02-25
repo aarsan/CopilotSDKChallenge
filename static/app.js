@@ -2165,10 +2165,10 @@ function renderTemplateTable(templates) {
     grid.innerHTML = templates.map(tmpl => {
         const ttype = tmpl.template_type || 'workload';
         const icon = typeIcons[ttype] || '📋';
-        const primaryAzIcon = provides.length ? _azureIcon(provides[0], 28) : '';
         const status = tmpl.status || 'draft';
         const serviceIds = tmpl.service_ids || [];
         const provides = tmpl.provides || [];
+        const primaryAzIcon = provides.length ? _azureIcon(provides[0], 28) : '';
         const semver = tmpl.latest_semver || (tmpl.active_version ? `v${tmpl.active_version}` : null);
         const progress = statusProgress[status] || 1;
         const isPublished = status === 'approved';
