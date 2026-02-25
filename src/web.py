@@ -2693,17 +2693,33 @@ async def compliance_scan_template(template_id: str, request: Request):
         "is_dependency": False,
     })
 
-    # Dependency templates
+    # Dependency templates — prefer latest service_versions ARM over
+    # catalog_templates.content (which may be stale after remediation).
     dep_service_ids = tmpl.get("service_ids", []) or []
     if dep_service_ids:
+        from src.database import get_service_versions
         all_tmpls = await get_all_templates()
         tmpl_by_id = {t["id"]: t for t in all_tmpls}
         for sid in dep_service_ids:
+            dep_name = sid
             dep_tmpl = tmpl_by_id.get(sid)
-            if dep_tmpl and dep_tmpl.get("content"):
+            if dep_tmpl:
+                dep_name = dep_tmpl.get("name", sid)
+
+            # Check service_versions first (has remediated content)
+            svc_versions = await get_service_versions(sid)
+            if svc_versions and svc_versions[0].get("arm_template"):
                 templates_to_scan.append({
                     "id": sid,
-                    "name": dep_tmpl.get("name", sid),
+                    "name": dep_name,
+                    "arm_content": svc_versions[0]["arm_template"],
+                    "is_dependency": True,
+                })
+            elif dep_tmpl and dep_tmpl.get("content"):
+                # Fall back to catalog_templates.content
+                templates_to_scan.append({
+                    "id": sid,
+                    "name": dep_name,
                     "arm_content": dep_tmpl["content"],
                     "is_dependency": True,
                 })
@@ -3963,9 +3979,18 @@ async def compliance_remediate_execute(template_id: str, request: Request):
 
             if is_service_dep:
                 # Service deps store ARM in service_versions (already written in
-                # step 6).  Nothing to update in catalog_templates which has no
-                # entry for service IDs.
+                # step 6).  Also update catalog_templates.content if a row exists,
+                # so compliance re-scans and other code paths see the fix.
                 step_log(sid, f"Service version v{new_semver_actual} stored for {tid}")
+                try:
+                    updated = await backend.execute_write(
+                        "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                        (fixed_content, now_iso, tid),
+                    )
+                    if updated:
+                        step_log(sid, f"Catalog content synced for {tid}")
+                except Exception:
+                    pass  # No catalog_templates row for this service — that's OK
             else:
                 step_log(sid, "Updating catalog template content…")
                 await backend.execute_write(
