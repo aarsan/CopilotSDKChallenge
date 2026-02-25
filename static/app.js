@@ -3976,6 +3976,22 @@ function _adoHandleEvent(container, event, state) {
                     </button>`;
                 }
 
+                // Compliance verification status
+                let verifyHtml = '';
+                if (ok && r.verify_iterations) {
+                    if (r.verify_clean) {
+                        verifyHtml = `<div class="ado-verify-status ado-verify-clean">
+                            <span class="ado-verify-icon">🛡️</span>
+                            <span>Compliance verified clean${r.verify_iterations > 1 ? ` (${r.verify_iterations} iteration${r.verify_iterations > 1 ? 's' : ''})` : ''}</span>
+                        </div>`;
+                    } else {
+                        verifyHtml = `<div class="ado-verify-status ado-verify-remaining">
+                            <span class="ado-verify-icon">⚠️</span>
+                            <span>${r.remaining_violations || '?'} violation(s) remain after ${r.verify_iterations} iteration(s) — manual review needed</span>
+                        </div>`;
+                    }
+                }
+
                 resultsHtml += `
                 <div class="ado-report-card ${ok ? 'ado-report-card-ok' : 'ado-report-card-fail'}">
                     <div class="ado-report-card-header">
@@ -3983,6 +3999,7 @@ function _adoHandleEvent(container, event, state) {
                         <span class="ado-report-card-name">${escapeHtml(name)}</span>
                         ${r.new_semver ? `<span class="ado-report-card-ver">v${escapeHtml(r.new_semver)}</span>` : ''}
                     </div>
+                    ${verifyHtml}
                     ${changesHtml}
                     ${diffBtnHtml}
                     ${proofHtml}

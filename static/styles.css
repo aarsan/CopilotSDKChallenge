@@ -8249,6 +8249,25 @@ body {
 
 .ado-report-changes { margin-top: 0.45rem; }
 
+/* Compliance verification status in pipeline results */
+.ado-verify-status {
+    display: flex; align-items: center; gap: 0.35rem;
+    font-size: 0.76rem; font-weight: 600;
+    padding: 0.35rem 0.6rem; border-radius: 6px;
+    margin-top: 0.4rem;
+}
+.ado-verify-icon { font-size: 0.85rem; }
+.ado-verify-clean {
+    color: #3fb950;
+    background: rgba(63,185,80,0.08);
+    border: 1px solid rgba(63,185,80,0.2);
+}
+.ado-verify-remaining {
+    color: #d29922;
+    background: rgba(210,153,34,0.08);
+    border: 1px solid rgba(210,153,34,0.2);
+}
+
 .ado-report-changes-title,
 .ado-report-changelog-title {
     font-size: 0.66rem;

@@ -3419,6 +3419,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 {"id": f"job-{i}-depcheck", "label": "Dep Check", "detail": dep_check_detail},
                 {"id": f"job-{i}-remediate", "label": "Remediate", "detail": f"Apply {len(steps)} compliance fix(es)"},
                 {"id": f"job-{i}-validate", "label": "Validate", "detail": "Parse & validate ARM JSON"},
+                {"id": f"job-{i}-verify", "label": "Verify", "detail": "Re-scan compliance to confirm fixes"},
                 {"id": f"job-{i}-deploy-test", "label": "Deploy Test", "detail": "ARM What-If validation against Azure"},
                 {"id": f"job-{i}-version", "label": "Version", "detail": f"Bump {current_semver} → {projected_semver} ({change_type})"},
                 {"id": f"job-{i}-publish", "label": "Publish", "detail": "Update catalog with new version"},
@@ -3829,7 +3830,153 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 pass
             step_end(sid, "success", int((time.time() - s3) * 1000))
 
-            # ── Step 5: DEPLOY TEST (ARM What-If) ──
+            # ── Step 5: VERIFY (Compliance Re-scan Loop) ──
+            # Run _quick_compliance_check on the fixed ARM. If violations remain,
+            # loop back to AI remediation with the remaining violations as context.
+            # Max 3 total iterations (original fix + 2 re-attempts).
+            MAX_VERIFY_LOOPS = 3
+            verify_iteration = 0
+            all_changes_made = list(changes_made)  # accumulate across iterations
+
+            sid = f"{job_id}-verify"
+            step_start(sid)
+            s_verify = time.time()
+
+            while True:
+                verify_iteration += 1
+                step_log(sid, f"Compliance re-scan (iteration {verify_iteration}/{MAX_VERIFY_LOOPS})…")
+
+                remaining_violations = await _quick_compliance_check(fixed_content)
+
+                if not remaining_violations:
+                    step_log(sid, "✓ All compliance checks passed — template is clean")
+                    step_end(sid, "success", int((time.time() - s_verify) * 1000),
+                             f"Clean after {verify_iteration} iteration(s)")
+                    break
+
+                step_log(sid, f"Found {len(remaining_violations)} remaining violation(s)")
+                for rv in remaining_violations[:8]:
+                    step_log(sid, f"  ✗ [{rv.get('severity','?').upper()}] {rv.get('standard_name','')}: {rv.get('detail','')}")
+
+                if verify_iteration >= MAX_VERIFY_LOOPS:
+                    step_log(sid, f"⚠ {len(remaining_violations)} violation(s) remain after {MAX_VERIFY_LOOPS} attempts", "warning")
+                    step_log(sid, "Proceeding with best-effort template — manual review recommended")
+                    step_end(sid, "warning", int((time.time() - s_verify) * 1000),
+                             f"{len(remaining_violations)} violation(s) remain")
+                    break
+
+                # ── Re-remediate: send remaining violations back to AI ──
+                step_log(sid, f"Sending {len(remaining_violations)} remaining violation(s) to AI for re-fix…")
+
+                re_instructions = "\n".join(
+                    f"{j+1}. [{v.get('severity','medium').upper()}] {v.get('standard_name','')}: "
+                    f"{v.get('detail','')} — Remediation: {v.get('remediation','Fix this violation')}"
+                    for j, v in enumerate(remaining_violations)
+                )
+
+                re_prompt = (
+                    "You are an Azure ARM template compliance remediation expert. "
+                    "A previous remediation pass was applied but some violations remain.\n\n"
+                    f"--- REMAINING VIOLATIONS ---\n{re_instructions}\n--- END VIOLATIONS ---\n\n"
+                    f"--- CURRENT ARM TEMPLATE (after previous fix) ---\n{fixed_content}\n--- END TEMPLATE ---\n\n"
+                    "Apply ALL the remaining fixes. Return a JSON object:\n"
+                    "{\n"
+                    '  "arm_template": { ...the complete fixed ARM JSON... },\n'
+                    '  "changes_made": [\n'
+                    '    {"step": 1, "description": "What was changed", "resource": "affected resource"}\n'
+                    "  ]\n"
+                    "}\n\n"
+                    "RULES:\n"
+                    "- Return the COMPLETE ARM template, not just changed parts\n"
+                    "- Maintain valid ARM template structure\n"
+                    "- Keep all existing parameters, variables, outputs that are still relevant\n"
+                    "- Preserve resource tags, dependencies, and naming conventions\n"
+                    "- Do NOT change resource names or parameter names\n"
+                    "- Do NOT remove resources — only modify properties for compliance\n"
+                    "- Return ONLY raw JSON — no markdown fences\n"
+                )
+
+                _re_chunk_chars = [0]
+                _re_token_count = [0]
+
+                def on_re_progress(ev, _sid=sid):
+                    try:
+                        if ev.type.value == "assistant.message_delta":
+                            delta = ev.data.delta_content or ""
+                            _re_chunk_chars[0] += len(delta)
+                            _re_token_count[0] += 1
+                            if _re_token_count[0] % 50 == 0:
+                                step_log(_sid, f"Re-fix generating… {_re_token_count[0]} chunks ({_re_chunk_chars[0]:,} chars)")
+                    except Exception:
+                        pass
+
+                from src.copilot_helpers import copilot_send
+                re_raw = await copilot_send(
+                    client, model=model,
+                    system_prompt=REMEDIATION_EXECUTOR.system_prompt,
+                    prompt=re_prompt,
+                    timeout=300, on_event=on_re_progress,
+                )
+                step_log(sid, f"AI re-fix response: {len(re_raw):,} chars")
+
+                if not re_raw:
+                    step_log(sid, "⚠ Empty AI response on re-fix — stopping loop", "warning")
+                    step_end(sid, "warning", int((time.time() - s_verify) * 1000),
+                             f"{len(remaining_violations)} violation(s) remain")
+                    break
+
+                # Parse the re-fix response
+                re_cleaned = re_raw
+                if re_cleaned.startswith("```"):
+                    re_cleaned = re_cleaned.split("\n", 1)[1] if "\n" in re_cleaned else re_cleaned[3:]
+                if re_cleaned.endswith("```"):
+                    re_cleaned = re_cleaned[:-3].strip()
+                if re_cleaned.startswith("json"):
+                    re_cleaned = re_cleaned[4:].strip()
+                brace_start = re_cleaned.find("{")
+                brace_end = re_cleaned.rfind("}")
+                if brace_start >= 0 and brace_end > brace_start:
+                    re_cleaned = re_cleaned[brace_start:brace_end + 1]
+
+                try:
+                    re_result = json.loads(re_cleaned)
+                except json.JSONDecodeError as e:
+                    step_log(sid, f"⚠ Could not parse AI re-fix: {e}", "warning")
+                    step_end(sid, "warning", int((time.time() - s_verify) * 1000),
+                             f"{len(remaining_violations)} violation(s) remain")
+                    break
+
+                # Extract and validate the re-fixed ARM
+                re_arm = re_result.get("arm_template", re_result)
+                re_changes = re_result.get("changes_made", [])
+
+                re_fixed = None
+                if isinstance(re_arm, dict) and "$schema" in re_arm:
+                    re_fixed = json.dumps(re_arm, indent=2)
+                elif isinstance(re_arm, str):
+                    try:
+                        parsed = json.loads(re_arm)
+                        if "$schema" in parsed:
+                            re_fixed = json.dumps(parsed, indent=2)
+                    except Exception:
+                        pass
+
+                if not re_fixed:
+                    step_log(sid, "⚠ AI re-fix produced invalid ARM — stopping loop", "warning")
+                    step_end(sid, "warning", int((time.time() - s_verify) * 1000),
+                             f"{len(remaining_violations)} violation(s) remain")
+                    break
+
+                fixed_content = re_fixed
+                all_changes_made.extend(re_changes)
+                for c in re_changes:
+                    step_log(sid, f"  ✓ {c.get('description', 'change applied')}")
+                step_log(sid, f"Applied {len(re_changes)} additional fix(es) — re-scanning…")
+
+            # Update changes_made with accumulated fixes from all iterations
+            changes_made = all_changes_made
+
+            # ── Step 6: DEPLOY TEST (ARM What-If) ──  (was step 5)
             sid = f"{job_id}-deploy-test"
             step_start(sid)
             s_dt = time.time()
@@ -3923,7 +4070,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 step_end(sid, "warning", int((time.time() - s_dt) * 1000),
                          "What-If skipped (advisory)")
 
-            # ── Step 6: VERSION ──
+            # ── Step 7: VERSION ──
             sid = f"{job_id}-version"
             step_start(sid)
             s4 = time.time()
@@ -3970,7 +4117,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             step_log(sid, f"Created version #{new_version_num} (v{new_semver_actual})")
             step_end(sid, "success", int((time.time() - s4) * 1000))
 
-            # ── Step 7: PUBLISH ──
+            # ── Step 8: PUBLISH ──
             sid = f"{job_id}-publish"
             step_start(sid)
             s5 = time.time()
@@ -4028,6 +4175,9 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 "changes_made": changes_made,
                 "changelog": changelog,
                 "deploy_proof": deploy_proof,
+                "verify_iterations": verify_iteration,
+                "verify_clean": not remaining_violations,
+                "remaining_violations": len(remaining_violations) if remaining_violations else 0,
             }
             emit({"type": "job_end", "job_id": job_id, "status": "success",
                   "result": result, "duration_ms": int((time.time() - t0) * 1000)})
