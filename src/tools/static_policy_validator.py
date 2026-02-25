@@ -237,6 +237,13 @@ def _get_deep_property(res: dict, key: str) -> tuple[bool, object]:
             return (True, props.get("allowBlobPublicAccess", True))
         return (True, False)  # Not applicable → passes
 
+    # ── Top-level property lookup ─────────────────────────
+    if key in res:
+        return (True, res[key])
+    for k, v in res.items():
+        if k.lower() == key.lower():
+            return (True, v)
+
     # ── Generic property lookup ───────────────────────────
     if key in props:
         return (True, props[key])
@@ -377,6 +384,10 @@ def validate_template_against_standards(
                 message=f"Cost threshold: ${rule.get('max_monthly_usd', 0)}/mo (checked at deployment time)",
                 remediation=remediation,
             ))
+        elif rule_type == "naming_convention":
+            _check_naming_convention_standard(std, rule, scope, severity,
+                                              enforcement, remediation,
+                                              resources, results)
         else:
             logger.warning(f"Unknown rule type '{rule_type}' in standard {std['id']}")
 
@@ -448,6 +459,54 @@ def _check_property_standard(std, rule, scope, severity, enforcement,
             enforcement=enforcement,
             message=(
                 f"{key} = {actual}" + (" ✓" if passed else f" (expected {operator} {expected})")
+            ),
+            resource_type=rtype,
+            resource_name=rname,
+            remediation=remediation if not passed else "",
+        ))
+
+
+def _check_naming_convention_standard(std, rule, scope, severity, enforcement,
+                                      remediation, resources, results):
+    """Evaluate a naming_convention-type standard against matching resources."""
+    import re
+    pattern = rule.get("pattern", "")
+    if not pattern:
+        return
+
+    applicable = [r for r in resources if _scope_matches(scope, r.get("type", ""))]
+
+    for res in applicable:
+        rtype = res.get("type", "unknown")
+        rname = res.get("name", "unknown")
+
+        # Unresolved ARM expressions cannot be evaluated statically
+        if isinstance(rname, str) and rname.startswith("[") and rname.endswith("]"):
+            results.append(PolicyCheckResult(
+                rule_id=std["id"],
+                rule_name=std["name"],
+                passed=True,
+                severity=severity,
+                enforcement=enforcement,
+                message=f"Name uses ARM expression (assumed compliant)",
+                resource_type=rtype,
+                resource_name=rname,
+            ))
+            continue
+
+        try:
+            passed = bool(re.match(pattern, rname))
+        except re.error:
+            passed = False
+
+        results.append(PolicyCheckResult(
+            rule_id=std["id"],
+            rule_name=std["name"],
+            passed=passed,
+            severity=severity,
+            enforcement=enforcement,
+            message=(
+                f"Name '{rname}' matches pattern '{pattern}'" if passed else f"Name '{rname}' does not match pattern '{pattern}'"
             ),
             resource_type=rtype,
             resource_name=rname,
