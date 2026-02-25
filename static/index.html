@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=144">
+    <link rel="stylesheet" href="/static/styles.css?v=145">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -470,6 +470,9 @@
                             <span class="search-icon">🔍</span>
                             <input type="text" id="standards-search" placeholder="Search standards by name, category, or ID..." oninput="searchStandards(this.value)" />
                         </div>
+                        <button class="btn btn-sm btn-primary gov-chat-toggle" onclick="toggleGovernanceChat()" title="Ask the Governance Advisor about policies">
+                            📜 Governance Advisor
+                        </button>
                     </div>
 
                     <!-- Severity Filters -->
@@ -632,6 +635,57 @@
                 <h3 id="detail-template-name">Template Name</h3>
             </div>
             <div class="detail-panel-body" id="detail-template-body"></div>
+        </div>
+    </div>
+
+    <!-- ── Governance Chat Drawer ────────────────────────────── -->
+    <div id="gov-chat-drawer" class="gov-chat-drawer hidden">
+        <div class="gov-chat-header">
+            <div class="gov-chat-title">
+                <span class="gov-chat-icon">📜</span>
+                <div>
+                    <h4>Governance Advisor</h4>
+                    <span class="gov-chat-subtitle">Ask about policies, standards, or request modifications</span>
+                </div>
+            </div>
+            <div class="gov-chat-header-actions">
+                <button class="btn btn-sm btn-ghost" onclick="clearGovernanceChat()" title="New conversation">🗒️</button>
+                <button class="modal-close" onclick="toggleGovernanceChat()">×</button>
+            </div>
+        </div>
+        <div class="gov-chat-messages" id="gov-chat-messages">
+            <div class="gov-chat-welcome" id="gov-chat-welcome">
+                <div class="gov-chat-welcome-icon">📜</div>
+                <h4>Governance Advisor</h4>
+                <p>I can help you understand policies, find standards, and request policy modifications.</p>
+                <div class="gov-chat-suggestions">
+                    <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What governance policies do we have?')">📋 List all policies</button>
+                    <button class="gov-chat-suggestion" onclick="sendGovQuickAction('Do we have any rules about public IP addresses?')">🌐 Public IP rules</button>
+                    <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What security standards cover encryption?')">🔐 Encryption standards</button>
+                    <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What compliance frameworks are configured?')">📋 Compliance frameworks</button>
+                </div>
+            </div>
+        </div>
+        <div class="gov-chat-tool-activity hidden" id="gov-chat-tool-activity">
+            <div class="tool-spinner"></div>
+            <span id="gov-chat-tool-text">Querying policies...</span>
+        </div>
+        <div class="gov-chat-input-area">
+            <div class="gov-chat-input-wrapper">
+                <textarea
+                    id="gov-chat-input"
+                    placeholder="Ask about policies, standards, or request a modification..."
+                    rows="1"
+                    onkeydown="handleGovChatKeyDown(event)"
+                    oninput="autoResizeTextarea(this)"
+                ></textarea>
+                <button id="gov-chat-send" class="btn btn-send" onclick="sendGovMessage()" title="Send">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13"></path>
+                        <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+                    </svg>
+                </button>
+            </div>
         </div>
     </div>
 
@@ -969,7 +1023,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=144"></script>
+    <script src="/static/app.js?v=145"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

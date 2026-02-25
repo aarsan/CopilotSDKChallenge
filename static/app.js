@@ -9434,6 +9434,245 @@ async function clearAllStandards() {
 }
 
 
+// ═══════════════════════════════════════════════════════════════
+//  GOVERNANCE CHAT — Governance Advisor Agent
+// ═══════════════════════════════════════════════════════════════
+
+let _govChatWs = null;
+let _govChatStreaming = false;
+let _govChatStreamDiv = null;
+let _govChatStreamContent = '';
+let _govChatOpen = false;
+
+function toggleGovernanceChat() {
+    const drawer = document.getElementById('gov-chat-drawer');
+    if (!drawer) return;
+    _govChatOpen = !_govChatOpen;
+    drawer.classList.toggle('hidden', !_govChatOpen);
+
+    if (_govChatOpen) {
+        _connectGovernanceChat();
+        setTimeout(() => {
+            const input = document.getElementById('gov-chat-input');
+            if (input) input.focus();
+        }, 100);
+    }
+}
+
+function _connectGovernanceChat() {
+    if (_govChatWs && _govChatWs.readyState === WebSocket.OPEN) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/governance-chat`;
+
+    _govChatWs = new WebSocket(wsUrl);
+
+    _govChatWs.onopen = () => {
+        _govChatWs.send(JSON.stringify({
+            type: 'auth',
+            sessionToken: sessionToken,
+        }));
+    };
+
+    _govChatWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        _handleGovChatMessage(data);
+    };
+
+    _govChatWs.onclose = () => {
+        _govChatWs = null;
+        // Reconnect if drawer is still open
+        if (_govChatOpen) {
+            setTimeout(() => _connectGovernanceChat(), 3000);
+        }
+    };
+
+    _govChatWs.onerror = () => {
+        _govChatWs = null;
+    };
+}
+
+function _handleGovChatMessage(data) {
+    switch (data.type) {
+        case 'auth_ok':
+            break;
+        case 'delta':
+            _handleGovStreamDelta(data.content);
+            break;
+        case 'done':
+            _handleGovStreamDone(data.content);
+            break;
+        case 'tool_call':
+            _handleGovToolCall(data.name, data.status);
+            break;
+        case 'error':
+            _handleGovError(data.message);
+            break;
+        case 'pong':
+            break;
+    }
+}
+
+function _addGovMessage(role, content, isStreaming = false) {
+    const container = document.getElementById('gov-chat-messages');
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `gov-msg gov-msg-${role}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'gov-msg-avatar';
+    avatar.textContent = role === 'user'
+        ? (currentUser ? currentUser.displayName.split(' ').map(n => n[0]).join('').substring(0, 2) : '?')
+        : '📜';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'gov-msg-content';
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'gov-msg-text';
+
+    if (isStreaming) {
+        textDiv.classList.add('streaming-cursor');
+    } else {
+        textDiv.innerHTML = renderMarkdown(content);
+    }
+
+    contentDiv.appendChild(textDiv);
+    msgDiv.appendChild(avatar);
+    msgDiv.appendChild(contentDiv);
+    container.appendChild(msgDiv);
+
+    container.scrollTop = container.scrollHeight;
+    return textDiv;
+}
+
+function _handleGovStreamDelta(content) {
+    if (!_govChatStreamDiv) return;
+    _govChatStreamContent += content;
+    _govChatStreamDiv.innerHTML = renderMarkdown(_govChatStreamContent);
+    _govChatStreamDiv.classList.add('streaming-cursor');
+    const container = document.getElementById('gov-chat-messages');
+    container.scrollTop = container.scrollHeight;
+}
+
+function _handleGovStreamDone(fullContent) {
+    if (_govChatStreamDiv) {
+        _govChatStreamDiv.classList.remove('streaming-cursor');
+        const finalContent = fullContent || _govChatStreamContent;
+        _govChatStreamDiv.innerHTML = renderMarkdown(finalContent);
+    }
+    _govChatStreamDiv = null;
+    _govChatStreamContent = '';
+    _govChatStreaming = false;
+    document.getElementById('gov-chat-send').disabled = false;
+    document.getElementById('gov-chat-input').focus();
+
+    // Hide tool activity
+    const toolEl = document.getElementById('gov-chat-tool-activity');
+    if (toolEl) toolEl.classList.add('hidden');
+
+    const container = document.getElementById('gov-chat-messages');
+    container.scrollTop = container.scrollHeight;
+}
+
+function _handleGovToolCall(name, status) {
+    const toolEl = document.getElementById('gov-chat-tool-activity');
+    const textEl = document.getElementById('gov-chat-tool-text');
+    if (!toolEl || !textEl) return;
+
+    const toolLabels = {
+        'list_governance_policies': 'Querying governance policies…',
+        'list_security_standards': 'Querying security standards…',
+        'list_compliance_frameworks': 'Querying compliance frameworks…',
+        'request_policy_modification': 'Submitting policy modification request…',
+    };
+
+    if (status === 'running') {
+        textEl.textContent = toolLabels[name] || `Running ${name}…`;
+        toolEl.classList.remove('hidden');
+    } else {
+        toolEl.classList.add('hidden');
+    }
+}
+
+function _handleGovError(message) {
+    _addGovMessage('assistant', `⚠️ ${message}`);
+    _govChatStreaming = false;
+    document.getElementById('gov-chat-send').disabled = false;
+}
+
+function sendGovMessage() {
+    const input = document.getElementById('gov-chat-input');
+    const text = input.value.trim();
+
+    if (!text || _govChatStreaming || !_govChatWs || _govChatWs.readyState !== WebSocket.OPEN) return;
+
+    // Hide welcome
+    const welcome = document.getElementById('gov-chat-welcome');
+    if (welcome) welcome.classList.add('hidden');
+
+    // Add user message
+    _addGovMessage('user', text);
+
+    // Send via WebSocket
+    _govChatWs.send(JSON.stringify({ type: 'message', content: text }));
+
+    // Clear input
+    input.value = '';
+    input.style.height = 'auto';
+    _govChatStreaming = true;
+    document.getElementById('gov-chat-send').disabled = true;
+
+    // Create placeholder for assistant response
+    _govChatStreamContent = '';
+    _govChatStreamDiv = _addGovMessage('assistant', '', true);
+}
+
+function sendGovQuickAction(prompt) {
+    const input = document.getElementById('gov-chat-input');
+    input.value = prompt;
+    sendGovMessage();
+}
+
+function handleGovChatKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendGovMessage();
+    }
+}
+
+function clearGovernanceChat() {
+    const container = document.getElementById('gov-chat-messages');
+    container.innerHTML = '';
+
+    // Re-add welcome
+    container.innerHTML = `
+        <div class="gov-chat-welcome" id="gov-chat-welcome">
+            <div class="gov-chat-welcome-icon">📜</div>
+            <h4>Governance Advisor</h4>
+            <p>I can help you understand policies, find standards, and request policy modifications.</p>
+            <div class="gov-chat-suggestions">
+                <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What governance policies do we have?')">📋 List all policies</button>
+                <button class="gov-chat-suggestion" onclick="sendGovQuickAction('Do we have any rules about public IP addresses?')">🌐 Public IP rules</button>
+                <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What security standards cover encryption?')">🔐 Encryption standards</button>
+                <button class="gov-chat-suggestion" onclick="sendGovQuickAction('What compliance frameworks are configured?')">📋 Compliance frameworks</button>
+            </div>
+        </div>
+    `;
+
+    _govChatStreamDiv = null;
+    _govChatStreamContent = '';
+    _govChatStreaming = false;
+
+    // Close and reconnect for a fresh session
+    if (_govChatWs) {
+        _govChatWs.close();
+        _govChatWs = null;
+    }
+    setTimeout(() => _connectGovernanceChat(), 300);
+}
+
+
 // ── Standards Import ─────────────────────────────────────────
 
 let _importedStandards = [];

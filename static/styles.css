@@ -11445,3 +11445,327 @@ details[open] > .tmpl-deploy-group-optional {
 .wf-pipeline-box.wf-accent-amber .wf-node.wf-active .wf-label {
     color: #f59e0b;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   GOVERNANCE CHAT DRAWER
+   ═══════════════════════════════════════════════════════════ */
+
+.gov-chat-toggle {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.gov-chat-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 440px;
+    height: 100vh;
+    background: var(--surface-primary);
+    border-left: 1px solid var(--border-default);
+    display: flex;
+    flex-direction: column;
+    z-index: 1100;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+    animation: govChatSlideIn 0.25s ease;
+}
+
+.gov-chat-drawer.hidden {
+    display: none;
+}
+
+@keyframes govChatSlideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Header ── */
+.gov-chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-default);
+    background: var(--surface-secondary);
+    flex-shrink: 0;
+}
+
+.gov-chat-title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.gov-chat-icon {
+    font-size: 1.3rem;
+}
+
+.gov-chat-title h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gov-chat-subtitle {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.gov-chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+/* ── Messages ── */
+.gov-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.gov-msg {
+    display: flex;
+    gap: 0.6rem;
+    max-width: 100%;
+}
+
+.gov-msg-user {
+    flex-direction: row-reverse;
+}
+
+.gov-msg-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--surface-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.gov-msg-user .gov-msg-avatar {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.gov-msg-content {
+    max-width: 85%;
+}
+
+.gov-msg-text {
+    padding: 0.6rem 0.8rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+}
+
+.gov-msg-user .gov-msg-text {
+    background: var(--accent-blue);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+
+.gov-msg-assistant .gov-msg-text {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-subtle);
+    border-bottom-left-radius: 4px;
+}
+
+/* Markdown inside governance messages */
+.gov-msg-text h1, .gov-msg-text h2, .gov-msg-text h3 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0.6rem 0 0.3rem;
+}
+
+.gov-msg-text h1:first-child, .gov-msg-text h2:first-child, .gov-msg-text h3:first-child {
+    margin-top: 0;
+}
+
+.gov-msg-text p {
+    margin: 0 0 0.4rem;
+}
+
+.gov-msg-text ul, .gov-msg-text ol {
+    margin: 0.3rem 0;
+    padding-left: 1.2rem;
+}
+
+.gov-msg-text li {
+    margin-bottom: 0.2rem;
+}
+
+.gov-msg-text table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+}
+
+.gov-msg-text th, .gov-msg-text td {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border-subtle);
+    text-align: left;
+}
+
+.gov-msg-text th {
+    background: var(--surface-tertiary);
+    font-weight: 600;
+}
+
+.gov-msg-text code {
+    background: var(--surface-tertiary);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.78rem;
+}
+
+.gov-msg-text pre {
+    background: var(--surface-tertiary);
+    padding: 0.5rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+}
+
+.gov-msg-text pre code {
+    background: none;
+    padding: 0;
+}
+
+/* ── Welcome ── */
+.gov-chat-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 2rem 1rem;
+    gap: 0.5rem;
+}
+
+.gov-chat-welcome-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.3rem;
+}
+
+.gov-chat-welcome h4 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gov-chat-welcome p {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    max-width: 300px;
+}
+
+.gov-chat-suggestions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.8rem;
+    width: 100%;
+    max-width: 340px;
+}
+
+.gov-chat-suggestion {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+}
+
+.gov-chat-suggestion:hover {
+    background: var(--surface-tertiary);
+    border-color: var(--accent-blue);
+    color: var(--text-primary);
+}
+
+/* ── Tool Activity ── */
+.gov-chat-tool-activity {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 1rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.gov-chat-tool-activity.hidden {
+    display: none;
+}
+
+/* ── Input Area ── */
+.gov-chat-input-area {
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--border-default);
+    background: var(--surface-secondary);
+    flex-shrink: 0;
+}
+
+.gov-chat-input-wrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    padding: 0.4rem 0.5rem;
+}
+
+.gov-chat-input-wrapper textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    resize: none;
+    max-height: 100px;
+    font-family: inherit;
+}
+
+.gov-chat-input-wrapper textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.gov-chat-input-wrapper .btn-send {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 0;
+    border-radius: 8px;
+}
+
+.gov-chat-input-wrapper .btn-send svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .gov-chat-drawer {
+        width: 100%;
+    }
+}

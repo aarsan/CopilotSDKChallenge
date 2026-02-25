@@ -26,6 +26,7 @@ from src.tools.governance_tools import (
     list_security_standards,
     list_compliance_frameworks,
     list_governance_policies,
+    request_policy_modification,
 )
 from src.tools.deploy_engine import (
     validate_deployment,
@@ -57,6 +58,7 @@ def get_all_tools() -> list:
         list_security_standards,
         list_compliance_frameworks,
         list_governance_policies,
+        request_policy_modification,
         # Catalog-first workflow
         search_template_catalog,
         compose_from_catalog,
@@ -80,4 +82,19 @@ def get_all_tools() -> list:
         save_output_to_file,
         # Publishing
         publish_to_github,
+    ]
+
+
+def get_governance_tools() -> list:
+    """Return governance-specific tools for the Governance Advisor agent.
+
+    A focused subset of tools for policy/standards discussion and
+    policy modification requests. Does NOT include generation, deployment,
+    or catalog tools — the governance agent is for governance conversations only.
+    """
+    return [
+        list_security_standards,
+        list_compliance_frameworks,
+        list_governance_policies,
+        request_policy_modification,
     ]

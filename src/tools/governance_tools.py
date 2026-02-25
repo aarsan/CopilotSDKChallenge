@@ -6,6 +6,9 @@ browsing, and compliance assessments. All data lives in the InfraForge
 database.
 """
 
+import json as _json
+from datetime import datetime, timezone
+
 from pydantic import BaseModel, Field
 from copilot import define_tool
 
@@ -14,6 +17,7 @@ from src.database import (
     get_compliance_frameworks,
     get_governance_policies,
     get_compliance_assessment,
+    save_approval_request,
 )
 
 
@@ -221,3 +225,99 @@ async def list_governance_policies(params: ListGovernancePoliciesParams) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ── Tool: Request Policy Modification ────────────────────────
+
+class RequestPolicyModificationParams(BaseModel):
+    policy_id: str = Field(
+        description=(
+            "The ID of the policy to modify (e.g., 'GOV-006'). Use "
+            "list_governance_policies or list_security_standards to find "
+            "the correct ID first."
+        ),
+    )
+    policy_name: str = Field(
+        description="The current name of the policy being modified.",
+    )
+    current_rule: str = Field(
+        description=(
+            "A clear description of the current policy rule, including its "
+            "key and value (e.g., 'max_public_ips = 0')."
+        ),
+    )
+    proposed_change: str = Field(
+        description=(
+            "The proposed modification — what the policy should say instead. "
+            "Be specific about the new rule value and any conditions or "
+            "exceptions being added."
+        ),
+    )
+    justification: str = Field(
+        description=(
+            "Business and technical justification for why the policy should "
+            "be modified. Include use cases that the current policy blocks, "
+            "risk assessment, and any compensating controls."
+        ),
+    )
+    impact_assessment: str = Field(
+        default="",
+        description=(
+            "Assessment of security/compliance impact of the proposed change. "
+            "What risks does the change introduce? What mitigations are in place?"
+        ),
+    )
+
+
+@define_tool(description=(
+    "Submit a formal Policy Modification Request (PMR) to change an existing "
+    "governance policy or security standard. Unlike a policy *exception* (which "
+    "is a one-time bypass), a modification permanently changes the rule for "
+    "everyone. The request is routed to the platform team for review. "
+    "ALWAYS call list_governance_policies or list_security_standards first to "
+    "find the exact policy ID and current rule before submitting."
+))
+async def request_policy_modification(
+    params: RequestPolicyModificationParams,
+) -> str:
+    """Submit a policy modification request."""
+
+    request_id = f"PMR-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+    # Build structured justification
+    biz_justification = (
+        f"POLICY MODIFICATION REQUEST\n"
+        f"{'=' * 40}\n\n"
+        f"Policy: {params.policy_id} — {params.policy_name}\n\n"
+        f"Current Rule:\n{params.current_rule}\n\n"
+        f"Proposed Change:\n{params.proposed_change}\n\n"
+        f"Justification:\n{params.justification}\n\n"
+        f"Impact Assessment:\n{params.impact_assessment or 'Not provided'}\n"
+    )
+
+    await save_approval_request({
+        "id": request_id,
+        "service_name": f"Policy Mod: {params.policy_id} — {params.policy_name}",
+        "service_resource_type": "policy-modification",
+        "current_status": "policy_modification",
+        "risk_tier": "high",
+        "business_justification": biz_justification,
+        "project_name": f"Modify {params.policy_id}",
+        "environment": "all",
+        "status": "submitted",
+    })
+
+    return _json.dumps({
+        "request_id": request_id,
+        "status": "submitted",
+        "policy_id": params.policy_id,
+        "policy_name": params.policy_name,
+        "proposed_change": params.proposed_change,
+        "message": (
+            f"Policy Modification Request {request_id} has been submitted. "
+            f"The platform team will review the proposed change to "
+            f"{params.policy_id} ({params.policy_name}). "
+            f"Typical review time: 3–5 business days for policy modifications. "
+            f"You'll be notified when a decision is made."
+        ),
+    })

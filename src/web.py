@@ -12502,6 +12502,179 @@ async def list_governance_policies(category: Optional[str] = None):
         return JSONResponse({"policies": [], "categories": [], "total": 0})
 
 
+# ── WebSocket: Governance Chat ───────────────────────────────
+
+governance_sessions: dict = {}
+
+@app.websocket("/ws/governance-chat")
+async def websocket_governance_chat(websocket: WebSocket):
+    """WebSocket endpoint for the Governance Advisor agent.
+
+    Specialised chat for discussing policies, security standards, compliance
+    frameworks, and submitting policy modification requests. Uses a focused
+    agent with governance-only tools.
+    """
+    from src.agents import GOVERNANCE_AGENT
+    from src.tools import get_governance_tools
+
+    await websocket.accept()
+
+    session_token: Optional[str] = None
+    user_context: Optional[UserContext] = None
+
+    try:
+        # ── Step 1: Authenticate ─────────────────────────────
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+
+        if auth_msg.get("type") != "auth":
+            await websocket.send_json({"type": "error", "message": "Expected auth message"})
+            await websocket.close()
+            return
+
+        session_token = auth_msg.get("sessionToken", "")
+        user_context = await get_user_context(session_token)
+
+        if not user_context:
+            await websocket.send_json({"type": "error", "message": "Invalid or expired session"})
+            await websocket.close()
+            return
+
+        # ── Step 2: Create Copilot session with governance context ─
+        client = await ensure_copilot_client()
+        if client is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Copilot SDK is not available. Governance chat is disabled.",
+            })
+            await websocket.close()
+            return
+
+        personalized_system_message = (
+            GOVERNANCE_AGENT.system_prompt + "\n" + user_context.to_prompt_context()
+        )
+
+        tools = get_governance_tools()
+        try:
+            copilot_session = await client.create_session({
+                "model": get_active_model(),
+                "streaming": True,
+                "tools": tools,
+                "system_message": {"content": personalized_system_message},
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Governance session: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to create governance chat session: {e}",
+            })
+            await websocket.close()
+            return
+
+        gov_key = f"gov-{session_token}"
+        governance_sessions[gov_key] = {
+            "copilot_session": copilot_session,
+            "user_context": user_context,
+            "connected_at": time.time(),
+        }
+        await websocket.send_json({
+            "type": "auth_ok",
+            "user": {
+                "displayName": user_context.display_name,
+                "email": user_context.email,
+                "department": user_context.department,
+                "team": user_context.team,
+            },
+        })
+
+        # ── Step 3: Chat loop ────────────────────────────────
+        while True:
+            data = await websocket.receive_json()
+
+            if data.get("type") == "message":
+                user_message = data.get("content", "").strip()
+                if not user_message:
+                    continue
+
+                # Stream the response
+                response_chunks: list[str] = []
+                done_event = asyncio.Event()
+
+                def on_event(event):
+                    try:
+                        if event.type.value == "assistant.message_delta":
+                            delta = event.data.delta_content or ""
+                            response_chunks.append(delta)
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "delta",
+                                    "content": delta,
+                                })
+                            )
+                        elif event.type.value == "assistant.message":
+                            full_content = event.data.content or ""
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "done",
+                                    "content": full_content,
+                                })
+                            )
+                        elif event.type.value == "tool.call":
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "tool_call",
+                                    "name": tool_name,
+                                    "status": "running",
+                                })
+                            )
+                        elif event.type.value == "tool.result":
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "tool_call",
+                                    "name": tool_name,
+                                    "status": "complete",
+                                })
+                            )
+                        elif event.type.value == "session.idle":
+                            done_event.set()
+                    except Exception as e:
+                        logger.error(f"Governance event handler error: {e}")
+                        done_event.set()
+
+                unsubscribe = copilot_session.on(on_event)
+
+                try:
+                    await copilot_session.send({"prompt": user_message})
+                    await asyncio.wait_for(done_event.wait(), timeout=120)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Request timed out. Please try again.",
+                    })
+                finally:
+                    unsubscribe()
+
+                # Save conversation
+                full_response = "".join(response_chunks)
+                await save_chat_message(session_token, "user", f"[governance] {user_message}")
+                await save_chat_message(session_token, "assistant", f"[governance] {full_response}")
+
+            elif data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info(f"Governance chat disconnected: {user_context.email if user_context else 'unknown'}")
+    except Exception as e:
+        logger.error(f"Governance WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        pass
+
+
 # ── WebSocket Chat ───────────────────────────────────────────
 
 @app.websocket("/ws/chat")
