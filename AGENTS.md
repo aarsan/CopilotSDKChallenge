@@ -237,6 +237,16 @@ These are persistent preferences for how the agent should behave in this workspa
 - **Never commit secrets, logs, or build artifacts.** Respect `.gitignore`.
 - **Check `git status` before ending a session.** All work must be committed.
 
+### Post-Completion Checklist (mandatory after every bug fix or feature)
+After finishing a bug fix or feature, **always verify all three** before considering the work done:
+
+1. **Git clean**: Run `git status` — working tree must be clean, all changes committed.
+2. **Merged to main**: Confirm the commit is on `main` (or merged if using a branch).
+3. **Server running**: Hit `http://localhost:8080/` and confirm a 200 response. If the
+   server is down, restart it with `Start-Process` and verify before reporting completion.
+
+Do NOT report completion until all three checks pass. If any check fails, fix it first.
+
 ### Code Style
 - Don't create markdown summary files after changes unless explicitly asked.
 - Don't announce tool names (e.g., don't say "I'll use multi_replace_string_in_file").
