@@ -10942,6 +10942,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
                 version_num = use_version
                 _draft_semver = _draft.get("semver") or f"{use_version}.0.0"
+                _semver = _draft_semver       # alias used throughout healing + promotion
                 gen_source = _draft.get("created_by") or "draft"
 
                 # Mark version as validating
