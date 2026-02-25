@@ -7401,7 +7401,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             pass
                         return
 
-                # ── Runtime policy check ──────────────────────────
+                # ── Runtime policy check — deploy Azure Policy ──────────
                 yield json.dumps({
                     "type": "progress", "phase": "policy_testing",
                     "step": attempt,
@@ -7409,23 +7409,61 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "progress": 0.68 + (attempt - 1) * 0.15,
                 }) + "\n"
 
+                _update_policy_deployed = False
                 try:
-                    live_resources = await loop.run_in_executor(
-                        None,
-                        lambda: [r.as_dict() for r in client.resources.list_by_resource_group(rg_name)]
-                    )
-                    yield json.dumps({
-                        "type": "progress", "phase": "policy_testing_complete",
-                        "step": attempt,
-                        "detail": f"✓ {len(live_resources)} resource(s) verified in Azure",
-                        "progress": 0.75 + (attempt - 1) * 0.15,
-                    }) + "\n"
+                    # Fetch the service's policy artifact (generated during onboarding)
+                    from src.database import get_service_artifacts as _get_arts
+                    _arts = await _get_arts(service_id)
+                    _policy_content = (_arts.get("policy", {}).get("content") or "").strip()
+                    _policy_obj = None
+                    if _policy_content:
+                        try:
+                            _policy_obj = json.loads(_policy_content)
+                        except Exception:
+                            pass
+
+                    if _policy_obj:
+                        # Deploy policy definition + assignment to the validation RG
+                        from src.tools.policy_deployer import deploy_policy, cleanup_policy
+                        _pol_info = await deploy_policy(
+                            service_id=service_id, run_id=_run_id,
+                            policy_json=_policy_obj, resource_group=rg_name,
+                        )
+                        _update_policy_deployed = True
+
+                        # List deployed resources for compliance verification
+                        live_resources = await loop.run_in_executor(
+                            None,
+                            lambda: [r.as_dict() for r in client.resources.list_by_resource_group(rg_name)]
+                        )
+
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_testing_complete",
+                            "step": attempt,
+                            "detail": (
+                                f"✓ Azure Policy '{_pol_info['definition_name']}' deployed — "
+                                f"{len(live_resources)} resource(s) verified"
+                            ),
+                            "progress": 0.75 + (attempt - 1) * 0.15,
+                        }) + "\n"
+                    else:
+                        # No policy artifact — list resources only
+                        live_resources = await loop.run_in_executor(
+                            None,
+                            lambda: [r.as_dict() for r in client.resources.list_by_resource_group(rg_name)]
+                        )
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_testing_complete",
+                            "step": attempt,
+                            "detail": f"✓ {len(live_resources)} resource(s) verified (no policy artifact to enforce)",
+                            "progress": 0.75 + (attempt - 1) * 0.15,
+                        }) + "\n"
                 except Exception as e:
                     logger.warning(f"Runtime policy check failed: {e}")
                     yield json.dumps({
                         "type": "progress", "phase": "policy_testing_complete",
                         "step": attempt,
-                        "detail": "⚠ Runtime check skipped (non-blocking)",
+                        "detail": f"⚠ Runtime check skipped (non-blocking): {str(e)[:150]}",
                         "progress": 0.75 + (attempt - 1) * 0.15,
                     }) + "\n"
 
@@ -7437,13 +7475,21 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "progress": 0.80,
                 }) + "\n"
 
+                # Clean up Azure Policy assignment + definition
+                if _update_policy_deployed:
+                    try:
+                        from src.tools.policy_deployer import cleanup_policy
+                        await cleanup_policy(service_id, _run_id, rg_name)
+                    except Exception as _cpe:
+                        logger.debug(f"Policy cleanup (non-fatal): {_cpe}")
+
                 try:
                     await loop.run_in_executor(None,
                         lambda: client.resource_groups.begin_delete(rg_name).result())
                     yield json.dumps({
                         "type": "progress", "phase": "cleanup_complete",
                         "step": attempt,
-                        "detail": "✓ Validation resources cleaned up",
+                        "detail": "✓ Validation resources + Azure Policy cleaned up",
                         "progress": 0.88,
                     }) + "\n"
                 except Exception as e:
@@ -9671,6 +9717,35 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                         "progress": att_base + 0.16,
                     }) + "\n"
 
+                # ── 5.5 Deploy Azure Policy to Azure ─────────
+                _val_policy_deployed = False
+                if policy_content:
+                    yield json.dumps({
+                        "type": "progress", "phase": "policy_deploy", "step": attempt,
+                        "detail": f"🛡️ Deploying Azure Policy to enforce governance on {service_id}…",
+                        "progress": att_base + 0.17,
+                    }) + "\n"
+                    try:
+                        _pol_json = json.loads(policy_content) if isinstance(policy_content, str) else policy_content
+                        from src.tools.policy_deployer import deploy_policy
+                        _val_pol_info = await deploy_policy(
+                            service_id=service_id, run_id=_run_id,
+                            policy_json=_pol_json, resource_group=rg_name,
+                        )
+                        _val_policy_deployed = True
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_deploy_complete", "step": attempt,
+                            "detail": f"✓ Azure Policy '{_val_pol_info['definition_name']}' deployed to RG '{rg_name}'",
+                            "progress": att_base + 0.18,
+                        }) + "\n"
+                    except Exception as _pe:
+                        logger.warning(f"Azure Policy deployment failed (non-blocking): {_pe}", exc_info=True)
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_deploy_complete", "step": attempt,
+                            "detail": f"⚠ Azure Policy deployment failed (non-blocking): {str(_pe)[:200]}",
+                            "progress": att_base + 0.18,
+                        }) + "\n"
+
                 # ── 6. Cleanup validation RG ──────────────────
                 yield json.dumps({
                     "type": "progress", "phase": "cleanup", "step": attempt,
@@ -9678,12 +9753,20 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                     "progress": 0.90,
                 }) + "\n"
 
+                # Clean up Azure Policy first
+                if _val_policy_deployed:
+                    try:
+                        from src.tools.policy_deployer import cleanup_policy
+                        await cleanup_policy(service_id, _run_id, rg_name)
+                    except Exception as _cpe:
+                        logger.debug(f"Policy cleanup (non-fatal): {_cpe}")
+
                 await _cleanup_rg(rg_name)
                 deployed_rg = None
 
                 yield json.dumps({
                     "type": "progress", "phase": "cleanup_complete", "step": attempt,
-                    "detail": f"✓ Resource group '{rg_name}' deletion initiated — Azure will remove all validation resources in the background",
+                    "detail": f"✓ Resource group '{rg_name}' + Azure Policy cleaned up",
                     "progress": 0.93,
                 }) + "\n"
 
@@ -9693,6 +9776,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                     "deployed_resources": [{"name": r["name"], "type": r["type"], "location": r["location"]} for r in resource_details],
                     "policy_compliance": policy_results,
                     "all_compliant": all(r["compliant"] for r in policy_results) if policy_results else True,
+                    "policy_deployed_to_azure": _val_policy_deployed,
                     "attempts": attempt,
                     "run_id": _run_id,
                     "resource_group": rg_name,
@@ -10617,6 +10701,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
 
     async def stream_onboarding():
         deployed_rg = None
+        _deployed_policy_info = None  # tracks Azure Policy deployment for cleanup
         version_num = None
         current_template = ""
         standards_ctx = ""  # org standards context for ARM generation
@@ -11557,6 +11642,44 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                         "progress": att_base + 0.30,
                     }) + "\n"
 
+                # ── 6.7 Deploy Azure Policy to Azure ──────────
+                _deployed_policy_info = None
+                if generated_policy:
+                    yield json.dumps({
+                        "type": "progress", "phase": "policy_deploy", "step": attempt,
+                        "detail": f"🛡️ Deploying Azure Policy definition + assignment to enforce governance on {svc['name']}…",
+                        "progress": 0.85,
+                    }) + "\n"
+                    try:
+                        from src.tools.policy_deployer import deploy_policy
+                        _deployed_policy_info = await deploy_policy(
+                            service_id=service_id,
+                            run_id=_run_id,
+                            policy_json=generated_policy,
+                            resource_group=rg_name,
+                        )
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_deploy_complete", "step": attempt,
+                            "detail": (
+                                f"✓ Azure Policy deployed — definition '{_deployed_policy_info['definition_name']}' "
+                                f"assigned to RG '{rg_name}' with deny effect"
+                            ),
+                            "progress": 0.87,
+                        }) + "\n"
+                    except Exception as _pe:
+                        logger.warning(f"Azure Policy deployment failed (non-blocking): {_pe}", exc_info=True)
+                        yield json.dumps({
+                            "type": "progress", "phase": "policy_deploy_complete", "step": attempt,
+                            "detail": f"⚠ Azure Policy deployment failed (non-blocking): {str(_pe)[:200]}",
+                            "progress": 0.87,
+                        }) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "progress", "phase": "policy_deploy_complete", "step": attempt,
+                        "detail": "No Azure Policy generated — skipping policy deployment",
+                        "progress": 0.87,
+                    }) + "\n"
+
                 # ── 7. Cleanup ────────────────────────────────
                 yield json.dumps({
                     "type": "progress", "phase": "cleanup", "step": attempt,
@@ -11564,12 +11687,21 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "progress": 0.90,
                 }) + "\n"
 
+                # Clean up policy assignment + definition alongside RG
+                if _deployed_policy_info:
+                    try:
+                        from src.tools.policy_deployer import cleanup_policy
+                        await cleanup_policy(service_id, _run_id, rg_name)
+                        logger.info(f"Cleaned up Azure Policy for run {_run_id}")
+                    except Exception as _cpe:
+                        logger.debug(f"Policy cleanup (non-fatal): {_cpe}")
+
                 await _cleanup_rg(rg_name)
                 deployed_rg = None
 
                 yield json.dumps({
                     "type": "progress", "phase": "cleanup_complete", "step": attempt,
-                    "detail": f"✓ Validation RG '{rg_name}' deletion initiated",
+                    "detail": f"✓ Validation RG '{rg_name}' + Azure Policy cleaned up",
                     "progress": 0.93,
                 }) + "\n"
 
@@ -11593,6 +11725,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "policy_compliance": policy_results,
                     "all_policy_compliant": all_policy_compliant,
                     "has_runtime_policy": generated_policy is not None,
+                    "policy_deployed_to_azure": _deployed_policy_info is not None,
+                    "policy_deployment": _deployed_policy_info,
                     "attempts": attempt,
                     "heal_history": heal_history,
                 }
@@ -11615,6 +11749,10 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     _pc = sum(1 for r in policy_results if r["compliant"])
                     _policy_str = f", {_pc}/{len(policy_results)} runtime policy check(s) passed"
 
+                _azure_policy_str = ""
+                if _deployed_policy_info:
+                    _azure_policy_str = ", Azure Policy deployed + cleaned up"
+
                 issues_resolved = len(heal_history)
                 heal_msg = f" Resolved {issues_resolved} issue{'s' if issues_resolved != 1 else ''} automatically." if issues_resolved > 0 else ""
                 yield json.dumps({
@@ -11624,7 +11762,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "detail": f"🎉 {svc['name']} v{version_num} approved! "
                               f"{len(resource_details)} resource(s) validated, "
                               f"{report.passed_checks}/{report.total_checks} static policy checks passed"
-                              f"{_policy_str}."
+                              f"{_policy_str}"
+                              f"{_azure_policy_str}."
                               f"{heal_msg}",
                     "progress": 1.0,
                     "summary": validation_summary,
@@ -11651,6 +11790,12 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             except Exception:
                 pass
         finally:
+            if _deployed_policy_info:
+                try:
+                    from src.tools.policy_deployer import cleanup_policy
+                    await cleanup_policy(service_id, _run_id, deployed_rg or rg_name)
+                except Exception:
+                    pass
             if deployed_rg:
                 try:
                     await _cleanup_rg(deployed_rg)

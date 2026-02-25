@@ -1282,6 +1282,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
             what_if: 'What-If…', what_if_complete: 'What-If OK', what_if_failed: 'What-If issue',
             deploying: 'Deploying…', deploy_complete: 'Deployed', deploy_failed: 'Deploy issue',
             policy_testing: 'Compliance…', policy_testing_complete: 'Compliant',
+            policy_deploy: 'Deploying policy…', policy_deploy_complete: 'Policy deployed',
             cleanup: 'Cleaning up…', cleanup_complete: 'Cleaned up',
             promoting: 'Publishing…', fixing_template: 'Healing…',
         };
@@ -1423,6 +1424,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
         { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
         { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
+        { icon: '📜', label: 'Policy Deploy', desc: 'Deploy Azure Policy definition + assignment to enforce governance' },
         { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
     ];
 
@@ -1435,7 +1437,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
         { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
         { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
-        { icon: '🧹', label: 'Cleanup', desc: 'Delete validation resource group' },
+        { icon: '📜', label: 'Policy Deploy', desc: 'Deploy Azure Policy to enforce governance in Azure' },
+        { icon: '🧹', label: 'Cleanup', desc: 'Delete validation resource group + policy' },
         { icon: '✅', label: 'Publish', desc: 'New version promoted to active' },
     ];
 
@@ -2472,6 +2475,7 @@ function _updateTableBadge(event) {
         what_if: 'What-If…', what_if_complete: 'What-If OK', what_if_failed: 'What-If issue',
         deploying: 'Deploying…', deploy_complete: 'Deployed', deploy_failed: 'Deploy issue',
         policy_testing: 'Compliance…', policy_testing_complete: 'Compliant',
+        policy_deploy: 'Deploying policy…', policy_deploy_complete: 'Policy deployed',
         cleanup: 'Cleaning up…', cleanup_complete: 'Cleaned up',
         promoting: 'Publishing…', fixing_template: 'Healing…',
     };
@@ -2545,6 +2549,8 @@ function _handleUpdateEvent(event) {
             else if (event.phase === 'deploy_failed')      icon = '💥';
             else if (event.phase === 'policy_testing')     icon = '🛡️';
             else if (event.phase === 'policy_testing_complete') icon = '✓';
+            else if (event.phase === 'policy_deploy')      icon = '📜';
+            else if (event.phase === 'policy_deploy_complete') icon = '✓';
             else if (event.phase === 'cleanup')            icon = '🧹';
             else if (event.phase === 'cleanup_complete')   icon = '✓';
             else if (event.phase === 'promoting')          icon = '🏆';
@@ -2670,6 +2676,8 @@ function _handleValidationEvent(event) {
             else if (event.phase === 'policy_testing_complete')  icon = '✓';
             else if (event.phase === 'policy_failed')           icon = '❌';
             else if (event.phase === 'policy_skip')             icon = 'ℹ️';
+            else if (event.phase === 'policy_deploy')           icon = '📜';
+            else if (event.phase === 'policy_deploy_complete')  icon = '✓';
             else if (event.phase === 'cleanup' || event.phase === 'cleanup_complete') icon = '🧹';
             else if (event.phase === 'promoting')               icon = '🏆';
             break;
@@ -9505,6 +9513,7 @@ function _renderActivityCard(job) {
         { key: 'deploying', label: 'Deploy', icon: '🚀' },
         { key: 'resource_check', label: 'Verify', icon: '🔎' },
         { key: 'policy_testing', label: 'Policy', icon: '🛡️' },
+        { key: 'policy_deploy', label: 'Enforce', icon: '📜' },
         { key: 'cleanup', label: 'Cleanup', icon: '🧹' },
         { key: 'promoting', label: 'Approve', icon: '🏆' },
     ];
@@ -9518,6 +9527,7 @@ function _renderActivityCard(job) {
         resource_check_warning: 'resource_check',
         policy_testing: 'policy_testing', policy_failed: 'policy_testing',
         policy_skip: 'policy_testing',
+        policy_deploy: 'policy_deploy', policy_deploy_complete: 'policy_deploy',
         cleanup: 'cleanup', cleanup_complete: 'cleanup',
         promoting: 'promoting',
         fixing_template: currentPhase, template_fixed: currentPhase,
@@ -9558,6 +9568,8 @@ function _renderActivityCard(job) {
             policy_testing: '🛡️ Evaluating policy compliance…',
             policy_failed: '⚠️ Policy violation detected',
             policy_skip: 'ℹ️ No policy to evaluate',
+            policy_deploy: '📜 Deploying Azure Policy to enforce governance…',
+            policy_deploy_complete: '✓ Azure Policy deployed + assigned',
             cleanup: '🧹 Cleaning up validation resources…',
             cleanup_complete: '✓ Cleanup initiated',
             promoting: '🏆 Promoting service to approved…',
@@ -9621,6 +9633,8 @@ function _renderActivityCard(job) {
             else if (e.phase === 'resource_check_complete') icon = '✓';
             else if (e.phase === 'policy_testing') icon = '🛡️';
             else if (e.phase === 'policy_failed') icon = '⚠️';
+            else if (e.phase === 'policy_deploy') icon = '📜';
+            else if (e.phase === 'policy_deploy_complete') icon = '✓';
             else if (e.phase === 'cleanup') icon = '🧹';
             else if (e.phase === 'cleanup_complete') icon = '✓';
             else if (e.phase === 'promoting') icon = '🏆';
