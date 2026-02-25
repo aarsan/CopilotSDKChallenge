@@ -1228,30 +1228,117 @@ function applyServiceFilters() {
 let _currentVersions = null;
 let _pendingApiUpdate = null;
 let _pendingApiUpdateTarget = null;  // Target version for the update (null = latest)
-let _apiUpdateAbort = null;  // AbortController for cancelling previous update fetches
+let _apiUpdateAbort = null;  // AbortController for drawer-initiated updates
+let _runningTableUpdates = new Map();  // serviceId → AbortController for concurrent table updates
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion) {
+    // If this service already has a table update running, ignore
+    if (_runningTableUpdates.has(serviceId)) {
+        console.warn('[update] table update already running for', serviceId);
+        return;
+    }
+
     // Immediate visual feedback on the badge
-    _apiUpdateBadgeId = badgeId || null;
-    if (badgeId) {
-        const badge = document.getElementById(badgeId);
-        if (badge) {
-            badge.classList.add('version-update-running');
-            badge.innerHTML = '<span class="update-badge-spinner"></span> Updating…';
-            // Re-wire click to open the detail drawer (observability view)
-            badge.onclick = (e) => { e.stopPropagation(); showServiceDetail(serviceId); };
-            badge.style.pointerEvents = '';
-            badge.title = 'Click to view update progress';
+    const badge = badgeId ? document.getElementById(badgeId) : null;
+    if (badge) {
+        badge.classList.add('version-update-running');
+        badge.innerHTML = '<span class="update-badge-spinner"></span> Updating…';
+        badge.onclick = (e) => { e.stopPropagation(); showServiceDetail(serviceId); };
+        badge.style.pointerEvents = '';
+        badge.title = 'Click to view update progress';
+    }
+
+    // Fire the update directly from the table — no drawer needed
+    const abort = new AbortController();
+    _runningTableUpdates.set(serviceId, abort);
+
+    try {
+        const body = {};
+        if (targetVersion) body.target_version = targetVersion;
+
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/update-api-version`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: abort.signal,
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'API version update failed');
         }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let failed = false;
+
+        const phaseLabels = {
+            checkout: 'Checking out…', checkout_complete: 'Checked out',
+            updating: 'Rewriting…', update_complete: 'Rewritten',
+            saved: 'Saved draft',
+            static_policy_check: 'Policy check…', static_policy_complete: 'Policies OK',
+            static_policy_failed: 'Policy issues',
+            what_if: 'What-If…', what_if_complete: 'What-If OK', what_if_failed: 'What-If issue',
+            deploying: 'Deploying…', deploy_complete: 'Deployed', deploy_failed: 'Deploy issue',
+            policy_testing: 'Compliance…', policy_testing_complete: 'Compliant',
+            cleanup: 'Cleaning up…', cleanup_complete: 'Cleaned up',
+            promoting: 'Publishing…', fixing_template: 'Healing…',
+        };
+
+        const updateBadge = (event) => {
+            if (!badge) return;
+            if (event.type === 'done') {
+                badge.classList.remove('version-update-running');
+                badge.classList.add('version-update-done');
+                badge.innerHTML = '✓ Updated';
+            } else if (event.type === 'error') {
+                badge.classList.remove('version-update-running');
+                badge.classList.add('version-update-error');
+                badge.innerHTML = '⚠ Failed';
+            } else if (event.phase && phaseLabels[event.phase]) {
+                badge.innerHTML = `<span class="update-badge-spinner"></span> ${phaseLabels[event.phase]}`;
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    if (event.type === 'error') failed = true;
+                    updateBadge(event);
+                } catch (e) {}
+            }
+        }
+        if (buffer.trim()) {
+            try {
+                const last = JSON.parse(buffer);
+                if (last.type === 'error') failed = true;
+                updateBadge(last);
+            } catch (e) {}
+        }
+
+        // Refresh data regardless of outcome
+        await loadAllData();
+
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            showToast(`API version update failed: ${err.message}`, 'error');
+        }
+        if (badge) {
+            badge.classList.remove('version-update-running');
+            badge.classList.add('version-update-error');
+            badge.innerHTML = '⚠ Failed';
+        }
+    } finally {
+        _runningTableUpdates.delete(serviceId);
     }
-    // Abort any previous in-flight update so we don't get stuck
-    if (_apiUpdateAbort) {
-        try { _apiUpdateAbort.abort(); } catch (_) {}
-    }
-    _apiUpdateRunning = false;
-    _pendingApiUpdate = serviceId;
-    _pendingApiUpdateTarget = targetVersion || null;
-    await showServiceDetail(serviceId);
 }
 
 async function showServiceDetail(serviceId) {
@@ -1291,14 +1378,6 @@ async function showServiceDetail(serviceId) {
         _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
-        // Auto-trigger API version update if requested from table badge
-        if (_pendingApiUpdate === serviceId) {
-            _pendingApiUpdate = null;
-            const targetVer = _pendingApiUpdateTarget;
-            _pendingApiUpdateTarget = null;
-            // Use requestAnimationFrame for minimal delay — just enough for DOM to settle
-            requestAnimationFrame(() => triggerApiVersionUpdate(serviceId, targetVer));
-        }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
             <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="showServiceDetail('${escapeHtml(serviceId)}')">🔄 Retry</button>`;
