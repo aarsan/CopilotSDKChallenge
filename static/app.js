@@ -3199,6 +3199,18 @@ function showTemplateDetail(templateId) {
                     <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
                 </div>` : ''}
 
+                ${(tmpl.service_ids && tmpl.service_ids.length) ? `
+                <!-- Check for Updates -->
+                <div class="detail-section tmpl-updates-section">
+                    <div class="tmpl-updates-header">
+                        <h4>🔄 Dependency Updates</h4>
+                        <button class="btn btn-sm tmpl-check-updates-btn" id="tmpl-check-updates-btn" onclick="checkForUpdates('${escapeHtml(tmpl.id)}')">
+                            🔍 Check for Updates
+                        </button>
+                    </div>
+                    <div id="tmpl-updates-results"></div>
+                </div>` : ''}
+
                 ${(tmpl.service_ids && tmpl.service_ids.length && status !== 'approved') ? `
                 <div class="detail-section">
                     <a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
@@ -3518,6 +3530,134 @@ async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
     } catch (err) {
         showToast(`Upgrade: ${err.message}`, 'info');
         btns.forEach(b => { b.disabled = false; });
+    }
+}
+
+/** Check for dependency updates — renders a full chain report */
+async function checkForUpdates(templateId) {
+    const btn = document.getElementById('tmpl-check-updates-btn');
+    const resultsDiv = document.getElementById('tmpl-updates-results');
+    if (!btn || !resultsDiv) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Checking…';
+    resultsDiv.innerHTML = '<div class="compose-loading">Analyzing dependency chain…</div>';
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`);
+        if (!res.ok) throw new Error('Failed to fetch composition data');
+        const data = await res.json();
+
+        const components = data.components || [];
+        const edges = data.edges || [];
+        const requires = data.requires || [];
+
+        if (!components.length) {
+            resultsDiv.innerHTML = '<div class="compose-empty">No service dependencies found.</div>';
+            return;
+        }
+
+        // Build dependency map for chain visualization
+        const depsOf = {};  // service_id → [depends-on service_ids]
+        for (const e of edges) {
+            if (!depsOf[e.from]) depsOf[e.from] = [];
+            depsOf[e.from].push({ to: e.to, reason: e.reason, required: e.required });
+        }
+
+        const updatable = components.filter(c => c.upgrade_available);
+        const upToDate = components.filter(c => !c.upgrade_available);
+
+        // Summary banner
+        let html = '';
+        if (updatable.length) {
+            html += `
+                <div class="upd-summary upd-summary-has-updates">
+                    <span class="upd-summary-icon">⚠️</span>
+                    <span><strong>${updatable.length}</strong> of ${components.length} dependencies have updates available</span>
+                </div>`;
+        } else {
+            html += `
+                <div class="upd-summary upd-summary-current">
+                    <span class="upd-summary-icon">✅</span>
+                    <span>All ${components.length} dependencies are up to date</span>
+                </div>`;
+        }
+
+        // Dependency chain details
+        html += '<div class="upd-chain">';
+
+        // Sort: updatable first, then up-to-date
+        const sorted = [...updatable, ...upToDate];
+        for (const c of sorted) {
+            const shortName = c.name || c.service_id.split('/').pop();
+            const deps = depsOf[c.service_id] || [];
+            const statusCls = c.upgrade_available ? 'upd-item-outdated' : 'upd-item-current';
+
+            html += `
+                <div class="upd-chain-item ${statusCls}">
+                    <div class="upd-chain-row">
+                        <div class="upd-chain-icon">${_azureIcon(c.service_id, 20)}</div>
+                        <div class="upd-chain-info">
+                            <div class="upd-chain-name">${escapeHtml(shortName)}</div>
+                            <div class="upd-chain-versions">
+                                <span class="upd-chain-ver-current">📌 ${c.current_semver || '—'}</span>
+                                ${c.upgrade_available ? `<span class="upd-chain-arrow">→</span><span class="upd-chain-ver-latest">${c.latest_semver}</span>` : '<span class="upd-chain-ver-ok">✓ latest</span>'}
+                            </div>
+                        </div>
+                        <div class="upd-chain-actions">
+                            ${c.upgrade_available
+                                ? `<button class="dep-upgrade-btn" onclick="upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')">⬆ Upgrade</button>`
+                                : '<span class="upd-chain-badge-ok">Current</span>'}
+                        </div>
+                    </div>
+                    ${deps.length ? `
+                    <div class="upd-chain-deps">
+                        ${deps.map(d => {
+                            const depComp = components.find(x => x.service_id === d.to);
+                            const depName = depComp ? (depComp.name || d.to.split('/').pop()) : d.to.split('/').pop();
+                            return `<span class="upd-chain-dep-link" title="${escapeHtml(d.reason)}">${d.required ? '🔗' : '🔹'} depends on <strong>${escapeHtml(depName)}</strong></span>`;
+                        }).join('')}
+                    </div>` : ''}
+                </div>`;
+        }
+
+        // External dependencies
+        if (requires.length) {
+            html += `
+                <div class="upd-chain-ext-header">External Dependencies</div>
+                ${requires.map(r => {
+                    const rType = r.type || r;
+                    return `
+                    <div class="upd-chain-item upd-item-ext">
+                        <div class="upd-chain-row">
+                            <div class="upd-chain-icon">${_azureIcon(rType, 20)}</div>
+                            <div class="upd-chain-info">
+                                <div class="upd-chain-name">${_shortType(rType)}</div>
+                                <div class="upd-chain-versions"><span class="upd-chain-ver-ext">resolved at deploy time</span></div>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('')}`;
+        }
+
+        html += '</div>';
+
+        // Upgrade all button
+        if (updatable.length) {
+            html += `
+                <div class="upd-chain-actions-footer">
+                    <button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">
+                        🔄 Upgrade All (${updatable.length} update${updatable.length > 1 ? 's' : ''})
+                    </button>
+                </div>`;
+        }
+
+        resultsDiv.innerHTML = html;
+    } catch (err) {
+        resultsDiv.innerHTML = `<div class="compose-empty">Failed: ${err.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔍 Check for Updates';
     }
 }
 
