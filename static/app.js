@@ -1429,7 +1429,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
     // Update pipeline steps (shown when API version update available)
     const updatePipelineSteps = [
         { icon: '📥', label: 'Checkout', desc: 'Read current active ARM template' },
-        { icon: '🔄', label: 'Update', desc: 'Rewrite API version references to latest Azure version' },
+        { icon: '🧠', label: 'Plan', desc: 'Reasoning model analyzes breaking changes between API versions' },
+        { icon: '⚡', label: 'Execute', desc: 'Code gen model rewrites template guided by migration plan' },
         { icon: '📋', label: 'Static Check', desc: 'Static validation against org governance policies' },
         { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
         { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },

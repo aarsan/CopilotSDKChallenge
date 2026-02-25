@@ -6766,8 +6766,30 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
     async def _stream():
         from src.copilot_helpers import copilot_send
+        from src.agents import LLM_REASONER, TEMPLATE_HEALER
 
         try:  # ← top-level error wrapper for the entire stream
+
+            # ═══════════════════════════════════════════════════
+            # PHASE 0: MODEL ROUTING
+            # ═══════════════════════════════════════════════════
+            _routing = {
+                "planning":        {"model": get_model_for_task(Task.PLANNING),        "display": get_model_display(Task.PLANNING),        "reason": get_task_reason(Task.PLANNING)},
+                "code_generation": {"model": get_model_for_task(Task.CODE_GENERATION), "display": get_model_display(Task.CODE_GENERATION), "reason": get_task_reason(Task.CODE_GENERATION)},
+                "code_fixing":     {"model": get_model_for_task(Task.CODE_FIXING),     "display": get_model_display(Task.CODE_FIXING),     "reason": get_task_reason(Task.CODE_FIXING)},
+            }
+            yield json.dumps({
+                "type": "progress", "phase": "init_model",
+                "detail": "🤖 Model routing configured — PLAN→EXECUTE pattern for API version migration",
+                "progress": 0.01,
+                "model_routing": _routing,
+            }) + "\n"
+            for task_key, info in _routing.items():
+                yield json.dumps({
+                    "type": "llm_reasoning", "phase": "init_model",
+                    "detail": f"  {task_key}: {info['display']} — {info['reason'][:80]}",
+                    "progress": 0.01,
+                }) + "\n"
 
             # ── Step 1: Checkout ──────────────────────────────────
             yield json.dumps({
@@ -6814,34 +6836,187 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "target_api_version": target_api,
             }) + "\n"
 
-            # ── Step 2: Update API Version (direct JSON replacement) ──
+            # ═══════════════════════════════════════════════════
+            # STEP 2: PLAN — Reasoning model analyzes migration
+            # ═══════════════════════════════════════════════════
+            #
+            # o3-mini reasons about what changes are needed beyond the
+            # apiVersion field: renamed properties, new required fields,
+            # deprecated features, schema changes between API versions.
+
+            _plan_model = get_model_display(Task.PLANNING)
             yield json.dumps({
-                "type": "progress", "phase": "updating",
-                "detail": f"Updating API version from {current_api} → {target_api}…",
+                "type": "progress", "phase": "planning",
+                "detail": f"🧠 PLAN phase — {_plan_model} analyzing migration from {current_api} → {target_api}…",
                 "progress": 0.10,
             }) + "\n"
 
-            # Direct replacement — no LLM needed for apiVersion field changes
-            def _update_api_versions(resources_list, target_api):
-                """Recursively update apiVersion on all resources."""
-                count = 0
-                for r in resources_list:
-                    if isinstance(r, dict) and "apiVersion" in r:
-                        r["apiVersion"] = target_api
-                        count += 1
-                    # Handle nested resources
-                    if isinstance(r, dict) and "resources" in r:
-                        count += _update_api_versions(r["resources"], target_api)
-                return count
+            # Collect resource types for targeted analysis
+            resource_types = sorted({
+                r.get("type", "unknown") for r in resources
+                if isinstance(r, dict) and r.get("type")
+            })
 
-            updated_count = _update_api_versions(tpl.get("resources", []), target_api)
-            updated_template = json.dumps(tpl, indent=2)
+            planning_prompt = (
+                f"You are analyzing an Azure ARM template API version migration.\n\n"
+                f"**Current API version:** {current_api}\n"
+                f"**Target API version:**  {target_api}\n"
+                f"**Resource types in template:** {', '.join(resource_types)}\n"
+                f"**Resource count:** {len(resources)}\n\n"
+                f"--- CURRENT ARM TEMPLATE ---\n{original_template}\n--- END TEMPLATE ---\n\n"
+                "Analyze this migration and produce a structured migration plan:\n\n"
+                "## Required Output Sections:\n"
+                "1. **Breaking Changes**: Are there any known breaking changes between these "
+                "API versions for these resource types? List property renames, removals, "
+                "new required fields, or behavioral changes.\n"
+                "2. **Property Updates**: Specific properties that need to change beyond just "
+                "the apiVersion field. Include the resource type, old property path, new "
+                "property path, and reason.\n"
+                "3. **Safe to Swap**: Which resources can safely have their apiVersion updated "
+                "with no other changes.\n"
+                "4. **Risk Assessment**: Rate the migration risk (low/medium/high) and explain.\n"
+                "5. **Migration Steps**: Ordered list of specific changes to make.\n"
+                "6. **Validation Criteria**: What should pass after the migration.\n\n"
+                "Be concrete and specific — include actual property names and values. "
+                "This plan will be handed to a code generation model to execute.\n\n"
+                "If you're uncertain about breaking changes for a specific API version, "
+                "note the uncertainty but still provide your best assessment based on "
+                "Azure ARM template patterns and common API evolution.\n"
+            )
 
-            yield json.dumps({
-                "type": "progress", "phase": "update_complete",
-                "detail": f"✓ Updated {updated_count} resource apiVersion(s) to {target_api}",
-                "progress": 0.20,
-            }) + "\n"
+            migration_plan = ""
+            try:
+                _plan_client = await ensure_copilot_client()
+                if _plan_client:
+                    migration_plan = await copilot_send(
+                        _plan_client,
+                        model=get_model_for_task(Task.PLANNING),
+                        system_prompt=LLM_REASONER.system_prompt,
+                        prompt=planning_prompt,
+                        timeout=90,
+                    )
+            except Exception as e:
+                logger.warning(f"Planning phase failed (non-fatal): {e}")
+                migration_plan = ""
+
+            # Stream the planning output line by line
+            for line in migration_plan.split("\n"):
+                line = line.strip()
+                if line:
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "planning",
+                        "detail": line,
+                        "progress": 0.14,
+                    }) + "\n"
+
+            if migration_plan:
+                yield json.dumps({
+                    "type": "progress", "phase": "planning_complete",
+                    "detail": f"✓ Migration plan complete ({len(migration_plan)} chars) — handing to code generation model",
+                    "progress": 0.16,
+                }) + "\n"
+            else:
+                yield json.dumps({
+                    "type": "progress", "phase": "planning_complete",
+                    "detail": f"⚠️ Planning phase returned no response — falling back to direct apiVersion swap",
+                    "progress": 0.16,
+                }) + "\n"
+
+            # ═══════════════════════════════════════════════════
+            # STEP 3: EXECUTE — Code gen model applies migration
+            # ═══════════════════════════════════════════════════
+            #
+            # If we have a migration plan, use claude-sonnet-4 to rewrite
+            # the template guided by the plan. Otherwise fall back to the
+            # simple deterministic apiVersion swap.
+
+            _gen_model = get_model_display(Task.CODE_GENERATION)
+            updated_template = None
+
+            if migration_plan:
+                yield json.dumps({
+                    "type": "progress", "phase": "executing",
+                    "detail": f"⚡ EXECUTE phase — {_gen_model} rewriting template guided by migration plan…",
+                    "progress": 0.17,
+                }) + "\n"
+
+                execute_prompt = (
+                    f"Rewrite the following ARM template to migrate from API version "
+                    f"{current_api} to {target_api}.\n\n"
+                    f"--- MIGRATION PLAN (follow this precisely) ---\n"
+                    f"{migration_plan}\n"
+                    f"--- END MIGRATION PLAN ---\n\n"
+                    f"--- CURRENT ARM TEMPLATE ---\n{original_template}\n--- END TEMPLATE ---\n\n"
+                    "Apply ALL changes from the migration plan:\n"
+                    "1. Update all apiVersion fields to the target version\n"
+                    "2. Apply any property renames, additions, or removals identified in the plan\n"
+                    "3. Keep all parameter defaultValues intact\n"
+                    "4. Preserve the template's intent and resource structure\n"
+                    "5. Ensure the result is valid ARM template JSON\n\n"
+                    "Return ONLY the complete, corrected ARM template JSON — no markdown "
+                    "fences, no explanation, no commentary."
+                )
+
+                try:
+                    _exec_client = await ensure_copilot_client()
+                    if _exec_client:
+                        raw = await copilot_send(
+                            _exec_client,
+                            model=get_model_for_task(Task.CODE_GENERATION),
+                            system_prompt=(
+                                "You are an expert Azure ARM template engineer. "
+                                "You receive a migration plan and an existing template. "
+                                "You produce the updated template following the plan precisely. "
+                                "Return ONLY valid JSON — no markdown, no explanation."
+                            ),
+                            prompt=execute_prompt,
+                            timeout=90,
+                        )
+                        cleaned = raw.strip()
+                        if cleaned.startswith("```"):
+                            lines = cleaned.split("\n")
+                            cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                        if cleaned.startswith("json"):
+                            cleaned = cleaned[4:].strip()
+                        # Validate it's valid JSON
+                        json.loads(cleaned)
+                        updated_template = cleaned
+
+                        yield json.dumps({
+                            "type": "progress", "phase": "execute_complete",
+                            "detail": f"✓ {_gen_model} rewrote template with migration plan applied",
+                            "progress": 0.20,
+                        }) + "\n"
+                except Exception as e:
+                    logger.warning(f"EXECUTE phase failed, falling back to direct swap: {e}")
+                    yield json.dumps({
+                        "type": "progress", "phase": "execute_fallback",
+                        "detail": f"⚠️ Code generation failed ({str(e)[:100]}) — falling back to direct apiVersion swap",
+                        "progress": 0.18,
+                    }) + "\n"
+                    updated_template = None
+
+            # Fallback: deterministic apiVersion swap
+            if updated_template is None:
+                def _update_api_versions(resources_list, target_api):
+                    """Recursively update apiVersion on all resources."""
+                    count = 0
+                    for r in resources_list:
+                        if isinstance(r, dict) and "apiVersion" in r:
+                            r["apiVersion"] = target_api
+                            count += 1
+                        if isinstance(r, dict) and "resources" in r:
+                            count += _update_api_versions(r["resources"], target_api)
+                    return count
+
+                updated_count = _update_api_versions(tpl.get("resources", []), target_api)
+                updated_template = json.dumps(tpl, indent=2)
+
+                yield json.dumps({
+                    "type": "progress", "phase": "update_complete",
+                    "detail": f"✓ Direct swap: updated {updated_count} resource apiVersion(s) to {target_api}",
+                    "progress": 0.20,
+                }) + "\n"
 
             # Ensure parameter defaults
             updated_template = _ensure_parameter_defaults(updated_template)
@@ -6872,14 +7047,16 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 region=region,
             )
 
+            _gen_source = f"copilot-healed" if migration_plan else f"api-version-update"
+
             ver = await create_service_version(
                 service_id,
                 arm_template=updated_template,
                 version=new_ver,
                 semver=new_semver,
                 status="draft",
-                changelog=f"API version updated: {current_api} → {target_api}",
-                created_by=f"api-version-update ({model_id})",
+                changelog=f"API version updated: {current_api} → {target_api}" + (" (PLAN→EXECUTE)" if migration_plan else " (direct swap)"),
+                created_by=_gen_source,
             )
 
             yield json.dumps({
@@ -6889,14 +7066,24 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "version": new_ver, "semver": new_semver,
             }) + "\n"
 
-            # ── Step 3+: Validation loop (same as onboarding) ─────
-            # Reuse the same validate→what-if→deploy→policy→cleanup→promote pattern
-            # Copilot SDK is only used for auto-healing when validation fails
+            # ── Validation loop: validate→what-if→deploy→policy→cleanup→promote ─
+            # Copilot SDK auto-healing with migration plan context and heal history
             _client = None  # lazy-init only when healing needed
+            heal_history: list[dict] = []  # track previous attempts to avoid repeating the same fix
 
             arm_template = updated_template
             attempt = 0
             promoted = False
+
+            # Build migration context string for healers
+            _migration_ctx = ""
+            if migration_plan:
+                _migration_ctx = (
+                    f"\n\n--- MIGRATION CONTEXT ---\n"
+                    f"This template is being migrated from API version {current_api} to {target_api}.\n"
+                    f"Migration plan:\n{migration_plan[:2000]}\n"
+                    f"--- END MIGRATION CONTEXT ---\n"
+                )
 
             while attempt < MAX_HEAL_ATTEMPTS and not promoted:
                 attempt += 1
@@ -6947,17 +7134,31 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                                 _client = await ensure_copilot_client()
                             if not _client:
                                 continue
-                            fix_prompt = build_remediation_prompt(arm_template, violations)
+                            fix_prompt = build_remediation_prompt(arm_template, violations) + _migration_ctx
+                            if heal_history:
+                                fix_prompt += "\n\n--- PREVIOUS ATTEMPTS (do NOT repeat) ---\n"
+                                for pa in heal_history:
+                                    fix_prompt += f"Step {pa.get('step','?')}: {pa['error'][:200]} → {pa['fix_summary']}\n"
+                                fix_prompt += "--- END PREVIOUS ATTEMPTS ---\n"
                             fix_model = get_model_for_task(Task.CODE_FIXING)
+                            _fix_display = get_model_display(Task.CODE_FIXING)
+                            yield json.dumps({
+                                "type": "llm_reasoning", "phase": "healing",
+                                "step": attempt,
+                                "detail": f"🔧 {_fix_display} fixing policy violations with migration context…",
+                                "progress": 0.33 + (attempt - 1) * 0.15,
+                            }) + "\n"
                             raw = await copilot_send(_client, model=fix_model,
-                                system_prompt="Fix the ARM template to resolve policy violations. Return ONLY valid JSON.",
+                                system_prompt=TEMPLATE_HEALER.system_prompt,
                                 prompt=fix_prompt, timeout=90)
                             cleaned = raw.strip()
                             if cleaned.startswith("```"):
                                 lines = cleaned.split("\n")
                                 cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
                             json.loads(cleaned)
+                            _pre_template = arm_template
                             arm_template = cleaned
+                            heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": "; ".join(str(v) for v in violations[:3]), "fix_summary": f"Fixed {len(violations)} policy violation(s)"})
                             await update_service_version_template(service_id, new_ver, arm_template)
                             yield json.dumps({
                                 "type": "healing_done", "phase": "template_fixed",
@@ -7054,16 +7255,29 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ What-If failed — no Copilot client for healing", "progress": 1.0}) + "\n"
                             return
                         fix_model = get_model_for_task(Task.CODE_FIXING)
+                        _fix_display = get_model_display(Task.CODE_FIXING)
+                        heal_prompt = f"This ARM template failed What-If:\n\nERROR:\n{what_if_error}\n\nTEMPLATE:\n{arm_template}{_migration_ctx}"
+                        if heal_history:
+                            heal_prompt += "\n\n--- PREVIOUS ATTEMPTS (do NOT repeat) ---\n"
+                            for pa in heal_history:
+                                heal_prompt += f"Step {pa.get('step','?')}: {pa['error'][:200]} → {pa['fix_summary']}\n"
+                            heal_prompt += "--- END PREVIOUS ATTEMPTS ---\n"
+                        yield json.dumps({
+                            "type": "llm_reasoning", "phase": "healing",
+                            "step": attempt,
+                            "detail": f"🔧 {_fix_display} fixing What-If failure with migration context…",
+                            "progress": 0.46 + (attempt - 1) * 0.15,
+                        }) + "\n"
                         raw = await copilot_send(_client, model=fix_model,
-                            system_prompt="Fix the ARM template so it passes Azure What-If validation. Return ONLY valid JSON.",
-                            prompt=f"This ARM template failed What-If:\n\nERROR:\n{what_if_error}\n\nTEMPLATE:\n{arm_template}",
-                            timeout=90)
+                            system_prompt=TEMPLATE_HEALER.system_prompt,
+                            prompt=heal_prompt, timeout=90)
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
                             cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
                         json.loads(cleaned)
                         arm_template = cleaned
+                        heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": what_if_error[:300], "fix_summary": "Fixed What-If validation failure"})
                         await update_service_version_template(service_id, new_ver, arm_template)
                         yield json.dumps({
                             "type": "healing_done", "phase": "template_fixed",
@@ -7140,9 +7354,22 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ Deployment failed — no Copilot client for healing", "progress": 1.0}) + "\n"
                             return
                         fix_model = get_model_for_task(Task.CODE_FIXING)
+                        _fix_display = get_model_display(Task.CODE_FIXING)
+                        deploy_heal_prompt = f"This ARM template failed deployment:\n\nERROR:\n{deploy_error}\n\nTEMPLATE:\n{arm_template}{_migration_ctx}"
+                        if heal_history:
+                            deploy_heal_prompt += "\n\n--- PREVIOUS ATTEMPTS (do NOT repeat) ---\n"
+                            for pa in heal_history:
+                                deploy_heal_prompt += f"Step {pa.get('step','?')}: {pa['error'][:200]} → {pa['fix_summary']}\n"
+                            deploy_heal_prompt += "--- END PREVIOUS ATTEMPTS ---\n"
+                        yield json.dumps({
+                            "type": "llm_reasoning", "phase": "healing",
+                            "step": attempt,
+                            "detail": f"🔧 {_fix_display} fixing deployment failure with migration context…",
+                            "progress": 0.63 + (attempt - 1) * 0.15,
+                        }) + "\n"
                         raw = await copilot_send(_client, model=fix_model,
-                            system_prompt="Fix the ARM template so it deploys successfully. Return ONLY valid JSON.",
-                            prompt=f"This ARM template failed deployment:\n\nERROR:\n{deploy_error}\n\nTEMPLATE:\n{arm_template}",
+                            system_prompt=TEMPLATE_HEALER.system_prompt,
+                            prompt=deploy_heal_prompt,
                             timeout=90)
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
@@ -7150,6 +7377,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
                         json.loads(cleaned)
                         arm_template = cleaned
+                        heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": deploy_error[:300], "fix_summary": "Fixed deployment failure"})
                         await update_service_version_template(service_id, new_ver, arm_template)
                         yield json.dumps({
                             "type": "healing_done", "phase": "template_fixed",
