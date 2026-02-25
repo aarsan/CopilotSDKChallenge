@@ -1617,6 +1617,151 @@ body {
     color: var(--accent-blue, #58a6ff);
 }
 
+.comp-verlog-btn-logs {
+    border-color: #a78bfa;
+    color: #a78bfa;
+}
+.comp-verlog-btn-logs:hover {
+    background: color-mix(in srgb, #a78bfa 12%, transparent);
+    border-color: #8b5cf6;
+    color: #8b5cf6;
+}
+
+/* ── Remediation Log Modal ── */
+.rlog-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(3px);
+}
+.rlog-modal {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    width: min(680px, 92vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.rlog-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.85rem 1.1rem;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.rlog-modal-title {
+    font-weight: 700;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+}
+.rlog-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+}
+.rlog-modal-close:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+.rlog-modal-body {
+    overflow-y: auto;
+    padding: 0.75rem 1rem;
+    flex: 1;
+}
+
+/* Step blocks */
+.rlog-step {
+    margin-bottom: 0.35rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.rlog-step-header {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.7rem;
+    cursor: pointer;
+    background: var(--bg-secondary);
+    transition: background 0.15s ease;
+    user-select: none;
+}
+.rlog-step-header:hover {
+    background: var(--bg-tertiary);
+}
+.rlog-step-icon {
+    font-size: 0.7rem;
+}
+.rlog-step-icon.rlog-ok { color: var(--accent-green); }
+.rlog-step-icon.rlog-fail { color: var(--accent-red); }
+.rlog-step-icon.rlog-warn { color: var(--accent-yellow); }
+.rlog-step-icon.rlog-skip { color: var(--text-muted); }
+.rlog-step-label {
+    font-weight: 600;
+    font-size: 0.76rem;
+    color: var(--text-primary);
+    text-transform: capitalize;
+}
+.rlog-step-dur {
+    margin-left: auto;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.rlog-step-arrow {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+}
+.rlog-step.rlog-expanded .rlog-step-arrow {
+    transform: rotate(90deg);
+}
+.rlog-step-body {
+    display: none;
+    padding: 0.35rem 0.7rem 0.5rem;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-subtle);
+    max-height: 240px;
+    overflow-y: auto;
+}
+.rlog-step.rlog-expanded .rlog-step-body {
+    display: block;
+}
+
+/* Log lines */
+.rlog-line {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.12rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+.rlog-ts {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    font-size: 0.66rem;
+    opacity: 0.7;
+}
+.rlog-msg {
+    word-break: break-word;
+}
+.rlog-line-err { color: var(--accent-red); }
+.rlog-line-warn { color: var(--accent-yellow); }
+.rlog-line-empty { color: var(--text-muted); font-style: italic; }
+
 /* Diff viewer inside version history items */
 .comp-verlog-item .diff-viewer {
     margin-top: 0.45rem;

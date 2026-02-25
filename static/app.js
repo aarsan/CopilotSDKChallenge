@@ -2690,6 +2690,7 @@ async function _loadTemplateVersionHistory(templateId) {
             const changeLabel = _inferChangeType(v.created_by, v.changelog);
             const dateStr = v.created_at ? v.created_at.substring(0, 10) : '';
             const hasTemplate = (v.template_size_bytes || 0) > 0;
+            const hasLogs = !!v.has_remediation_log;
             const tid = escapeHtml(templateId);
             // Previous version for diff — sorted is newest-first, so prev is idx+1
             const prevVersion = idx < sorted.length - 1 ? sorted[idx + 1].version : null;
@@ -2703,6 +2704,7 @@ async function _loadTemplateVersionHistory(templateId) {
                         ${changeLabel ? `<span class="comp-verlog-change">${changeLabel}</span>` : ''}
                         <span class="comp-verlog-date">${dateStr}</span>
                         <span class="comp-verlog-actions">
+                            ${hasLogs ? `<button class="comp-verlog-btn comp-verlog-btn-logs" onclick="viewRemediationLog('${tid}', ${v.version})" title="View remediation pipeline logs">📋 Logs</button>` : ''}
                             ${hasTemplate && prevVersion != null ? `<button class="comp-verlog-btn comp-verlog-btn-diff" onclick="toggleVersionDiff(this, '${tid}', ${prevVersion}, ${v.version})" title="Diff against previous version">± Diff</button>` : ''}
                             ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-view" onclick="viewCatalogTemplateVersion('${tid}', ${v.version})" title="View ARM template">👁 View</button>` : ''}
                             ${hasTemplate ? `<button class="comp-verlog-btn comp-verlog-btn-deploy" onclick="deployCatalogTemplateVersion('${tid}', ${v.version}, '${semverDisplay}')" title="Deploy this version">🚀 Deploy</button>` : ''}
@@ -2715,6 +2717,99 @@ async function _loadTemplateVersionHistory(templateId) {
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
     }
+}
+
+/* ── Remediation Log Viewer ────────────────────────────────── */
+
+async function viewRemediationLog(templateId, version) {
+    // Fetch the full version detail including remediation_log
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/versions/${version}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const vr = data.validation_results || {};
+        const logEvents = vr.remediation_log || [];
+        if (!logEvents.length) {
+            showToast('No remediation logs found for this version.', 'info');
+            return;
+        }
+
+        _showRemediationLogModal(data, logEvents);
+    } catch (err) {
+        showToast(`Failed to load logs: ${err.message}`, 'error');
+    }
+}
+
+function _showRemediationLogModal(versionData, logEvents) {
+    // Remove existing modal if any
+    const old = document.getElementById('remediation-log-modal');
+    if (old) old.remove();
+
+    const semver = versionData.semver || `${versionData.version}.0.0`;
+
+    // Group events by step_id to show structured pipeline
+    const steps = [];
+    const stepMap = {};
+    for (const evt of logEvents) {
+        const sid = evt.step_id || 'unknown';
+        if (!stepMap[sid]) {
+            stepMap[sid] = { id: sid, status: 'running', logs: [], started: evt.timestamp, duration_ms: 0 };
+            steps.push(stepMap[sid]);
+        }
+        const step = stepMap[sid];
+        if (evt.type === 'step_start') {
+            step.started = evt.timestamp;
+        } else if (evt.type === 'step_log') {
+            step.logs.push(evt);
+        } else if (evt.type === 'step_end') {
+            step.status = evt.status || 'success';
+            step.duration_ms = evt.duration_ms || 0;
+        }
+    }
+
+    const statusIcon = { success: '●', failed: '●', warning: '●', skipped: '○', running: '⏳' };
+    const statusClass = { success: 'rlog-ok', failed: 'rlog-fail', warning: 'rlog-warn', skipped: 'rlog-skip' };
+
+    const stepsHtml = steps.map(step => {
+        const label = step.id.replace(/^job-\d+-/, '');
+        const icon = statusIcon[step.status] || '●';
+        const cls = statusClass[step.status] || 'rlog-ok';
+        const dur = step.duration_ms > 0 ? `${(step.duration_ms / 1000).toFixed(1)}s` : '';
+
+        const logsHtml = step.logs.map(l => {
+            const lvl = l.level === 'error' ? 'rlog-line-err' : l.level === 'warning' ? 'rlog-line-warn' : '';
+            const ts = l.timestamp ? l.timestamp.substring(11, 19) : '';
+            return `<div class="rlog-line ${lvl}"><span class="rlog-ts">${ts}</span><span class="rlog-msg">${escapeHtml(l.message)}</span></div>`;
+        }).join('');
+
+        return `
+            <div class="rlog-step ${cls}">
+                <div class="rlog-step-header" onclick="this.parentElement.classList.toggle('rlog-expanded')">
+                    <span class="rlog-step-icon ${cls}">${icon}</span>
+                    <span class="rlog-step-label">${escapeHtml(label)}</span>
+                    ${dur ? `<span class="rlog-step-dur">${dur}</span>` : ''}
+                    <span class="rlog-step-arrow">▸</span>
+                </div>
+                <div class="rlog-step-body">${logsHtml || '<div class="rlog-line rlog-line-empty">No log output</div>'}</div>
+            </div>`;
+    }).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'remediation-log-modal';
+    modal.className = 'rlog-modal-overlay';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `
+        <div class="rlog-modal">
+            <div class="rlog-modal-header">
+                <span class="rlog-modal-title">📋 Remediation Log — v${escapeHtml(semver)}</span>
+                <button class="rlog-modal-close" onclick="document.getElementById('remediation-log-modal').remove()">✕</button>
+            </div>
+            <div class="rlog-modal-body">
+                ${stepsHtml}
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
 }
 
 /** Toggle the pipeline visualization for a version item */
