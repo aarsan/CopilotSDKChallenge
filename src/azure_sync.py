@@ -414,11 +414,22 @@ async def sync_azure_services(
                 if loc and loc.lower() not in {"global", ""}
             ))
 
+            # Extract API versions (newest-first from Azure)
+            api_versions_list = rt.api_versions or []
+            # Latest stable = first non-preview version; fallback to first overall
+            latest_stable = next(
+                (v for v in api_versions_list if "preview" not in v.lower()),
+                api_versions_list[0] if api_versions_list else None,
+            )
+            default_ver = getattr(rt, "default_api_version", None)
+
             discovered.append({
                 "id": service_id,
                 "name": friendly,
                 "category": category,
                 "azure_locations": locations,
+                "latest_api_version": latest_stable,
+                "default_api_version": default_ver,
             })
 
     logger.info(
@@ -429,7 +440,7 @@ async def sync_azure_services(
     await _emit({"phase": "filtering", "detail": f"Found {len(discovered)} resource types ({skipped} noise filtered out)", "progress": 0.55, "discovered": len(discovered), "skipped": skipped})
 
     # ── 3. Upsert into DB (only new services) ────────────────
-    from src.database import get_all_services, bulk_insert_services
+    from src.database import get_all_services, bulk_insert_services, bulk_update_api_versions
 
     existing_services = await get_all_services()
     existing_ids = {svc["id"] for svc in existing_services}
@@ -467,6 +478,19 @@ async def sync_azure_services(
 
     logger.info(f"Sync complete: {new_count} new services added, {len(existing_ids)} unchanged")
 
+    # ── 4. Update API versions for ALL discovered services ───
+    api_updates = [
+        {
+            "id": svc["id"],
+            "latest_api_version": svc.get("latest_api_version"),
+            "default_api_version": svc.get("default_api_version"),
+        }
+        for svc in discovered
+        if svc.get("latest_api_version")
+    ]
+    api_updated = await bulk_update_api_versions(api_updates)
+    logger.info(f"API versions updated for {api_updated} services")
+
     summary = {
         "subscription_id": subscription_id,
         "providers_scanned": len(providers),
@@ -475,6 +499,7 @@ async def sync_azure_services(
         "new_services_added": new_count,
         "existing_unchanged": len(existing_ids),
         "total_in_catalog": len(existing_ids) + new_count,
+        "api_versions_updated": api_updated,
     }
     await _emit({"phase": "done", "detail": "Sync complete!", "progress": 1.0, **summary})
     return summary

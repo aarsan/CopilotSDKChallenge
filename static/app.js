@@ -1081,7 +1081,7 @@ async function showServiceDetail(serviceId) {
         }
         const data = await versionsRes.json();
         _currentVersions = data.versions || [];
-        _renderVersionedWorkflow(svc, _currentVersions, data.active_version);
+        _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
     } catch (err) {
@@ -1090,7 +1090,23 @@ async function showServiceDetail(serviceId) {
     }
 }
 
-function _renderVersionedWorkflow(svc, versions, activeVersion) {
+function _renderApiVersionAdvisory(status) {
+    if (!status || !status.newer_available) return '';
+    return `
+        <div class="api-version-advisory">
+            <div class="api-version-advisory-icon">ℹ️</div>
+            <div class="api-version-advisory-body">
+                <div class="api-version-advisory-title">Newer Azure API version available</div>
+                <div class="api-version-advisory-detail">
+                    Template uses <code>${escapeHtml(status.template_api_version)}</code>
+                    — Azure now offers <code>${escapeHtml(status.latest_stable)}</code>${status.default ? ` (default: <code>${escapeHtml(status.default)}</code>)` : ''}.
+                    Re-onboarding will pick up the latest version automatically.
+                </div>
+            </div>
+        </div>`;
+}
+
+function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus) {
     const body = document.getElementById('detail-service-body');
     const status = svc.status || 'not_approved';
     const hasVersions = versions.length > 0;
@@ -1122,6 +1138,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion) {
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
             ${activeVersion ? `<span class="version-badge version-active">Active: v${activeVersion}</span>` : ''}
         </div>
+
+        ${_renderApiVersionAdvisory(apiVersionStatus)}
 
         <div class="onboard-pipeline">
             <div class="pipeline-label">Onboarding Pipeline ${_copilotBadge()}</div>
