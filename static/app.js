@@ -3079,19 +3079,60 @@ function _handleUpdateEvent(event) {
     // ── Phase → flow card mapping ──
     // Cards are keyed by logical step — if the step recurs (healing loop),
     // _flowCard reopens the existing card with an iteration separator.
-    if (phase === 'checkout') {
+    if (phase === 'init_model') {
+        // Model routing — show as first card with pipeline setup info
+        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup');
+        if (event.model_routing) {
+            for (const [taskKey, info] of Object.entries(event.model_routing)) {
+                const friendlyTask = taskKey === 'planning' ? 'Planning' : taskKey === 'code_generation' ? 'Code Generation' : taskKey === 'code_fixing' ? 'Auto-Healing' : taskKey;
+                _flowDetail(logEl, 'setup', '🤖', `<strong>${escapeHtml(friendlyTask)}</strong> → ${escapeHtml(info.display)}`, 'uf-text-reasoning');
+            }
+        }
+        if (detail) _flowDetail(logEl, 'setup', '▸', escapeHtml(detail));
+    } else if (phase === 'pipeline_overview') {
+        // Pipeline plan overview — add step list to setup card
+        if (event.steps && event.steps.length) {
+            const stepsHtml = event.steps.map((s, i) => `<strong>${i + 1}.</strong> ${escapeHtml(s)}`).join('<br>');
+            _flowDetail(logEl, 'setup', '📋', stepsHtml);
+        }
+        _flowFinalize(logEl, 'setup', 'done', 'Ready');
+    } else if (phase === 'cleanup_drafts') {
+        // Stale draft cleanup — just a detail on setup
+        if (detail) _flowDetailOnCard(logEl, 'setup', '🧹', escapeHtml(detail));
+    } else if (phase === 'checkout') {
         _flowCard(logEl, 'checkout', '📥', 'Checking Out Template');
         if (detail) _flowDetail(logEl, 'checkout', '▸', escapeHtml(detail));
+        if (event.current_api_version) {
+            _flowDetail(logEl, 'checkout', 'ℹ️', `Current API: <strong>${escapeHtml(event.current_api_version)}</strong> → Target: <strong>${escapeHtml(event.target_api_version || '?')}</strong>`);
+        }
     } else if (phase === 'checkout_complete') {
         if (detail) _flowDetail(logEl, 'checkout', '✓', escapeHtml(detail), 'uf-text-success');
+        if (event.resource_count) {
+            _flowDetail(logEl, 'checkout', 'ℹ️', `${event.resource_count} resource(s) in template`);
+        }
         _flowFinalize(logEl, 'checkout', 'done');
-    } else if (phase === 'updating') {
-        _flowCard(logEl, 'rewrite', '🔄', 'AI Rewriting Template');
+    } else if (phase === 'planning') {
+        _flowCard(logEl, 'planning', '🧠', 'Thinking & Planning');
+        if (detail) _flowDetail(logEl, 'planning', '▸', escapeHtml(detail));
+    } else if (phase === 'planning_complete') {
+        if (detail) _flowDetail(logEl, 'planning', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'planning', 'done');
+    } else if (phase === 'executing') {
+        _flowCard(logEl, 'rewrite', '⚡', 'Rewriting Template');
         if (detail) _flowDetail(logEl, 'rewrite', '▸', escapeHtml(detail));
-    } else if (phase === 'update_complete') {
+    } else if (phase === 'updating') {
+        _flowCard(logEl, 'rewrite', '🔄', 'Rewriting Template');
+        if (detail) _flowDetail(logEl, 'rewrite', '▸', escapeHtml(detail));
+    } else if (phase === 'execute_complete' || phase === 'update_complete') {
         if (detail) _flowDetail(logEl, 'rewrite', '✓', escapeHtml(detail), 'uf-text-success');
+    } else if (phase === 'execute_fallback') {
+        if (detail) _flowDetail(logEl, 'rewrite', '⚠️', escapeHtml(detail));
     } else if (phase === 'saved') {
         if (detail) _flowDetail(logEl, 'rewrite', '💾', escapeHtml(detail), 'uf-text-success');
+    } else if (phase === 'version_info') {
+        // Version bump explanation — add to the rewrite card and then finalize it
+        if (detail) _flowDetail(logEl, 'rewrite', '🏷️', escapeHtml(detail));
+        if (event.bump_reason) _flowDetail(logEl, 'rewrite', 'ℹ️', `Strategy: ${escapeHtml(event.bump_reason)}`);
         _flowFinalize(logEl, 'rewrite', 'done');
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'policy', '📋', 'Static Policy Checks');
@@ -3116,6 +3157,10 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'deploying') {
         _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+        // Show deploy metadata if available
+        if (event.resource_group) _flowDetail(logEl, 'deploy', '📦', `Resource group: <strong>${escapeHtml(event.resource_group)}</strong>`);
+        if (event.region) _flowDetail(logEl, 'deploy', '🌍', `Region: <strong>${escapeHtml(event.region)}</strong>`);
+        if (event.deploy_mode) _flowDetail(logEl, 'deploy', 'ℹ️', `Mode: ${escapeHtml(event.deploy_mode)}`);
     } else if (phase === 'deploy_progress' || phase === 'deploy_heartbeat') {
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
     } else if (phase === 'deploy_complete') {
@@ -3189,8 +3234,16 @@ function _handleUpdateEvent(event) {
         const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
         if (k && detail) _flowDetailOnCard(logEl, k, '🔄', escapeHtml(detail));
     } else if (type === 'llm_reasoning') {
-        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
-        if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        // Route planning-phase reasoning into the planning card specifically
+        if (phase === 'planning' || phase === 'init_model') {
+            const targetKey = phase === 'planning' ? 'planning' : 'setup';
+            if (logEl._flow?.cards[targetKey]) {
+                _flowDetailOnCard(logEl, targetKey, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+            }
+        } else {
+            const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+            if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        }
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
@@ -3212,12 +3265,18 @@ function _handleUpdateEvent(event) {
     const header = card?.querySelector('.validation-title');
     const iconEl = card?.querySelector('.validation-icon');
 
-    if (phase === 'checkout' && header) {
+    if (phase === 'init_model' && header) {
+        header.textContent = 'Setting Up Pipeline…';
+        if (iconEl) { iconEl.textContent = '⚙️'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'checkout' && header) {
         header.textContent = 'Checking Out Template…';
         if (iconEl) { iconEl.textContent = '📥'; iconEl.classList.add('validation-spinner'); }
-    } else if (phase === 'updating' && header) {
-        header.textContent = 'Updating API Version…';
-        if (iconEl) { iconEl.textContent = '🔄'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'planning' && header) {
+        header.textContent = 'AI Analyzing & Planning…';
+        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
+    } else if ((phase === 'updating' || phase === 'executing') && header) {
+        header.textContent = 'Rewriting Template…';
+        if (iconEl) { iconEl.textContent = '⚡'; iconEl.classList.add('validation-spinner'); }
     } else if (phase === 'static_policy_check' && header) {
         header.textContent = 'Checking Governance Policies…';
         if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
@@ -3293,7 +3352,30 @@ function _handleValidationEvent(event) {
     // ── Phase → flow card mapping ──
     // Cards reuse their key across iterations — _flowCard reopens
     // a finalized card and inserts an iteration separator inside it.
-    if (phase === 'standards_analysis' || phase === 'init_model') {
+    if (phase === 'init_model') {
+        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup');
+        if (event.model_routing) {
+            for (const [taskKey, info] of Object.entries(event.model_routing)) {
+                const friendlyTask = taskKey === 'planning' ? 'Planning' : taskKey === 'code_generation' ? 'Code Generation' : taskKey === 'code_fixing' ? 'Auto-Healing' : taskKey === 'policy_gen' ? 'Policy Generation' : taskKey === 'analysis' ? 'Analysis' : taskKey;
+                _flowDetail(logEl, 'setup', '🤖', `<strong>${escapeHtml(friendlyTask)}</strong> → ${escapeHtml(info.display)}`, 'uf-text-reasoning');
+            }
+        }
+        if (detail) _flowDetail(logEl, 'setup', '▸', escapeHtml(detail));
+    } else if (phase === 'pipeline_overview') {
+        if (event.steps && event.steps.length) {
+            const stepsHtml = event.steps.map((s, i) => `<strong>${i + 1}.</strong> ${escapeHtml(s)}`).join('<br>');
+            _flowDetail(logEl, 'setup', '📋', stepsHtml);
+        }
+        _flowFinalize(logEl, 'setup', 'done', 'Ready');
+    } else if (phase === 'init_complete') {
+        if (!logEl._flow?.cards['setup']) {
+            // Fallback if setup card wasn't created
+        } else {
+            _flowFinalize(logEl, 'setup', 'done', 'Ready');
+        }
+    } else if (phase === 'cleanup_drafts') {
+        if (detail) _flowDetailOnCard(logEl, 'setup', '🧹', escapeHtml(detail));
+    } else if (phase === 'standards_analysis') {
         _flowCard(logEl, 'standards', '📋', 'Analyzing Standards');
         if (detail) _flowDetail(logEl, 'standards', '▸', escapeHtml(detail));
     } else if (phase === 'standards_complete') {
@@ -3340,6 +3422,8 @@ function _handleValidationEvent(event) {
     } else if (phase === 'deploying') {
         _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+        if (event.resource_group) _flowDetail(logEl, 'deploy', '📦', `Resource group: <strong>${escapeHtml(event.resource_group)}</strong>`);
+        if (event.region) _flowDetail(logEl, 'deploy', '🌍', `Region: <strong>${escapeHtml(event.region)}</strong>`);
     } else if (phase === 'deploy_progress' || phase === 'deploy_heartbeat') {
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
     } else if (phase === 'deploy_complete') {
@@ -3403,8 +3487,15 @@ function _handleValidationEvent(event) {
         const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
     } else if (type === 'llm_reasoning') {
-        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
-        if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        // Route init_model phase reasoning to setup card
+        if (phase === 'init_model') {
+            if (logEl._flow?.cards['setup']) {
+                _flowDetailOnCard(logEl, 'setup', '🧠', escapeHtml(detail), 'uf-text-reasoning');
+            }
+        } else {
+            const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+            if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        }
     } else if (type === 'policy_result') {
         const k = logEl._flow.activeKey;
         if (k && detail) {
@@ -3461,7 +3552,10 @@ function _handleValidationEvent(event) {
     const header = card?.querySelector('.validation-title');
     const iconEl = card?.querySelector('.validation-icon');
 
-    if (phase === 'standards_analysis' && header) {
+    if (phase === 'init_model' && header) {
+        header.textContent = 'Setting Up Pipeline…';
+        if (iconEl) { iconEl.textContent = '⚙️'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'standards_analysis' && header) {
         header.textContent = 'Analyzing Organization Standards…';
         if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
     } else if (phase === 'planning' && header) {

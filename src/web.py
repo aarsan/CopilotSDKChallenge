@@ -6163,6 +6163,24 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "progress": 0.01,
                 }) + "\n"
 
+            # ── Pipeline overview — tell the user what's about to happen ─
+            yield json.dumps({
+                "type": "progress", "phase": "pipeline_overview",
+                "detail": f"Pipeline: Update {svc.get('name', service_id)} from API version {svc.get('current_api_version', '?')} → {target_api}",
+                "progress": 0.015,
+                "steps": [
+                    "Check out current active template",
+                    "AI analyzes breaking changes & plans migration",
+                    "Rewrite template with updated API version",
+                    "Run static governance policy checks",
+                    "ARM What-If preview (dry run)",
+                    "Deploy to isolated validation resource group",
+                    "Runtime compliance verification",
+                    "Clean up validation resources",
+                    "Publish & promote new version",
+                ],
+            }) + "\n"
+
             # ── Cleanup stale drafts/failed from previous runs ────
             _cleaned = await delete_service_versions_by_status(
                 service_id, ["draft", "failed"],
@@ -6177,7 +6195,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             # ── Step 1: Checkout ──────────────────────────────────
             yield json.dumps({
                 "type": "progress", "phase": "checkout",
-                "detail": f"Reading active template (v{active_ver_num})…",
+                "detail": f"Checking out active template (v{active_ver_num}) for {svc.get('name', service_id)}…",
                 "progress": 0.02,
             }) + "\n"
 
@@ -6211,12 +6229,17 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             )
             current_api = current_api_versions[0] if current_api_versions else "unknown"
 
+            _resource_summary = ", ".join(sorted({r.get('type','?').split('/')[-1] for r in resources if isinstance(r,dict) and r.get('type')})[:5])
+            _more = max(0, len(resources) - 5)
+            _res_text = _resource_summary + (f" +{_more} more" if _more else "")
+
             yield json.dumps({
                 "type": "progress", "phase": "checkout_complete",
-                "detail": f"✓ Template loaded — currently uses API version {current_api}",
+                "detail": f"✓ Template loaded — {len(resources)} resource(s) ({_res_text}) using API {current_api}",
                 "progress": 0.08,
                 "current_api_version": current_api,
                 "target_api_version": target_api,
+                "resource_count": len(resources),
             }) + "\n"
 
             # ═══════════════════════════════════════════════════
@@ -6295,7 +6318,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             if migration_plan:
                 yield json.dumps({
                     "type": "progress", "phase": "planning_complete",
-                    "detail": f"✓ Migration plan complete ({len(migration_plan)} chars) — handing to code generation model",
+                    "detail": f"✓ Migration plan ready — {len(migration_plan)} chars of analysis covering {len(resource_types)} resource type(s)",
                     "progress": 0.16,
                 }) + "\n"
             else:
@@ -6448,6 +6471,16 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "detail": f"✓ Saved as v{new_semver} (version {new_ver})",
                 "progress": 0.25,
                 "version": new_ver, "semver": new_semver,
+            }) + "\n"
+
+            # Tell the user about the version bump reasoning
+            yield json.dumps({
+                "type": "progress", "phase": "version_info",
+                "detail": f"Version bump: v{source_semver} → v{new_semver} (minor bump — API version change is backwards-compatible)",
+                "progress": 0.26,
+                "from_semver": source_semver, "to_semver": new_semver,
+                "from_api": current_api, "to_api": target_api,
+                "bump_reason": "API version migration" + (" with PLAN→EXECUTE" if migration_plan else " (direct swap)"),
             }) + "\n"
 
             # ── Validation loop: validate→what-if→deploy→policy→cleanup→promote ─
@@ -6717,6 +6750,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "step": attempt,
                     "detail": f"Deploying to validation RG {rg_name}…",
                     "progress": 0.50 + (attempt - 1) * 0.15,
+                    "resource_group": rg_name,
+                    "region": region,
+                    "deploy_mode": "incremental",
                 }) + "\n"
 
                 deploy_ok = False

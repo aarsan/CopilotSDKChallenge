@@ -212,6 +212,25 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
             ctx.progress(0.3),
         )
 
+    # Pipeline overview — tell the user what steps are coming
+    yield emit(
+        "progress", "pipeline_overview",
+        f"Pipeline: Onboard {ctx.service.get('name', ctx.service_id)} with full ARM template generation & validation",
+        ctx.progress(0.4),
+        steps=[
+            "Analyze organization standards & governance policies",
+            "AI plans cloud architecture for this service",
+            "Generate production-ready ARM template",
+            "Generate Azure Policy for compliance enforcement",
+            "Run static governance policy checks",
+            "ARM What-If preview (dry run)",
+            "Deploy to isolated validation resource group",
+            "Runtime compliance verification with Azure Policy",
+            "Clean up validation resources",
+            "Publish & promote approved version",
+        ],
+    )
+
     # Cleanup stale drafts/failed
     cleaned = await delete_service_versions_by_status(ctx.service_id, ["draft", "failed"])
     if cleaned:

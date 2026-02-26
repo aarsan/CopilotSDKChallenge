@@ -4993,10 +4993,10 @@ body {
 
 /* ── Action Card ─────────────────────────────────────────── */
 .uf-action {
-    width: 420px;
-    max-width: 100%;
+    width: 580px;
+    max-width: 95%;
     border: 1px solid var(--border-default);
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--bg-secondary);
     overflow: hidden;
     transition: border-color 0.25s, box-shadow 0.25s, opacity 0.3s;
@@ -5024,8 +5024,8 @@ body {
 .uf-action-head {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.6rem 0.85rem;
+    gap: 0.7rem;
+    padding: 0.75rem 1rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
     cursor: pointer;
@@ -5037,10 +5037,10 @@ body {
 
 /* Icon container — resembles Logic Apps node icon */
 .uf-action-icon {
-    width: 30px; height: 30px;
-    border-radius: 7px;
+    width: 34px; height: 34px;
+    border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.95rem;
+    font-size: 1.05rem;
     background: rgba(59,130,246,0.08);
     flex-shrink: 0;
 }
@@ -5051,7 +5051,7 @@ body {
 .uf-action-name {
     flex: 1;
     font-weight: 600;
-    font-size: 0.85rem;
+    font-size: 0.92rem;
     color: var(--text-primary);
     min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -5102,15 +5102,16 @@ body {
 .uf-action-body {
     max-height: 0;
     overflow: hidden;
-    padding: 0 0.85rem;
-    font-size: 0.78rem;
+    padding: 0 1rem;
+    font-size: 0.82rem;
     color: var(--text-secondary);
     transition: max-height 0.3s ease, padding 0.3s ease;
+    line-height: 1.55;
 }
 .uf-action-body.uf-body-open {
-    max-height: 500px;
+    max-height: 600px;
     overflow-y: auto;
-    padding: 0.5rem 0.85rem;
+    padding: 0.6rem 1rem;
 }
 
 /* ── Iteration separator inside a card body ──────────────── */
@@ -5137,14 +5138,14 @@ body {
 
 /* Detail lines */
 .uf-detail-line {
-    display: flex; gap: 0.35rem;
+    display: flex; gap: 0.4rem;
     align-items: flex-start;
-    padding: 0.15rem 0;
-    line-height: 1.5;
+    padding: 0.2rem 0;
+    line-height: 1.55;
 }
 .uf-detail-icon {
-    flex-shrink: 0; width: 1em; text-align: center;
-    font-size: 0.72rem;
+    flex-shrink: 0; width: 1.1em; text-align: center;
+    font-size: 0.78rem;
 }
 .uf-detail-text { flex: 1; word-break: break-word; }
 .uf-detail-text.uf-text-reasoning {
