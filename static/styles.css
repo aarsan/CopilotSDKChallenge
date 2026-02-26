@@ -21,6 +21,11 @@
 
     --border-default: #30363d;
     --border-muted: #21262d;
+    --border-subtle: #21262d;
+
+    --surface-primary: #0d1117;
+    --surface-secondary: #161b22;
+    --surface-tertiary: #1c2128;
 
     --sidebar-width: 280px;
     --header-height: 56px;
@@ -12393,7 +12398,7 @@ details[open] > .tmpl-deploy-group-optional {
     width: 440px;
     height: 560px;
     max-height: calc(100vh - 7rem);
-    background: var(--surface-primary);
+    background: #0d1117;
     border: 1px solid var(--border-default);
     border-radius: 16px;
     display: flex;
@@ -12620,7 +12625,7 @@ details[open] > .tmpl-deploy-group-optional {
 .concierge-input-area {
     padding: 0.6rem 0.75rem;
     border-top: 1px solid var(--border-default);
-    background: var(--surface-secondary);
+    background: #161b22;
     flex-shrink: 0;
     border-radius: 0 0 16px 16px;
 }
@@ -12629,7 +12634,7 @@ details[open] > .tmpl-deploy-group-optional {
     display: flex;
     align-items: flex-end;
     gap: 0.5rem;
-    background: var(--surface-primary);
+    background: #0d1117;
     border: 1px solid var(--border-default);
     border-radius: 10px;
     padding: 0.4rem 0.5rem;
