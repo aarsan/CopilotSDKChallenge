@@ -6095,11 +6095,13 @@ async def check_service_updates():
 
             total_checked += 1
             if latest_api > template_api:
+                active_semver_str = active_ver.get("semver") or (f"{active_ver_num}.0.0" if active_ver_num else None)
                 updates.append({
                     "id": svc["id"],
                     "name": svc.get("name", svc["id"]),
                     "category": svc.get("category", "other"),
                     "active_version": active_ver_num,
+                    "active_semver": active_semver_str,
                     "template_api_version": template_api,
                     "latest_api_version": latest_api,
                     "default_api_version": svc.get("default_api_version"),
@@ -6174,6 +6176,10 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     active_ver_num = svc.get("active_version")
     if active_ver_num is None:
         raise HTTPException(status_code=400, detail="Service has no active version to update")
+
+    # Resolve semver for display (never show raw integer versions)
+    from src.database import get_latest_semver
+    _active_semver = await get_latest_semver(service_id) or f"{active_ver_num}.0.0"
 
     latest_api = svc.get("latest_api_version")
     if not latest_api:
@@ -6259,7 +6265,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             # ── Step 1: Checkout ──────────────────────────────────
             yield json.dumps({
                 "type": "progress", "phase": "checkout",
-                "detail": f"Checking out active template (v{active_ver_num}) for {svc.get('name', service_id)}…",
+                "detail": f"Checking out active template (v{_active_semver}) for {svc.get('name', service_id)}…",
                 "progress": 0.02,
             }) + "\n"
 
@@ -6616,7 +6622,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
             yield json.dumps({
                 "type": "progress", "phase": "saved",
-                "detail": f"✓ Saved as v{new_semver} (version {new_ver})",
+                "detail": f"✓ Saved as v{new_semver}",
                 "progress": 0.25,
                 "version": new_ver, "semver": new_semver,
             }) + "\n"
@@ -9994,7 +10000,7 @@ async def modify_service_version(service_id: str, version: int, request: Request
             yield json.dumps({
                 "type": "progress",
                 "phase": "saving",
-                "detail": f"Saving as v{new_semver} (version {new_ver})…",
+                "detail": f"Saving as v{new_semver}…",
                 "progress": 0.75,
             }) + "\n"
 
