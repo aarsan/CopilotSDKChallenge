@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=159">
+    <link rel="stylesheet" href="/static/styles.css?v=161">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -714,6 +714,24 @@
         </div>
     </div>
 
+    <!-- ── Pipeline Flow Overlay (full-screen Logic Apps–style) ── -->
+    <div id="pipeline-overlay" class="pipeline-overlay hidden">
+        <div class="pipeline-overlay-header">
+            <div class="pipeline-overlay-left">
+                <span class="pipeline-overlay-icon" id="pipeline-overlay-icon">🚀</span>
+                <span class="pipeline-overlay-title" id="pipeline-overlay-title">Pipeline</span>
+            </div>
+            <div class="pipeline-overlay-meta" id="pipeline-overlay-meta"></div>
+            <div class="pipeline-overlay-right">
+                <button class="log-toggle-reasoning pipeline-overlay-reasoning" id="pipeline-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
+                <button class="pipeline-overlay-close" onclick="closePipelineOverlay()">×</button>
+            </div>
+        </div>
+        <div class="pipeline-overlay-canvas" id="pipeline-canvas">
+            <!-- Flow cards render here via JS -->
+        </div>
+    </div>
+
     <!-- ── Template Detail Panel (full-page overlay) ───────── -->
     <div id="template-detail-drawer" class="detail-panel-overlay hidden" onclick="if(event.target===this) closeTemplateDetail()">
         <div class="detail-panel" onclick="event.stopPropagation()">
@@ -1166,7 +1184,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=160"></script>
+    <script src="/static/app.js?v=162"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

@@ -4884,10 +4884,100 @@ body {
 }
 
 /* ══════════════════════════════════════════════════════════════
-   LOGIC APPS–STYLE FLOW CARDS
+   FULL-SCREEN PIPELINE OVERLAY (Logic Apps–style)
    ══════════════════════════════════════════════════════════════ */
 
-/* Override validation-log when in flow mode */
+.pipeline-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    transition: opacity 0.25s;
+}
+.pipeline-overlay.hidden { display: none !important; }
+
+/* ── Overlay header ─────────────────────────────────────── */
+.pipeline-overlay-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1.5rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-default);
+    flex-shrink: 0;
+}
+.pipeline-overlay-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.pipeline-overlay-icon {
+    font-size: 1.3rem;
+}
+.pipeline-overlay-title {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+.pipeline-overlay-meta {
+    flex: 1;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pipeline-overlay-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+.pipeline-overlay-reasoning {
+    font-size: 0.72rem;
+    padding: 0.25rem 0.6rem;
+}
+.pipeline-overlay-close {
+    width: 32px; height: 32px;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 1.2rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+.pipeline-overlay-close:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* ── Canvas (scrollable flow area) ──────────────────────── */
+.pipeline-overlay-canvas {
+    flex: 1;
+    overflow-y: auto;
+    padding: 2rem 1rem 3rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    gap: 0;
+    background:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,0.03) 1px, transparent 0) 0 0 / 24px 24px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   LOGIC APPS FLOW CARDS (shared between overlay and inline)
+   ══════════════════════════════════════════════════════════════ */
+
+/* Override validation-log when in flow mode (inline fallback) */
 .validation-log.uf-flow {
     display: flex;
     flex-direction: column;
@@ -4903,37 +4993,39 @@ body {
 
 /* ── Action Card ─────────────────────────────────────────── */
 .uf-action {
-    width: 100%;
+    width: 420px;
+    max-width: 100%;
     border: 1px solid var(--border-default);
-    border-radius: 8px;
-    background: var(--bg-primary);
+    border-radius: 10px;
+    background: var(--bg-secondary);
     overflow: hidden;
     transition: border-color 0.25s, box-shadow 0.25s, opacity 0.3s;
+    position: relative;
 }
 .uf-action-active {
     border-color: var(--accent-blue);
-    box-shadow: 0 0 0 1px rgba(59,130,246,0.12), 0 2px 8px rgba(0,0,0,0.18);
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.10), 0 4px 16px rgba(0,0,0,0.22);
 }
 .uf-action-done {
     border-color: var(--border-subtle);
-    opacity: 0.88;
+    opacity: 0.92;
 }
-.uf-action-done .uf-action-head:hover { opacity: 1; }
+.uf-action-done:hover { opacity: 1; }
 .uf-action-failed {
     border-color: #f85149;
-    border-left: 3px solid #f85149;
+    box-shadow: 0 0 0 1px rgba(248,81,73,0.10), 0 2px 8px rgba(248,81,73,0.08);
 }
 .uf-action-skipped {
     border-color: var(--border-subtle);
-    opacity: 0.6;
+    opacity: 0.55;
 }
 
 /* ── Action Header ───────────────────────────────────────── */
 .uf-action-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 0.65rem;
+    gap: 0.6rem;
+    padding: 0.6rem 0.85rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
     cursor: pointer;
@@ -4943,23 +5035,23 @@ body {
 .uf-action-head:hover { background: var(--bg-tertiary); }
 .uf-action-done .uf-action-head { border-bottom-color: transparent; }
 
-/* Icon container */
+/* Icon container — resembles Logic Apps node icon */
 .uf-action-icon {
-    width: 26px; height: 26px;
-    border-radius: 6px;
+    width: 30px; height: 30px;
+    border-radius: 7px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.85rem;
-    background: rgba(59,130,246,0.1);
+    font-size: 0.95rem;
+    background: rgba(59,130,246,0.08);
     flex-shrink: 0;
 }
-.uf-action-done .uf-action-icon   { background: rgba(63,185,80,0.1); }
-.uf-action-failed .uf-action-icon { background: rgba(248,81,73,0.1); }
+.uf-action-done .uf-action-icon   { background: rgba(63,185,80,0.08); }
+.uf-action-failed .uf-action-icon { background: rgba(248,81,73,0.08); }
 
 /* Title */
 .uf-action-name {
     flex: 1;
     font-weight: 600;
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     color: var(--text-primary);
     min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -4968,9 +5060,9 @@ body {
 
 /* Status badge */
 .uf-action-badge {
-    font-size: 0.66rem; font-weight: 600;
-    padding: 0.1rem 0.4rem; border-radius: 4px;
-    display: flex; align-items: center; gap: 0.2rem;
+    font-size: 0.68rem; font-weight: 600;
+    padding: 0.15rem 0.5rem; border-radius: 4px;
+    display: flex; align-items: center; gap: 0.25rem;
     flex-shrink: 0;
 }
 .uf-badge-active {
@@ -4996,19 +5088,51 @@ body {
     50%      { opacity: 1;   box-shadow: 0 0 8px rgba(59,130,246,0.6); }
 }
 
+/* Expand/collapse chevron */
+.uf-action-chevron {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+.uf-body-open ~ .uf-action-head .uf-action-chevron,
+.uf-action-head[data-open="true"] .uf-action-chevron { transform: rotate(180deg); }
+
 /* ── Action Body — collapsible detail ────────────────────── */
 .uf-action-body {
     max-height: 0;
     overflow: hidden;
-    padding: 0 0.65rem;
-    font-size: 0.76rem;
+    padding: 0 0.85rem;
+    font-size: 0.78rem;
     color: var(--text-secondary);
     transition: max-height 0.3s ease, padding 0.3s ease;
 }
 .uf-action-body.uf-body-open {
-    max-height: 350px;
+    max-height: 500px;
     overflow-y: auto;
-    padding: 0.35rem 0.65rem;
+    padding: 0.5rem 0.85rem;
+}
+
+/* ── Iteration separator inside a card body ──────────────── */
+.uf-iter-sep {
+    display: flex; align-items: center;
+    gap: 0.4rem; margin: 0.4rem 0 0.2rem;
+    padding-top: 0.35rem;
+    border-top: 1px dashed rgba(59,130,246,0.2);
+}
+.uf-iter-label {
+    font-size: 0.62rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--accent-blue);
+    background: rgba(59,130,246,0.06);
+    padding: 0.1rem 0.4rem; border-radius: 3px;
+    border: 1px solid rgba(59,130,246,0.15);
+    flex-shrink: 0;
+}
+.uf-iter-text {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    flex: 1;
 }
 
 /* Detail lines */
@@ -5036,82 +5160,74 @@ body {
     color: #3fb950;
 }
 
-/* ── Connector between cards ─────────────────────────────── */
+/* ── Connector — Logic Apps ⊕ style ─────────────────────── */
 .uf-connector {
-    width: 2px; height: 16px;
-    background: var(--border-default);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     flex-shrink: 0;
     position: relative;
+    height: 36px;
 }
-.uf-connector::after {
-    content: '';
-    position: absolute;
-    bottom: -3px; left: 50%;
-    transform: translateX(-50%);
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid var(--border-default);
+.uf-connector-line-top,
+.uf-connector-line-bot {
+    width: 2px; flex: 1;
+    background: var(--border-default);
 }
-.uf-connector-done        { background: #3fb950; }
-.uf-connector-done::after  { border-top-color: #3fb950; }
-.uf-connector-failed       { background: #f85149; }
-.uf-connector-failed::after { border-top-color: #f85149; }
-.uf-connector-active       { background: var(--accent-blue); animation: ufEdgePulse 1.5s infinite; }
-.uf-connector-active::after { border-top-color: var(--accent-blue); }
+.uf-connector-plus {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid var(--border-default);
+    background: var(--bg-primary);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.65rem; font-weight: 700;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    z-index: 1;
+}
+.uf-connector-done .uf-connector-line-top,
+.uf-connector-done .uf-connector-line-bot { background: #3fb950; }
+.uf-connector-done .uf-connector-plus { border-color: #3fb950; color: #3fb950; }
+.uf-connector-active .uf-connector-line-top,
+.uf-connector-active .uf-connector-line-bot { background: var(--accent-blue); animation: ufEdgePulse 1.5s infinite; }
+.uf-connector-active .uf-connector-plus { border-color: var(--accent-blue); color: var(--accent-blue); }
+.uf-connector-failed .uf-connector-line-top,
+.uf-connector-failed .uf-connector-line-bot { background: #f85149; }
+.uf-connector-failed .uf-connector-plus { border-color: #f85149; color: #f85149; }
+
 @keyframes ufEdgePulse {
     0%, 100% { opacity: 0.6; }
     50%      { opacity: 1; }
 }
 
-/* ── Attempt / Iteration separator ───────────────────────── */
-.uf-attempt-sep {
-    display: flex; align-items: center;
-    gap: 0.5rem; margin: 0.5rem 0;
-    width: 100%;
-}
-.uf-attempt-sep-line {
-    flex: 1; height: 1px;
-    background: rgba(59,130,246,0.25);
-}
-.uf-attempt-label {
-    font-size: 0.68rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.05em;
-    color: var(--accent-blue);
-    background: rgba(59,130,246,0.08);
-    padding: 0.15rem 0.6rem; border-radius: 4px;
-    border: 1px solid rgba(59,130,246,0.2);
-    flex-shrink: 0;
-}
-
 /* ── Final result card ───────────────────────────────────── */
 .uf-result {
     display: flex; align-items: center;
-    gap: 0.5rem; padding: 0.5rem 0.75rem;
-    border-radius: 8px; font-weight: 600;
-    font-size: 0.8rem; width: 100%;
+    gap: 0.6rem; padding: 0.65rem 1rem;
+    border-radius: 10px; font-weight: 600;
+    font-size: 0.88rem; width: 420px; max-width: 100%;
 }
 .uf-result-success {
-    background: rgba(63,185,80,0.08);
+    background: rgba(63,185,80,0.06);
     border: 1px solid rgba(63,185,80,0.25);
     color: #3fb950;
 }
 .uf-result-failed {
-    background: rgba(248,81,73,0.08);
+    background: rgba(248,81,73,0.06);
     border: 1px solid rgba(248,81,73,0.25);
     color: #f85149;
 }
 .uf-result-blocked {
-    background: rgba(210,153,34,0.08);
+    background: rgba(210,153,34,0.06);
     border: 1px solid rgba(210,153,34,0.25);
     color: #e3b341;
 }
-.uf-result-icon  { font-size: 1rem; flex-shrink: 0; }
+.uf-result-icon  { font-size: 1.1rem; flex-shrink: 0; }
 .uf-result-text  { flex: 1; word-break: break-word; }
 
 /* Rich analysis body inside action card */
 .uf-analysis-body {
-    font-size: 0.76rem; line-height: 1.6;
+    font-size: 0.78rem; line-height: 1.6;
     color: var(--text-primary);
     padding: 0.35rem 0;
 }
@@ -5134,8 +5250,9 @@ body {
 }
 
 /* Policy blocked guidance inside flow */
+.pipeline-overlay-canvas .policy-blocked-guidance,
 .uf-flow .policy-blocked-guidance {
-    width: 100%;
+    width: 420px; max-width: 100%;
     margin: 0.25rem 0 0;
     font-family: var(--font-sans);
 }
@@ -5145,6 +5262,17 @@ body {
     width: 100%; margin-bottom: 0.4rem;
     align-self: stretch;
 }
+
+/* ── Small inline link to open full-screen ───────────────── */
+.uf-expand-btn {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.72rem; font-weight: 500;
+    color: var(--accent-blue);
+    background: none; border: none;
+    cursor: pointer; padding: 0.3rem 0;
+    margin-top: 0.25rem;
+}
+.uf-expand-btn:hover { text-decoration: underline; }
 
 
 /* Status badge additions */

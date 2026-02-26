@@ -1336,7 +1336,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
     // If drawer is open for this service, switch validation card to running state
     const _drawerOpen = _openDrawerServiceId === serviceId;
     if (_drawerOpen) {
-        _initRunningCardForTableUpdate(targetVersion);
+        _initRunningCardForTableUpdate(targetVersion, serviceId);
     }
 
     // Fire the update directly from the table — no drawer needed
@@ -1437,7 +1437,15 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
 }
 
 /** Convert the validation-card to a running state when a table update starts while the drawer is open */
-function _initRunningCardForTableUpdate(targetVersion) {
+function _initRunningCardForTableUpdate(targetVersion, serviceId) {
+    // Open pipeline overlay for table-triggered updates
+    if (serviceId) {
+        const svc = allServices.find(s => s.id === serviceId);
+        const svcName = svc ? svc.name : serviceId;
+        const targetLabel = targetVersion ? `to ${targetVersion}` : 'to latest';
+        openPipelineOverlay('API Version Update', '⬆', `Updating ${svcName} ${targetLabel}…`);
+    }
+
     let card = document.getElementById('validation-card');
     if (!card) {
         const body = document.getElementById('detail-service-body');
@@ -1465,12 +1473,7 @@ function _initRunningCardForTableUpdate(targetVersion) {
             </div>
         </div>
         <div class="validation-detail" id="validation-detail">Initializing API version update pipeline…</div>
-        <div class="validation-log" id="validation-log">
-            <div class="validation-log-header">
-                <span>Update Log</span>
-                <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
-            </div>
-        </div>
+        <div class="validation-log" id="validation-log"></div>
     `;
 }
 
@@ -1518,7 +1521,7 @@ async function showServiceDetail(serviceId) {
         // switch the freshly-rendered card to running state so new events appear
         const runningEntry = _runningTableUpdates.get(serviceId);
         if (runningEntry) {
-            _initRunningCardForTableUpdate(runningEntry.targetVersion);
+            _initRunningCardForTableUpdate(runningEntry.targetVersion, serviceId);
         }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
@@ -2325,6 +2328,10 @@ async function triggerDraftValidation(serviceId, version, semver) {
     // Close the template viewer if open
     closeModal('modal-template-viewer');
 
+    const svc = allServices.find(s => s.id === serviceId);
+    const svcName = svc ? svc.name : serviceId;
+    openPipelineOverlay('Validation Pipeline', '🔍', `Validating ${svcName} draft v${semver}…`);
+
     showToast(`Starting validation for draft v${semver}…`, 'info');
 
     // Trigger the onboard pipeline with use_version to skip generation
@@ -2345,12 +2352,7 @@ async function triggerDraftValidation(serviceId, version, semver) {
                 </div>
             </div>
             <div class="validation-detail" id="validation-detail">Initializing validation pipeline for draft v${semver}…</div>
-            <div class="validation-log" id="validation-log">
-                <div class="validation-log-header">
-                    <span>Validation Log</span>
-                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
-                </div>
-            </div>
+            <div class="validation-log" id="validation-log"></div>
         `;
     }
 
@@ -2472,6 +2474,10 @@ async function changeGlobalModel(modelId) {
 }
 
 async function triggerOnboarding(serviceId) {
+    const svc = allServices.find(s => s.id === serviceId);
+    const svcName = svc ? svc.name : serviceId;
+    openPipelineOverlay('Onboarding Pipeline', '⏳', `Onboarding ${svcName}…`);
+
     const card = document.getElementById('validation-card');
 
     if (card) {
@@ -2490,12 +2496,7 @@ async function triggerOnboarding(serviceId) {
                 </div>
             </div>
             <div class="validation-detail" id="validation-detail">Initializing onboarding pipeline…</div>
-            <div class="validation-log" id="validation-log">
-                <div class="validation-log-header">
-                    <span>Onboarding Log</span>
-                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
-                </div>
-            </div>
+            <div class="validation-log" id="validation-log"></div>
         `;
     }
 
@@ -2578,6 +2579,11 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
     _apiUpdateAbort = new AbortController();
     console.log('[update] triggerApiVersionUpdate started for', serviceId, 'target:', targetVersion || 'latest');
 
+    const svc = allServices.find(s => s.id === serviceId);
+    const svcName = svc ? svc.name : serviceId;
+    const targetLabel = targetVersion ? `to ${targetVersion}` : 'to latest';
+    openPipelineOverlay('API Version Update', '⬆', `Updating ${svcName} ${targetLabel}…`);
+
     // Ensure the card shows running state — even if showServiceDetail already rendered the green card
     let card = document.getElementById('validation-card');
 
@@ -2594,7 +2600,6 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         }
     }
 
-    const targetLabel = targetVersion ? `to ${targetVersion}` : 'to latest';
     if (card) {
         card.className = 'validation-card validation-running';
         card.innerHTML = `
@@ -2610,12 +2615,7 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
                 </div>
             </div>
             <div class="validation-detail" id="validation-detail">Initializing API version update pipeline…</div>
-            <div class="validation-log" id="validation-log">
-                <div class="validation-log-header">
-                    <span>Update Log</span>
-                    <button class="log-toggle-reasoning" id="toggle-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
-                </div>
-            </div>
+            <div class="validation-log" id="validation-log"></div>
         `;
     }
 
@@ -2739,31 +2739,126 @@ function _updateTableBadge(event) {
 // LOGIC APPS–STYLE FLOW CARD HELPERS
 // ══════════════════════════════════════════════════════════════
 
-/** Initialize flow state on a log container */
+/** ─── Pipeline overlay management ──────────────────────── */
+let _pipelineOverlayOpen = false;
+
+function openPipelineOverlay(title, icon, meta) {
+    const overlay = document.getElementById('pipeline-overlay');
+    if (!overlay) return;
+    const titleEl = document.getElementById('pipeline-overlay-title');
+    const iconEl = document.getElementById('pipeline-overlay-icon');
+    const metaEl = document.getElementById('pipeline-overlay-meta');
+    if (titleEl) titleEl.textContent = title || 'Pipeline';
+    if (iconEl) iconEl.textContent = icon || '🚀';
+    if (metaEl) metaEl.textContent = meta || '';
+    // Clear previous canvas content
+    const canvas = document.getElementById('pipeline-canvas');
+    if (canvas) {
+        canvas.innerHTML = '';
+        canvas._flow = null;
+    }
+    overlay.classList.remove('hidden');
+    _pipelineOverlayOpen = true;
+}
+
+function closePipelineOverlay() {
+    const overlay = document.getElementById('pipeline-overlay');
+    if (overlay) overlay.classList.add('hidden');
+    _pipelineOverlayOpen = false;
+}
+
+/** Reopen the overlay (preserves existing canvas content) */
+function reopenPipelineOverlay() {
+    const overlay = document.getElementById('pipeline-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+    _pipelineOverlayOpen = true;
+    const canvas = document.getElementById('pipeline-canvas');
+    if (canvas) canvas.scrollTop = canvas.scrollHeight;
+}
+
+/** Get the active flow container — overlay canvas if open, else validation-log */
+function _getFlowTarget() {
+    if (_pipelineOverlayOpen) {
+        const canvas = document.getElementById('pipeline-canvas');
+        if (canvas) return canvas;
+    }
+    return document.getElementById('validation-log');
+}
+
+/** Initialize flow state on a container */
 function _flowInit(logEl) {
+    if (!logEl) return;
     if (logEl._flow) return;
     logEl._flow = {
         cards: {},        // key → card element
         activeKey: null,  // currently active card key
         count: 0,
+        iteration: {},    // key → current iteration number
     };
-    // Keep the validation-log-header, remove any old log lines
+    // Keep the validation-log-header if present, remove any old log lines
     const children = Array.from(logEl.children);
     children.forEach(c => {
-        if (!c.classList.contains('validation-log-header')) c.remove();
+        if (!c.classList.contains('validation-log-header') && !c.classList.contains('uf-expand-btn')) c.remove();
     });
     logEl.classList.add('uf-flow');
+    // If this is the drawer's validation-log (not the overlay canvas), add "View Pipeline" link
+    if (logEl.id === 'validation-log' && _pipelineOverlayOpen && !logEl.querySelector('.uf-expand-btn')) {
+        const btn = document.createElement('button');
+        btn.className = 'uf-expand-btn';
+        btn.textContent = 'View Pipeline ↗';
+        btn.onclick = (e) => { e.stopPropagation(); reopenPipelineOverlay(); };
+        logEl.appendChild(btn);
+    }
 }
 
-/** Create a new action card in the flow */
+/** Create a ⊕ connector between cards */
+function _createConnector(status) {
+    const conn = document.createElement('div');
+    const cls = status === 'done' ? 'uf-connector-done' :
+                status === 'active' ? 'uf-connector-active' :
+                status === 'failed' ? 'uf-connector-failed' : '';
+    conn.className = `uf-connector ${cls}`.trim();
+    conn.innerHTML = `<div class="uf-connector-line-top"></div><div class="uf-connector-plus">+</div><div class="uf-connector-line-bot"></div>`;
+    return conn;
+}
+
+/** Create a new action card in the flow (or reopen an existing one) */
 function _flowCard(logEl, key, icon, title) {
     _flowInit(logEl);
     const flow = logEl._flow;
 
-    // If card already exists for this key, just make it active
+    // If card already exists for this key — reopen it for a new iteration
     if (flow.cards[key]) {
+        const existing = flow.cards[key];
         flow.activeKey = key;
-        return flow.cards[key];
+        // If card was finalized, reopen it
+        if (!existing.classList.contains('uf-action-active')) {
+            existing.classList.remove('uf-action-done', 'uf-action-failed', 'uf-action-skipped');
+            existing.classList.add('uf-action-active');
+            // Restore running badge
+            const badge = existing.querySelector('.uf-action-badge');
+            if (badge) {
+                badge.className = 'uf-action-badge uf-badge-active';
+                badge.innerHTML = '<span class="uf-badge-dot"></span>';
+            }
+            // Restore icon bg
+            const iconBox = existing.querySelector('.uf-action-icon');
+            if (iconBox) iconBox.style.background = '';
+            // Open body
+            const body = existing.querySelector('.uf-action-body');
+            if (body) body.classList.add('uf-body-open');
+            // Add iteration separator inside the card body
+            flow.iteration[key] = (flow.iteration[key] || 1) + 1;
+            _flowIterSep(logEl, key, flow.iteration[key]);
+            // Re-color the preceding connector back to active
+            const prev = existing.previousElementSibling;
+            if (prev && prev.classList.contains('uf-connector')) {
+                prev.className = 'uf-connector uf-connector-active';
+            }
+        }
+        logEl.scrollTop = logEl.scrollHeight;
+        return existing;
     }
 
     // Finalize previous active card
@@ -2774,13 +2869,12 @@ function _flowCard(logEl, key, icon, title) {
         }
     }
 
-    // Add connector
+    // Add ⊕ connector
     if (flow.count > 0) {
-        const conn = document.createElement('div');
-        conn.className = 'uf-connector uf-connector-active';
-        logEl.appendChild(conn);
+        logEl.appendChild(_createConnector('active'));
     }
     flow.count++;
+    flow.iteration[key] = 1;
 
     const card = document.createElement('div');
     card.className = 'uf-action uf-action-active';
@@ -2809,6 +2903,17 @@ function _flowCard(logEl, key, icon, title) {
     return card;
 }
 
+/** Add an iteration separator inside a card's body */
+function _flowIterSep(logEl, key, iteration, note) {
+    if (!logEl._flow?.cards[key]) return;
+    const body = logEl._flow.cards[key].querySelector('.uf-action-body');
+    if (!body) return;
+    const sep = document.createElement('div');
+    sep.className = 'uf-iter-sep';
+    sep.innerHTML = `<span class="uf-iter-label">Iteration ${iteration}</span>${note ? `<span class="uf-iter-text">${escapeHtml(note)}</span>` : ''}`;
+    body.appendChild(sep);
+}
+
 /** Add a detail line to an existing action card */
 function _flowDetail(logEl, key, icon, text, extraCls) {
     if (!logEl._flow?.cards[key]) return;
@@ -2832,7 +2937,9 @@ function _flowFinalize(logEl, key, status, label) {
     const badge = card.querySelector('.uf-action-badge');
     if (badge) {
         badge.className = `uf-action-badge ${status === 'failed' ? 'uf-badge-failed' : 'uf-badge-done'}`;
-        badge.innerHTML = status === 'failed' ? '✗ Failed' : (label || '✓');
+        const iter = logEl._flow.iteration[key] || 1;
+        const iterLabel = iter > 1 ? ` (${iter} iterations)` : '';
+        badge.innerHTML = status === 'failed' ? '✗ Failed' : (label || '✓') + iterLabel;
     }
     // Auto-collapse body of done cards
     const body = card.querySelector('.uf-action-body');
@@ -2856,24 +2963,10 @@ function _flowFinalizeActive(logEl, status) {
     _flowFinalize(logEl, logEl._flow.activeKey, status);
 }
 
-/** Add an attempt separator line */
-function _flowAttemptSep(logEl, label) {
-    _flowInit(logEl);
-    _flowFinalizeActive(logEl, 'done');
-    const sep = document.createElement('div');
-    sep.className = 'uf-attempt-sep';
-    sep.innerHTML = `<span class="uf-attempt-sep-line"></span><span class="uf-attempt-label">${escapeHtml(label)}</span><span class="uf-attempt-sep-line"></span>`;
-    logEl.appendChild(sep);
-    logEl._flow.count++;
-    logEl.scrollTop = logEl.scrollHeight;
-}
-
 /** Add a final result block */
 function _flowResult(logEl, status, text) {
     _flowFinalizeActive(logEl, status === 'success' ? 'done' : 'failed');
-    const conn = document.createElement('div');
-    conn.className = `uf-connector ${status === 'success' ? 'uf-connector-done' : (status === 'blocked' ? '' : 'uf-connector-failed')}`;
-    logEl.appendChild(conn);
+    logEl.appendChild(_createConnector(status === 'success' ? 'done' : (status === 'blocked' ? '' : 'failed')));
     const result = document.createElement('div');
     const cls = status === 'success' ? 'uf-result-success' : (status === 'blocked' ? 'uf-result-blocked' : 'uf-result-failed');
     const icon = status === 'success' ? '✅' : (status === 'blocked' ? '🛑' : '❌');
@@ -2890,10 +2983,10 @@ function _flowResult(logEl, status, text) {
 function _handleUpdateEvent(event) {
     const progressFill = document.getElementById('validation-progress-fill');
     const detailEl = document.getElementById('validation-detail');
-    const logEl = document.getElementById('validation-log');
     const badge = document.getElementById('validation-attempt-badge');
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
+    const logEl = _getFlowTarget();
 
     // Update the table badge with live status
     _updateTableBadge(event);
@@ -2904,10 +2997,6 @@ function _handleUpdateEvent(event) {
     }
     if (event.detail && detailEl) {
         detailEl.textContent = event.detail;
-    }
-    if (event.step && event.step > 1 && badge) {
-        badge.textContent = `Attempt ${event.step}`;
-        badge.classList.add('visible');
     }
     if (event.phase === 'init_model' && event.model && modelBadge) {
         modelBadge.textContent = `🤖 ${event.model.display || event.model.id || event.model}`;
@@ -2921,12 +3010,9 @@ function _handleUpdateEvent(event) {
     const type = event.type || '';
     const detail = event.detail || '';
 
-    // ── Attempt separator ──
-    if (event.step && event.step > 1 && phase !== 'init_model') {
-        _flowAttemptSep(logEl, `Attempt ${event.step}`);
-    }
-
     // ── Phase → flow card mapping ──
+    // Cards are keyed by logical step — if the step recurs (healing loop),
+    // _flowCard reopens the existing card with an iteration separator.
     if (phase === 'checkout') {
         _flowCard(logEl, 'checkout', '📥', 'Checking Out Template');
         if (detail) _flowDetail(logEl, 'checkout', '▸', escapeHtml(detail));
@@ -2949,7 +3035,7 @@ function _handleUpdateEvent(event) {
         _flowFinalize(logEl, 'policy', 'done');
     } else if (phase === 'static_policy_failed') {
         if (detail) _flowDetail(logEl, 'policy', '⚠️', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'policy', 'failed');
+        // Don't finalize — healing will fix and the card will be re-entered
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
         if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
@@ -2958,7 +3044,6 @@ function _handleUpdateEvent(event) {
         _flowFinalize(logEl, 'whatif', 'done');
     } else if (phase === 'what_if_failed') {
         if (detail) _flowDetail(logEl, 'whatif', '💥', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'whatif', 'failed');
     } else if (phase === 'deploying') {
         _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
@@ -2967,16 +3052,18 @@ function _handleUpdateEvent(event) {
         _flowFinalize(logEl, 'deploy', 'done');
     } else if (phase === 'deploy_failed') {
         if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'deploy', 'failed');
     } else if (type === 'healing') {
-        _flowCard(logEl, 'healing', '🤖', 'AI Auto-Healing');
-        if (detail) _flowDetail(logEl, 'healing', '▸', escapeHtml(detail));
+        // Healing detail goes into whatever card just failed (policy/whatif/deploy)
+        const healKey = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, healKey, '🤖', escapeHtml(detail));
     } else if (type === 'healing_done') {
-        if (detail) _flowDetail(logEl, 'healing', '✓', escapeHtml(detail), 'uf-text-success');
-        _flowFinalize(logEl, 'healing', 'done');
+        const healKey = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, healKey, '✓', escapeHtml(detail), 'uf-text-success');
+        // Don't finalize — the card stays active for the next iteration
     } else if (phase === 'healing_failed') {
-        if (detail) _flowDetail(logEl, 'healing', '⚠️', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'healing', 'failed');
+        const healKey = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, healKey, '⚠️', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, healKey, 'failed');
     } else if (phase === 'analyzing_failure') {
         _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure');
         if (detail) _flowDetail(logEl, 'analysis', '▸', escapeHtml(detail));
@@ -2992,18 +3079,19 @@ function _handleUpdateEvent(event) {
                 <div class="uf-analysis-body">${downgradeWarning}${renderMarkdown(detail)}</div>
                 <div class="uf-analysis-meta">
                     ${event.from_api ? `<span class="uf-analysis-chip">${escapeHtml(event.from_api)} → ${escapeHtml(event.to_api)}</span>` : ''}
-                    <span class="uf-analysis-chip">${event.attempts || '?'} attempt(s)</span>
+                    <span class="uf-analysis-chip">${event.attempts || '?'} iteration(s)</span>
                 </div>
             `;
             body.classList.add('uf-body-open');
         }
         _flowFinalize(logEl, 'agent_analysis', 'done', 'Analysis');
     } else if (phase === 'fixing_template') {
-        _flowCard(logEl, 'fixing', '🔧', 'Fixing Template');
-        if (detail) _flowDetail(logEl, 'fixing', '▸', escapeHtml(detail));
+        // Fixing goes into the currently active card as detail
+        const fixKey = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, fixKey, '🔧', escapeHtml(detail));
     } else if (phase === 'template_fixed') {
-        if (detail) _flowDetail(logEl, 'fixing', '✓', escapeHtml(detail), 'uf-text-success');
-        _flowFinalize(logEl, 'fixing', 'done');
+        const fixKey = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, fixKey, '✓', escapeHtml(detail), 'uf-text-success');
     } else if (phase === 'policy_testing') {
         _flowCard(logEl, 'compliance', '🛡️', 'Runtime Compliance Test');
         if (detail) _flowDetail(logEl, 'compliance', '▸', escapeHtml(detail));
@@ -3025,6 +3113,13 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'promoting') {
         _flowCard(logEl, 'publishing', '🏆', 'Publishing Version');
         if (detail) _flowDetail(logEl, 'publishing', '▸', escapeHtml(detail));
+    } else if (phase === 'infra_retry') {
+        // Transient Azure error — add as detail in active card
+        const k = logEl._flow.activeKey;
+        if (k && detail) _flowDetail(logEl, k, '🔄', escapeHtml(detail));
+    } else if (type === 'llm_reasoning') {
+        const k = logEl._flow.activeKey;
+        if (k && detail) _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
@@ -3032,11 +3127,14 @@ function _handleUpdateEvent(event) {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'failed', detail || 'Update failed');
     } else if (detail) {
-        // Generic detail → add to whatever card is active
         const activeKey = logEl._flow?.activeKey;
-        if (activeKey) {
-            _flowDetail(logEl, activeKey, '▸', escapeHtml(detail));
-        }
+        if (activeKey) _flowDetail(logEl, activeKey, '▸', escapeHtml(detail));
+    }
+
+    // ── Overlay header live update ──
+    if (_pipelineOverlayOpen) {
+        const metaEl = document.getElementById('pipeline-overlay-meta');
+        if (metaEl && detail) metaEl.textContent = detail;
     }
 
     // ── Outer card header updates ──
@@ -3097,10 +3195,10 @@ function _handleUpdateEvent(event) {
 function _handleValidationEvent(event) {
     const progressFill = document.getElementById('validation-progress-fill');
     const detailEl = document.getElementById('validation-detail');
-    const logEl = document.getElementById('validation-log');
     const badge = document.getElementById('validation-attempt-badge');
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
+    const logEl = _getFlowTarget();
 
     // Progress bar + detail text
     if (event.progress && progressFill) {
@@ -3108,10 +3206,6 @@ function _handleValidationEvent(event) {
     }
     if (event.detail && detailEl) {
         detailEl.textContent = event.detail;
-    }
-    if (event.step && badge) {
-        badge.textContent = event.step > 1 ? `Step ${event.step}` : 'Deploying…';
-        badge.classList.add('visible');
     }
     if (event.phase === 'init_model' && event.model && modelBadge) {
         modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
@@ -3125,15 +3219,9 @@ function _handleValidationEvent(event) {
     const type = event.type || '';
     const detail = event.detail || '';
 
-    // ── Iteration / attempt separator ──
-    if (type === 'iteration_start' && event.step && event.step > 1) {
-        _flowAttemptSep(logEl, `Attempt ${event.step}`);
-    }
-    if (phase === 'infra_retry') {
-        _flowAttemptSep(logEl, detail || 'Retrying');
-    }
-
     // ── Phase → flow card mapping ──
+    // Cards reuse their key across iterations — _flowCard reopens
+    // a finalized card and inserts an iteration separator inside it.
     if (phase === 'standards_analysis' || phase === 'init_model') {
         _flowCard(logEl, 'standards', '📋', 'Analyzing Standards');
         if (detail) _flowDetail(logEl, 'standards', '▸', escapeHtml(detail));
@@ -3170,7 +3258,7 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'staticPolicy', 'done');
     } else if (phase === 'static_policy_failed') {
         if (detail) _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'staticPolicy', 'failed');
+        // Keep card active — healing will add fix detail, then the card is revisited
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
         if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
@@ -3187,7 +3275,7 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'deploy', 'done');
     } else if (phase === 'deploy_failed') {
         if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, 'deploy', 'failed');
+        // Keep card active — healing details will be added here
     } else if (phase === 'resource_check') {
         _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
         if (detail) _flowDetail(logEl, 'resourceCheck', '▸', escapeHtml(detail));
@@ -3206,11 +3294,12 @@ function _handleValidationEvent(event) {
     } else if (phase === 'policy_skip') {
         if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', 'ℹ️', escapeHtml(detail));
     } else if (phase === 'fixing_policy') {
-        _flowCard(logEl, 'fixPolicy', '🛡️', 'Fixing Policy');
-        if (detail) _flowDetail(logEl, 'fixPolicy', '▸', escapeHtml(detail));
+        // Policy fixing goes into the active card as detail
+        const k = logEl._flow.activeKey || 'policyTest';
+        if (detail) _flowDetail(logEl, k, '🔧', escapeHtml(detail));
     } else if (phase === 'policy_fixed') {
-        if (detail) _flowDetail(logEl, 'fixPolicy', '✓', escapeHtml(detail), 'uf-text-success');
-        _flowFinalize(logEl, 'fixPolicy', 'done');
+        const k = logEl._flow.activeKey || 'policyTest';
+        if (detail) _flowDetail(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
     } else if (phase === 'policy_deploy') {
         _flowCard(logEl, 'policyDeploy', '📜', 'Deploying Policy');
         if (detail) _flowDetail(logEl, 'policyDeploy', '▸', escapeHtml(detail));
@@ -3229,20 +3318,21 @@ function _handleValidationEvent(event) {
     } else if (phase === 'co_onboarding') {
         _flowCard(logEl, 'coOnboard', '👶', 'Co-boarding Dependencies');
         if (detail) _flowDetail(logEl, 'coOnboard', '▸', escapeHtml(detail));
-    } else if (type === 'healing') {
-        _flowCard(logEl, 'healing', '🤖', 'AI Auto-Healing');
-        if (detail) _flowDetail(logEl, 'healing', '▸', escapeHtml(detail));
-    } else if (type === 'healing_done') {
-        if (detail) _flowDetail(logEl, 'healing', '✓', escapeHtml(detail), 'uf-text-success');
-        _flowFinalize(logEl, 'healing', 'done');
-    } else if (type === 'llm_reasoning') {
-        // Reasoning goes into the currently active card as a collapsible detail
+    } else if (phase === 'infra_retry') {
+        // Transient Azure error — add as detail in the active card
         const k = logEl._flow.activeKey;
-        if (k && detail) {
-            _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
-        }
+        if (k && detail) _flowDetail(logEl, k, '🔄', escapeHtml(detail));
+    } else if (type === 'healing') {
+        // Healing detail goes into the currently active card (the failing step)
+        const k = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, k, '🤖', escapeHtml(detail));
+    } else if (type === 'healing_done') {
+        const k = logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetail(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
+    } else if (type === 'llm_reasoning') {
+        const k = logEl._flow.activeKey;
+        if (k && detail) _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
     } else if (type === 'policy_result') {
-        // Policy result details go into the active card
         const k = logEl._flow.activeKey;
         if (k && detail) {
             const passed = event.compliant !== undefined ? event.compliant : event.passed;
@@ -3257,7 +3347,6 @@ function _handleValidationEvent(event) {
     } else if (type === 'policy_blocked') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'blocked', 'Policy review needed');
-        // Render guidance
         if (event.violations) {
             const guidanceEl = document.createElement('div');
             guidanceEl.className = 'policy-blocked-guidance';
@@ -3285,9 +3374,14 @@ function _handleValidationEvent(event) {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'failed', detail || 'Onboarding failed');
     } else if (detail) {
-        // Generic — add to active card
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
+    }
+
+    // ── Overlay header live update ──
+    if (_pipelineOverlayOpen) {
+        const metaEl = document.getElementById('pipeline-overlay-meta');
+        if (metaEl && detail) metaEl.textContent = detail;
     }
 
     // ── Outer card header updates ──
@@ -3349,11 +3443,14 @@ function _handleValidationEvent(event) {
 let reasoningVisible = true;
 function toggleReasoningVisibility() {
     reasoningVisible = !reasoningVisible;
-    const btn = document.getElementById('toggle-reasoning-btn');
-    if (btn) {
-        btn.classList.toggle('active', reasoningVisible);
-        btn.textContent = reasoningVisible ? '🧠 AI Thinking' : '🧠 Hidden';
-    }
+    // Update both the inline toggle and the overlay toggle
+    ['toggle-reasoning-btn', 'pipeline-reasoning-btn'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.classList.toggle('active', reasoningVisible);
+            btn.textContent = reasoningVisible ? '🧠 AI Thinking' : '🧠 Hidden';
+        }
+    });
     // Hide/show reasoning in both old log lines and new flow detail lines
     document.querySelectorAll('.reasoning-line').forEach(el => {
         el.style.display = reasoningVisible ? '' : 'none';
