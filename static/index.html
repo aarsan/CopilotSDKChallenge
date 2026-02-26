@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=148">
+    <link rel="stylesheet" href="/static/styles.css?v=149">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -537,6 +537,7 @@
                     <div class="obs-tabs">
                         <button class="obs-tab active" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations</button>
+                        <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                     </div>
 
                     <!-- Tab: Deployments -->
@@ -545,6 +546,39 @@
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">🚀</span>
                                 <p>No deployments yet. Deploy a template from the Template Catalog.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Azure Resources -->
+                    <div class="obs-tab-content hidden" id="obs-content-azure-resources">
+                        <div class="azure-rg-toolbar">
+                            <button class="btn btn-sm btn-primary" onclick="loadAzureResources()" id="azure-rg-refresh-btn">🔄 Refresh</button>
+                            <button class="btn btn-sm btn-danger" onclick="cleanupOrphanedRGs()" id="azure-rg-cleanup-btn" style="display:none">🧹 Cleanup Orphaned</button>
+                            <span class="azure-rg-sub" id="azure-rg-sub"></span>
+                        </div>
+                        <div class="azure-rg-summary" id="azure-rg-summary">
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="azure-rg-managed-count">0</span>
+                                <span class="obs-stat-label">Managed</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-fail" id="azure-rg-validation-count">0</span>
+                                <span class="obs-stat-label">Validation (Orphaned)</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="azure-rg-deployment-count">0</span>
+                                <span class="obs-stat-label">Deployments</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="azure-rg-total-count">0</span>
+                                <span class="obs-stat-label">Total in Sub</span>
+                            </div>
+                        </div>
+                        <div class="azure-rg-feed" id="azure-rg-feed">
+                            <div class="activity-empty">
+                                <span class="activity-empty-icon">☁️</span>
+                                <p>Click <b>Refresh</b> to scan your Azure subscription for InfraForge-managed resource groups.</p>
                             </div>
                         </div>
                     </div>
@@ -1027,7 +1061,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=148"></script>
+    <script src="/static/app.js?v=149"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

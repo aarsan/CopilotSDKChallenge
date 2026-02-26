@@ -1289,3 +1289,110 @@ async def teardown_deployment(params: TeardownDeploymentParams) -> str:
 
     else:
         return f"❌ {result.get('error', 'Teardown failed.')}"
+
+
+# ══════════════════════════════════════════════════════════════
+# AZURE RESOURCE GROUP DISCOVERY  (Managed Resources)
+# ══════════════════════════════════════════════════════════════
+
+async def list_azure_resource_groups() -> list[dict]:
+    """List all resource groups in the subscription, annotated with
+    InfraForge management info.
+
+    Each entry includes:
+      - name, location, provisioning_state, tags
+      - managed_by_infraforge (bool)  — has the managedBy=InfraForge tag OR
+        name starts with 'infraforge-'
+      - rg_type: 'validation' | 'deployment' | 'unknown'
+      - resources: count of resources in the RG (if InfraForge-managed)
+    """
+    loop = asyncio.get_event_loop()
+    client = _get_resource_client()
+
+    # List all RGs
+    rg_list = await loop.run_in_executor(
+        None, lambda: list(client.resource_groups.list())
+    )
+
+    results: list[dict] = []
+    for rg in rg_list:
+        tags = rg.tags or {}
+        name = rg.name or ""
+        is_managed = (
+            tags.get("managedBy", "").lower() == "infraforge"
+            or tags.get("managedby", "").lower() == "infraforge"
+            or name.lower().startswith("infraforge-")
+        )
+
+        # Classify RG type
+        rg_type = "unknown"
+        if name.lower().startswith("infraforge-val-"):
+            rg_type = "validation"
+        elif is_managed:
+            rg_type = "deployment"
+
+        entry: dict = {
+            "name": name,
+            "location": rg.location,
+            "provisioning_state": rg.properties.provisioning_state if rg.properties else "Unknown",
+            "tags": tags,
+            "managed_by_infraforge": is_managed,
+            "rg_type": rg_type,
+        }
+        results.append(entry)
+
+    # For InfraForge-managed RGs, count resources in parallel
+    managed = [r for r in results if r["managed_by_infraforge"]]
+    if managed:
+        async def _count_resources(rg_name: str) -> int:
+            try:
+                res_list = await loop.run_in_executor(
+                    None,
+                    lambda n=rg_name: list(client.resources.list_by_resource_group(n)),
+                )
+                return len(res_list)
+            except Exception:
+                return 0
+
+        counts = await asyncio.gather(
+            *[_count_resources(r["name"]) for r in managed]
+        )
+        for r, count in zip(managed, counts):
+            r["resource_count"] = count
+
+    return results
+
+
+async def delete_resource_group(rg_name: str) -> dict:
+    """Delete a resource group by name. Returns status dict."""
+    loop = asyncio.get_event_loop()
+    client = _get_resource_client()
+
+    try:
+        # Check existence first
+        exists = await loop.run_in_executor(
+            None, lambda: client.resource_groups.check_existence(rg_name)
+        )
+        if not exists:
+            return {"status": "not_found", "message": f"Resource group '{rg_name}' does not exist."}
+
+        # Begin deletion
+        poller = await loop.run_in_executor(
+            None, lambda: client.resource_groups.begin_delete(rg_name)
+        )
+        # Wait for completion (with timeout)
+        await loop.run_in_executor(None, lambda: poller.wait(timeout=300))
+
+        logger.info(f"Deleted resource group '{rg_name}'")
+        return {
+            "status": "deleted",
+            "message": f"Resource group '{rg_name}' deleted successfully.",
+            "resource_group": rg_name,
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete resource group '{rg_name}': {e}")
+        return {
+            "status": "error",
+            "error": f"Failed to delete '{rg_name}': {str(e)[:300]}",
+            "resource_group": rg_name,
+        }

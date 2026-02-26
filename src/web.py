@@ -12383,6 +12383,119 @@ async def teardown_deployment_endpoint(deployment_id: str):
     return JSONResponse(result)
 
 
+# ── Azure Managed Resources API ──────────────────────────────
+
+@app.get("/api/azure/resource-groups")
+async def list_azure_resource_groups_endpoint():
+    """List all resource groups in the Azure subscription, annotated with
+    InfraForge management info. Cross-references with deployment DB records."""
+    from src.tools.deploy_engine import list_azure_resource_groups
+    from src.database import get_deployments
+
+    try:
+        rgs = await list_azure_resource_groups()
+        deployments = await get_deployments()
+
+        # Build lookup: resource_group → deployment info
+        deploy_map: dict[str, dict] = {}
+        for d in deployments:
+            rg = d.get("resource_group", "")
+            if rg and rg not in deploy_map:
+                deploy_map[rg] = {
+                    "deployment_id": d.get("deployment_id"),
+                    "status": d.get("status"),
+                    "deployment_name": d.get("deployment_name"),
+                    "template_id": d.get("template_id"),
+                    "template_name": d.get("template_name"),
+                    "started_at": d.get("started_at"),
+                    "torn_down_at": d.get("torn_down_at"),
+                }
+
+        # Enrich RG data with deployment info
+        for rg in rgs:
+            dep_info = deploy_map.get(rg["name"])
+            if dep_info:
+                rg["deployment"] = dep_info
+                rg["managed_by_infraforge"] = True  # has a deployment record
+                if rg["rg_type"] == "unknown":
+                    rg["rg_type"] = "deployment"
+
+        managed = [r for r in rgs if r["managed_by_infraforge"]]
+        unmanaged = [r for r in rgs if not r["managed_by_infraforge"]]
+
+        return JSONResponse({
+            "managed": managed,
+            "unmanaged": unmanaged,
+            "total": len(rgs),
+            "managed_count": len(managed),
+            "subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID", "")[:12] + "…",
+        })
+    except Exception as e:
+        logger.error(f"Failed to list Azure resource groups: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to query Azure: {str(e)[:200]}")
+
+
+@app.delete("/api/azure/resource-groups/{rg_name}")
+async def delete_azure_resource_group_endpoint(rg_name: str):
+    """Delete a single Azure resource group."""
+    from src.tools.deploy_engine import delete_resource_group
+
+    result = await delete_resource_group(rg_name)
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail=result["error"])
+    if result["status"] == "not_found":
+        raise HTTPException(status_code=404, detail=result["message"])
+    return JSONResponse(result)
+
+
+@app.post("/api/azure/resource-groups/cleanup")
+async def cleanup_azure_resource_groups_endpoint(request: Request):
+    """Bulk-delete InfraForge-managed resource groups.
+
+    Body (optional):
+      rg_names: list[str]  — specific RGs to delete (default: all validation RGs)
+      type: str            — 'validation' | 'all' (default: 'validation')
+    """
+    from src.tools.deploy_engine import list_azure_resource_groups, delete_resource_group
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    rg_names = body.get("rg_names")
+    cleanup_type = body.get("type", "validation")
+
+    if not rg_names:
+        # Auto-discover: list managed RGs and filter
+        all_rgs = await list_azure_resource_groups()
+        if cleanup_type == "all":
+            targets = [r["name"] for r in all_rgs if r["managed_by_infraforge"]]
+        else:
+            targets = [r["name"] for r in all_rgs if r["rg_type"] == "validation"]
+    else:
+        targets = rg_names
+
+    if not targets:
+        return JSONResponse({"deleted": [], "failed": [], "message": "No resource groups to clean up."})
+
+    results = []
+    for name in targets:
+        result = await delete_resource_group(name)
+        results.append({"name": name, **result})
+
+    deleted = [r for r in results if r["status"] == "deleted"]
+    failed = [r for r in results if r["status"] == "error"]
+
+    return JSONResponse({
+        "deleted": deleted,
+        "failed": failed,
+        "total_deleted": len(deleted),
+        "total_failed": len(failed),
+        "message": f"Deleted {len(deleted)} resource group(s)" + (f", {len(failed)} failed" if failed else ""),
+    })
+
+
 # ── Approval Management API ──────────────────────────────────
 
 @app.get("/api/approvals")

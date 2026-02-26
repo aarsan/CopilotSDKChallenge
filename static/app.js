@@ -9993,6 +9993,7 @@ function switchObsTab(tab) {
     const content = document.getElementById(`obs-content-${tab}`);
     if (tabBtn) tabBtn.classList.add('active');
     if (content) content.classList.remove('hidden');
+    if (tab === 'azure-resources') loadAzureResources();
 }
 
 async function loadDeploymentHistory() {
@@ -10175,6 +10176,187 @@ async function teardownDeployment(deploymentId) {
         await loadDeploymentHistory();
     } catch (err) {
         alert(`Teardown failed: ${err.message}`);
+    }
+}
+
+// ── Azure Managed Resources ─────────────────────────────────
+
+let _azureRgCache = null;
+
+async function loadAzureResources() {
+    const feed = document.getElementById('azure-rg-feed');
+    const refreshBtn = document.getElementById('azure-rg-refresh-btn');
+    if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = '⏳ Scanning…'; }
+    feed.innerHTML = '<div class="activity-empty"><span class="activity-empty-icon">⏳</span><p>Scanning Azure subscription for resource groups…</p></div>';
+
+    try {
+        const res = await fetch('/api/azure/resource-groups');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        _azureRgCache = data;
+
+        // Update summary counters
+        const managed = data.managed || [];
+        const validationRGs = managed.filter(r => r.rg_type === 'validation');
+        const deploymentRGs = managed.filter(r => r.rg_type === 'deployment');
+
+        el('azure-rg-managed-count', managed.length);
+        el('azure-rg-validation-count', validationRGs.length);
+        el('azure-rg-deployment-count', deploymentRGs.length);
+        el('azure-rg-total-count', data.total || 0);
+
+        const subEl = document.getElementById('azure-rg-sub');
+        if (subEl) subEl.textContent = `Subscription: ${data.subscription_id || ''}`;
+
+        // Show/hide cleanup button
+        const cleanupBtn = document.getElementById('azure-rg-cleanup-btn');
+        if (cleanupBtn) cleanupBtn.style.display = validationRGs.length > 0 ? '' : 'none';
+
+        _renderAzureResourceGroups(managed, data.unmanaged || []);
+    } catch (err) {
+        feed.innerHTML = `<div class="activity-empty"><span class="activity-empty-icon">❌</span><p>Failed to load Azure resources: ${escapeHtml(err.message)}</p></div>`;
+    } finally {
+        if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = '🔄 Refresh'; }
+    }
+}
+
+function _renderAzureResourceGroups(managed, unmanaged) {
+    const feed = document.getElementById('azure-rg-feed');
+    if (!managed.length && !unmanaged.length) {
+        feed.innerHTML = '<div class="activity-empty"><span class="activity-empty-icon">☁️</span><p>No resource groups found in this subscription.</p></div>';
+        return;
+    }
+
+    let html = '';
+
+    if (managed.length) {
+        html += '<div class="azure-rg-section"><h4 class="azure-rg-section-title">🔗 InfraForge-Managed Resource Groups</h4>';
+        html += managed.map(rg => _renderAzureRGCard(rg, true)).join('');
+        html += '</div>';
+    }
+
+    if (unmanaged.length) {
+        html += `<details class="azure-rg-section azure-rg-unmanaged-details">
+            <summary class="azure-rg-section-title azure-rg-unmanaged-summary">📁 Other Resource Groups (${unmanaged.length})</summary>`;
+        html += unmanaged.map(rg => _renderAzureRGCard(rg, false)).join('');
+        html += '</details>';
+    }
+
+    feed.innerHTML = html;
+}
+
+function _renderAzureRGCard(rg, isManaged) {
+    const typeIcons = { validation: '🧪', deployment: '🚀', unknown: '📁' };
+    const typeLabels = { validation: 'Validation', deployment: 'Deployment', unknown: 'Resource Group' };
+    const typeIcon = typeIcons[rg.rg_type] || '📁';
+    const typeLabel = typeLabels[rg.rg_type] || 'Resource Group';
+
+    const provState = rg.provisioning_state || 'Unknown';
+    const stateClass = provState === 'Succeeded' ? 'azure-rg-state-ok'
+        : provState === 'Deleting' ? 'azure-rg-state-deleting'
+        : 'azure-rg-state-other';
+
+    // Deployment link if available
+    let depHtml = '';
+    if (rg.deployment) {
+        const d = rg.deployment;
+        const statusIcons = { succeeded: '✅', failed: '❌', torn_down: '🗑️', deploying: '⏳' };
+        depHtml = `<div class="azure-rg-deploy-link">
+            <span class="azure-rg-deploy-status">${statusIcons[d.status] || '❓'} ${d.status}</span>
+            ${d.template_name ? `<span class="azure-rg-deploy-name">${escapeHtml(d.template_name)}</span>` : ''}
+            ${d.started_at ? `<span class="azure-rg-deploy-time">${new Date(d.started_at).toLocaleDateString()}</span>` : ''}
+        </div>`;
+    }
+
+    // Resource count
+    const resCount = rg.resource_count !== undefined ? `<span class="azure-rg-res-count" title="Resources in this RG">${rg.resource_count} resource${rg.resource_count !== 1 ? 's' : ''}</span>` : '';
+
+    // Tags (show a few key ones)
+    const tags = rg.tags || {};
+    const tagKeys = Object.keys(tags).slice(0, 4);
+    const tagsHtml = tagKeys.length
+        ? `<div class="azure-rg-tags">${tagKeys.map(k => `<span class="azure-rg-tag">${escapeHtml(k)}: ${escapeHtml(String(tags[k]).substring(0, 30))}</span>`).join('')}</div>`
+        : '';
+
+    // Actions
+    let actionsHtml = '';
+    if (isManaged && provState !== 'Deleting') {
+        actionsHtml = `<div class="azure-rg-actions">
+            <button class="btn btn-sm btn-danger azure-rg-delete-btn" onclick="deleteAzureRG('${escapeHtml(rg.name)}')" title="Delete this resource group">🗑️ Delete</button>
+        </div>`;
+    }
+
+    return `
+    <div class="azure-rg-card ${isManaged ? 'azure-rg-managed' : 'azure-rg-unmanaged'} azure-rg-type-${rg.rg_type}">
+        <div class="azure-rg-header">
+            <div class="azure-rg-title">
+                <span class="azure-rg-icon">${typeIcon}</span>
+                <div class="azure-rg-name-block">
+                    <span class="azure-rg-name">${escapeHtml(rg.name)}</span>
+                    <span class="azure-rg-type-label">${typeLabel}</span>
+                </div>
+            </div>
+            <div class="azure-rg-meta-right">
+                <span class="azure-rg-state ${stateClass}">${provState}</span>
+                ${resCount}
+            </div>
+        </div>
+        <div class="azure-rg-details">
+            <span class="azure-rg-location">📍 ${escapeHtml(rg.location)}</span>
+            ${depHtml}
+        </div>
+        ${tagsHtml}
+        ${actionsHtml}
+    </div>`;
+}
+
+async function deleteAzureRG(rgName) {
+    if (!confirm(`⚠️ Delete resource group "${rgName}" and ALL its resources?\n\nThis cannot be undone.`)) return;
+
+    // Disable the button
+    const btns = document.querySelectorAll('.azure-rg-delete-btn');
+    btns.forEach(b => {
+        if (b.getAttribute('onclick')?.includes(rgName)) {
+            b.disabled = true;
+            b.textContent = '🔄 Deleting…';
+        }
+    });
+
+    try {
+        const res = await fetch(`/api/azure/resource-groups/${encodeURIComponent(rgName)}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`Delete failed: ${data.detail || 'Unknown error'}`);
+            return;
+        }
+        showToast(`✅ Resource group "${rgName}" deleted`, 'success');
+        await loadAzureResources();
+    } catch (err) {
+        alert(`Delete failed: ${err.message}`);
+    }
+}
+
+async function cleanupOrphanedRGs() {
+    const validationCount = _azureRgCache?.managed?.filter(r => r.rg_type === 'validation').length || 0;
+    if (!confirm(`🧹 Delete all ${validationCount} orphaned validation resource group(s)?\n\nThese are leftover from onboarding validation runs and are no longer needed.\n\nThis cannot be undone.`)) return;
+
+    const btn = document.getElementById('azure-rg-cleanup-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Cleaning up…'; }
+
+    try {
+        const res = await fetch('/api/azure/resource-groups/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'validation' }),
+        });
+        const data = await res.json();
+        const msg = data.message || `Deleted ${data.total_deleted || 0} resource group(s)`;
+        showToast(`🧹 ${msg}`, 'success');
+        await loadAzureResources();
+    } catch (err) {
+        alert(`Cleanup failed: ${err.message}`);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🧹 Cleanup Orphaned'; }
     }
 }
 

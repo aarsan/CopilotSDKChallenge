@@ -5113,6 +5113,206 @@ body {
 
 
 /* ══════════════════════════════════════════════════════════════
+   AZURE MANAGED RESOURCES TAB
+   ══════════════════════════════════════════════════════════════ */
+
+.azure-rg-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem 0;
+}
+
+.azure-rg-sub {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-left: auto;
+    font-family: var(--font-mono);
+}
+
+.azure-rg-summary {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 1.25rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-primary);
+}
+
+.azure-rg-section {
+    margin-bottom: 1.5rem;
+}
+
+.azure-rg-section-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.azure-rg-unmanaged-summary {
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+}
+.azure-rg-unmanaged-summary:hover {
+    color: var(--text-primary);
+}
+
+.azure-rg-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-left: 3px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+    transition: border-color 0.2s;
+}
+.azure-rg-card:hover { border-color: var(--accent-primary); }
+
+.azure-rg-card.azure-rg-managed { border-left-color: var(--accent-primary); }
+.azure-rg-card.azure-rg-type-validation { border-left-color: #f59e0b; }
+.azure-rg-card.azure-rg-type-deployment { border-left-color: var(--accent-success); }
+.azure-rg-card.azure-rg-unmanaged { opacity: 0.65; }
+.azure-rg-card.azure-rg-unmanaged:hover { opacity: 0.85; }
+
+.azure-rg-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.azure-rg-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.azure-rg-icon {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.azure-rg-name-block {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.azure-rg-name {
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+}
+
+.azure-rg-type-label {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.azure-rg-meta-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+}
+
+.azure-rg-state {
+    font-size: 0.7rem;
+    padding: 0.15em 0.5em;
+    border-radius: 4px;
+    font-weight: 600;
+}
+.azure-rg-state-ok { background: rgba(46, 160, 67, 0.15); color: var(--accent-success); }
+.azure-rg-state-deleting { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.azure-rg-state-other { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
+
+.azure-rg-res-count {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    padding: 0.15em 0.5em;
+    border-radius: 4px;
+}
+
+.azure-rg-details {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.4rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.azure-rg-location {
+    flex-shrink: 0;
+}
+
+.azure-rg-deploy-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+}
+
+.azure-rg-deploy-status {
+    font-weight: 600;
+}
+.azure-rg-deploy-name {
+    color: var(--accent-primary);
+}
+.azure-rg-deploy-time {
+    color: var(--text-muted);
+}
+
+.azure-rg-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+}
+
+.azure-rg-tag {
+    font-size: 0.65rem;
+    background: var(--bg-tertiary);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.azure-rg-actions {
+    margin-top: 0.5rem;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border-primary);
+    display: flex;
+    gap: 0.5rem;
+}
+
+.azure-rg-delete-btn {
+    font-size: 0.72rem !important;
+    padding: 0.2em 0.6em !important;
+}
+.azure-rg-delete-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+
+/* ══════════════════════════════════════════════════════════════
    ACTIVITY MONITOR (Service Validations)
    ══════════════════════════════════════════════════════════════ */
 
