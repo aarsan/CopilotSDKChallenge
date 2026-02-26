@@ -6229,6 +6229,32 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             )
             current_api = current_api_versions[0] if current_api_versions else "unknown"
 
+            # Validate ARM template contains the expected resource type
+            _arm_types = [
+                r.get("type", "").lower()
+                for r in resources
+                if isinstance(r, dict) and r.get("type")
+            ]
+            _expected_type = service_id.lower()
+            _expected_parent = "/".join(service_id.split("/")[:2]).lower() if service_id.count("/") >= 2 else None
+            _type_found = any(
+                _expected_type in t or (_expected_parent and _expected_parent in t)
+                for t in _arm_types
+            )
+            if not _type_found and _arm_types:
+                _actual = ", ".join(sorted(set(r.get("type", "?") for r in resources if isinstance(r, dict) and r.get("type"))))
+                yield json.dumps({
+                    "type": "error", "phase": "checkout",
+                    "detail": (
+                        f"✗ ARM template resource type mismatch — template contains [{_actual}] "
+                        f"but this service is '{service_id}'. "
+                        f"The template was likely generated incorrectly during onboarding. "
+                        f"Please re-onboard this service to generate a correct ARM template."
+                    ),
+                    "progress": 1.0,
+                }) + "\n"
+                return
+
             _resource_summary = ", ".join(sorted({r.get('type','?').split('/')[-1] for r in resources if isinstance(r,dict) and r.get('type')})[:5])
             _more = max(0, len(resources) - 5)
             _res_text = _resource_summary + (f" +{_more} more" if _more else "")

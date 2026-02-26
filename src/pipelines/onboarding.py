@@ -458,11 +458,35 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
         raise PipelineAbort("ARM template generation returned empty content")
 
     try:
-        json.loads(ctx.template)
+        _parsed = json.loads(ctx.template)
     except json.JSONDecodeError as e:
         from src.database import fail_service_validation
         await fail_service_validation(ctx.service_id, f"Generated ARM template is not valid JSON: {e}")
         raise PipelineAbort(f"Generated ARM template is not valid JSON: {e}")
+
+    # Validate the template contains the expected resource type
+    _generated_types = [
+        r.get("type", "").lower()
+        for r in _parsed.get("resources", [])
+        if isinstance(r, dict) and r.get("type")
+    ]
+    _expected = ctx.service_id.lower()
+    _parent = "/".join(ctx.service_id.split("/")[:2]).lower() if ctx.service_id.count("/") >= 2 else None
+    _type_ok = any(
+        _expected in t or (_parent and _parent in t)
+        for t in _generated_types
+    )
+    if not _type_ok and _generated_types:
+        _msg = (
+            f"ARM template contains wrong resource types: {_generated_types}. "
+            f"Expected at least one resource of type '{ctx.service_id}'."
+        )
+        logger.error(f"Resource type mismatch for {ctx.service_id}: {_msg}")
+        yield emit("llm_reasoning", "generating",
+                    f"⚠️ {_msg}", ctx.progress(0.5))
+        from src.database import fail_service_validation
+        await fail_service_validation(ctx.service_id, _msg)
+        raise PipelineAbort(_msg)
 
     # Sanitize + tag injection + metadata stamping
     ctx.template = sanitize_template(ctx.template)

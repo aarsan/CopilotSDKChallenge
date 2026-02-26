@@ -1090,6 +1090,27 @@ async def generate_arm_template_with_copilot(
             if not isinstance(parsed, dict) or ("resources" not in parsed and "$schema" not in parsed):
                 raise json.JSONDecodeError("Response is valid JSON but not an ARM template", result, 0)
 
+            # Validate the template contains the expected resource type
+            _generated_types = [
+                r.get("type", "").lower()
+                for r in parsed.get("resources", [])
+                if isinstance(r, dict) and r.get("type")
+            ]
+            _expected_type = resource_type.lower()
+            # For child resource types (e.g. Microsoft.Network/virtualNetworks/subnets),
+            # also accept the parent type (Microsoft.Network/virtualNetworks)
+            _expected_parent = "/".join(resource_type.split("/")[:2]).lower() if resource_type.count("/") >= 2 else None
+            _type_match = any(
+                _expected_type in t or (_expected_parent and _expected_parent in t)
+                for t in _generated_types
+            )
+            if not _type_match and _generated_types:
+                raise ValueError(
+                    f"Generated template contains {_generated_types} but expected "
+                    f"'{resource_type}'. The template MUST include a resource of "
+                    f"type '{resource_type}'. Do not generate unrelated resource types."
+                )
+
             logger.info(f"Copilot generated ARM template for {resource_type} (attempt {attempt})")
             return result
 
