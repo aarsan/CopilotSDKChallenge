@@ -1510,7 +1510,7 @@ async function showServiceDetail(serviceId) {
         }
         const data = await versionsRes.json();
         _currentVersions = data.versions || [];
-        _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status);
+        _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status, data.child_resources, data.parent_resource);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
 
@@ -1550,7 +1550,7 @@ function _renderApiVersionAdvisory(status) {
         </div>`;
 }
 
-function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus) {
+function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus, childResources, parentResource) {
     const body = document.getElementById('detail-service-body');
     const status = svc.status || 'not_approved';
     const hasVersions = versions.length > 0;
@@ -1622,8 +1622,69 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
 
         ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersion)}
 
+        ${_renderChildResources(childResources, parentResource)}
+
         ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
+}
+
+function _renderChildResources(childResources, parentResource) {
+    let html = '';
+
+    // Parent link (for child resources)
+    if (parentResource) {
+        const parentShort = parentResource.split('/').pop();
+        const parentSvc = allServices.find(s => s.id === parentResource);
+        const parentStatus = parentSvc ? parentSvc.status : 'not_in_catalog';
+        const parentBadge = parentStatus === 'approved'
+            ? '<span class="child-res-status child-res-approved">✅ Onboarded</span>'
+            : '<span class="child-res-status child-res-missing">⚠️ Not onboarded</span>';
+        html += `
+        <div class="child-resources-section">
+            <div class="child-res-header">🔗 Parent Resource</div>
+            <div class="child-res-item" onclick="showServiceDetail('${escapeHtml(parentResource)}')" style="cursor:pointer">
+                <span class="child-res-name">${escapeHtml(parentShort)}</span>
+                <span class="child-res-type">${escapeHtml(parentResource)}</span>
+                ${parentBadge}
+            </div>
+        </div>`;
+    }
+
+    // Child resources
+    if (childResources && childResources.length > 0) {
+        const items = childResources.map(c => {
+            let badge;
+            if (c.has_active_version) {
+                badge = '<span class="child-res-status child-res-approved">✅ Onboarded</span>';
+            } else if (c.status === 'approved') {
+                badge = '<span class="child-res-status child-res-pending">📋 Approved</span>';
+            } else if (c.status === 'not_in_catalog') {
+                badge = '<span class="child-res-status child-res-missing">—</span>';
+            } else {
+                badge = `<span class="child-res-status child-res-missing">${escapeHtml(c.status)}</span>`;
+            }
+            const autoTag = c.always_include
+                ? '<span class="child-res-auto-tag" title="Will be automatically co-onboarded with parent">auto</span>'
+                : '';
+            const clickable = c.status !== 'not_in_catalog'
+                ? ` onclick="showServiceDetail('${escapeHtml(c.type)}')" style="cursor:pointer"`
+                : '';
+            return `
+                <div class="child-res-item"${clickable}>
+                    <span class="child-res-name">${escapeHtml(c.short_name)} ${autoTag}</span>
+                    <span class="child-res-reason">${escapeHtml(c.reason)}</span>
+                    ${badge}
+                </div>`;
+        }).join('');
+
+        html += `
+        <div class="child-resources-section">
+            <div class="child-res-header">👶 Child Resources</div>
+            ${items}
+        </div>`;
+    }
+
+    return html;
 }
 
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
@@ -2875,6 +2936,7 @@ function _handleValidationEvent(event) {
             else if (event.phase === 'policy_deploy_complete')  icon = '✓';
             else if (event.phase === 'cleanup' || event.phase === 'cleanup_complete') icon = '🧹';
             else if (event.phase === 'promoting')               icon = '🏆';
+            else if (event.phase === 'co_onboarding')           icon = '👶';
             break;
     }
 

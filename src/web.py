@@ -10050,14 +10050,49 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
 
                 await promote_service_after_validation(service_id, validation_summary)
 
+                # ── Co-onboard required child resources ──────
+                # Azure parent-child relationship: when onboarding a parent
+                # (e.g. VNet), automatically co-onboard tightly-coupled children
+                # (e.g. subnets) that can't exist without the parent.
+                from src.template_engine import get_required_co_onboard_types
+                co_onboard_types = get_required_co_onboard_types(service_id)
+                co_onboarded = []
+
+                if co_onboard_types:
+                    from src.orchestrator import auto_onboard_service
+                    for child_info in co_onboard_types:
+                        child_type = child_info["type"]
+                        child_reason = child_info["reason"]
+                        child_short = child_type.split("/")[-1]
+                        yield json.dumps({
+                            "type": "progress", "phase": "co_onboarding", "step": attempt,
+                            "detail": f"Co-onboarding child resource: {child_short} — {child_reason}",
+                            "progress": 0.98,
+                        }) + "\n"
+                        try:
+                            client = await ensure_copilot_client()
+                            child_result = await auto_onboard_service(
+                                child_type,
+                                copilot_client=client,
+                            )
+                            if child_result.get("status") in ("onboarded", "already_approved"):
+                                co_onboarded.append(child_type)
+                                logger.info(f"Co-onboarded child resource {child_type} with parent {service_id}")
+                            else:
+                                logger.warning(f"Co-onboard of {child_type} returned: {child_result.get('status')}")
+                        except Exception as co_err:
+                            logger.warning(f"Failed to co-onboard {child_type}: {co_err}")
+
                 compliant_str = f", all {len(policy_results)} policy check(s) passed" if policy_results else ""
                 res_types_done = ", ".join(tmpl_meta["resource_types"][:5]) or "N/A"
                 issues_resolved = len(heal_history)
                 heal_msg = f" Resolved {issues_resolved} issue{'s' if issues_resolved != 1 else ''} automatically." if issues_resolved > 0 else ""
+                co_msg = f" Also co-onboarded: {', '.join(t.split('/')[-1] for t in co_onboarded)}." if co_onboarded else ""
                 yield json.dumps({
                     "type": "done", "phase": "approved", "step": attempt,
                     "issues_resolved": issues_resolved,
-                    "detail": f"🎉 {svc['name']} approved! Successfully deployed {len(resource_details)} resource(s) [{res_types_done}] to Azure{compliant_str}. Validation resource group cleaned up.{heal_msg}",
+                    "co_onboarded": co_onboarded,
+                    "detail": f"🎉 {svc['name']} approved! Successfully deployed {len(resource_details)} resource(s) [{res_types_done}] to Azure{compliant_str}. Validation resource group cleaned up.{heal_msg}{co_msg}",
                     "progress": 1.0,
                     "summary": validation_summary,
                 }) + "\n"
@@ -10245,11 +10280,32 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
         # ── API version advisory ──
         api_version_status = _build_api_version_status(svc, versions)
 
+        # ── Parent-child resource relationships ──
+        from src.template_engine import (
+            get_child_resource_types, get_parent_resource_type,
+        )
+        child_resources = []
+        for child_info in get_child_resource_types(service_id):
+            child_type = child_info["type"]
+            # Check if the child is already in the catalog
+            child_svc = await get_service(child_type)
+            child_resources.append({
+                "type": child_type,
+                "short_name": child_type.split("/")[-1],
+                "reason": child_info["reason"],
+                "always_include": child_info.get("always_include", False),
+                "status": child_svc.get("status") if child_svc else "not_in_catalog",
+                "has_active_version": bool(child_svc.get("active_version")) if child_svc else False,
+            })
+        parent_type = get_parent_resource_type(service_id)
+
         return JSONResponse({
             "service_id": service_id,
             "active_version": svc.get("active_version"),
             "versions": versions_summary,
             "api_version_status": api_version_status,
+            "child_resources": child_resources,
+            "parent_resource": parent_type,
         })
     except HTTPException:
         raise

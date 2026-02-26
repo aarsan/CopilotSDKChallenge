@@ -184,8 +184,108 @@ FOUNDATION_TYPES = {
 
 
 # ══════════════════════════════════════════════════════════════
-# DEPENDENCY ANALYSIS
+# PARENT-CHILD RESOURCE RELATIONSHIPS
 # ══════════════════════════════════════════════════════════════
+
+# Azure ARM encodes parent-child relationships in the resource type string:
+#   Microsoft.Network/virtualNetworks           → parent
+#   Microsoft.Network/virtualNetworks/subnets    → child (4+ segments)
+#
+# A child resource CANNOT exist without its parent.  This map captures
+# the well-known parent→child associations so InfraForge can co-onboard
+# them together.  The map is augmented by get_child_resource_types() which
+# can also derive parent-child from the resource type string generically.
+
+CHILD_RESOURCES: dict[str, list[dict]] = {
+    "Microsoft.Network/virtualNetworks": [
+        {
+            "type": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "Subnets are the fundamental building block of a VNet — every deployment needs at least one",
+            "always_include": True,
+        },
+    ],
+    "Microsoft.Sql/servers": [
+        {
+            "type": "Microsoft.Sql/servers/databases",
+            "reason": "A SQL Server without at least one database has no standalone value",
+            "always_include": False,  # user might want just the server first
+        },
+        {
+            "type": "Microsoft.Sql/servers/firewallRules",
+            "reason": "Firewall rules control network access to the SQL Server",
+            "always_include": False,
+        },
+    ],
+    "Microsoft.Web/sites": [
+        {
+            "type": "Microsoft.Web/sites/config",
+            "reason": "Site configuration (app settings, connection strings)",
+            "always_include": False,
+        },
+    ],
+    "Microsoft.KeyVault/vaults": [
+        {
+            "type": "Microsoft.KeyVault/vaults/secrets",
+            "reason": "Secrets stored in the vault",
+            "always_include": False,
+        },
+    ],
+    "Microsoft.Storage/storageAccounts": [
+        {
+            "type": "Microsoft.Storage/storageAccounts/blobServices",
+            "reason": "Blob storage service",
+            "always_include": False,
+        },
+    ],
+}
+
+
+def get_parent_resource_type(resource_type: str) -> str | None:
+    """Return the parent resource type, or None if this is a top-level resource.
+
+    Azure ARM convention: a child type has 4+ segments (Namespace/Parent/Child).
+    Example: Microsoft.Network/virtualNetworks/subnets → Microsoft.Network/virtualNetworks
+    """
+    parts = resource_type.split("/")
+    # Top-level: Microsoft.Foo/bars (2 segments via /)
+    # Child:     Microsoft.Foo/bars/children (3+ segments via /)
+    if len(parts) >= 3:
+        return "/".join(parts[:2])
+    return None
+
+
+def get_child_resource_types(resource_type: str) -> list[dict]:
+    """Return known child resource types for a parent.
+
+    First checks the explicit CHILD_RESOURCES map, then scans
+    RESOURCE_DEPENDENCIES for any types that are structurally children
+    of this resource type.
+    """
+    children = list(CHILD_RESOURCES.get(resource_type, []))
+
+    # Also find structural children from RESOURCE_DEPENDENCIES
+    known_child_types = {c["type"] for c in children}
+    prefix = resource_type + "/"
+    for rtype in RESOURCE_DEPENDENCIES:
+        if rtype.startswith(prefix) and rtype not in known_child_types:
+            children.append({
+                "type": rtype,
+                "reason": f"Child resource of {resource_type.split('/')[-1]}",
+                "always_include": False,
+            })
+            known_child_types.add(rtype)
+
+    return children
+
+
+def get_required_co_onboard_types(resource_type: str) -> list[dict]:
+    """Return child resource types that should be ALWAYS co-onboarded with a parent.
+
+    These are children marked with always_include=True — resources that are
+    so tightly coupled to the parent that onboarding the parent without the
+    child would be incomplete (e.g., VNet without subnets).
+    """
+    return [c for c in get_child_resource_types(resource_type) if c.get("always_include")]
 
 def analyze_dependencies(service_ids: list[str]) -> dict:
     """
