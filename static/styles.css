@@ -4411,6 +4411,15 @@ body {
     background: rgba(248, 81, 73, 0.04);
 }
 
+.validation-policy-blocked {
+    border-color: #d2992244;
+    background: rgba(210, 153, 34, 0.04);
+}
+
+.validation-policy-blocked .validation-progress-fill {
+    background: linear-gradient(90deg, #d29922, #e3b341);
+}
+
 /* Progress bar */
 .validation-progress {
     margin-bottom: 0.75rem;
@@ -4498,6 +4507,43 @@ body {
 
 .validation-log-healing_done {
     color: #a5d6ff;
+}
+
+.validation-log-policy-blocked {
+    color: #e3b341;
+    font-weight: 600;
+    white-space: pre-line;
+}
+
+.policy-blocked-guidance {
+    margin-top: 0.75rem;
+    padding: 0.875rem 1rem;
+    background: rgba(210, 153, 34, 0.08);
+    border: 1px solid rgba(210, 153, 34, 0.25);
+    border-radius: 8px;
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.policy-blocked-guidance p { margin: 0.25rem 0; }
+.policy-blocked-guidance ul { margin: 0.25rem 0 0.5rem 1rem; padding: 0; }
+.policy-blocked-guidance li { margin: 0.2rem 0; }
+.policy-blocked-guidance details { margin: 0.5rem 0; }
+.policy-blocked-guidance summary {
+    cursor: pointer;
+    color: #e3b341;
+    font-weight: 500;
+}
+.policy-blocked-guidance details ul {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+.policy-blocked-guidance .btn-sm {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.72rem;
 }
 
 .validation-log-policy_result {

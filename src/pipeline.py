@@ -124,6 +124,10 @@ class StepFailure(Exception):
         If ``True``, the runner may attempt LLM-based healing and retry.
     phase : str
         Optional sub-phase label (e.g. ``"static_policy"``, ``"what_if"``).
+    event_type : str
+        The NDJSON event type to emit (default ``"error"``).  Use
+        ``"policy_blocked"`` for policy violations so the frontend can
+        render guidance instead of a hard failure.
     """
 
     def __init__(
@@ -132,11 +136,13 @@ class StepFailure(Exception):
         *,
         healable: bool = True,
         phase: str = "",
+        event_type: str = "error",
     ):
         super().__init__(error)
         self.error = error
         self.healable = healable
         self.phase = phase
+        self.event_type = event_type
 
 
 class PipelineAbort(Exception):
@@ -696,7 +702,7 @@ class PipelineRunner:
 
                     # Non-healable or exhausted — route on_failure
                     if target in ("abort", "mark_failed"):
-                        yield emit("error", step.name, e.error)
+                        yield emit(e.event_type, step.name, e.error)
                         return
 
                     if target == "report_gap":

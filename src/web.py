@@ -9919,6 +9919,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         if evt.get("type") == "done":
             tracker["status"] = "succeeded"
             tracker["progress"] = 1.0
+        elif evt.get("type") == "policy_blocked":
+            tracker["status"] = "policy_blocked"
+            tracker["error"] = evt.get("detail", "")
         elif evt.get("type") == "error":
             tracker["status"] = "failed"
             tracker["error"] = evt.get("detail", "")

@@ -66,6 +66,121 @@ runner = PipelineRunner()
 
 
 # ══════════════════════════════════════════════════════════════
+# POLICY HEALING HELPER
+# ══════════════════════════════════════════════════════════════
+
+async def _heal_policy(
+    policy: dict,
+    resources: list[dict],
+    violations: list[dict],
+    standards_ctx: str,
+    previous_attempts: list[dict],
+) -> tuple[dict, str]:
+    """Fix a generated Azure Policy so it doesn't reject successfully-deployed resources.
+
+    The deployed resources are real and valid — the policy needs to be
+    relaxed to match reality while still enforcing meaningful governance.
+
+    Returns ``(fixed_policy_dict, strategy_text)``.
+    """
+    from src.copilot_helpers import copilot_send
+    from src.web import ensure_copilot_client
+
+    attempt_num = len(previous_attempts) + 1
+    plan_model = get_model_for_task(Task.PLANNING)
+    fix_model = get_model_for_task(Task.POLICY_GENERATION)
+
+    violation_summary = "\n".join(
+        f"  - {v['resource_name']} ({v['resource_type']}): {v['reason']}"
+        for v in violations
+    )
+    resource_summary = json.dumps(
+        [{"name": r.get("name"), "type": r.get("type"), "location": r.get("location"),
+          "tags": r.get("tags", {})} for r in resources[:10]],
+        indent=2, default=str,
+    )[:4000]
+
+    analysis_prompt = (
+        f"An Azure Policy you generated is rejecting resources that DEPLOYED SUCCESSFULLY.\n"
+        f"The deployment is valid — the policy is too strict.\n\n"
+        f"--- CURRENT POLICY ---\n{json.dumps(policy, indent=2)[:4000]}\n--- END POLICY ---\n\n"
+        f"--- VIOLATIONS (resources that failed the policy) ---\n{violation_summary}\n"
+        f"--- END VIOLATIONS ---\n\n"
+        f"--- ACTUAL DEPLOYED RESOURCES ---\n{resource_summary}\n--- END RESOURCES ---\n\n"
+    )
+    if standards_ctx:
+        analysis_prompt += f"--- ORG STANDARDS TO ENFORCE ---\n{standards_ctx[:2000]}\n--- END STANDARDS ---\n\n"
+
+    if previous_attempts:
+        analysis_prompt += "--- PREVIOUS ATTEMPTS ---\n"
+        for pa in previous_attempts:
+            if pa.get("phase") == "policy_compliance":
+                analysis_prompt += f"Attempt {pa.get('step', '?')}: {pa.get('strategy', 'unknown')[:300]} → STILL FAILED\n"
+        analysis_prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
+
+    analysis_prompt += (
+        "ROOT CAUSE: Why does the policy reject these valid resources?\n"
+        "STRATEGY: What specific conditions need to change?\n\n"
+        "RULES:\n"
+        "- The deployed resources are CORRECT — don't suggest changing the template\n"
+        "- Relax policy conditions that don't apply to this resource type\n"
+        "- Keep meaningful governance (tags, location restrictions)\n"
+        "- Remove conditions that check for properties the resource type doesn't have\n"
+    )
+
+    _client = await ensure_copilot_client()
+    if _client is None:
+        raise RuntimeError("Copilot SDK not available")
+
+    strategy_text = await copilot_send(
+        _client, model=plan_model,
+        system_prompt="You are an Azure Policy expert. Analyze why a policy rejects valid resources and propose specific fixes.",
+        prompt=analysis_prompt, timeout=60,
+    )
+
+    fix_prompt = (
+        f"Fix this Azure Policy following the strategy below.\n\n"
+        f"--- STRATEGY ---\n{strategy_text}\n--- END STRATEGY ---\n\n"
+        f"--- CURRENT POLICY ---\n{json.dumps(policy, indent=2)}\n--- END POLICY ---\n\n"
+        f"--- DEPLOYED RESOURCES (must pass after fix) ---\n{resource_summary}\n--- END RESOURCES ---\n\n"
+        f"Return ONLY the corrected policy JSON — no markdown, no explanation. Start with {{\n"
+        f"Keep the same structure: properties.policyRule with if/then.\n"
+        f"The 'if' must describe VIOLATIONS (non-compliant state) — if it matches, deny applies.\n"
+    )
+
+    fixed_raw = await copilot_send(
+        _client, model=fix_model,
+        system_prompt="You are an Azure Policy expert. Fix the policy JSON so it correctly evaluates the deployed resources. Return ONLY raw JSON.",
+        prompt=fix_prompt, timeout=60,
+    )
+
+    # Parse response
+    cleaned = fixed_raw.strip()
+    fence_match = re.search(r'```(?:json)?\s*\n(.*?)```', cleaned, re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    if not cleaned.startswith('{'):
+        brace_start = cleaned.find('{')
+        if brace_start >= 0:
+            depth = 0
+            for i in range(brace_start, len(cleaned)):
+                if cleaned[i] == '{': depth += 1
+                elif cleaned[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        cleaned = cleaned[brace_start:i + 1]
+                        break
+
+    try:
+        fixed_policy = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("Policy healer returned invalid JSON — keeping original policy")
+        return policy, strategy_text
+
+    return fixed_policy, strategy_text
+
+
+# ══════════════════════════════════════════════════════════════
 # STEP HANDLERS
 # ══════════════════════════════════════════════════════════════
 
@@ -773,28 +888,77 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             if not all_policy_compliant:
                 violations = [pr for pr in policy_results if not pr["compliant"]]
                 violation_desc = "; ".join(f"{v['resource_name']}: {v['reason']}" for v in violations)
-                fail_msg = f"{sum(1 for r in policy_results if r['compliant'])}/{len(policy_results)} compliant — {len(violations)} violation(s)"
+                compliant_count = sum(1 for r in policy_results if r["compliant"])
+                fail_msg = f"{compliant_count}/{len(policy_results)} compliant — {len(violations)} violation(s)"
 
                 yield emit("progress", "policy_failed", fail_msg, ctx.progress(att_base + 0.29), step=attempt)
 
                 if is_last:
+                    # ── Policy-blocked terminal state ──
+                    # The deployment SUCCEEDED — resources are live.  The
+                    # violation is in the *generated policy*, which may be
+                    # overly strict.  Instead of a hard "failed" we give the
+                    # user actionable guidance.
                     await cleanup_rg(ctx.rg_name)
                     ctx.deployed_rg = None
-                    await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": fail_msg, "phase": "policy_compliance"})
-                    await fail_service_validation(ctx.service_id, fail_msg)
-                    raise StepFailure(fail_msg, healable=False, phase="policy_compliance")
 
-                fix_error = f"Runtime policy violation: {violation_desc}. Policy: {json.dumps(ctx.generated_policy, indent=2)[:500]}"
-                yield emit("healing", "fixing_template",
-                            f"{len(violations)} resource(s) failed runtime policy compliance — auto-healing…",
+                    violation_details = [
+                        {"resource": v["resource_name"], "type": v["resource_type"], "reason": v["reason"]}
+                        for v in violations
+                    ]
+                    guidance = (
+                        f"The ARM template deployed successfully, but {len(violations)} resource(s) "
+                        f"did not pass the generated governance policy. This usually means the "
+                        f"policy is stricter than what the resource type supports.\n\n"
+                        f"Options:\n"
+                        f"1. Submit a policy exception request for this service\n"
+                        f"2. Ask the platform team to adjust the governance standards\n"
+                        f"3. Retry onboarding — the policy will be regenerated"
+                    )
+
+                    await update_service_version_status(
+                        ctx.service_id, ctx.version_num, "policy_blocked",
+                        validation_result={"error": fail_msg, "phase": "policy_compliance",
+                                           "violations": violation_details, "guidance": guidance},
+                    )
+                    # Don't demote the service — the template works, just
+                    # policy needs adjustment.  Record the issue in notes.
+                    await fail_service_validation(ctx.service_id, f"Policy review needed: {fail_msg}")
+
+                    yield emit("policy_blocked", "policy_blocked", guidance,
+                               ctx.progress(att_base + 0.30), step=attempt,
+                               violations=violation_details,
+                               compliant=compliant_count, total=len(policy_results))
+                    raise StepFailure(
+                        f"Deployment succeeded but {len(violations)} resource(s) need a policy exception. "
+                        f"Submit a policy exception request or ask the platform team to adjust standards.",
+                        healable=False, phase="policy_compliance",
+                        event_type="policy_blocked",
+                    )
+
+                # ── Heal the POLICY, not the template ──
+                # The template deployed successfully — don't break it.
+                # The generated policy may be too strict, so we ask the
+                # LLM to relax the policy to match the real resources.
+                yield emit("healing", "fixing_policy",
+                            f"{len(violations)} resource(s) failed policy — adjusting governance policy…",
                             ctx.progress(att_base + 0.30), step=attempt)
-                _pre_fix = ctx.template
-                ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, fix_error, standards_ctx, planning_response, ctx.heal_history)
-                yield emit("llm_reasoning", "strategy", f"Strategy: {_strategy[:500]}", step=attempt)
-                ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "policy_compliance", "error": fix_error[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
-                tmpl_meta = extract_meta(ctx.template)
-                await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-                yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — redeploying…", ctx.progress(att_base + 0.31), step=attempt)
+
+                fixed_policy, _strategy = await _heal_policy(
+                    ctx.generated_policy, resource_details, violations,
+                    standards_ctx, ctx.heal_history,
+                )
+                ctx.generated_policy = fixed_policy
+                yield emit("llm_reasoning", "strategy", f"Policy fix: {_strategy[:500]}", step=attempt)
+                ctx.heal_history.append({
+                    "step": len(ctx.heal_history) + 1, "phase": "policy_compliance",
+                    "error": violation_desc[:500],
+                    "fix_summary": "Adjusted generated policy to match deployed resources",
+                    "strategy": _strategy,
+                })
+                yield emit("healing_done", "policy_fixed",
+                            f"Policy adjusted: {_strategy[:200]} — re-evaluating…",
+                            ctx.progress(att_base + 0.31), step=attempt)
                 continue
             else:
                 yield emit("progress", "policy_testing_complete",

@@ -2476,6 +2476,7 @@ async function triggerOnboarding(serviceId) {
 
     if (card) {
         card.className = 'validation-card validation-running';
+        card.dataset.serviceId = serviceId;
         card.innerHTML = `
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⏳</span>
@@ -2919,6 +2920,7 @@ function _handleValidationEvent(event) {
         case 'iteration_start': icon = '🔄'; break;
         case 'healing':         icon = '🤖'; break;
         case 'healing_done':    icon = '🔧'; break;
+        case 'policy_blocked':  icon = '🛑'; logClass = 'policy-blocked'; break;
         case 'standard_check':  icon = '📏'; logClass = 'standard'; break;
         case 'llm_reasoning':   icon = '🧠'; logClass = 'reasoning'; isReasoning = true; break;
         case 'policy_result':   icon = event.compliant !== undefined ? (event.compliant ? '✅' : '❌') : (event.passed ? '✅' : (event.severity === 'high' || event.severity === 'critical' ? '❌' : '⚠️')); break;
@@ -2948,6 +2950,9 @@ function _handleValidationEvent(event) {
             else if (event.phase === 'policy_testing')          icon = '🛡️';
             else if (event.phase === 'policy_testing_complete')  icon = '✓';
             else if (event.phase === 'policy_failed')           icon = '❌';
+            else if (event.phase === 'policy_blocked')          icon = '🛑';
+            else if (event.phase === 'fixing_policy')           icon = '🛡️';
+            else if (event.phase === 'policy_fixed')            icon = '🔧';
             else if (event.phase === 'policy_skip')             icon = 'ℹ️';
             else if (event.phase === 'policy_deploy')           icon = '📜';
             else if (event.phase === 'policy_deploy_complete')  icon = '✓';
@@ -3014,6 +3019,34 @@ function _handleValidationEvent(event) {
         if (badge && event.issues_resolved > 0) {
             badge.textContent = `Resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}`;
             badge.classList.add('badge-success');
+        }
+    } else if (event.type === 'policy_blocked' && card) {
+        card.className = 'validation-card validation-policy-blocked';
+        if (header) header.textContent = 'Policy Review Needed';
+        if (iconEl) { iconEl.textContent = '🛑'; iconEl.classList.remove('validation-spinner'); }
+        // Render guidance with retry button
+        if (logEl && event.violations) {
+            const guidanceEl = document.createElement('div');
+            guidanceEl.className = 'policy-blocked-guidance';
+            const violationList = event.violations.map(v =>
+                `<li><strong>${escapeHtml(v.type)}/${escapeHtml(v.resource)}</strong> — ${escapeHtml(v.reason)}</li>`
+            ).join('');
+            guidanceEl.innerHTML = `
+                <div class="policy-blocked-summary">
+                    <p>The ARM template deployed successfully, but <strong>${event.violations.length} resource(s)</strong>
+                    did not pass the generated governance policy.</p>
+                    <details><summary>Violations</summary><ul>${violationList}</ul></details>
+                    <p class="policy-blocked-options"><strong>Options:</strong></p>
+                    <ul>
+                        <li>Ask InfraForge to submit a <strong>policy exception request</strong> for this service</li>
+                        <li>Ask the platform team to adjust governance standards</li>
+                        <li><button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(card.dataset.serviceId || '')}')">
+                            Retry Onboarding</button> — the policy will be regenerated</li>
+                    </ul>
+                </div>
+            `;
+            logEl.appendChild(guidanceEl);
+            logEl.scrollTop = logEl.scrollHeight;
         }
     } else if (event.type === 'error' && card) {
         card.className = 'validation-card validation-failed';
