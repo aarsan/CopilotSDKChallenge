@@ -3273,7 +3273,7 @@ function showTemplateDetail(templateId) {
     const requires = tmpl.requires || [];
     const provides = tmpl.provides || [];
     const optionalRefs = tmpl.optional_refs || [];
-    const activeVer = tmpl.active_version;
+    const activeVer = tmpl.latest_semver || (tmpl.active_version ? `${tmpl.active_version}.0.0` : null);
 
     const statusBadgeMap = {
         approved: '✅ Published',
@@ -3355,7 +3355,7 @@ function showTemplateDetail(templateId) {
             <span class="svc-id">${escapeHtml(tmpl.id)}</span>
             <span class="tmpl-type-badge tmpl-type-${ttype}">${typeIcons[ttype] || '📋'} ${typeLabels[ttype] || ttype}</span>
             <span class="status-badge ${status}">${statusBadgeMap[status] || status}</span>
-            ${activeVer ? `<span class="tmpl-ver-badge">v${activeVer}</span>` : ''}
+            ${activeVer ? `<span class="tmpl-ver-badge">${activeVer}</span>` : ''}
             <span class="tmpl-standalone-badge ${isStandalone ? 'standalone-yes' : 'standalone-no'}">
                 ${isStandalone ? '✅ Standalone' : '🔗 Has dependencies'}
             </span>
@@ -3507,7 +3507,7 @@ function showTemplateDetail(templateId) {
                 <div class="detail-section comp-version-section">
                     <div class="comp-template-ver">
                         <span class="comp-ver-label">Template Version</span>
-                        <span class="comp-ver-num">${activeVer ? `v${activeVer}` : 'Draft'}</span>
+                        <span class="comp-ver-num">${activeVer || 'Draft'}</span>
                         <span class="comp-ver-status comp-ver-status-${status}">${statusBadgeMap[status] || status}</span>
                     </div>
                 </div>
