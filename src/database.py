@@ -2945,6 +2945,8 @@ async def seed_governance_data() -> dict:
             logger.info("Governance data already seeded — skipping.")
         # Always run CAF migration on existing governance policies
         await _apply_governance_caf_fields(backend)
+        # Fix naming convention to include {region}
+        await _fix_naming_convention_region(backend)
         return {"status": "already_seeded", "orchestration_processes": proc_count}
 
     logger.info("Seeding governance data into database...")
@@ -3074,6 +3076,40 @@ async def _apply_governance_caf_fields(backend) -> None:
 
     if updated:
         logger.info(f"Populated CAF fields on {updated} governance policy/policies")
+
+
+async def _fix_naming_convention_region(backend) -> None:
+    """Ensure GOV-007 naming convention includes {region} segment.
+
+    Earlier versions used {resourceType}-{project}-{environment}-{instance}
+    which omitted the region — causing resource names to not reflect their
+    actual deployment region.
+    """
+    rows = await backend.execute(
+        "SELECT rule_value_json FROM governance_policies WHERE id = 'GOV-007'",
+        (),
+    )
+    if not rows:
+        return
+    current_pattern = rows[0].get("rule_value_json", "")
+    if "{region}" in current_pattern:
+        return  # already fixed
+
+    new_pattern = "{resourceType}-{project}-{environment}-{region}-{instance}"
+    new_statement = (
+        "All resources should follow the naming convention: "
+        f"{new_pattern}. The {{region}} segment must use the standard "
+        "abbreviation (e.g. eus2 for East US 2) and must match the "
+        "actual deployment region."
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """UPDATE governance_policies
+           SET rule_value_json = ?, policy_statement = ?, updated_at = ?
+           WHERE id = 'GOV-007'""",
+        (json.dumps(new_pattern), new_statement, now),
+    )
+    logger.info("Fixed GOV-007 naming convention to include {region} segment")
 
 
 async def _seed_governance_and_services(backend, summary: dict, now: str) -> None:
