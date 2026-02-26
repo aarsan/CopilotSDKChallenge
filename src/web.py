@@ -6640,10 +6640,11 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     what_if_error = str(e)
                     logger.warning(f"What-If failed: {e}")
                     _last_error = what_if_error
+                    _whatif_brief = _brief_azure_error(what_if_error)
                     yield json.dumps({
                         "type": "progress", "phase": "what_if_failed",
                         "step": attempt,
-                        "detail": f"⚠ What-If failed: {str(e)[:200]}",
+                        "detail": f"{_whatif_brief}",
                         "progress": 0.45 + (attempt - 1) * 0.15,
                     }) + "\n"
 
@@ -6754,10 +6755,11 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     deploy_error = str(e)
                     _last_error = deploy_error
                     logger.warning(f"Deployment failed: {e}")
+                    _deploy_brief = _brief_azure_error(deploy_error)
                     yield json.dumps({
                         "type": "progress", "phase": "deploy_failed",
                         "step": attempt,
-                        "detail": f"⚠ Deployment failed: {str(e)[:200]}",
+                        "detail": f"{_deploy_brief}",
                         "progress": 0.62 + (attempt - 1) * 0.15,
                     }) + "\n"
 

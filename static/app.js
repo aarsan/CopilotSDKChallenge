@@ -2831,6 +2831,15 @@ function _flowCard(logEl, key, icon, title) {
     // If card already exists for this key — reopen it for a new iteration
     if (flow.cards[key]) {
         const existing = flow.cards[key];
+
+        // Finalize previous active card first (if different from this one)
+        if (flow.activeKey && flow.activeKey !== key && flow.cards[flow.activeKey]) {
+            const prev = flow.cards[flow.activeKey];
+            if (prev.classList.contains('uf-action-active')) {
+                _flowFinalize(logEl, flow.activeKey, 'done');
+            }
+        }
+
         flow.activeKey = key;
         // If card was finalized, reopen it
         if (!existing.classList.contains('uf-action-active')) {
@@ -2955,6 +2964,10 @@ function _flowFinalize(logEl, key, status, label) {
     if (logEl._flow.activeKey === key) {
         logEl._flow.activeKey = null;
     }
+    // Track last failed card so healing events can target it
+    if (status === 'failed') {
+        logEl._flow._lastFailedKey = key;
+    }
 }
 
 /** Finalize whatever card is currently active */
@@ -2973,6 +2986,59 @@ function _flowResult(logEl, status, text) {
     result.className = `uf-result ${cls}`;
     result.innerHTML = `<div class="uf-result-icon">${icon}</div><div class="uf-result-text">${escapeHtml(text)}</div>`;
     logEl.appendChild(result);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Convert raw Azure / ARM error messages into concise, friendly text */
+function _friendlyError(raw) {
+    if (!raw || typeof raw !== 'string') return raw || 'Unknown error';
+    let msg = raw;
+    // Strip the outer "(DeploymentFailed) At least one resource..." wrapper
+    msg = msg.replace(/\(DeploymentFailed\)\s*At least one resource deployment operation failed\..*?Code:\s*Deploy\b/gi, '');
+    // Strip "Please list deployment operations..." boilerplate
+    msg = msg.replace(/Please (list|see) deployment operations.*?$/gi, '');
+    msg = msg.replace(/Please see https?:\/\/\S+/gi, '');
+    // Extract inner error codes: (SomeErrorCode) message
+    const innerMatch = msg.match(/\((\w+)\)\s*(.+)/);
+    if (innerMatch) {
+        const code = innerMatch[1];
+        const rest = innerMatch[2].trim().replace(/\s*Code:\s*\w+\s*$/, '').trim();
+        // Map common codes to friendly phrases
+        const friendly = {
+            InvalidTemplate: 'Template validation error',
+            InvalidTemplateDeployment: 'Template has configuration issues',
+            DeploymentFailed: 'Deployment did not complete',
+            BadRequest: 'Azure rejected the request',
+            Conflict: 'Resource conflict',
+            ResourceNotFound: 'A referenced resource was not found',
+            InvalidApiVersionParameter: 'Invalid API version specified',
+            LinkedAuthorizationFailed: 'Missing permissions for linked resources',
+            AuthorizationFailed: 'Insufficient Azure permissions',
+            AccountPropertyIsInvalid: 'Invalid account property',
+            SkuNotAvailable: 'The selected SKU is not available in this region',
+        };
+        const label = friendly[code] || code.replace(/([a-z])([A-Z])/g, '$1 $2');
+        return rest ? `${label} — ${rest.substring(0, 150)}` : label;
+    }
+    // Trim to something reasonable
+    msg = msg.trim();
+    if (msg.length > 200) msg = msg.substring(0, 200) + '…';
+    return msg || 'Deployment encountered an error';
+}
+
+/** Add detail to a specific card—even if it's finalized (briefly opens the body) */
+function _flowDetailOnCard(logEl, key, icon, text, extraCls) {
+    if (!logEl._flow?.cards[key]) return;
+    const card = logEl._flow.cards[key];
+    const body = card.querySelector('.uf-action-body');
+    if (!body) return;
+    const line = document.createElement('div');
+    const textCls = extraCls ? ` ${extraCls}` : '';
+    line.innerHTML = `<span class="uf-detail-icon">${icon}</span><span class="uf-detail-text${textCls}">${text}</span>`;
+    line.className = 'uf-detail-line';
+    body.appendChild(line);
+    // Briefly open body so user sees the new content
+    body.classList.add('uf-body-open');
     logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -3034,8 +3100,9 @@ function _handleUpdateEvent(event) {
         if (detail) _flowDetail(logEl, 'policy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'policy', 'done');
     } else if (phase === 'static_policy_failed') {
-        if (detail) _flowDetail(logEl, 'policy', '⚠️', escapeHtml(detail), 'uf-text-error');
-        // Don't finalize — healing will fix and the card will be re-entered
+        const friendly = _friendlyError(detail);
+        _flowDetail(logEl, 'policy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowFinalize(logEl, 'policy', 'failed');
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
         if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
@@ -3043,27 +3110,31 @@ function _handleUpdateEvent(event) {
         if (detail) _flowDetail(logEl, 'whatif', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'whatif', 'done');
     } else if (phase === 'what_if_failed') {
-        if (detail) _flowDetail(logEl, 'whatif', '💥', escapeHtml(detail), 'uf-text-error');
+        const friendly = _friendlyError(detail);
+        _flowDetail(logEl, 'whatif', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowFinalize(logEl, 'whatif', 'failed');
     } else if (phase === 'deploying') {
         _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
+        if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+    } else if (phase === 'deploy_progress' || phase === 'deploy_heartbeat') {
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
     } else if (phase === 'deploy_complete') {
         if (detail) _flowDetail(logEl, 'deploy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'deploy', 'done');
     } else if (phase === 'deploy_failed') {
-        if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
+        const friendly = _friendlyError(detail);
+        _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowFinalize(logEl, 'deploy', 'failed');
     } else if (type === 'healing') {
-        // Healing detail goes into whatever card just failed (policy/whatif/deploy)
-        const healKey = logEl._flow.activeKey || 'deploy';
-        if (detail) _flowDetail(logEl, healKey, '🤖', escapeHtml(detail));
+        // Healing detail → goes into the LAST failed card (even though finalized)
+        const healKey = logEl._flow._lastFailedKey || 'deploy';
+        _flowDetailOnCard(logEl, healKey, '🤖', escapeHtml(detail));
     } else if (type === 'healing_done') {
-        const healKey = logEl._flow.activeKey || 'deploy';
-        if (detail) _flowDetail(logEl, healKey, '✓', escapeHtml(detail), 'uf-text-success');
-        // Don't finalize — the card stays active for the next iteration
+        const healKey = logEl._flow._lastFailedKey || 'deploy';
+        if (detail) _flowDetailOnCard(logEl, healKey, '✓', escapeHtml(detail), 'uf-text-success');
     } else if (phase === 'healing_failed') {
-        const healKey = logEl._flow.activeKey || 'deploy';
-        if (detail) _flowDetail(logEl, healKey, '⚠️', escapeHtml(detail), 'uf-text-error');
-        _flowFinalize(logEl, healKey, 'failed');
+        const healKey = logEl._flow._lastFailedKey || 'deploy';
+        if (detail) _flowDetailOnCard(logEl, healKey, '⚠️', escapeHtml(detail), 'uf-text-error');
     } else if (phase === 'analyzing_failure') {
         _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure');
         if (detail) _flowDetail(logEl, 'analysis', '▸', escapeHtml(detail));
@@ -3114,12 +3185,12 @@ function _handleUpdateEvent(event) {
         _flowCard(logEl, 'publishing', '🏆', 'Publishing Version');
         if (detail) _flowDetail(logEl, 'publishing', '▸', escapeHtml(detail));
     } else if (phase === 'infra_retry') {
-        // Transient Azure error — add as detail in active card
-        const k = logEl._flow.activeKey;
-        if (k && detail) _flowDetail(logEl, k, '🔄', escapeHtml(detail));
+        // Transient Azure error — add as detail in active or last failed card
+        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+        if (k && detail) _flowDetailOnCard(logEl, k, '🔄', escapeHtml(detail));
     } else if (type === 'llm_reasoning') {
-        const k = logEl._flow.activeKey;
-        if (k && detail) _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+        if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
@@ -3257,8 +3328,9 @@ function _handleValidationEvent(event) {
         if (detail) _flowDetail(logEl, 'staticPolicy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'staticPolicy', 'done');
     } else if (phase === 'static_policy_failed') {
-        if (detail) _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(detail), 'uf-text-error');
-        // Keep card active — healing will add fix detail, then the card is revisited
+        const friendly = _friendlyError(detail);
+        _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowFinalize(logEl, 'staticPolicy', 'failed');
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
         if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
@@ -3274,8 +3346,9 @@ function _handleValidationEvent(event) {
         if (detail) _flowDetail(logEl, 'deploy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'deploy', 'done');
     } else if (phase === 'deploy_failed') {
-        if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
-        // Keep card active — healing details will be added here
+        const friendly = _friendlyError(detail);
+        _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowFinalize(logEl, 'deploy', 'failed');
     } else if (phase === 'resource_check') {
         _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
         if (detail) _flowDetail(logEl, 'resourceCheck', '▸', escapeHtml(detail));
@@ -3319,19 +3392,19 @@ function _handleValidationEvent(event) {
         _flowCard(logEl, 'coOnboard', '👶', 'Co-boarding Dependencies');
         if (detail) _flowDetail(logEl, 'coOnboard', '▸', escapeHtml(detail));
     } else if (phase === 'infra_retry') {
-        // Transient Azure error — add as detail in the active card
-        const k = logEl._flow.activeKey;
-        if (k && detail) _flowDetail(logEl, k, '🔄', escapeHtml(detail));
+        // Transient Azure error — add as detail in the active or last failed card
+        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+        if (k && detail) _flowDetailOnCard(logEl, k, '🔄', escapeHtml(detail));
     } else if (type === 'healing') {
-        // Healing detail goes into the currently active card (the failing step)
-        const k = logEl._flow.activeKey || 'deploy';
-        if (detail) _flowDetail(logEl, k, '🤖', escapeHtml(detail));
+        // Healing detail → goes into the LAST failed card (even though finalized)
+        const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetailOnCard(logEl, k, '🤖', escapeHtml(detail));
     } else if (type === 'healing_done') {
-        const k = logEl._flow.activeKey || 'deploy';
-        if (detail) _flowDetail(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
+        const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
+        if (detail) _flowDetailOnCard(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
     } else if (type === 'llm_reasoning') {
-        const k = logEl._flow.activeKey;
-        if (k && detail) _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
+        if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
     } else if (type === 'policy_result') {
         const k = logEl._flow.activeKey;
         if (k && detail) {
