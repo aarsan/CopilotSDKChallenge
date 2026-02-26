@@ -3373,7 +3373,8 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'static_policy_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'policy', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        _flowFinalize(logEl, 'policy', 'failed');
+        // Don't finalize as failed — the heal loop may recover.
+        logEl._flow._lastFailedKey = 'policy';
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
         if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
@@ -3383,7 +3384,9 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'what_if_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'whatif', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        _flowFinalize(logEl, 'whatif', 'failed');
+        // Don't finalize as failed — the heal loop may recover.
+        // Track it so healing events target this card.
+        logEl._flow._lastFailedKey = 'whatif';
     } else if (phase === 'deploying') {
         _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
         if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
@@ -3399,7 +3402,9 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'deploy_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        _flowFinalize(logEl, 'deploy', 'failed');
+        // Don't finalize as failed — the heal loop may recover.
+        // Track it so healing events target this card.
+        logEl._flow._lastFailedKey = 'deploy';
     } else if (type === 'healing') {
         // Healing detail → goes into the LAST failed card (even though finalized)
         const healKey = logEl._flow._lastFailedKey || 'deploy';
