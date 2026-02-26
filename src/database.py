@@ -3353,15 +3353,15 @@ async def get_all_processes() -> list[dict]:
 
 
 async def seed_orchestration_processes() -> int:
-    """Seed the orchestration processes if not already present."""
+    """Seed the orchestration processes, replacing stale definitions.
+
+    Compares the step count for known processes against the in-code
+    definitions.  If any process is missing or has the wrong number
+    of steps, the **entire set** is deleted and re-inserted so every
+    process + step stays in sync with the codebase.
+    """
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
-
-    existing = await backend.execute(
-        "SELECT COUNT(*) as cnt FROM orchestration_processes", ()
-    )
-    if existing and existing[0]["cnt"] > 0:
-        return 0
 
     processes = [
         # ─────────────────────────────────────────────────────
@@ -3805,6 +3805,38 @@ async def seed_orchestration_processes() -> int:
     ]
 
     count = 0
+
+    # ── Staleness check: compare expected vs actual step counts ──
+    expected_counts = {p["id"]: len(p["steps"]) for p in processes}
+    needs_reseed = False
+
+    existing = await backend.execute(
+        "SELECT COUNT(*) as cnt FROM orchestration_processes", ()
+    )
+    if not existing or existing[0]["cnt"] == 0:
+        needs_reseed = True
+    else:
+        for proc_id, expected_step_count in expected_counts.items():
+            rows = await backend.execute(
+                "SELECT COUNT(*) as cnt FROM process_steps WHERE process_id = ?",
+                (proc_id,),
+            )
+            actual = rows[0]["cnt"] if rows else 0
+            if actual != expected_step_count:
+                logger.info(
+                    f"Process '{proc_id}' has {actual} steps in DB, "
+                    f"expected {expected_step_count} — will re-seed"
+                )
+                needs_reseed = True
+                break
+
+    if not needs_reseed:
+        return 0
+
+    # Clear stale data before inserting fresh definitions
+    await backend.execute_write("DELETE FROM process_steps", ())
+    await backend.execute_write("DELETE FROM orchestration_processes", ())
+
     for proc in processes:
         steps = proc.pop("steps")
         await backend.execute_write(
