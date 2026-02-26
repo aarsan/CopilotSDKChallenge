@@ -6263,16 +6263,17 @@ async function submitRevision(templateId) {
                 <strong>${revData.resource_count || '?'}</strong> resources,
                 <strong>${revData.parameter_count || '?'}</strong> params from
                 <strong>${revData.services?.length || '?'}</strong> services.
-                <br><em>Starting validation…</em>
             </div>`;
         resultDiv.appendChild(summaryEl);
 
         textarea.value = '';
         showToast(`Revised → v${ver.semver || '?'} — starting validation…`, 'info');
-        setTimeout(async () => {
-            await loadCatalog();
-            runFullValidation(templateId);
-        }, 1500);
+
+        // Run validation inline — progress renders right here, no context switch
+        const validationContainer = document.createElement('div');
+        validationContainer.className = 'tmpl-revision-validation-inline';
+        resultDiv.appendChild(validationContainer);
+        _runPostRevisionValidation(templateId, validationContainer);
 
     } catch (err) {
         resultDiv.style.display = 'block';
@@ -6281,6 +6282,125 @@ async function submitRevision(templateId) {
     } finally {
         btn.disabled = false;
         btn.textContent = '✏️ Request Revision';
+    }
+}
+
+/**
+ * Run validation inline after a template revision.
+ * Renders progress directly into the revision result area — no context switch.
+ */
+async function _runPostRevisionValidation(templateId, container) {
+    // Refresh catalog to pick up the new version
+    await loadCatalog();
+
+    // ── Step 1: Structural tests ──
+    const testStatus = document.createElement('div');
+    testStatus.className = 'tmpl-rv-status';
+    testStatus.innerHTML = '<span class="vf-badge-pulse"></span> Running structural checks…';
+    container.appendChild(testStatus);
+
+    try {
+        const testRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!testRes.ok) {
+            const err = await testRes.json();
+            throw new Error(err.detail || 'Test failed');
+        }
+        const testData = await testRes.json();
+        const results = testData.results || {};
+        if (!results.all_passed) {
+            testStatus.innerHTML = `⚠️ ${results.failed} of ${results.total} structural checks need attention`;
+            testStatus.classList.add('tmpl-rv-status-warn');
+            await loadAllData();
+            showTemplateDetail(templateId);
+            return;
+        }
+        testStatus.innerHTML = `✅ All ${results.total} structural checks passed — deploying to Azure…`;
+        testStatus.classList.add('tmpl-rv-status-ok');
+    } catch (err) {
+        testStatus.innerHTML = `❌ Structure check error: ${escapeHtml(err.message)}`;
+        testStatus.classList.add('tmpl-rv-status-error');
+        return;
+    }
+
+    // ── Step 2: Stream ARM validation inline ──
+    const progressDiv = document.createElement('div');
+    progressDiv.className = 'tmpl-rv-progress';
+    container.appendChild(progressDiv);
+
+    const tracker = {
+        running: true,
+        events: [],
+        finalEvent: null,
+        abortController: new AbortController(),
+    };
+    _activeTemplateValidations[templateId] = tracker;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parameters: {}, region: 'eastus2' }),
+            signal: tracker.abortController.signal,
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Validation failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    tracker.events.push(event);
+                    tracker.finalEvent = event;
+                    _renderDeployProgress(progressDiv, event, 'validate');
+                } catch (e) { /* skip malformed */ }
+            }
+        }
+
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                tracker.events.push(event);
+                tracker.finalEvent = event;
+                _renderDeployProgress(progressDiv, event, 'validate');
+            } catch (e) { /* skip */ }
+        }
+
+        if (tracker.finalEvent?.status === 'succeeded') {
+            const resolved = tracker.finalEvent.issues_resolved || 0;
+            const healMsg = resolved > 0 ? ` Resolved ${resolved} issue${resolved !== 1 ? 's' : ''} along the way.` : '';
+            showToast(`Template verified.${healMsg} Ready to publish.`, 'info');
+        } else if (tracker.finalEvent?.status === 'failed') {
+            showToast('Validation complete — check the log for details.', 'info');
+        }
+
+        // Refresh data (don't switch view — user can navigate when ready)
+        await loadAllData();
+
+    } catch (err) {
+        if (err.name === 'AbortError') return;
+        showToast(`Validation issue: ${err.message}`, 'info');
+        progressDiv.innerHTML = `<div class="tmpl-deploy-diag-msg">${escapeHtml(err.message)}</div>`;
+    } finally {
+        tracker.running = false;
     }
 }
 

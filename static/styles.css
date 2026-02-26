@@ -11773,6 +11773,37 @@ details[open] > .tmpl-deploy-group-optional {
     color: var(--text-secondary);
 }
 
+/* ── Post-Revision Inline Validation ───────────────── */
+.tmpl-revision-validation-inline {
+    margin-top: 0.75rem;
+}
+.tmpl-rv-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+.tmpl-rv-status-ok {
+    border-color: var(--clr-success, #2ea043);
+    background: rgba(46, 160, 67, 0.08);
+}
+.tmpl-rv-status-warn {
+    border-color: var(--clr-warning, #d29922);
+    background: rgba(210, 153, 34, 0.08);
+}
+.tmpl-rv-status-error {
+    border-color: var(--clr-danger, #f85149);
+    background: rgba(248, 81, 73, 0.08);
+}
+.tmpl-rv-progress {
+    margin-top: 0.5rem;
+}
+
 /* ── Compose Tab Switcher ──────────────────────────── */
 .compose-tabs {
     display: flex;
