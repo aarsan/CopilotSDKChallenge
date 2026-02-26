@@ -9560,6 +9560,10 @@ function _renderCompletenessBoard() {
         }
     }
 
+    // Count CAF-aligned standards (those with risk_id populated)
+    const cafAligned = allStandards.filter(s => s.risk_id).length;
+    const cafPct = allStandards.length > 0 ? Math.round((cafAligned / allStandards.length) * 100) : 0;
+
     // Progress header
     let html = `
     <div class="gov-completeness-header">
@@ -9572,6 +9576,11 @@ function _renderCompletenessBoard() {
         </div>
         <div class="gov-completeness-subtitle">
             ${configured} of ${total} standard categories configured · ${allStandards.length} total standards (${allStandards.filter(s => s.enabled).length} enabled)
+        </div>
+        <div class="gov-caf-alignment">
+            <span class="gov-caf-label">☁️ CAF Alignment</span>
+            <span class="gov-caf-pct ${cafPct === 100 ? 'gov-complete' : cafPct >= 50 ? 'gov-partial' : 'gov-low'}">${cafPct}%</span>
+            <span class="gov-caf-detail">${cafAligned}/${allStandards.length} standards have risk linkage</span>
         </div>
     </div>
     <div class="gov-category-grid">`;
@@ -10013,7 +10022,10 @@ function _renderStandardsList() {
             s.name.toLowerCase().includes(standardsSearchQuery) ||
             s.id.toLowerCase().includes(standardsSearchQuery) ||
             (s.description || '').toLowerCase().includes(standardsSearchQuery) ||
-            s.category.toLowerCase().includes(standardsSearchQuery)
+            s.category.toLowerCase().includes(standardsSearchQuery) ||
+            (s.risk_id || '').toLowerCase().includes(standardsSearchQuery) ||
+            (s.purpose || '').toLowerCase().includes(standardsSearchQuery) ||
+            (s.enforcement_tool || '').toLowerCase().includes(standardsSearchQuery)
         );
     }
 
@@ -10055,6 +10067,10 @@ function _renderStandardsList() {
             return fwCat ? `<span class="std-fw-badge" title="${fwCat.name}" onclick="event.stopPropagation(); openCategoryDetail('${fw}')">${fwCat.icon}</span>` : '';
         }).join('');
 
+        // CAF metadata badges
+        const riskBadge = std.risk_id ? `<span class="std-risk-badge" title="Mitigates risk ${std.risk_id}">${escapeHtml(std.risk_id)}</span>` : '';
+        const toolBadge = std.enforcement_tool ? `<span class="std-tool-badge" title="Enforced via ${escapeHtml(std.enforcement_tool)}">${escapeHtml(std.enforcement_tool)}</span>` : '';
+
         return `
         <div class="std-card ${enabledClass}">
             <div class="std-card-header">
@@ -10068,6 +10084,8 @@ function _renderStandardsList() {
                 <div class="std-card-right">
                     <div class="std-card-badges">
                         <span class="category-badge">${escapeHtml(std.category)}</span>
+                        ${riskBadge}
+                        ${toolBadge}
                         <span class="std-scope-badge" title="Scope: ${escapeHtml(std.scope)}">${escapeHtml(std.scope === '*' ? 'All Services' : std.scope)}</span>
                     </div>
                     ${fwBadgeHtml ? `<div class="std-fw-badges">${fwBadgeHtml}</div>` : ''}
@@ -10193,6 +10211,18 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
         <div class="std-fw-detail-list">${fwLinks}</div>
     </div>` : '';
 
+    // CAF governance metadata section
+    const hasCafFields = std.risk_id || std.purpose || std.enforcement_tool;
+    const cafHtml = hasCafFields ? `
+    <div class="std-detail-section std-caf-section">
+        <h4>Cloud Adoption Framework</h4>
+        <div class="std-caf-grid">
+            ${std.risk_id ? `<div class="std-caf-row"><span class="std-caf-label">Risk ID</span><span class="std-caf-value"><span class="std-risk-badge">${escapeHtml(std.risk_id)}</span></span></div>` : ''}
+            ${std.purpose ? `<div class="std-caf-row"><span class="std-caf-label">Purpose</span><span class="std-caf-value">${escapeHtml(std.purpose)}</span></div>` : ''}
+            ${std.enforcement_tool ? `<div class="std-caf-row"><span class="std-caf-label">Enforcement Tool</span><span class="std-caf-value"><span class="std-tool-badge">${escapeHtml(std.enforcement_tool)}</span></span></div>` : ''}
+        </div>
+    </div>` : '';
+
     return `
     <div class="std-detail-section">
         <div class="std-detail-meta">
@@ -10203,6 +10233,8 @@ function _buildStandardDetailHtml(std, ruleJson, historyHtml) {
         </div>
         <p class="std-detail-desc">${escapeHtml(std.description || '')}</p>
     </div>
+
+    ${cafHtml}
 
     ${frameworksHtml}
 
@@ -10278,6 +10310,9 @@ function openEditStandardModal(standardId) {
     form.querySelector('textarea[name="rule_json"]').value = JSON.stringify(std.rule || {}, null, 2);
     form.querySelector('input[name="enabled"]').checked = std.enabled;
     form.querySelector('input[name="change_reason"]').value = '';
+    form.querySelector('input[name="risk_id"]').value = std.risk_id || '';
+    form.querySelector('input[name="purpose"]').value = std.purpose || '';
+    form.querySelector('input[name="enforcement_tool"]').value = std.enforcement_tool || '';
     document.getElementById('btn-save-standard').textContent = 'Update Standard';
     document.getElementById('modal-standard').classList.remove('hidden');
 }
@@ -10314,6 +10349,9 @@ async function saveStandard(event) {
         rule: rule,
         enabled: !!form.querySelector('input[name="enabled"]').checked,
         change_reason: fd.get('change_reason') || '',
+        risk_id: fd.get('risk_id') || '',
+        purpose: fd.get('purpose') || '',
+        enforcement_tool: fd.get('enforcement_tool') || '',
     };
 
     try {

@@ -279,6 +279,26 @@ IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_governance_policies_c
 CREATE INDEX idx_governance_policies_category ON governance_policies(category);
 GO
 
+-- ── CAF alignment: add risk_id, policy_statement, purpose, scope, remediation, enforcement_tool ──
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'risk_id')
+ALTER TABLE governance_policies ADD risk_id NVARCHAR(50) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'policy_statement')
+ALTER TABLE governance_policies ADD policy_statement NVARCHAR(MAX) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'purpose')
+ALTER TABLE governance_policies ADD purpose NVARCHAR(MAX) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'scope')
+ALTER TABLE governance_policies ADD scope NVARCHAR(500) DEFAULT 'All cloud resources';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'remediation')
+ALTER TABLE governance_policies ADD remediation NVARCHAR(MAX) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'enforcement_tool')
+ALTER TABLE governance_policies ADD enforcement_tool NVARCHAR(200) DEFAULT '';
+GO
+
 -- ── Governance: Compliance Assessments ──────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'compliance_assessments')
@@ -679,6 +699,17 @@ IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standa
 ALTER TABLE org_standards ADD frameworks NVARCHAR(MAX) DEFAULT '[]';
 GO
 
+-- ── CAF alignment: risk_id, purpose, enforcement_tool on org_standards ──
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'risk_id')
+ALTER TABLE org_standards ADD risk_id NVARCHAR(50) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'purpose')
+ALTER TABLE org_standards ADD purpose NVARCHAR(MAX) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'enforcement_tool')
+ALTER TABLE org_standards ADD enforcement_tool NVARCHAR(200) DEFAULT '';
+GO
+
 -- ── Organization Standards History ──────────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'org_standards_history')
@@ -702,6 +733,17 @@ GO
 
 IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'frameworks')
 ALTER TABLE org_standards_history ADD frameworks NVARCHAR(MAX) DEFAULT '[]';
+GO
+
+-- ── CAF alignment: risk_id, purpose, enforcement_tool on org_standards_history ──
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'risk_id')
+ALTER TABLE org_standards_history ADD risk_id NVARCHAR(50) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'purpose')
+ALTER TABLE org_standards_history ADD purpose NVARCHAR(MAX) DEFAULT '';
+GO
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'enforcement_tool')
+ALTER TABLE org_standards_history ADD enforcement_tool NVARCHAR(200) DEFAULT '';
 GO
 
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_org_standards_hist_sid')

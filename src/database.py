@@ -418,6 +418,19 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_security_standards_category ON security_standards(category)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_governance_policies_category')
     CREATE INDEX idx_governance_policies_category ON governance_policies(category)""",
+    # ── CAF alignment: add risk_id, policy_statement, purpose, scope, remediation, enforcement_tool to governance_policies ──
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'risk_id')
+    ALTER TABLE governance_policies ADD risk_id NVARCHAR(50) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'policy_statement')
+    ALTER TABLE governance_policies ADD policy_statement NVARCHAR(MAX) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'purpose')
+    ALTER TABLE governance_policies ADD purpose NVARCHAR(MAX) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'scope')
+    ALTER TABLE governance_policies ADD scope NVARCHAR(500) DEFAULT 'All cloud resources'""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'remediation')
+    ALTER TABLE governance_policies ADD remediation NVARCHAR(MAX) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('governance_policies') AND name = 'enforcement_tool')
+    ALTER TABLE governance_policies ADD enforcement_tool NVARCHAR(200) DEFAULT ''""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_service_policies_service')
     CREATE INDEX idx_service_policies_service ON service_policies(service_id)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_compliance_assessments_request')
@@ -2771,8 +2784,10 @@ async def upsert_governance_policy(pol: dict) -> None:
         """INSERT INTO governance_policies
            (id, name, description, category, rule_key,
             rule_value_json, severity, enforcement, enabled,
+            risk_id, policy_statement, purpose, scope,
+            remediation, enforcement_tool,
             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             pol["id"],
             pol["name"],
@@ -2783,6 +2798,12 @@ async def upsert_governance_policy(pol: dict) -> None:
             pol.get("severity", "high"),
             pol.get("enforcement", "block"),
             int(pol.get("enabled", True)),
+            pol.get("risk_id", ""),
+            pol.get("policy_statement", ""),
+            pol.get("purpose", ""),
+            pol.get("scope", "All cloud resources"),
+            pol.get("remediation", ""),
+            pol.get("enforcement_tool", ""),
             now,
             now,
         ),
@@ -2922,6 +2943,8 @@ async def seed_governance_data() -> dict:
             logger.info(f"Seeded {proc_count} orchestration processes (services/templates already existed)")
         else:
             logger.info("Governance data already seeded — skipping.")
+        # Always run CAF migration on existing governance policies
+        await _apply_governance_caf_fields(backend)
         return {"status": "already_seeded", "orchestration_processes": proc_count}
 
     logger.info("Seeding governance data into database...")
@@ -2941,6 +2964,116 @@ async def seed_governance_data() -> dict:
 
     logger.info(f"Governance data seeded: {summary}")
     return summary
+
+
+# CAF field defaults for existing governance policies.
+_GOV_CAF_DEFAULTS: dict[str, dict] = {
+    "GOV-001": {
+        "risk_id": "R07",
+        "policy_statement": "Tags must be enforced on all cloud resources using Azure Policy.",
+        "purpose": "Facilitate resource tracking, cost attribution, and ownership accountability across all teams",
+        "scope": "All cloud resources",
+        "remediation": "Correct tagging within 30 days. Non-compliant resources flagged in compliance dashboard.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-002": {
+        "risk_id": "R01",
+        "policy_statement": "Resources must only be deployed to approved Azure regions (eastus2, westus2, westeurope).",
+        "purpose": "Ensure regulatory compliance with data residency requirements and reduce latency",
+        "scope": "All cloud resources, all environments",
+        "remediation": "Immediate blocking at deployment time. Non-compliant resources must be redeployed to an approved region.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-003": {
+        "risk_id": "R02",
+        "policy_statement": "All web-facing resources must enforce HTTPS. HTTP must not be allowed.",
+        "purpose": "Mitigate data breaches and man-in-the-middle attacks on data in transit",
+        "scope": "Workload teams, all web-facing resources",
+        "remediation": "Immediate corrective action. Enable HTTPS-only and disable HTTP listeners.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-004": {
+        "risk_id": "R02",
+        "policy_statement": "Resources should use managed identities instead of stored credentials, keys, or passwords.",
+        "purpose": "Eliminate credential exposure risk by using Azure-managed identity lifecycle",
+        "scope": "Workload teams, platform team",
+        "remediation": "Architecture review within 30 days. Transition to SystemAssigned or UserAssigned managed identity.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-005": {
+        "risk_id": "R02",
+        "policy_statement": "Production resources must use private endpoints. Public network access must not be enabled in production.",
+        "purpose": "Ensure production data flows over private Azure backbone, not public internet",
+        "scope": "Production workloads, platform team",
+        "remediation": "Immediate blocking at deployment. Create private endpoint in the appropriate VNet/subnet.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-006": {
+        "risk_id": "R02",
+        "policy_statement": "Public IP addresses must not be provisioned unless an explicit exception is approved.",
+        "purpose": "Reduce attack surface by preventing uncontrolled internet-facing endpoints",
+        "scope": "All cloud resources, all environments",
+        "remediation": "Immediate blocking. Submit exception request with business justification for public endpoints.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-007": {
+        "risk_id": "R07",
+        "policy_statement": "All resources should follow the naming convention: {resourceType}-{project}-{environment}-{instance}.",
+        "purpose": "Standardize resource provisioning and improve operational clarity across teams",
+        "scope": "Workload teams, platform team",
+        "remediation": "Rename resources within 60 days. New resources blocked if naming pattern is not followed.",
+        "enforcement_tool": "Azure Policy",
+    },
+    "GOV-008": {
+        "risk_id": "R04",
+        "policy_statement": "Workload teams must set budget alerts at the resource group level. Requests exceeding $5,000/month must receive manager approval.",
+        "purpose": "Prevent overspending and ensure cost accountability through budget gate controls",
+        "scope": "Workload teams, platform team",
+        "remediation": "Immediate review. Submit cost exception request or reduce resource SKU/count.",
+        "enforcement_tool": "Microsoft Cost Management",
+    },
+}
+
+
+async def _apply_governance_caf_fields(backend) -> None:
+    """Populate Cloud Adoption Framework fields on existing governance policies.
+
+    Adds risk_id, policy_statement, purpose, scope, remediation, and
+    enforcement_tool values to governance policies that were created
+    before the CAF alignment migration.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    updated = 0
+
+    for pol_id, caf in _GOV_CAF_DEFAULTS.items():
+        rows = await backend.execute(
+            "SELECT risk_id, policy_statement, purpose FROM governance_policies WHERE id = ?",
+            (pol_id,),
+        )
+        if not rows:
+            continue
+
+        current = rows[0]
+        # Skip if already populated
+        if (current.get("risk_id") or "") and (current.get("policy_statement") or "") and (current.get("purpose") or ""):
+            continue
+
+        await backend.execute_write(
+            """UPDATE governance_policies
+               SET risk_id = ?, policy_statement = ?, purpose = ?,
+                   scope = ?, remediation = ?, enforcement_tool = ?,
+                   updated_at = ?
+               WHERE id = ?""",
+            (
+                caf["risk_id"], caf["policy_statement"], caf["purpose"],
+                caf["scope"], caf["remediation"], caf["enforcement_tool"],
+                now, pol_id,
+            ),
+        )
+        updated += 1
+
+    if updated:
+        logger.info(f"Populated CAF fields on {updated} governance policy/policies")
 
 
 async def _seed_governance_and_services(backend, summary: dict, now: str) -> None:
@@ -3154,7 +3287,9 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
     summary["compliance_controls"] = sum(len(fw["controls"]) for fw in frameworks)
 
     # ══════════════════════════════════════════════════════════
-    # 3. GOVERNANCE POLICIES (org-wide rules)
+    # 3. GOVERNANCE POLICIES (org-wide rules — CAF-aligned)
+    #    Per Microsoft Cloud Adoption Framework, each policy has:
+    #    policy_statement, risk_id, purpose, scope, remediation, enforcement_tool
     # ══════════════════════════════════════════════════════════
     governance_policies_data = [
         {
@@ -3163,6 +3298,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "tagging", "rule_key": "require_tags",
             "rule_value": ["environment", "owner", "costCenter", "project"],
             "severity": "high", "enforcement": "block",
+            "risk_id": "R07",
+            "policy_statement": "Tags must be enforced on all cloud resources using Azure Policy.",
+            "purpose": "Facilitate resource tracking, cost attribution, and ownership accountability across all teams",
+            "scope": "All cloud resources",
+            "remediation": "Correct tagging within 30 days. Non-compliant resources flagged in compliance dashboard.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-002", "name": "Allowed Deployment Regions",
@@ -3170,6 +3311,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "geography", "rule_key": "allowed_regions",
             "rule_value": ["eastus2", "westus2", "westeurope"],
             "severity": "critical", "enforcement": "block",
+            "risk_id": "R01",
+            "policy_statement": "Resources must only be deployed to approved Azure regions (eastus2, westus2, westeurope).",
+            "purpose": "Ensure regulatory compliance with data residency requirements and reduce latency",
+            "scope": "All cloud resources, all environments",
+            "remediation": "Immediate blocking at deployment time. Non-compliant resources must be redeployed to an approved region.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-003", "name": "HTTPS Enforcement",
@@ -3177,6 +3324,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "security", "rule_key": "require_https",
             "rule_value": True,
             "severity": "critical", "enforcement": "block",
+            "risk_id": "R02",
+            "policy_statement": "All web-facing resources must enforce HTTPS. HTTP must not be allowed.",
+            "purpose": "Mitigate data breaches and man-in-the-middle attacks on data in transit",
+            "scope": "Workload teams, all web-facing resources",
+            "remediation": "Immediate corrective action. Enable HTTPS-only and disable HTTP listeners.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-004", "name": "Managed Identity Enforcement",
@@ -3184,6 +3337,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "security", "rule_key": "require_managed_identity",
             "rule_value": True,
             "severity": "high", "enforcement": "warn",
+            "risk_id": "R02",
+            "policy_statement": "Resources should use managed identities instead of stored credentials, keys, or passwords.",
+            "purpose": "Eliminate credential exposure risk by using Azure-managed identity lifecycle",
+            "scope": "Workload teams, platform team",
+            "remediation": "Architecture review within 30 days. Transition to SystemAssigned or UserAssigned managed identity.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-005", "name": "Private Endpoints (Production)",
@@ -3191,6 +3350,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "network", "rule_key": "require_private_endpoints",
             "rule_value": True,
             "severity": "high", "enforcement": "block",
+            "risk_id": "R02",
+            "policy_statement": "Production resources must use private endpoints. Public network access must not be enabled in production.",
+            "purpose": "Ensure production data flows over private Azure backbone, not public internet",
+            "scope": "Production workloads, platform team",
+            "remediation": "Immediate blocking at deployment. Create private endpoint in the appropriate VNet/subnet.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-006", "name": "Public IP Restriction",
@@ -3198,6 +3363,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "network", "rule_key": "max_public_ips",
             "rule_value": 0,
             "severity": "high", "enforcement": "block",
+            "risk_id": "R02",
+            "policy_statement": "Public IP addresses must not be provisioned unless an explicit exception is approved.",
+            "purpose": "Reduce attack surface by preventing uncontrolled internet-facing endpoints",
+            "scope": "All cloud resources, all environments",
+            "remediation": "Immediate blocking. Submit exception request with business justification for public endpoints.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-007", "name": "Naming Convention",
@@ -3205,6 +3376,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "operations", "rule_key": "naming_convention",
             "rule_value": "{resourceType}-{project}-{environment}-{instance}",
             "severity": "medium", "enforcement": "warn",
+            "risk_id": "R07",
+            "policy_statement": "All resources should follow the naming convention: {resourceType}-{project}-{environment}-{instance}.",
+            "purpose": "Standardize resource provisioning and improve operational clarity across teams",
+            "scope": "Workload teams, platform team",
+            "remediation": "Rename resources within 60 days. New resources blocked if naming pattern is not followed.",
+            "enforcement_tool": "Azure Policy",
         },
         {
             "id": "GOV-008", "name": "Budget Alert Threshold",
@@ -3212,6 +3389,12 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
             "category": "cost", "rule_key": "cost_approval_threshold",
             "rule_value": 5000,
             "severity": "medium", "enforcement": "warn",
+            "risk_id": "R04",
+            "policy_statement": "Workload teams must set budget alerts at the resource group level. Requests exceeding $5,000/month must receive manager approval.",
+            "purpose": "Prevent overspending and ensure cost accountability through budget gate controls",
+            "scope": "Workload teams, platform team",
+            "remediation": "Immediate review. Submit cost exception request or reduce resource SKU/count.",
+            "enforcement_tool": "Microsoft Cost Management",
         },
     ]
 

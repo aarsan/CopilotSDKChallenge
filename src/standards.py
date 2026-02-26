@@ -53,6 +53,13 @@ _STANDARDS_SCHEMA = [
     # ── Add frameworks column (many-to-many: standards ↔ regulatory frameworks) ──
     """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'frameworks')
     ALTER TABLE org_standards ADD frameworks NVARCHAR(MAX) DEFAULT '[]'""",
+    # ── CAF alignment: risk_id, purpose, enforcement_tool ──
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'risk_id')
+    ALTER TABLE org_standards ADD risk_id NVARCHAR(50) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'purpose')
+    ALTER TABLE org_standards ADD purpose NVARCHAR(MAX) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards') AND name = 'enforcement_tool')
+    ALTER TABLE org_standards ADD enforcement_tool NVARCHAR(200) DEFAULT ''""",
     # ── Version history for standards ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'org_standards_history')
@@ -75,6 +82,13 @@ _STANDARDS_SCHEMA = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'frameworks')
     ALTER TABLE org_standards_history ADD frameworks NVARCHAR(MAX) DEFAULT '[]'""",
+    # ── CAF alignment: risk_id, purpose, enforcement_tool for history table ──
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'risk_id')
+    ALTER TABLE org_standards_history ADD risk_id NVARCHAR(50) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'purpose')
+    ALTER TABLE org_standards_history ADD purpose NVARCHAR(MAX) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('org_standards_history') AND name = 'enforcement_tool')
+    ALTER TABLE org_standards_history ADD enforcement_tool NVARCHAR(200) DEFAULT ''""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_org_standards_hist_sid')
     CREATE INDEX idx_org_standards_hist_sid ON org_standards_history(standard_id)""",
 ]
@@ -95,6 +109,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "encryption",
         "severity": "critical",
         "scope": "Microsoft.Storage/*,Microsoft.Web/*,Microsoft.Sql/*,Microsoft.DBforPostgreSQL/*,Microsoft.Cache/*,Microsoft.KeyVault/*,Microsoft.Cdn/*",
+        "risk_id": "R02",
+        "purpose": "Mitigate data interception and man-in-the-middle attacks by enforcing modern transport encryption",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "properties.minimumTlsVersion",
@@ -110,6 +127,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "encryption",
         "severity": "critical",
         "scope": "Microsoft.Web/*,Microsoft.Storage/*,Microsoft.Cdn/*",
+        "risk_id": "R02",
+        "purpose": "Protect data in transit by requiring encrypted connections for all web-facing endpoints",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "httpsOnly",
@@ -125,6 +145,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "encryption",
         "severity": "critical",
         "scope": "Microsoft.Sql/*,Microsoft.Storage/*,Microsoft.DocumentDB/*,Microsoft.DBforPostgreSQL/*",
+        "risk_id": "R06",
+        "purpose": "Protect sensitive data at rest from unauthorized access per regulatory and security requirements",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "encryptionAtRest",
@@ -140,6 +163,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "identity",
         "severity": "high",
         "scope": "Microsoft.Compute/*,Microsoft.Web/*,Microsoft.ContainerService/*,Microsoft.App/*,Microsoft.ContainerRegistry/*",
+        "risk_id": "R02",
+        "purpose": "Eliminate credential exposure risk by using Azure-managed identity lifecycle",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "identity.type",
@@ -155,6 +181,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "identity",
         "severity": "high",
         "scope": "Microsoft.Sql/*,Microsoft.DBforPostgreSQL/*,Microsoft.Cache/*",
+        "risk_id": "R02",
+        "purpose": "Centralize authentication through Microsoft Entra ID for unified access control and audit",
+        "enforcement_tool": "Microsoft Entra ID",
         "rule": {
             "type": "property",
             "key": "aadAuthEnabled",
@@ -170,6 +199,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "network",
         "severity": "high",
         "scope": "Microsoft.Storage/*,Microsoft.Sql/*,Microsoft.KeyVault/*,Microsoft.DocumentDB/*,Microsoft.Web/*,Microsoft.Cache/*,Microsoft.CognitiveServices/*",
+        "risk_id": "R02",
+        "purpose": "Reduce attack surface by blocking public internet access to cloud resources",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "properties.publicNetworkAccess",
@@ -185,6 +217,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "network",
         "severity": "high",
         "scope": "Microsoft.Sql/*,Microsoft.Storage/*,Microsoft.KeyVault/*,Microsoft.DocumentDB/*",
+        "risk_id": "R02",
+        "purpose": "Ensure production data flows over private Azure backbone, not public internet",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "privateEndpoints",
@@ -200,6 +235,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "monitoring",
         "severity": "high",
         "scope": "Microsoft.Insights/diagnosticSettings",
+        "risk_id": "R05",
+        "purpose": "Ensure operational visibility and incident response capability across all workloads",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "property",
             "key": "properties.workspaceId",
@@ -215,6 +253,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "tagging",
         "severity": "high",
         "scope": "*",
+        "risk_id": "R07",
+        "purpose": "Facilitate resource tracking, cost attribution, and ownership accountability",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "tags",
             "required_tags": ["environment", "owner", "costCenter", "project"],
@@ -228,6 +269,9 @@ DEFAULT_STANDARDS: list[dict] = [
         "category": "geography",
         "severity": "critical",
         "scope": "*",
+        "risk_id": "R01",
+        "purpose": "Ensure regulatory compliance with data residency requirements and reduce latency",
+        "enforcement_tool": "Azure Policy",
         "rule": {
             "type": "allowed_values",
             "key": "location",
@@ -238,10 +282,13 @@ DEFAULT_STANDARDS: list[dict] = [
     {
         "id": "STD-COST-THRESHOLD",
         "name": "Cost Approval Threshold",
-        "description": "Requests exceeding $5,000/month require manager approval.",
+        "description": "Requests exceeding $5,000/month must receive manager approval before provisioning.",
         "category": "cost",
         "severity": "medium",
         "scope": "*",
+        "risk_id": "R04",
+        "purpose": "Prevent overspending and ensure cost accountability through budget gate controls",
+        "enforcement_tool": "Microsoft Cost Management",
         "rule": {
             "type": "cost_threshold",
             "max_monthly_usd": 5000,
@@ -319,6 +366,7 @@ async def init_standards() -> None:
     if rows and rows[0]["cnt"] > 0:
         logger.info("Organization standards present (%d) — applying migrations", rows[0]["cnt"])
         await _apply_scope_fixes(backend)
+        await _apply_caf_fields(backend)
         return
 
     logger.info("Organization standards table is empty — ready for generation")
@@ -407,6 +455,96 @@ async def _apply_scope_fixes(backend) -> None:
     else:
         logger.info("All standard scopes already correct")
 
+
+# CAF field defaults for existing default standards (keyed by standard ID).
+_CAF_DEFAULTS: dict[str, dict] = {
+    "STD-ENCRYPT-TLS":  {"risk_id": "R02", "purpose": "Mitigate data interception and man-in-the-middle attacks by enforcing modern transport encryption", "enforcement_tool": "Azure Policy"},
+    "STD-ENCRYPT-HTTPS": {"risk_id": "R02", "purpose": "Protect data in transit by requiring encrypted connections for all web-facing endpoints", "enforcement_tool": "Azure Policy"},
+    "STD-ENCRYPT-REST": {"risk_id": "R06", "purpose": "Protect sensitive data at rest from unauthorized access per regulatory and security requirements", "enforcement_tool": "Azure Policy"},
+    "STD-IDENTITY-MI":  {"risk_id": "R02", "purpose": "Eliminate credential exposure risk by using Azure-managed identity lifecycle", "enforcement_tool": "Azure Policy"},
+    "STD-IDENTITY-AAD": {"risk_id": "R02", "purpose": "Centralize authentication through Microsoft Entra ID for unified access control and audit", "enforcement_tool": "Microsoft Entra ID"},
+    "STD-NETWORK-PUBLIC": {"risk_id": "R02", "purpose": "Reduce attack surface by blocking public internet access to cloud resources", "enforcement_tool": "Azure Policy"},
+    "STD-NETWORK-PE":   {"risk_id": "R02", "purpose": "Ensure production data flows over private Azure backbone, not public internet", "enforcement_tool": "Azure Policy"},
+    "STD-MONITOR-DIAG": {"risk_id": "R05", "purpose": "Ensure operational visibility and incident response capability across all workloads", "enforcement_tool": "Azure Policy"},
+    "STD-TAG-REQUIRED": {"risk_id": "R07", "purpose": "Facilitate resource tracking, cost attribution, and ownership accountability", "enforcement_tool": "Azure Policy"},
+    "STD-REGION-ALLOWED": {"risk_id": "R01", "purpose": "Ensure regulatory compliance with data residency requirements and reduce latency", "enforcement_tool": "Azure Policy"},
+    "STD-COST-THRESHOLD": {"risk_id": "R04", "purpose": "Prevent overspending and ensure cost accountability through budget gate controls", "enforcement_tool": "Microsoft Cost Management"},
+}
+
+# Category → default CAF risk mapping for standards not in _CAF_DEFAULTS.
+_CAF_CATEGORY_RISK: dict[str, dict] = {
+    "encryption":       {"risk_id": "R02", "enforcement_tool": "Azure Policy"},
+    "security":         {"risk_id": "R02", "enforcement_tool": "Azure Policy"},
+    "identity":         {"risk_id": "R02", "enforcement_tool": "Microsoft Entra ID"},
+    "network":          {"risk_id": "R02", "enforcement_tool": "Azure Policy"},
+    "tagging":          {"risk_id": "R07", "enforcement_tool": "Azure Policy"},
+    "naming":           {"risk_id": "R07", "enforcement_tool": "Azure Policy"},
+    "geography":        {"risk_id": "R01", "enforcement_tool": "Azure Policy"},
+    "region":           {"risk_id": "R01", "enforcement_tool": "Azure Policy"},
+    "cost":             {"risk_id": "R04", "enforcement_tool": "Microsoft Cost Management"},
+    "monitoring":       {"risk_id": "R05", "enforcement_tool": "Azure Policy"},
+    "operations":       {"risk_id": "R05", "enforcement_tool": "Azure Policy"},
+    "data_protection":  {"risk_id": "R06", "enforcement_tool": "Azure Policy"},
+    "compliance":       {"risk_id": "R01", "enforcement_tool": "Azure Policy"},
+    "compute":          {"risk_id": "R05", "enforcement_tool": "Azure Policy"},
+    "general":          {"risk_id": "R07", "enforcement_tool": "Azure Policy"},
+}
+
+
+async def _apply_caf_fields(backend) -> None:
+    """Populate Cloud Adoption Framework fields on existing standards.
+
+    Phase 1: Apply exact-match CAF defaults to known standard IDs.
+    Phase 2: For any remaining standards missing risk_id, infer from
+    their category using _CAF_CATEGORY_RISK so every standard gets
+    linked to the CAF risk register.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    updated = 0
+
+    # Phase 1 — exact-match defaults (risk_id + purpose + enforcement_tool)
+    for std_id, caf in _CAF_DEFAULTS.items():
+        rows = await backend.execute(
+            "SELECT risk_id, purpose, enforcement_tool FROM org_standards WHERE id = ?",
+            (std_id,),
+        )
+        if not rows:
+            continue
+
+        current = rows[0]
+        if (current.get("risk_id") or "") and (current.get("purpose") or "") and (current.get("enforcement_tool") or ""):
+            continue
+
+        await backend.execute_write(
+            """UPDATE org_standards
+               SET risk_id = ?, purpose = ?, enforcement_tool = ?, updated_at = ?
+               WHERE id = ?""",
+            (caf["risk_id"], caf["purpose"], caf["enforcement_tool"], now, std_id),
+        )
+        updated += 1
+
+    # Phase 2 — category-based fallback for any standards still missing risk_id
+    orphans = await backend.execute(
+        "SELECT id, category FROM org_standards WHERE risk_id IS NULL OR risk_id = ''",
+        (),
+    )
+    for row in orphans:
+        cat = (row.get("category") or "general").lower()
+        mapping = _CAF_CATEGORY_RISK.get(cat, _CAF_CATEGORY_RISK["general"])
+        await backend.execute_write(
+            """UPDATE org_standards
+               SET risk_id = ?, enforcement_tool = ?, updated_at = ?
+               WHERE id = ?""",
+            (mapping["risk_id"], mapping["enforcement_tool"], now, row["id"]),
+        )
+        updated += 1
+
+    if updated:
+        logger.info(f"Populated CAF fields on {updated} organization standard(s)")
+    else:
+        logger.info("All standards already have CAF fields")
+
+
 async def get_all_standards(
     category: Optional[str] = None,
     enabled_only: bool = False,
@@ -465,8 +603,9 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
     await backend.execute_write(
         """INSERT INTO org_standards
            (id, name, description, category, severity, scope,
-            rule_json, enabled, frameworks, created_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rule_json, enabled, frameworks, risk_id, purpose,
+            enforcement_tool, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             std_id,
             std["name"],
@@ -477,6 +616,9 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
             json.dumps(std.get("rule", {})),
             int(std.get("enabled", True)),
             frameworks_json,
+            std.get("risk_id", ""),
+            std.get("purpose", ""),
+            std.get("enforcement_tool", ""),
             created_by,
             now,
             now,
@@ -488,8 +630,9 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
         """INSERT INTO org_standards_history
            (standard_id, version, name, description, category,
             severity, scope, rule_json, enabled, frameworks,
+            risk_id, purpose, enforcement_tool,
             changed_by, changed_at, change_reason)
-           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Created')""",
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Created')""",
         (
             std_id,
             std["name"],
@@ -500,6 +643,9 @@ async def create_standard(std: dict, created_by: str = "platform-team") -> dict:
             json.dumps(std.get("rule", {})),
             int(std.get("enabled", True)),
             frameworks_json,
+            std.get("risk_id", ""),
+            std.get("purpose", ""),
+            std.get("enforcement_tool", ""),
             created_by,
             now,
         ),
@@ -532,16 +678,21 @@ async def update_standard(
     enabled = updates.get("enabled", existing["enabled"])
     frameworks = updates.get("frameworks", existing.get("frameworks", []))
     frameworks_json = json.dumps(frameworks)
+    risk_id = updates.get("risk_id", existing.get("risk_id", ""))
+    purpose = updates.get("purpose", existing.get("purpose", ""))
+    enforcement_tool = updates.get("enforcement_tool", existing.get("enforcement_tool", ""))
 
     await backend.execute_write(
         """UPDATE org_standards
            SET name = ?, description = ?, category = ?, severity = ?,
                scope = ?, rule_json = ?, enabled = ?, frameworks = ?,
+               risk_id = ?, purpose = ?, enforcement_tool = ?,
                updated_at = ?
            WHERE id = ?""",
         (
             name, description, category, severity,
             scope, json.dumps(rule), int(enabled), frameworks_json,
+            risk_id, purpose, enforcement_tool,
             now, standard_id,
         ),
     )
@@ -557,12 +708,14 @@ async def update_standard(
         """INSERT INTO org_standards_history
            (standard_id, version, name, description, category,
             severity, scope, rule_json, enabled, frameworks,
+            risk_id, purpose, enforcement_tool,
             changed_by, changed_at, change_reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             standard_id, next_ver, name, description, category,
             severity, scope, json.dumps(rule), int(enabled),
-            frameworks_json, changed_by, now, change_reason,
+            frameworks_json, risk_id, purpose, enforcement_tool,
+            changed_by, now, change_reason,
         ),
     )
 
@@ -690,6 +843,15 @@ async def build_policy_generation_context(service_id: str) -> str:
         rule = s.get("rule", {})
         lines.append(f"  [{s['severity'].upper()}] {s['name']}")
         lines.append(f"    {s['description']}")
+        risk_id = s.get("risk_id", "")
+        purpose = s.get("purpose", "")
+        enforcement_tool = s.get("enforcement_tool", "")
+        if risk_id:
+            lines.append(f"    Risk: {risk_id}")
+        if purpose:
+            lines.append(f"    Purpose: {purpose}")
+        if enforcement_tool:
+            lines.append(f"    Enforcement: {enforcement_tool}")
         if rule.get("remediation"):
             lines.append(f"    Remediation: {rule['remediation']}")
         lines.append("")

@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=167">
+    <link rel="stylesheet" href="/static/styles.css?v=169">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -1056,7 +1056,21 @@
                     </div>
                     <div class="form-group">
                         <label>Description</label>
-                        <textarea name="description" rows="2" placeholder="What this standard enforces and why..."></textarea>
+                        <textarea name="description" rows="2" placeholder="Policy statement using must/must not language per CAF..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Risk ID <span class="hint">(CAF risk reference)</span></label>
+                            <input type="text" name="risk_id" placeholder="e.g. R02" />
+                        </div>
+                        <div class="form-group">
+                            <label>Enforcement Tool <span class="hint">(CAF)</span></label>
+                            <input type="text" name="enforcement_tool" placeholder="e.g. Azure Policy" />
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Purpose <span class="hint">(why this standard exists — CAF)</span></label>
+                        <input type="text" name="purpose" placeholder="e.g. Mitigate data breaches and unauthorized access" />
                     </div>
                     <div class="form-row">
                         <div class="form-group">
@@ -1185,7 +1199,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=168"></script>
+    <script src="/static/app.js?v=169"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

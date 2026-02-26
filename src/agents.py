@@ -373,16 +373,19 @@ Each standard must be converted into this exact schema:
 {
   "id": "STD-<SHORT-CODE>",
   "name": "<Human-readable standard name>",
-  "description": "<Full description of what this standard enforces>",
+  "description": "<Full description using must/must not/should language per Cloud Adoption Framework>",
   "category": "<one of: encryption, identity, network, monitoring, tagging, naming, region, geography, cost, security, compliance, compute, data_protection, operations, general>",
   "severity": "<one of: critical, high, medium, low>",
   "scope": "<comma-separated Azure resource type globs, e.g. 'Microsoft.Storage/*,Microsoft.Sql/*' or '*' for all>",
   "enabled": true,
+  "risk_id": "<risk identifier this standard mitigates, e.g. R01 for regulatory compliance, R02 for security, R04 for cost, R05 for operations, R06 for data, R07 for resource management>",
+  "purpose": "<Why this standard exists — the risk or regulatory requirement it addresses>",
+  "enforcement_tool": "<Tool used to enforce, e.g. Azure Policy, Microsoft Defender, Microsoft Entra ID, Microsoft Cost Management, Manual audit>",
   "frameworks": ["<regulatory framework IDs this standard satisfies — zero or more of: compliance_hipaa, compliance_soc2, compliance_pci, compliance_gdpr, compliance_data_residency>"],
   "rule": {
     "type": "<one of: property, tags, allowed_values, cost_threshold>",
     ... type-specific fields (see below) ...
-    "remediation": "<How to fix a resource that violates this standard>"
+    "remediation": "<How to fix a resource that violates this standard — include timeline expectations>"
   }
 }
 
@@ -393,6 +396,20 @@ A single standard can satisfy multiple compliance frameworks. For example:
 - A naming convention standard may satisfy none → []
 
 Always tag standards with ALL applicable frameworks based on the regulatory requirements they help satisfy.
+
+CLOUD ADOPTION FRAMEWORK — Risk Register Reference:
+Standards should reference risk IDs from the organization's risk register. Common risks:
+- R01: Regulatory non-compliance (data residency, industry regulations)
+- R02: Security vulnerabilities (unauthorized access, data breaches)
+- R03: Code and supply chain security (insecure dependencies, unauthorized code hosting)
+- R04: Cost overruns (uncontrolled spending, missing budget controls)
+- R05: Operational failures (service disruption, missing monitoring/DR)
+- R06: Data protection gaps (unencrypted data, missing lifecycle management)
+- R07: Resource management drift (untagged resources, inconsistent provisioning)
+- R08: AI governance gaps (harmful content, unaudited AI behavior)
+
+Use the risk_id field to link each standard to the risk(s) it mitigates. Use "must"/"must not"
+language in descriptions per the Cloud Adoption Framework documentation standards.
 
 Rule type schemas:
 
