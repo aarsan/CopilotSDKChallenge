@@ -10634,13 +10634,14 @@ async def websocket_governance_chat(websocket: WebSocket):
                             )
                         elif event.type.value == "assistant.message":
                             full_content = event.data.content or ""
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "done",
-                                    "content": full_content,
-                                })
-                            )
-                        elif event.type.value == "tool.call":
+                            if full_content:
+                                asyncio.get_event_loop().create_task(
+                                    websocket.send_json({
+                                        "type": "done",
+                                        "content": full_content,
+                                    })
+                                )
+                        elif event.type.value in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
@@ -10649,7 +10650,7 @@ async def websocket_governance_chat(websocket: WebSocket):
                                     "status": "running",
                                 })
                             )
-                        elif event.type.value == "tool.result":
+                        elif event.type.value in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
@@ -10798,7 +10799,8 @@ async def websocket_concierge_chat(websocket: WebSocket):
 
                 def on_event(event):
                     try:
-                        if event.type.value == "assistant.message_delta":
+                        evt_type = event.type.value
+                        if evt_type == "assistant.message_delta":
                             delta = event.data.delta_content or ""
                             response_chunks.append(delta)
                             asyncio.get_event_loop().create_task(
@@ -10807,15 +10809,18 @@ async def websocket_concierge_chat(websocket: WebSocket):
                                     "content": delta,
                                 })
                             )
-                        elif event.type.value == "assistant.message":
+                        elif evt_type == "assistant.message":
                             full_content = event.data.content or ""
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "done",
-                                    "content": full_content,
-                                })
-                            )
-                        elif event.type.value == "tool.call":
+                            # Only send 'done' when there's actual content;
+                            # empty messages are tool-call turns, not final.
+                            if full_content:
+                                asyncio.get_event_loop().create_task(
+                                    websocket.send_json({
+                                        "type": "done",
+                                        "content": full_content,
+                                    })
+                                )
+                        elif evt_type in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
@@ -10824,7 +10829,7 @@ async def websocket_concierge_chat(websocket: WebSocket):
                                     "status": "running",
                                 })
                             )
-                        elif event.type.value == "tool.result":
+                        elif evt_type in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
@@ -10833,7 +10838,7 @@ async def websocket_concierge_chat(websocket: WebSocket):
                                     "status": "complete",
                                 })
                             )
-                        elif event.type.value == "session.idle":
+                        elif evt_type == "session.idle":
                             done_event.set()
                     except Exception as e:
                         logger.error(f"Concierge event handler error: {e}")
@@ -10849,6 +10854,13 @@ async def websocket_concierge_chat(websocket: WebSocket):
                         "type": "error",
                         "message": "Request timed out. Please try again.",
                     })
+                except Exception as send_err:
+                    logger.error(f"[Concierge] Error during send: {send_err}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Error: {send_err}",
+                    })
+                    done_event.set()
                 finally:
                     unsubscribe()
 
@@ -10992,13 +11004,16 @@ async def websocket_chat(websocket: WebSocket):
                             )
                         elif event.type.value == "assistant.message":
                             full_content = event.data.content or ""
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "done",
-                                    "content": full_content,
-                                })
-                            )
-                        elif event.type.value == "tool.call":
+                            # Only send 'done' when there's actual content;
+                            # empty messages are tool-call turns, not final.
+                            if full_content:
+                                asyncio.get_event_loop().create_task(
+                                    websocket.send_json({
+                                        "type": "done",
+                                        "content": full_content,
+                                    })
+                                )
+                        elif event.type.value in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
@@ -11010,7 +11025,7 @@ async def websocket_chat(websocket: WebSocket):
                             # Track catalog usage
                             if tool_name == "search_template_catalog":
                                 request_record["from_catalog"] = True
-                        elif event.type.value == "tool.result":
+                        elif event.type.value in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             asyncio.get_event_loop().create_task(
                                 websocket.send_json({
