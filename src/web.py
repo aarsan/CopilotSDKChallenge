@@ -6340,9 +6340,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 try:
                     from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton, generate_arm_template_with_copilot
                     from src.pipeline_helpers import sanitize_template, inject_standard_tags
-                    from src.database import (
-                        create_service_version, compute_next_semver,
-                    )
 
                     # Clear active version so delete_service_versions_by_status can purge all
                     backend = await get_backend()
