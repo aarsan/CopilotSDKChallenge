@@ -10,9 +10,10 @@ service onboarding flow:
   4. generate_arm       — ARM template generation (skeleton or LLM)
   5. generate_policy    — Azure Policy generation
   6. validate_arm_deploy — HealingLoop with all checks
-  7. deploy_policy      — deploy Azure Policy to Azure
-  8. cleanup            — delete temp RG + policy
-  9. promote_service    — mark approved, set active version
+  7. infra_testing      — AI-generated infrastructure smoke tests
+  8. deploy_policy      — deploy Azure Policy to Azure
+  9. cleanup            — delete temp RG + policy
+ 10. promote_service    — mark approved, set active version
 
 The endpoint still lives in web.py — it just delegates to
 ``runner.execute(ctx)`` now.
@@ -226,6 +227,7 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
             "ARM What-If preview (dry run)",
             "Deploy to isolated validation resource group",
             "Runtime compliance verification with Azure Policy",
+            "Run infrastructure smoke tests against live resources",
             "Clean up validation resources",
             "Publish & promote approved version",
         ],
@@ -1024,6 +1026,92 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
         return  # ✅ validation passed
 
 
+@runner.step("infra_testing")
+async def step_infra_testing(ctx: PipelineContext, step: StepDef):
+    """Phase 4.6: run AI-generated infrastructure tests against live resources.
+
+    Uses the Copilot SDK to generate Python tests tailored to the deployed
+    resource types (e.g. SQL endpoint reachability, App Service HTTPS, etc.),
+    executes them against the live validation environment, and reports results.
+    """
+    from src.pipelines.testing import stream_infra_testing
+
+    resource_details = ctx.artifacts.get("resource_details", [])
+    deploy_result = ctx.artifacts.get("deploy_result", {})
+
+    if not resource_details:
+        yield emit("progress", "testing_complete",
+                    "No deployed resources to test — skipping infrastructure tests",
+                    ctx.progress(0.5), status="skipped")
+        return
+
+    # Parse the current ARM template
+    try:
+        arm_template = json.loads(ctx.template)
+    except json.JSONDecodeError:
+        yield emit("progress", "testing_complete",
+                    "⚠ Could not parse ARM template for test generation — skipping",
+                    ctx.progress(0.5), status="skipped")
+        return
+
+    # Stream testing events — translate NDJSON from testing pipeline into
+    # proper pipeline emit() events so the frontend renders flow cards.
+    progress_base = 0.1
+    async for raw_line in stream_infra_testing(
+        arm_template=arm_template,
+        resource_group=ctx.rg_name,
+        deployed_resources=resource_details,
+        region=ctx.region,
+        max_retries=2,
+    ):
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+
+        phase = event.get("phase", "")
+        detail = event.get("detail", "")
+        status = event.get("status", "")
+
+        # Map testing phases to progress fractions within this step
+        phase_progress = {
+            "testing_start": 0.1,
+            "testing_generate": 0.3,
+            "testing_execute": 0.5,
+            "test_result": 0.6,
+            "testing_analyze": 0.7,
+            "testing_feedback": 0.8,
+            "testing_complete": 1.0,
+        }
+        prog = ctx.progress(phase_progress.get(phase, progress_base))
+
+        # Forward as a pipeline event with correct type field
+        if phase == "test_result":
+            yield emit("test_result", phase, detail, prog,
+                        test_name=event.get("test_name", ""),
+                        status=status,
+                        message=event.get("message", ""))
+        elif phase == "testing_complete":
+            yield emit("progress", phase, detail, prog,
+                        status=status,
+                        tests_passed=event.get("tests_passed", 0),
+                        tests_failed=event.get("tests_failed", 0),
+                        tests_total=event.get("tests_total", 0))
+            # Store test results in artifacts
+            ctx.artifacts["infra_test_results"] = {
+                "status": status,
+                "passed": event.get("tests_passed", 0),
+                "failed": event.get("tests_failed", 0),
+                "total": event.get("tests_total", 0),
+            }
+        elif phase == "testing_feedback":
+            yield emit("progress", phase, detail, prog,
+                        action=event.get("action", ""),
+                        fix_guidance=event.get("fix_guidance", ""))
+        else:
+            yield emit("progress", phase, detail, prog, status=status)
+
+
 @runner.step("deploy_policy")
 async def step_deploy_policy(ctx: PipelineContext, step: StepDef):
     """Phase 4.7: deploy Azure Policy to Azure."""
@@ -1108,6 +1196,7 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
         "has_runtime_policy": ctx.generated_policy is not None,
         "policy_deployed_to_azure": ctx.deployed_policy_info is not None,
         "policy_deployment": ctx.deployed_policy_info,
+        "infra_tests": ctx.artifacts.get("infra_test_results"),
         "attempts": len(ctx.heal_history) + 1,
         "heal_history": ctx.heal_history,
     }
@@ -1133,12 +1222,17 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
     if ctx.deployed_policy_info:
         _azure_policy_str = ", Azure Policy deployed + cleaned up"
 
+    _test_str = ""
+    infra_tests = ctx.artifacts.get("infra_test_results")
+    if infra_tests and infra_tests.get("total", 0) > 0:
+        _test_str = f", {infra_tests['passed']}/{infra_tests['total']} infra test(s) passed"
+
     yield emit(
         "done", "approved",
         f"🎉 {svc['name']} v{ctx.semver} approved! "
         f"{len(resource_details)} resource(s) validated, "
         f"{report.passed_checks}/{report.total_checks} static policy checks passed"
-        f"{_policy_str}{_azure_policy_str}.{heal_msg}",
+        f"{_policy_str}{_test_str}{_azure_policy_str}.{heal_msg}",
         1.0,
         issues_resolved=issues_resolved, version=ctx.version_num, semver=ctx.semver,
         summary=validation_summary, step=len(ctx.heal_history) + 1,

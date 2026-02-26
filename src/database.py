@@ -3675,6 +3675,21 @@ async def seed_orchestration_processes() -> int:
                 },
                 {
                     "step_order": 7,
+                    "name": "Infrastructure smoke tests",
+                    "description": (
+                        "Generate and execute Python infrastructure tests against the "
+                        "live validation resources using the Copilot SDK. Tests verify "
+                        "endpoint reachability, provisioning state, security config, "
+                        "and tag compliance. Retries transient failures and analyzes "
+                        "root causes of persistent issues."
+                    ),
+                    "action": "infra_testing",
+                    "on_success": "next",
+                    "on_failure": "next",
+                    "config_json": '{"skippable": true}',
+                },
+                {
+                    "step_order": 8,
                     "name": "Deploy Azure Policy",
                     "description": (
                         "Deploy the generated Azure Policy definition to enforce "
@@ -3686,7 +3701,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 8,
+                    "step_order": 9,
                     "name": "Cleanup",
                     "description": (
                         "Delete the temporary validation resource group and clean up "
@@ -3697,7 +3712,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 9,
+                    "step_order": 10,
                     "name": "Approve and promote",
                     "description": (
                         "Mark service version as approved, set as active version. "

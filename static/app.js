@@ -3531,6 +3531,36 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'policyTest', 'failed');
     } else if (phase === 'policy_skip') {
         if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', 'ℹ️', escapeHtml(detail));
+
+    // ── Infrastructure Testing ──
+    } else if (phase === 'testing_start') {
+        _flowCard(logEl, 'infraTest', '🧪', 'Infrastructure Tests');
+        if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
+    } else if (phase === 'testing_generate') {
+        if (!logEl._flow?.cards['infraTest']) _flowCard(logEl, 'infraTest', '🧪', 'Infrastructure Tests');
+        const icon = event.status === 'complete' ? '✓' : event.status === 'error' ? '⚠️' : '▸';
+        const cls = event.status === 'complete' ? 'uf-text-success' : event.status === 'error' ? 'uf-text-error' : '';
+        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+    } else if (phase === 'testing_execute') {
+        if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
+    } else if (phase === 'test_result') {
+        const passed = event.status === 'passed';
+        const icon = passed ? '✅' : '❌';
+        const cls = passed ? 'uf-text-success' : 'uf-text-error';
+        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+    } else if (phase === 'testing_analyze') {
+        const icon = event.status === 'complete' ? '🔍' : '▸';
+        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail));
+    } else if (phase === 'testing_feedback') {
+        if (detail) _flowDetail(logEl, 'infraTest', '💡', escapeHtml(detail), 'uf-text-warning');
+    } else if (phase === 'testing_complete') {
+        const allPassed = event.status === 'passed';
+        const skipped = event.status === 'skipped';
+        const icon = allPassed ? '✓' : skipped ? 'ℹ️' : '⚠️';
+        const cls = allPassed ? 'uf-text-success' : skipped ? '' : 'uf-text-error';
+        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+        _flowFinalize(logEl, 'infraTest', allPassed || skipped ? 'done' : 'failed');
+
     } else if (phase === 'fixing_policy') {
         // Policy fixing goes into the active card as detail
         const k = logEl._flow.activeKey || 'policyTest';
@@ -3654,6 +3684,9 @@ function _handleValidationEvent(event) {
     } else if (phase === 'policy_testing' && header) {
         header.textContent = 'Testing Runtime Policy Compliance…';
         if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
+    } else if ((phase === 'testing_start' || phase === 'testing_generate' || phase === 'testing_execute') && header) {
+        header.textContent = 'Running Infrastructure Tests…';
+        if (iconEl) { iconEl.textContent = '🧪'; iconEl.classList.add('validation-spinner'); }
     } else if (type === 'healing' && header) {
         header.textContent = 'Auto-Healing — AI Fixing Template…';
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
