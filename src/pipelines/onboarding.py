@@ -511,14 +511,14 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": error_msg})
                 await fail_service_validation(ctx.service_id, error_msg)
                 raise StepFailure(error_msg, healable=False, phase="parsing")
-            yield emit("healing", "fixing_template", f"JSON parse error — analyzing root cause…", ctx.progress(att_base + 0.02), step=attempt)
+            yield emit("healing", "fixing_template", f"Template has a JSON syntax issue — auto-healing…", ctx.progress(att_base + 0.02), step=attempt)
             _pre_fix = ctx.template
             ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, error_msg, standards_ctx, planning_response, ctx.heal_history)
             yield emit("llm_reasoning", "strategy", f"Strategy: {_strategy[:300]}", step=attempt)
             ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "parsing", "error": error_msg, "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
             tmpl_meta = extract_meta(ctx.template)
             await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-            yield emit("healing_done", "template_fixed", "Applied strategy — retrying…", ctx.progress(att_base + 0.03), step=attempt)
+            yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — retrying…", ctx.progress(att_base + 0.03), step=attempt)
             continue
 
         # ── Static Policy Check ──
@@ -549,7 +549,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             failed_checks = [c for c in report.results if not c.passed and c.enforcement == "block"]
             fix_prompt = build_remediation_prompt(ctx.template, failed_checks)
             yield emit("healing", "fixing_template",
-                        f"Policy violations ({len(failed_checks)} blockers) — analyzing…",
+                        f"{len(failed_checks)} policy violation(s) detected — auto-healing template…",
                         ctx.progress(att_base + 0.07), step=attempt)
             _pre_fix = ctx.template
             ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, fix_prompt, standards_ctx, planning_response, ctx.heal_history)
@@ -557,7 +557,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "static_policy", "error": fix_prompt[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
             tmpl_meta = extract_meta(ctx.template)
             await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-            yield emit("healing_done", "template_fixed", "Applied strategy — retrying…", ctx.progress(att_base + 0.08), step=attempt)
+            yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — revalidating…", ctx.progress(att_base + 0.08), step=attempt)
             continue
 
         yield emit("progress", "static_policy_complete",
@@ -579,19 +579,20 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
         if wif.get("status") != "success":
             errors = "; ".join(str(e) for e in wif.get("errors", [])) or "Unknown What-If error"
+            brief = brief_azure_error(errors)
 
             if is_transient_error(errors):
-                yield emit("progress", "infra_retry", "Transient Azure error — waiting 10s…", ctx.progress(att_base + 0.11), step=attempt)
+                yield emit("progress", "infra_retry", "Azure is temporarily busy — retrying in 10 seconds…", ctx.progress(att_base + 0.11), step=attempt)
                 await asyncio.sleep(10)
                 continue
 
             if is_last:
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": errors, "phase": "what_if"})
-                await fail_service_validation(ctx.service_id, f"What-If failed: {errors}")
-                raise StepFailure(errors, healable=False, phase="what_if")
+                await fail_service_validation(ctx.service_id, f"What-If failed: {brief}")
+                raise StepFailure(brief, healable=False, phase="what_if")
 
             yield emit("healing", "fixing_template",
-                        f"What-If rejected — analyzing… Error: {errors[:200]}",
+                        f"{brief} — auto-healing template…",
                         ctx.progress(att_base + 0.12), step=attempt)
             _pre_fix = ctx.template
             ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, errors, standards_ctx, planning_response, ctx.heal_history)
@@ -599,7 +600,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "what_if", "error": errors[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
             tmpl_meta = extract_meta(ctx.template)
             await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-            yield emit("healing_done", "template_fixed", "Applied strategy — retrying…", ctx.progress(att_base + 0.13), step=attempt)
+            yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — revalidating…", ctx.progress(att_base + 0.13), step=attempt)
             continue
 
         change_summary = ", ".join(f"{v} {k}" for k, v in wif.get("change_counts", {}).items())
@@ -639,21 +640,22 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 except Exception:
                     pass
 
-            yield emit("progress", "deploy_failed", f"Deployment failed: {deploy_error[:400]}", ctx.progress(att_base + 0.20), step=attempt)
+            brief = brief_azure_error(deploy_error)
+            yield emit("progress", "deploy_failed", f"Deployment failed — {brief}", ctx.progress(att_base + 0.20), step=attempt)
 
             if is_transient_error(deploy_error):
-                yield emit("progress", "infra_retry", "Transient infra error — waiting 10s…", ctx.progress(att_base + 0.21), step=attempt)
+                yield emit("progress", "infra_retry", "Azure is temporarily busy — retrying in 10 seconds…", ctx.progress(att_base + 0.21), step=attempt)
                 await asyncio.sleep(10)
                 continue
 
             if is_last:
                 await cleanup_rg(ctx.rg_name)
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": deploy_error, "phase": "deploy"})
-                await fail_service_validation(ctx.service_id, f"Deploy failed: {deploy_error}")
-                raise StepFailure(deploy_error, healable=False, phase="deploy")
+                await fail_service_validation(ctx.service_id, f"Deploy failed: {brief}")
+                raise StepFailure(brief, healable=False, phase="deploy")
 
             yield emit("healing", "fixing_template",
-                        f"Deployment failed — analyzing… Error: {deploy_error[:200]}",
+                        f"{brief} — auto-healing template…",
                         ctx.progress(att_base + 0.21), step=attempt)
             _pre_fix = ctx.template
             ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, deploy_error, standards_ctx, planning_response, ctx.heal_history)
@@ -661,7 +663,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "deploy", "error": deploy_error[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
             tmpl_meta = extract_meta(ctx.template)
             await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-            yield emit("healing_done", "template_fixed", "Applied strategy — redeploying…", ctx.progress(att_base + 0.22), step=attempt)
+            yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — redeploying…", ctx.progress(att_base + 0.22), step=attempt)
             continue
 
         # Deploy succeeded!
@@ -745,7 +747,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
                 fix_error = f"Runtime policy violation: {violation_desc}. Policy: {json.dumps(ctx.generated_policy, indent=2)[:500]}"
                 yield emit("healing", "fixing_template",
-                            f"Policy violations on {len(violations)} resource(s) — analyzing…",
+                            f"{len(violations)} resource(s) failed runtime policy compliance — auto-healing…",
                             ctx.progress(att_base + 0.30), step=attempt)
                 _pre_fix = ctx.template
                 ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, fix_error, standards_ctx, planning_response, ctx.heal_history)
@@ -753,7 +755,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "policy_compliance", "error": fix_error[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
                 tmpl_meta = extract_meta(ctx.template)
                 await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
-                yield emit("healing_done", "template_fixed", "Applied policy compliance fix — redeploying…", ctx.progress(att_base + 0.31), step=attempt)
+                yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — redeploying…", ctx.progress(att_base + 0.31), step=attempt)
                 continue
             else:
                 yield emit("progress", "policy_testing_complete",

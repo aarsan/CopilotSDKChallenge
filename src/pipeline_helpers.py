@@ -61,6 +61,60 @@ def _build_param_defaults() -> dict[str, object]:
 
 PARAM_DEFAULTS: dict[str, object] = _build_param_defaults()
 
+
+def _constrained_fallback(pname: str, pdef: dict) -> object:
+    """Generate a fallback value that respects ARM parameter constraints.
+
+    Checks ``allowedValues``, ``type``, ``maxLength``, and ``minLength``
+    so the generated placeholder won't immediately fail Azure validation.
+    """
+    # --- allowedValues: just pick the first one --------------------------
+    allowed = pdef.get("allowedValues")
+    if isinstance(allowed, list) and allowed:
+        return allowed[0]
+
+    # --- type-aware defaults ---------------------------------------------
+    ptype = (pdef.get("type") or "string").lower()
+    if ptype == "int":
+        min_v = pdef.get("minValue", 1)
+        return min_v if isinstance(min_v, int) else 1
+    if ptype == "bool":
+        return False
+    if ptype in ("array", "list"):
+        return []
+    if ptype == "object":
+        return {}
+    if ptype == "securestring":
+        return "InfraForge#Val1d!"
+
+    # --- string: respect maxLength / minLength ---------------------------
+    plow = pname.lower()
+    if any(k in plow for k in ("dns", "zone", "domain", "fqdn")):
+        base = "infraforge-demo.com"
+    elif "hostname" in plow:
+        base = "app.infraforge-demo.com"
+    elif plow.endswith("password") or plow.endswith("secret"):
+        base = "InfraForge#Val1d!"
+    elif plow.endswith("username"):
+        base = "azureadmin"
+    elif "sharedkey" in plow:
+        base = "InfraForgeVal1dation!"
+    else:
+        base = f"ifrg-{pname}"
+
+    max_len = pdef.get("maxLength")
+    min_len = pdef.get("minLength")
+
+    if isinstance(max_len, int) and len(base) > max_len:
+        # Truncate to fit — keep a recognisable prefix
+        base = base[:max_len]
+    if isinstance(min_len, int) and len(base) < min_len:
+        # Pad to meet minimum
+        base = base + "x" * (min_len - len(base))
+
+    return base
+
+
 # Global-location resource types (DNS zones, CDN, etc.)
 GLOBAL_LOCATION_TYPES = frozenset({
     "microsoft.network/dnszones",
@@ -191,7 +245,11 @@ def summarize_fix(before: str, after: str) -> str:
 
 
 def ensure_parameter_defaults(template_json: str) -> str:
-    """Ensure every parameter in an ARM template has a defaultValue."""
+    """Ensure every parameter in an ARM template has a defaultValue.
+
+    Uses ``_constrained_fallback`` so generated defaults respect
+    ``maxLength``, ``minLength``, ``allowedValues``, and ``type``.
+    """
     try:
         tmpl = json.loads(template_json)
     except (json.JSONDecodeError, TypeError):
@@ -212,18 +270,13 @@ def ensure_parameter_defaults(template_json: str) -> str:
                 plow = pname.lower()
                 if "subscri" in plow and sub_id:
                     dv = sub_id
-                elif plow.endswith("password") or plow.endswith("secret"):
-                    dv = "InfraForge#Val1d!"
-                elif plow.endswith("username"):
-                    dv = "azureadmin"
-                elif "sharedkey" in plow:
-                    dv = "InfraForgeVal1dation!"
-                elif any(k in plow for k in ("dns", "zone", "domain", "fqdn")):
-                    dv = "infraforge-demo.com"
-                elif "hostname" in plow:
-                    dv = "app.infraforge-demo.com"
                 else:
-                    dv = f"infraforge-{pname}"
+                    dv = _constrained_fallback(pname, pdef)
+            # Enforce maxLength even on PARAM_DEFAULTS values
+            if isinstance(dv, str):
+                max_len = pdef.get("maxLength")
+                if isinstance(max_len, int) and len(dv) > max_len:
+                    dv = dv[:max_len]
             pdef["defaultValue"] = dv
             patched = True
 
@@ -338,6 +391,8 @@ def extract_param_values(template: dict) -> dict:
     """Extract explicit parameter values from a template's defaultValues.
 
     Skips location and ARM expressions (``[...]``).
+    Uses ``_constrained_fallback`` to generate values that respect
+    ``maxLength``, ``minLength``, ``allowedValues``, and ``type``.
     """
     params = template.get("parameters", {})
     values: dict[str, object] = {}
@@ -348,13 +403,12 @@ def extract_param_values(template: dict) -> dict:
         if dv is None:
             dv = PARAM_DEFAULTS.get(pname)
         if dv is None:
-            plow = pname.lower()
-            if any(k in plow for k in ("dns", "zone", "domain", "fqdn")):
-                dv = "infraforge-demo.com"
-            elif "hostname" in plow:
-                dv = "app.infraforge-demo.com"
-            else:
-                dv = f"infraforge-{pname}"
+            dv = _constrained_fallback(pname, pdef)
+        # Enforce maxLength even on existing defaults / PARAM_DEFAULTS
+        if isinstance(dv, str):
+            max_len = pdef.get("maxLength")
+            if isinstance(max_len, int) and len(dv) > max_len:
+                dv = dv[:max_len]
         if isinstance(dv, str) and dv.startswith("["):
             continue
         values[pname] = dv
