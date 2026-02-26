@@ -1035,6 +1035,7 @@ const statusLabels = {
     not_approved: '❌ Not Approved',
     validating: '🔄 Validating…',
     validation_failed: '⛔ Validation Failed',
+    offboarded: '📦 Offboarded',
 };
 
 /** Auto-populate _serviceUpdates from cached DB data — no Azure call needed */
@@ -1604,7 +1605,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         { icon: '✅', label: 'Publish', desc: 'New version promoted to active' },
     ];
 
-    const showUpdatePipeline = apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs);
+    const showUpdatePipeline = apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status !== 'offboarded';
 
     // Distinguish governance approval from full onboarding
     const displayStatus = (status === 'approved' && !activeVersion)
@@ -1764,6 +1765,9 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                 <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
                     🔄 Re-validate (New Version)
                 </button>
+                <button class="btn btn-sm btn-danger btn-offboard" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service and deprecate all versions">
+                    📦 Offboard
+                </button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
@@ -1839,6 +1843,28 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
         </div>`;
     }
 
+    // offboarded — show deactivated state with re-onboard option
+    if (status === 'offboarded') {
+        return `
+        <div class="validation-card validation-offboarded" id="validation-card">
+            <div class="validation-header">
+                <span class="validation-icon">📦</span>
+                <span class="validation-title">Service Offboarded</span>
+            </div>
+            <div class="validation-detail">
+                <strong>${escapeHtml(svc.name)}</strong> has been offboarded. All previously approved template versions
+                are now deprecated and no longer active for deployment.
+                Version history is preserved below for audit purposes.
+            </div>
+            <div class="validation-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
+                    🚀 Re-onboard Service
+                </button>
+            </div>
+            <div class="validation-log" id="validation-log"></div>
+        </div>`;
+    }
+
     // not_approved — show the main onboarding button
     return `
     <div class="validation-card validation-ready" id="validation-card">
@@ -1861,7 +1887,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
 }
 
 function _renderVersionHistory(versions, activeVersion) {
-    const approvedVersions = versions.filter(v => v.status === 'approved');
+    const approvedVersions = versions.filter(v => v.status === 'approved' || v.status === 'deprecated');
     const draftVersions = versions.filter(v => v.status === 'draft' || v.status === 'failed');
     const totalCount = versions.length;
     const approvedCount = approvedVersions.length;
@@ -1955,11 +1981,11 @@ function _renderVersionHistory(versions, activeVersion) {
                     const displayVer = v.semver || `${v.version}.0.0`;
 
                     return `
-                    <div class="version-item ${isActive ? 'version-item-active' : ''}" onclick="toggleVersionDetail(this)">
+                    <div class="version-item ${isActive ? 'version-item-active' : ''} ${v.status === 'deprecated' ? 'version-item-deprecated' : ''}" onclick="toggleVersionDetail(this)">
                         <div class="version-item-header">
                             <span class="version-item-badge">v${displayVer}</span>
-                            <span class="version-item-status">✅ approved</span>
-                            ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>'}
+                            <span class="version-item-status">${v.status === 'deprecated' ? '📦 deprecated' : '✅ approved'}</span>
+                            ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : (v.status === 'deprecated' ? '<span class="version-item-deprecated-label">DEPRECATED</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>')}
                             ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
                             <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                             <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
@@ -2339,6 +2365,31 @@ async function deleteAllDraftVersions(serviceId) {
         await showServiceDetail(serviceId);
     } catch (err) {
         showToast(`Failed to delete: ${err.message}`, 'error');
+    }
+}
+
+async function offboardService(serviceId, serviceName) {
+    if (!confirm(
+        `⚠️ Offboard "${serviceName}"?\n\n` +
+        `This will:\n` +
+        `• Deactivate the service (no active template)\n` +
+        `• Mark all approved versions as deprecated\n` +
+        `• Preserve all data for audit trail\n\n` +
+        `The service can be re-onboarded later if needed.`
+    )) return;
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/offboard`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Offboarding failed');
+        }
+        const data = await res.json();
+        showToast(data.message || `${serviceName} offboarded successfully`, 'info');
+        await loadAllData();
+        await showServiceDetail(serviceId);
+    } catch (err) {
+        showToast(`Failed to offboard: ${err.message}`, 'error');
     }
 }
 

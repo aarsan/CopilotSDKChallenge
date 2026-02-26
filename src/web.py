@@ -5875,6 +5875,60 @@ async def delete_service_endpoint(service_id: str):
     return JSONResponse({"status": "ok", "deleted": service_id})
 
 
+@app.post("/api/services/{service_id:path}/offboard")
+async def offboard_service_endpoint(service_id: str):
+    """Offboard a service: deactivate it while preserving history for audit.
+
+    - Sets service status to 'offboarded'
+    - Clears active_version (no active template)
+    - Marks all approved versions as 'deprecated'
+    - Preserves all data for audit trail
+
+    The service can be re-onboarded later if needed.
+    """
+    from src.database import get_service, get_backend
+    from datetime import datetime, timezone
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    if svc.get("status") == "offboarded":
+        raise HTTPException(status_code=400, detail="Service is already offboarded")
+
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Clear active version and set status to offboarded
+    await backend.execute_write(
+        """UPDATE services
+           SET status = 'offboarded',
+               active_version = NULL,
+               template_api_version = NULL,
+               updated_at = ?
+           WHERE id = ?""",
+        (now, service_id),
+    )
+
+    # Mark all approved versions as deprecated (preserves draft/failed as-is)
+    await backend.execute_write(
+        """UPDATE service_versions
+           SET status = 'deprecated'
+           WHERE service_id = ? AND status = 'approved'""",
+        (service_id,),
+    )
+
+    logger.info(f"Service offboarded: {service_id}")
+
+    return JSONResponse({
+        "status": "ok",
+        "service_id": service_id,
+        "message": f"Service '{svc.get('name', service_id)}' has been offboarded. "
+                   f"All approved versions marked as deprecated. "
+                   f"The service can be re-onboarded at any time.",
+    })
+
+
 # ── Service Update Check (bulk API-version comparison) ───────
 
 
@@ -6113,6 +6167,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     svc = await get_service(service_id)
     if not svc:
         raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    if svc.get("status") == "offboarded":
+        raise HTTPException(status_code=400, detail="Cannot update an offboarded service. Re-onboard the service first.")
 
     active_ver_num = svc.get("active_version")
     if active_ver_num is None:

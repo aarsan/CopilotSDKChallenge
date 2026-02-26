@@ -1388,6 +1388,12 @@ body {
     border: 1px solid rgba(210, 153, 34, 0.3);
 }
 
+.status-badge.offboarded {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--text-secondary);
+    border: 1px solid rgba(139, 148, 158, 0.3);
+}
+
 /* Risk badges */
 
 .risk-badge {
@@ -1398,6 +1404,16 @@ body {
 .risk-badge.low { color: var(--accent-green); }
 .risk-badge.medium { color: var(--accent-orange); }
 .risk-badge.high { color: var(--accent-red); }
+
+/* Offboard button */
+.btn-offboard {
+    margin-left: auto;
+    opacity: 0.65;
+    transition: opacity 0.15s;
+}
+.btn-offboard:hover {
+    opacity: 1;
+}
 .risk-badge.critical { color: var(--accent-red); font-weight: 600; }
 
 /* Region & Tag badges */
@@ -3972,6 +3988,14 @@ body {
     font-weight: 500;
 }
 
+.version-item-deprecated {
+    border-left: 3px solid rgba(139, 148, 158, 0.5) !important;
+    opacity: 0.7;
+}
+.version-item-deprecated:hover {
+    opacity: 0.9;
+}
+
 /* ── Template Modify Section ──────────────────────────────── */
 .template-modify-section {
     border-top: 1px solid var(--border-subtle);
@@ -4409,6 +4433,19 @@ body {
 .validation-failed {
     border-color: #f8514944;
     background: rgba(248, 81, 73, 0.04);
+}
+
+.validation-offboarded {
+    border-color: rgba(139, 148, 158, 0.35);
+    background: rgba(139, 148, 158, 0.04);
+}
+
+.validation-offboarded .validation-icon {
+    opacity: 0.7;
+}
+
+.validation-offboarded .validation-title {
+    color: var(--text-secondary);
 }
 
 .validation-policy-blocked {
