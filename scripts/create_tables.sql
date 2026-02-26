@@ -385,6 +385,20 @@ IF NOT EXISTS (
 ALTER TABLE deployments ADD torn_down_at NVARCHAR(50);
 GO
 
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('deployments') AND name = 'template_version'
+)
+ALTER TABLE deployments ADD template_version INT DEFAULT 0;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('deployments') AND name = 'template_semver'
+)
+ALTER TABLE deployments ADD template_semver NVARCHAR(20) DEFAULT '';
+GO
+
 -- ── Service Artifacts (Approval Gates) ──────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_artifacts')

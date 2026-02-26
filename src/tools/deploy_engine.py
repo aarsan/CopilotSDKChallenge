@@ -61,6 +61,8 @@ class DeploymentRecord:
         self.initiated_by = initiated_by
         self.template_id = ""           # catalog template ID if from template deploy
         self.template_name = ""         # human-readable template name
+        self.template_version = 0        # integer version ordinal
+        self.template_semver = ""        # display semver string (e.g. "1.2.0")
         self.subscription_id = ""        # filled at deploy time
         self.status = "pending"          # pending → validating → deploying → succeeded / failed
         self.phase = "init"
@@ -92,6 +94,8 @@ class DeploymentRecord:
             "initiated_by": self.initiated_by,
             "template_id": self.template_id,
             "template_name": self.template_name,
+            "template_version": self.template_version,
+            "template_semver": self.template_semver,
         }
 
 
@@ -371,6 +375,8 @@ async def execute_deployment(
     on_progress: ProgressCallback = None,
     template_id: str = "",
     template_name: str = "",
+    template_version: int = 0,
+    template_semver: str = "",
 ) -> dict:
     """Deploy an ARM template to Azure.
 
@@ -417,6 +423,8 @@ async def execute_deployment(
     )
     record.template_id = template_id
     record.template_name = template_name
+    record.template_version = template_version
+    record.template_semver = template_semver
     deploy_manager.deployments[deployment_id] = record
 
     async def _emit(data: dict):

@@ -481,6 +481,21 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE deployments ADD torn_down_at NVARCHAR(50)
     """,
+    # ── Deployment template version tracking (migration) ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'template_version'
+    )
+    ALTER TABLE deployments ADD template_version INT DEFAULT 0
+    """,
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('deployments') AND name = 'template_semver'
+    )
+    ALTER TABLE deployments ADD template_semver NVARCHAR(20) DEFAULT ''
+    """,
     # ── Service Artifacts (3-gate approval) ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'service_artifacts')
@@ -1946,8 +1961,9 @@ async def save_deployment(deployment: dict) -> None:
             status, phase, progress, detail, template_hash,
             initiated_by, started_at, completed_at, error,
             resources_json, what_if_json, outputs_json,
-            template_id, template_name, subscription_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            template_id, template_name, subscription_id,
+            template_version, template_semver)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             deployment["deployment_id"],
             deployment["deployment_name"],
@@ -1968,6 +1984,8 @@ async def save_deployment(deployment: dict) -> None:
             deployment.get("template_id", ""),
             deployment.get("template_name", ""),
             deployment.get("subscription_id", ""),
+            deployment.get("template_version", 0),
+            deployment.get("template_semver", ""),
         ),
     )
 
@@ -2005,6 +2023,8 @@ async def get_deployments(
         d.setdefault("template_name", "")
         d.setdefault("subscription_id", "")
         d.setdefault("torn_down_at", None)
+        d.setdefault("template_version", 0)
+        d.setdefault("template_semver", "")
         result.append(d)
     return result
 

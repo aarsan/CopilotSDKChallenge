@@ -10243,10 +10243,13 @@ function _renderAzureResourceGroups(managed, unmanaged) {
         for (const rg of deploymentRGs) {
             const tmplName = rg.deployment?.template_name || 'Ungrouped Deployments';
             const tmplId = rg.deployment?.template_id || '';
+            const tmplSemver = rg.deployment?.template_semver || '';
             const key = tmplId || tmplName;
             if (!byTemplate[key]) {
-                byTemplate[key] = { name: tmplName, id: tmplId, rgs: [] };
+                byTemplate[key] = { name: tmplName, id: tmplId, semver: tmplSemver, rgs: [] };
             }
+            // Keep the latest semver if multiple RGs have different versions
+            if (tmplSemver && !byTemplate[key].semver) byTemplate[key].semver = tmplSemver;
             byTemplate[key].rgs.push(rg);
         }
 
@@ -10264,6 +10267,7 @@ function _renderAzureResourceGroups(managed, unmanaged) {
                 <div class="azure-tmpl-group-header">
                     <span class="azure-tmpl-group-icon">📋</span>
                     <span class="azure-tmpl-group-name">${escapeHtml(group.name)}</span>
+                    ${group.semver ? `<span class="azure-tmpl-group-version">v${escapeHtml(group.semver)}</span>` : ''}
                     <span class="azure-tmpl-group-stats">
                         <span class="azure-tmpl-group-rg-count">${group.rgs.length} resource group${group.rgs.length !== 1 ? 's' : ''}</span>
                         ${totalResources ? `<span class="azure-tmpl-group-res-count">${totalResources} resource${totalResources !== 1 ? 's' : ''}</span>` : ''}
@@ -10316,9 +10320,10 @@ function _renderAzureRGCard(rg, isManaged) {
     if (rg.deployment) {
         const d = rg.deployment;
         const statusIcons = { succeeded: '✅', failed: '❌', torn_down: '🗑️', deploying: '⏳' };
+        const semverLabel = d.template_semver ? ` · v${escapeHtml(d.template_semver)}` : '';
         depHtml = `<div class="azure-rg-deploy-link">
             <span class="azure-rg-deploy-status">${statusIcons[d.status] || '❓'} ${d.status}</span>
-            ${d.template_name ? `<span class="azure-rg-deploy-name">${escapeHtml(d.template_name)}</span>` : ''}
+            ${d.template_name ? `<span class="azure-rg-deploy-name">${escapeHtml(d.template_name)}${semverLabel}</span>` : ''}
             ${d.started_at ? `<span class="azure-rg-deploy-time">${new Date(d.started_at).toLocaleDateString()}</span>` : ''}
         </div>`;
     }

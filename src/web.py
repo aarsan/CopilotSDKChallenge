@@ -6147,9 +6147,11 @@ async def deploy_template(template_id: str, request: Request):
     versions = await get_template_versions(template_id)
     active_ver = tmpl.get("active_version")
     target_ver = deploy_version if deploy_version else active_ver
+    _deploy_semver = ""
     for v in versions:
         if v["version"] == target_ver and v.get("arm_template"):
             arm_content = v["arm_template"]
+            _deploy_semver = v.get("semver", "")
             break
 
     try:
@@ -6321,6 +6323,8 @@ async def deploy_template(template_id: str, request: Request):
                     on_progress=_on_progress,
                     template_id=_tmpl_id,
                     template_name=_tmpl_name,
+                    template_version=target_ver or 0,
+                    template_semver=_deploy_semver,
                 )
             )
 
@@ -12407,6 +12411,8 @@ async def list_azure_resource_groups_endpoint():
                     "deployment_name": d.get("deployment_name"),
                     "template_id": d.get("template_id"),
                     "template_name": d.get("template_name"),
+                    "template_version": d.get("template_version", 0),
+                    "template_semver": d.get("template_semver", ""),
                     "started_at": d.get("started_at"),
                     "torn_down_at": d.get("torn_down_at"),
                 }
