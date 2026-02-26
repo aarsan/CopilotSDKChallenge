@@ -6,6 +6,7 @@ Produces Azure Bicep templates based on natural-language infrastructure descript
 from pydantic import BaseModel, Field
 from copilot import define_tool
 
+from src.config import region_abbr as _region_abbr
 from src.templates.bicep_patterns import get_bicep_reference
 
 
@@ -49,7 +50,10 @@ async def generate_bicep(params: GenerateBicepParams) -> str:
 **Resource Prefix:** {params.resource_prefix}
 
 ### Naming Convention
-Use the pattern: `{params.resource_prefix}-<resourceType>-{params.environment}-<instance>`
+Use the pattern: `{params.resource_prefix}-<resourceType>-{params.environment}-{_region_abbr(params.region)}-<instance>`
+
+The region abbreviation for `{params.region}` is `{_region_abbr(params.region)}`.
+ALL resource names MUST include this EXACT region abbreviation — it must match the actual deployment region.
 
 ### Required Tags
 All resources must include these tags:

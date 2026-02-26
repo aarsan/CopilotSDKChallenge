@@ -443,6 +443,7 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
                 ctx.service_id, svc["name"], _gen_client, _gen_model_id,
                 standards_context=standards_ctx,
                 planning_context=planning_response,
+                region=ctx.region,
             )
         except Exception as gen_err:
             from src.database import fail_service_validation

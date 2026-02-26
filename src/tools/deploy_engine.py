@@ -947,8 +947,9 @@ class DeployInfrastructureParams(BaseModel):
     resource_group: str = Field(
         description=(
             "The Azure resource group name. Will be created if it doesn't exist. "
-            "Follow naming convention: 'rg-{project}-{environment}-{region}'. "
-            "Example: 'rg-myapp-dev-eastus2'"
+            "Follow naming convention: 'rg-{project}-{environment}-{regionAbbr}'. "
+            "Use standard region abbreviations (e.g. eus2 for eastus2, wus2 for westus2). "
+            "Example: 'rg-myapp-dev-eus2'"
         )
     )
     region: str = Field(

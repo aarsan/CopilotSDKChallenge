@@ -24,8 +24,34 @@ param projectName string
 @description('The administrator password for the SQL Server')
 param sqlAdminPassword string
 
-// Computed naming convention
-var resourcePrefix = '${projectName}-${environment}'
+// Region abbreviation map — use for resource naming
+var regionAbbreviations = {
+  eastus: 'eus'
+  eastus2: 'eus2'
+  westus: 'wus'
+  westus2: 'wus2'
+  westus3: 'wus3'
+  centralus: 'cus'
+  northcentralus: 'ncus'
+  southcentralus: 'scus'
+  westeurope: 'weu'
+  northeurope: 'neu'
+  uksouth: 'uks'
+  ukwest: 'ukw'
+  southeastasia: 'sea'
+  eastasia: 'ea'
+  japaneast: 'jpe'
+  japanwest: 'jpw'
+  australiaeast: 'aue'
+  australiasoutheast: 'ause'
+  canadacentral: 'cac'
+  canadaeast: 'cae'
+  brazilsouth: 'brs'
+}
+var regionShort = contains(regionAbbreviations, location) ? regionAbbreviations[location] : location
+
+// Computed naming convention — includes region abbreviation
+var resourcePrefix = '${projectName}-${environment}-${regionShort}'
 var tags = {
   environment: environment
   project: projectName

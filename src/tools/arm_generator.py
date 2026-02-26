@@ -995,6 +995,7 @@ async def generate_arm_template_with_copilot(
     model: str = "gpt-4.1",
     standards_context: str = "",
     planning_context: str = "",
+    region: str = "",
 ) -> str:
     """Use the Copilot SDK to generate an ARM template for an unknown resource type.
 
@@ -1013,6 +1014,19 @@ async def generate_arm_template_with_copilot(
     prompt = (
         f"Generate a minimal ARM template (JSON) for deploying the Azure resource type "
         f"'{resource_type}' (service: {service_name}).\n\n"
+    )
+
+    # Inject region-aware naming context
+    from src.config import region_abbr as _region_abbr
+    _region = region or "eastus2"
+    _abbr = _region_abbr(_region)
+    prompt += (
+        f"### Naming Convention\n"
+        f"Deployment region: {_region} (abbreviation: {_abbr})\n"
+        f"Resource names MUST include the region abbreviation '{_abbr}' — "
+        f"NEVER use a different region in the name.\n"
+        f"Pattern: {{resourceType}}-{{project}}-{{environment}}-{_abbr}-{{instance}}\n"
+        f"Example: infraforge-sql-dev-{_abbr}-001\n\n"
     )
 
     # Inject the architecture plan from the PLAN phase

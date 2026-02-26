@@ -31,6 +31,7 @@ async def auto_onboard_service(
     *,
     copilot_client=None,
     progress_callback=None,
+    region: str = "",
 ) -> dict:
     """Auto-onboard a missing Azure service into the approved catalog.
 
@@ -129,6 +130,7 @@ async def auto_onboard_service(
                 display_name,
                 copilot_client,
                 model=model,
+                region=region,
             )
             if arm_json:
                 arm_dict = json.loads(arm_json)

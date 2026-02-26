@@ -101,6 +101,37 @@ AZURE_REGIONS = [
     "brazilsouth",
 ]
 
+# Canonical abbreviations used in resource names.
+# Must stay in sync with the Naming Conventions prompt in static/app.js.
+REGION_ABBREVIATIONS: dict[str, str] = {
+    "eastus":              "eus",
+    "eastus2":             "eus2",
+    "westus":              "wus",
+    "westus2":             "wus2",
+    "westus3":             "wus3",
+    "centralus":           "cus",
+    "northcentralus":      "ncus",
+    "southcentralus":      "scus",
+    "westeurope":          "weu",
+    "northeurope":         "neu",
+    "uksouth":             "uks",
+    "ukwest":              "ukw",
+    "southeastasia":       "sea",
+    "eastasia":            "ea",
+    "japaneast":           "jpe",
+    "japanwest":           "jpw",
+    "australiaeast":       "aue",
+    "australiasoutheast":  "ause",
+    "canadacentral":       "cac",
+    "canadaeast":          "cae",
+    "brazilsouth":         "brs",
+}
+
+
+def region_abbr(region: str) -> str:
+    """Return the abbreviated form of an Azure region for use in resource names."""
+    return REGION_ABBREVIATIONS.get(region.lower(), region.lower())
+
 # ── Policy / Governance Defaults ─────────────────────────────
 # NOTE: Governance policies are now stored in the database (governance_policies table).
 # They are seeded automatically on first run by database.seed_governance_data().
@@ -109,7 +140,7 @@ AZURE_REGIONS = [
 DEFAULT_POLICIES = {
     "require_tags": ["environment", "owner", "costCenter", "project"],
     "allowed_regions": ["eastus2", "westus2", "westeurope"],
-    "naming_convention": "{resourceType}-{project}-{environment}-{instance}",
+    "naming_convention": "{resourceType}-{project}-{environment}-{region}-{instance}",
     "require_https": True,
     "require_managed_identity": True,
     "require_private_endpoints": False,

@@ -893,6 +893,14 @@ async def build_arm_generation_context(service_id: str) -> str:
             lines.append(
                 f"  - {s['name']}: Monthly cost must not exceed ${rule.get('max_monthly_usd', 0)}"
             )
+        elif rule_type == "naming_convention":
+            pattern = rule.get("pattern", "")
+            examples = rule.get("examples", [])
+            lines.append(f"  - {s['name']}: Resource names MUST match pattern: {pattern}")
+            if examples:
+                lines.append(f"    Examples: {', '.join(examples)}")
+            if rule.get("remediation"):
+                lines.append(f"    Remediation: {rule['remediation']}")
         else:
             lines.append(f"  - {s['name']}: {s['description']}")
 
