@@ -6157,6 +6157,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
         get_governance_policies_as_dict,
         update_service_version_deployment_info,
         delete_service_versions_by_status,
+        get_backend, compute_next_semver,
     )
     from src.tools.static_policy_validator import (
         validate_template, validate_template_against_standards,
@@ -6315,18 +6316,140 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             )
             if not _type_found and _arm_types:
                 _actual = ", ".join(sorted(set(r.get("type", "?") for r in resources if isinstance(r, dict) and r.get("type"))))
+
+                # ── Auto-recovery: regenerate the ARM template ────
                 yield json.dumps({
-                    "type": "error", "phase": "checkout",
+                    "type": "progress", "phase": "checkout_recovery",
                     "detail": (
-                        f"✗ ARM template resource type mismatch — template contains [{_actual}] "
-                        f"but this service is '{service_id}'. "
-                        f"The template was likely generated incorrectly during onboarding. "
-                        f"Please re-onboard this service to generate a correct ARM template."
+                        f"⚠️ Template contains wrong resource type [{_actual}] — "
+                        f"expected '{service_id}'. Auto-recovering by regenerating…"
                     ),
-                    "progress": 1.0,
+                    "progress": 0.04,
                 }) + "\n"
-                await complete_pipeline_run(_run_id, "failed", error_detail="Resource type mismatch")
-                return
+
+                try:
+                    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton, generate_arm_template_with_copilot
+                    from src.web import ensure_copilot_client
+                    from src.tools.arm_generator import sanitize_template
+                    from src.pipeline_helpers import inject_standard_tags
+                    from src.web import _stamp_template_metadata
+                    from src.database import (
+                        create_service_version, compute_next_semver,
+                    )
+
+                    # Clear active version so delete_service_versions_by_status can purge all
+                    backend = await get_backend()
+                    await backend.execute_write(
+                        "UPDATE services SET active_version = NULL WHERE id = ?",
+                        (service_id,),
+                    )
+
+                    # Delete all corrupt versions
+                    _purged = await delete_service_versions_by_status(
+                        service_id, ["approved", "draft", "failed", "deprecated", "validating"],
+                    )
+                    if _purged:
+                        yield json.dumps({
+                            "type": "llm_reasoning", "phase": "checkout_recovery",
+                            "detail": f"🧹 Purged {_purged} corrupt version(s)",
+                            "progress": 0.05,
+                        }) + "\n"
+
+                    # Generate fresh ARM template
+                    _gen_model = get_model_display(Task.CODE_GENERATION)
+                    _gen_model_id = get_model_for_task(Task.CODE_GENERATION)
+
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "checkout_recovery",
+                        "detail": f"⚙️ {_gen_model} generating correct ARM template for {svc.get('name', service_id)}…",
+                        "progress": 0.06,
+                    }) + "\n"
+
+                    if has_builtin_skeleton(service_id):
+                        _regen_tpl = json.dumps(generate_arm_template(service_id), indent=2)
+                        _regen_source = "built-in skeleton (auto-recovery)"
+                    else:
+                        _copilot = await ensure_copilot_client()
+                        if _copilot is None:
+                            raise RuntimeError("Copilot SDK not available")
+                        _regen_tpl = await generate_arm_template_with_copilot(
+                            service_id, svc.get("name", service_id),
+                            _copilot, _gen_model_id, region=region,
+                        )
+                        _regen_source = f"Copilot SDK auto-recovery ({_gen_model})"
+
+                    # Validate the regenerated template
+                    _regen_parsed = json.loads(_regen_tpl)
+                    _regen_types = [
+                        r.get("type", "").lower()
+                        for r in _regen_parsed.get("resources", [])
+                        if isinstance(r, dict) and r.get("type")
+                    ]
+                    _regen_ok = any(
+                        _expected_type in t or (_expected_parent and _expected_parent in t)
+                        for t in _regen_types
+                    )
+                    if not _regen_ok:
+                        raise RuntimeError(
+                            f"Regenerated template still has wrong types: {_regen_types}"
+                        )
+
+                    # Sanitize + tag + stamp
+                    _regen_tpl = sanitize_template(_regen_tpl)
+                    _regen_tpl = await inject_standard_tags(_regen_tpl, service_id)
+
+                    _new_ver = 1  # Start fresh
+                    _new_semver = "1.0.0"
+                    _regen_tpl = _stamp_template_metadata(
+                        _regen_tpl, service_id=service_id,
+                        version_int=_new_ver, semver=_new_semver,
+                        gen_source=_regen_source, region=region,
+                    )
+
+                    # Save as approved + set active
+                    ver_row = await create_service_version(
+                        service_id=service_id, arm_template=_regen_tpl,
+                        version=_new_ver, semver=_new_semver, status="approved",
+                        changelog="Auto-recovery: regenerated correct ARM template",
+                        created_by=_regen_source,
+                    )
+                    backend = await get_backend()
+                    await backend.execute_write(
+                        "UPDATE services SET active_version = ?, status = 'approved', updated_at = ? WHERE id = ?",
+                        (_new_ver, datetime.now(timezone.utc).isoformat(), service_id),
+                    )
+
+                    yield json.dumps({
+                        "type": "progress", "phase": "checkout_recovery_done",
+                        "detail": f"✅ Regenerated correct ARM template (v{_new_semver}) — continuing update…",
+                        "progress": 0.08,
+                    }) + "\n"
+
+                    # Replace variables for the rest of the pipeline
+                    original_template = _regen_tpl
+                    active_ver_num = _new_ver
+                    _active_semver = _new_semver
+                    tpl = json.loads(_regen_tpl)
+                    resources = tpl.get("resources", [])
+                    current_api_versions = sorted(
+                        {r.get("apiVersion", "") for r in resources
+                         if isinstance(r, dict) and r.get("apiVersion")},
+                        reverse=True,
+                    )
+                    current_api = current_api_versions[0] if current_api_versions else "unknown"
+
+                except Exception as _recov_err:
+                    logger.error(f"Auto-recovery failed for {service_id}: {_recov_err}", exc_info=True)
+                    yield json.dumps({
+                        "type": "error", "phase": "checkout",
+                        "detail": (
+                            f"✗ ARM template has wrong resource type [{_actual}] and auto-recovery failed: {_recov_err}. "
+                            f"Please re-onboard this service manually."
+                        ),
+                        "progress": 1.0,
+                    }) + "\n"
+                    await complete_pipeline_run(_run_id, "failed", error_detail=f"Resource type mismatch + recovery failed: {_recov_err}")
+                    return
 
             _resource_summary = ", ".join(sorted({r.get('type','?').split('/')[-1] for r in resources if isinstance(r,dict) and r.get('type')})[:5])
             _more = max(0, len(resources) - 5)
