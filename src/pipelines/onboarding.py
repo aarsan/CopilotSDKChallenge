@@ -188,7 +188,13 @@ async def _heal_policy(
 @runner.step("initialize")
 async def step_initialize(ctx: PipelineContext, step: StepDef):
     """Phase 0: model routing table + cleanup stale drafts."""
-    from src.database import delete_service_versions_by_status
+    from src.database import delete_service_versions_by_status, create_pipeline_run
+
+    # Record this pipeline run for history tracking
+    await create_pipeline_run(
+        ctx.run_id, ctx.service_id, "onboarding",
+        created_by="copilot-sdk",
+    )
 
     # Build per-task model routing summary
     routing = {
@@ -1165,7 +1171,7 @@ async def step_cleanup(ctx: PipelineContext, step: StepDef):
 @runner.step("promote_service")
 async def step_promote_service(ctx: PipelineContext, step: StepDef):
     """Phase 4.9: mark service approved, set active version."""
-    from src.database import update_service_version_status, set_active_service_version
+    from src.database import update_service_version_status, set_active_service_version, complete_pipeline_run
 
     svc = ctx.extra["svc"]
     report = ctx.artifacts.get("report")
@@ -1238,6 +1244,18 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
         summary=validation_summary, step=len(ctx.heal_history) + 1,
     )
 
+    # Record pipeline completion
+    await complete_pipeline_run(
+        ctx.run_id, "completed",
+        version_num=ctx.version_num, semver=ctx.semver,
+        summary={
+            "resources": len(resource_details),
+            "policy_checks": f"{report.passed_checks}/{report.total_checks}" if report else "0/0",
+            "infra_tests": infra_tests,
+        },
+        heal_count=issues_resolved,
+    )
+
 
 # ══════════════════════════════════════════════════════════════
 # FINALIZER — cleanup on abort/cancel
@@ -1246,6 +1264,23 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
 @runner.finalizer
 async def finalizer_cleanup(ctx: PipelineContext):
     """Ensure temp RG and policy artifacts are cleaned up on any exit."""
+    # Mark pipeline run as failed if it wasn't completed successfully
+    try:
+        from src.database import complete_pipeline_run
+        from src.database import get_backend
+        backend = await get_backend()
+        rows = await backend.execute(
+            "SELECT status FROM pipeline_runs WHERE run_id = ?", (ctx.run_id,)
+        )
+        if rows and rows[0].get("status") == "running":
+            await complete_pipeline_run(
+                ctx.run_id, "failed",
+                error_detail="Pipeline did not complete — aborted or encountered an unrecoverable error",
+                heal_count=len(ctx.heal_history),
+            )
+    except Exception:
+        pass
+
     if ctx.deployed_policy_info:
         try:
             from src.tools.policy_deployer import cleanup_policy

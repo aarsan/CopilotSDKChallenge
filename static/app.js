@@ -1536,6 +1536,9 @@ async function showServiceDetail(serviceId) {
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
 
+        // Lazy-load pipeline runs
+        _loadPipelineRuns(serviceId);
+
         // If a table-initiated update is already running for this service,
         // switch the freshly-rendered card to running state so new events appear
         const runningEntry = _runningTableUpdates.get(serviceId);
@@ -1645,6 +1648,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersion)}
 
         ${_renderChildResources(childResources, parentResource)}
+
+        <div id="pipeline-runs-container" class="pipeline-runs-section" style="display:none;"></div>
 
         ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
@@ -2328,6 +2333,94 @@ async function submitTemplateModification() {
         btnEl.disabled = false;
         btnEl.textContent = '🚀 Apply';
     }
+}
+
+// ── Pipeline Runs ──────────────────────────────────────────────
+async function _loadPipelineRuns(serviceId) {
+    const container = document.getElementById('pipeline-runs-container');
+    if (!container) return;
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/pipeline-runs`);
+        if (!res.ok) return;           // silently fail — not critical
+        const runs = await res.json();
+        if (!runs || runs.length === 0) return;   // nothing to show
+        container.innerHTML = _renderPipelineRuns(runs);
+        container.style.display = '';
+    } catch (_) { /* ignore */ }
+}
+
+function _renderPipelineRuns(runs) {
+    const statusIcon = (s) => ({
+        completed: '✅', failed: '❌', running: '🔄',
+    })[s] || '⏳';
+
+    const statusClass = (s) => ({
+        completed: 'run-status-completed',
+        failed: 'run-status-failed',
+        running: 'run-status-running',
+    })[s] || 'run-status-unknown';
+
+    const pipelineLabel = (t) => ({
+        onboarding: 'Onboarding',
+        api_version_update: 'API Version Update',
+        infra_testing: 'Infrastructure Testing',
+    })[t] || t;
+
+    const formatDuration = (secs) => {
+        if (!secs && secs !== 0) return '—';
+        if (secs < 60) return `${Math.round(secs)}s`;
+        const m = Math.floor(secs / 60);
+        const s = Math.round(secs % 60);
+        return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    };
+
+    const items = runs.map(r => {
+        const started = (r.started_at || '').replace('T', ' ').substring(0, 19);
+        const dur = formatDuration(r.duration_secs);
+        const summary = r.summary || {};
+        const healCount = r.heal_count || 0;
+
+        let detailRows = '';
+        if (r.error_detail) {
+            detailRows += `<div class="run-detail-row run-detail-error"><strong>Error:</strong> ${escapeHtml(r.error_detail)}</div>`;
+        }
+        if (summary.changelog) {
+            detailRows += `<div class="run-detail-row"><strong>Change:</strong> ${escapeHtml(summary.changelog)}</div>`;
+        }
+        if (summary.policy_check) {
+            detailRows += `<div class="run-detail-row"><strong>Policy:</strong> ${escapeHtml(summary.policy_check)}</div>`;
+        }
+        if (healCount > 0) {
+            detailRows += `<div class="run-detail-row"><strong>Heal cycles:</strong> ${healCount}</div>`;
+        }
+        if (r.version_num) {
+            const ver = r.semver || `v${r.version_num}`;
+            detailRows += `<div class="run-detail-row"><strong>Version:</strong> ${escapeHtml(ver)}</div>`;
+        }
+        if (r.run_id) {
+            detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
+        }
+
+        return `
+        <div class="run-item run-item-${r.status || 'unknown'}" onclick="this.querySelector('.run-item-detail')?.classList.toggle('hidden')">
+            <div class="run-item-header">
+                <span class="run-item-status ${statusClass(r.status)}">${statusIcon(r.status)}</span>
+                <span class="run-item-pipeline">${pipelineLabel(r.pipeline_type)}</span>
+                <span class="run-item-duration">${dur}</span>
+                <span class="run-item-date">${started}</span>
+            </div>
+            ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="version-history">
+        <div class="version-history-header">
+            <span>📊 Recent Pipeline Runs</span>
+            <span class="version-count">${runs.length} run${runs.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="version-list">${items}</div>
+    </div>`;
 }
 
 function toggleVersionDetail(el) {

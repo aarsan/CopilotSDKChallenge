@@ -772,6 +772,34 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE services ADD template_api_version NVARCHAR(20) DEFAULT NULL
     """,
+    # ══════════════════════════════════════════════════════════
+    # PIPELINE RUNS — Persistent log of every pipeline execution
+    # so users can see run history, status, and duration after
+    # page refresh. Each run links to a service + version.
+    # ══════════════════════════════════════════════════════════
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'pipeline_runs')
+    CREATE TABLE pipeline_runs (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        run_id          NVARCHAR(50) NOT NULL,
+        service_id      NVARCHAR(200) NOT NULL,
+        pipeline_type   NVARCHAR(50) NOT NULL,
+        status          NVARCHAR(30) NOT NULL DEFAULT 'running',
+        version_num     INT DEFAULT NULL,
+        semver          NVARCHAR(20) DEFAULT NULL,
+        started_at      NVARCHAR(50) NOT NULL,
+        completed_at    NVARCHAR(50) DEFAULT NULL,
+        duration_secs   FLOAT DEFAULT NULL,
+        summary_json    NVARCHAR(MAX) DEFAULT '{}',
+        error_detail    NVARCHAR(MAX) DEFAULT NULL,
+        created_by      NVARCHAR(200) DEFAULT NULL,
+        heal_count      INT DEFAULT 0
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_runs_service')
+    CREATE INDEX idx_pipeline_runs_service ON pipeline_runs(service_id, started_at DESC)""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_runs_runid')
+    CREATE UNIQUE INDEX idx_pipeline_runs_runid ON pipeline_runs(run_id)""",
 ]
 
 
@@ -3529,6 +3557,103 @@ async def _seed_templates(summary: dict) -> None:
     """
     summary["templates"] = 0
     logger.info("Template seeding skipped — no approved services yet")
+
+
+# ══════════════════════════════════════════════════════════════
+# PIPELINE RUN TRACKING
+# ══════════════════════════════════════════════════════════════
+
+async def create_pipeline_run(
+    run_id: str,
+    service_id: str,
+    pipeline_type: str,
+    *,
+    version_num: int | None = None,
+    semver: str | None = None,
+    created_by: str | None = None,
+) -> dict:
+    """Insert a new pipeline run record with status='running'."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """INSERT INTO pipeline_runs
+           (run_id, service_id, pipeline_type, status, version_num, semver,
+            started_at, created_by)
+           VALUES (?, ?, ?, 'running', ?, ?, ?, ?)""",
+        (run_id, service_id, pipeline_type, version_num, semver or "", now, created_by or ""),
+    )
+    return {"run_id": run_id, "service_id": service_id, "pipeline_type": pipeline_type,
+            "status": "running", "started_at": now}
+
+
+async def complete_pipeline_run(
+    run_id: str,
+    status: str = "completed",
+    *,
+    version_num: int | None = None,
+    semver: str | None = None,
+    summary: dict | None = None,
+    error_detail: str | None = None,
+    heal_count: int = 0,
+) -> None:
+    """Mark a pipeline run as completed/failed/interrupted."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Calculate duration
+    rows = await backend.execute(
+        "SELECT started_at FROM pipeline_runs WHERE run_id = ?", (run_id,)
+    )
+    duration = None
+    if rows and rows[0].get("started_at"):
+        try:
+            started = datetime.fromisoformat(rows[0]["started_at"])
+            completed = datetime.fromisoformat(now)
+            duration = (completed - started).total_seconds()
+        except (ValueError, TypeError):
+            pass
+
+    summary_json = json.dumps(summary or {}, default=str)
+
+    updates = [
+        "status = ?", "completed_at = ?", "duration_secs = ?",
+        "summary_json = ?", "heal_count = ?",
+    ]
+    params: list = [status, now, duration, summary_json, heal_count]
+
+    if error_detail is not None:
+        updates.append("error_detail = ?")
+        params.append(error_detail[:4000])
+
+    if version_num is not None:
+        updates.append("version_num = ?")
+        params.append(version_num)
+
+    if semver:
+        updates.append("semver = ?")
+        params.append(semver)
+
+    params.append(run_id)
+    await backend.execute_write(
+        f"UPDATE pipeline_runs SET {', '.join(updates)} WHERE run_id = ?",
+        tuple(params),
+    )
+
+
+async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
+    """Get recent pipeline runs for a service, newest first."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        f"SELECT TOP {limit} * FROM pipeline_runs WHERE service_id = ? ORDER BY started_at DESC",
+        (service_id,),
+    )
+    for r in rows:
+        if isinstance(r.get("summary_json"), str):
+            try:
+                r["summary"] = json.loads(r["summary_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["summary"] = {}
+    return rows
 
 
 # ══════════════════════════════════════════════════════════════

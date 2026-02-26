@@ -6199,6 +6199,13 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
         try:  # ← top-level error wrapper for the entire stream
 
+            # Record pipeline run for history
+            from src.database import create_pipeline_run, complete_pipeline_run
+            await create_pipeline_run(
+                _run_id, service_id, "api_version_update",
+                created_by="copilot-sdk",
+            )
+
             # ═══════════════════════════════════════════════════
             # PHASE 0: MODEL ROUTING
             # ═══════════════════════════════════════════════════
@@ -6263,6 +6270,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "detail": "✗ No ARM template found for the active version",
                     "progress": 1.0,
                 }) + "\n"
+                await complete_pipeline_run(_run_id, "failed", error_detail="No ARM template found")
                 return
 
             original_template = active_ver["arm_template"]
@@ -6276,6 +6284,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "detail": f"✗ Failed to parse ARM template: {e}",
                     "progress": 1.0,
                 }) + "\n"
+                await complete_pipeline_run(_run_id, "failed", error_detail=f"Parse error: {e}")
                 return
 
             resources = tpl.get("resources", [])
@@ -6310,6 +6319,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     ),
                     "progress": 1.0,
                 }) + "\n"
+                await complete_pipeline_run(_run_id, "failed", error_detail="Resource type mismatch")
                 return
 
             _resource_summary = ", ".join(sorted({r.get('type','?').split('/')[-1] for r in resources if isinstance(r,dict) and r.get('type')})[:5])
@@ -6771,6 +6781,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         if not _client:
                             await update_service_version_status(service_id, new_ver, "failed")
                             yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ What-If failed — no Copilot client for healing", "progress": 1.0}) + "\n"
+                            await complete_pipeline_run(_run_id, "failed", error_detail="What-If failed, no Copilot client")
                             return
                         fix_model = get_model_for_task(Task.CODE_FIXING)
                         _fix_display = get_model_display(Task.CODE_FIXING)
@@ -6825,6 +6836,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             "detail": f"✗ What-If failed after {attempt} attempt(s)",
                             "progress": 1.0,
                         }) + "\n"
+                        await complete_pipeline_run(_run_id, "failed", error_detail=f"What-If failed after {attempt} attempts", heal_count=len(heal_history))
                         return
 
                 # ── Deploy ────────────────────────────────────────
@@ -6887,6 +6899,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             _client = await ensure_copilot_client()
                         if not _client:
                             await update_service_version_status(service_id, new_ver, "failed")
+                            await complete_pipeline_run(_run_id, "failed", error_detail="Deploy failed, no Copilot client for healing", heal_count=len(heal_history))
                             yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ Deployment failed — no Copilot client for healing", "progress": 1.0}) + "\n"
                             return
                         fix_model = get_model_for_task(Task.CODE_FIXING)
@@ -6937,6 +6950,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         continue
                     else:
                         await update_service_version_status(service_id, new_ver, "failed")
+                        await complete_pipeline_run(_run_id, "failed", error_detail=f"Deploy failed after {attempt} attempt(s): {deploy_error[:300]}", heal_count=len(heal_history))
                         yield json.dumps({
                             "type": "error", "phase": "failed",
                             "detail": f"✗ Deployment failed after {attempt} attempt(s)",
@@ -7072,6 +7086,14 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "from_api": current_api, "to_api": target_api,
                 }) + "\n"
 
+                # Record pipeline completion
+                await complete_pipeline_run(
+                    _run_id, "completed",
+                    version_num=new_ver, semver=new_semver,
+                    summary={"from_api": current_api, "to_api": target_api},
+                    heal_count=len(heal_history),
+                )
+
             if not promoted:
                 await update_service_version_status(service_id, new_ver, "failed")
                 await fail_service_validation(service_id)
@@ -7126,6 +7148,13 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "progress": 1.0,
                 }) + "\n"
 
+                # Record pipeline failure
+                await complete_pipeline_run(
+                    _run_id, "failed",
+                    error_detail=_last_error[:500] if _last_error else "Update failed after max attempts",
+                    heal_count=len(heal_history),
+                )
+
         except Exception as _stream_err:
             logger.error(f"Update pipeline stream error: {_stream_err}", exc_info=True)
             yield json.dumps({
@@ -7133,6 +7162,13 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "detail": f"✗ Pipeline error: {str(_stream_err)[:300]}",
                 "progress": 1.0,
             }) + "\n"
+            try:
+                await complete_pipeline_run(
+                    _run_id, "failed",
+                    error_detail=str(_stream_err)[:500],
+                )
+            except Exception:
+                pass
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
@@ -9764,6 +9800,15 @@ async def delete_all_draft_versions_endpoint(service_id: str):
 
     count = await delete_service_versions_by_status(service_id, ["draft", "failed"])
     return JSONResponse({"deleted": count})
+
+
+@app.get("/api/services/{service_id:path}/pipeline-runs")
+async def get_service_pipeline_runs(service_id: str, limit: int = 20):
+    """Get recent pipeline runs for a service."""
+    from src.database import get_pipeline_runs
+
+    runs = await get_pipeline_runs(service_id, limit=min(limit, 100))
+    return JSONResponse(runs)
 
 
 @app.post("/api/services/{service_id:path}/versions/{version:int}/modify")
