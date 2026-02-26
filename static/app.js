@@ -1315,6 +1315,7 @@ let _pendingApiUpdate = null;
 let _pendingApiUpdateTarget = null;  // Target version for the update (null = latest)
 let _apiUpdateAbort = null;  // AbortController for drawer-initiated updates
 let _runningTableUpdates = new Map();  // serviceId → AbortController for concurrent table updates
+let _tableUpdateEventBuffers = new Map();  // serviceId → array of events (replayed when drawer opens)
 let _openDrawerServiceId = null;  // currently open service detail drawer
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion) {
@@ -1343,6 +1344,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
     // Fire the update directly from the table — no drawer needed
     const abort = new AbortController();
     _runningTableUpdates.set(serviceId, { abort, targetVersion });
+    _tableUpdateEventBuffers.set(serviceId, []);  // Start fresh buffer
 
     try {
         const body = {};
@@ -1410,6 +1412,9 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                     const event = JSON.parse(line);
                     if (event.type === 'error') failed = true;
                     updateBadge(event);
+                    // Buffer event for replay if drawer opens later
+                    const buf = _tableUpdateEventBuffers.get(serviceId);
+                    if (buf) buf.push(event);
                     // Forward to drawer if open for this service
                     if (_openDrawerServiceId === serviceId) _handleUpdateEvent(event);
                 } catch (e) {}
@@ -1420,6 +1425,8 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                 const last = JSON.parse(buffer);
                 if (last.type === 'error') failed = true;
                 updateBadge(last);
+                const buf2 = _tableUpdateEventBuffers.get(serviceId);
+                if (buf2) buf2.push(last);
                 if (_openDrawerServiceId === serviceId) _handleUpdateEvent(last);
             } catch (e) {}
         }
@@ -1433,8 +1440,11 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                 badge.innerHTML = '⚠ Interrupted';
             }
             // Send an interrupted event to the overlay so it shows a visible warning
+            const interruptedEvt = { type: 'error', phase: 'interrupted', detail: 'Pipeline stream ended unexpectedly — update may not have completed. Check the service status and retry if needed.' };
+            const buf3 = _tableUpdateEventBuffers.get(serviceId);
+            if (buf3) buf3.push(interruptedEvt);
             if (_openDrawerServiceId === serviceId) {
-                _handleUpdateEvent({ type: 'error', phase: 'interrupted', detail: 'Pipeline stream ended unexpectedly — update may not have completed. Check the service status and retry if needed.' });
+                _handleUpdateEvent(interruptedEvt);
             }
         }
 
@@ -1539,11 +1549,55 @@ async function showServiceDetail(serviceId) {
         // Lazy-load pipeline runs
         _loadPipelineRuns(serviceId);
 
-        // If a table-initiated update is already running for this service,
-        // switch the freshly-rendered card to running state so new events appear
+        // If a table-initiated update is running or recently completed,
+        // show the running card and replay buffered events
         const runningEntry = _runningTableUpdates.get(serviceId);
-        if (runningEntry) {
-            _initRunningCardForTableUpdate(runningEntry.targetVersion, serviceId);
+        const bufferedEvents = _tableUpdateEventBuffers.get(serviceId);
+        if (runningEntry || (bufferedEvents && bufferedEvents.length > 0)) {
+            const targetVer = runningEntry ? runningEntry.targetVersion : null;
+            // Only open overlay for actively running streams, not completed replays
+            if (runningEntry) {
+                _initRunningCardForTableUpdate(targetVer, serviceId);
+            } else {
+                // Stream already ended — just create the card without overlay
+                let card = document.getElementById('validation-card');
+                if (!card) {
+                    const body = document.getElementById('detail-service-body');
+                    if (body) {
+                        const div = document.createElement('div');
+                        div.id = 'validation-card';
+                        body.insertBefore(div, body.firstChild);
+                        card = div;
+                    }
+                }
+                if (card) {
+                    const tLabel = targetVer ? `to ${targetVer}` : 'to latest';
+                    card.className = 'validation-card validation-running';
+                    card.innerHTML = `
+                        <div class="validation-header">
+                            <span class="validation-icon validation-spinner">⬆</span>
+                            <span class="validation-title">API Version Update ${tLabel} In Progress…</span>
+                        </div>
+                        <div class="validation-model-badge" id="validation-model-badge"></div>
+                        <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
+                        <div class="validation-progress">
+                            <div class="validation-progress-track">
+                                <div class="validation-progress-fill" id="validation-progress-fill" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="validation-detail" id="validation-detail">Loading…</div>
+                        <div class="validation-log" id="validation-log"></div>
+                    `;
+                }
+            }
+            // Replay all buffered events so the flow cards appear
+            if (bufferedEvents && bufferedEvents.length > 0) {
+                for (const ev of bufferedEvents) {
+                    _handleUpdateEvent(ev);
+                }
+                // Clear buffer after replay to prevent re-showing stale state
+                if (!runningEntry) _tableUpdateEventBuffers.delete(serviceId);
+            }
         }
     } catch (err) {
         body.innerHTML += `<p style="color: var(--accent-red);">Failed to load versions: ${err.message}</p>
