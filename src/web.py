@@ -10390,6 +10390,7 @@ async def modify_service_version(service_id: str, version: int, request: Request
     """
     from src.database import (
         get_service, get_service_versions, create_service_version,
+        delete_service_versions_by_status,
     )
     from src.tools.arm_generator import modify_arm_template_with_copilot
 
@@ -10421,6 +10422,17 @@ async def modify_service_version(service_id: str, version: int, request: Request
     source_semver = source.get("semver") or f"{version}.0.0"
 
     async def _stream():
+        # Clean up stale drafts/failed from previous runs
+        _cleaned = await delete_service_versions_by_status(
+            service_id, ["draft", "failed"],
+        )
+        if _cleaned:
+            yield json.dumps({
+                "type": "progress", "phase": "cleanup_drafts",
+                "detail": f"🧹 Cleaned up {_cleaned} stale draft/failed version(s)",
+                "progress": 0.0,
+            }) + "\n"
+
         yield json.dumps({
             "type": "progress",
             "phase": "start",
@@ -10566,6 +10578,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         update_service_version_template, set_active_service_version,
         fail_service_validation, get_governance_policies_as_dict,
         update_service_version_deployment_info,
+        delete_service_versions_by_status,
     )
     from src.tools.arm_generator import (
         generate_arm_template, has_builtin_skeleton,
@@ -11198,6 +11211,17 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     "type": "llm_reasoning", "phase": "init_model",
                     "detail": f"  {task_key}: {info['display']} — {info['reason'][:80]}",
                     "progress": 0.01,
+                }) + "\n"
+
+            # ── Cleanup stale drafts/failed from previous runs ────
+            _cleaned = await delete_service_versions_by_status(
+                service_id, ["draft", "failed"],
+            )
+            if _cleaned:
+                yield json.dumps({
+                    "type": "progress", "phase": "cleanup_drafts",
+                    "detail": f"🧹 Cleaned up {_cleaned} stale draft/failed version(s) from previous runs",
+                    "progress": 0.015,
                 }) + "\n"
 
             # ═══════════════════════════════════════════════════
