@@ -4883,6 +4883,270 @@ body {
     border-color: rgba(248, 81, 73, 0.25);
 }
 
+/* ══════════════════════════════════════════════════════════════
+   LOGIC APPS–STYLE FLOW CARDS
+   ══════════════════════════════════════════════════════════════ */
+
+/* Override validation-log when in flow mode */
+.validation-log.uf-flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: var(--font-sans);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    padding: 0.6rem;
+    gap: 0;
+    max-height: 520px;
+    background: rgba(0,0,0,0.18);
+}
+
+/* ── Action Card ─────────────────────────────────────────── */
+.uf-action {
+    width: 100%;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    overflow: hidden;
+    transition: border-color 0.25s, box-shadow 0.25s, opacity 0.3s;
+}
+.uf-action-active {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.12), 0 2px 8px rgba(0,0,0,0.18);
+}
+.uf-action-done {
+    border-color: var(--border-subtle);
+    opacity: 0.88;
+}
+.uf-action-done .uf-action-head:hover { opacity: 1; }
+.uf-action-failed {
+    border-color: #f85149;
+    border-left: 3px solid #f85149;
+}
+.uf-action-skipped {
+    border-color: var(--border-subtle);
+    opacity: 0.6;
+}
+
+/* ── Action Header ───────────────────────────────────────── */
+.uf-action-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.65rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+.uf-action-head:hover { background: var(--bg-tertiary); }
+.uf-action-done .uf-action-head { border-bottom-color: transparent; }
+
+/* Icon container */
+.uf-action-icon {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.85rem;
+    background: rgba(59,130,246,0.1);
+    flex-shrink: 0;
+}
+.uf-action-done .uf-action-icon   { background: rgba(63,185,80,0.1); }
+.uf-action-failed .uf-action-icon { background: rgba(248,81,73,0.1); }
+
+/* Title */
+.uf-action-name {
+    flex: 1;
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.uf-action-done .uf-action-name { color: var(--text-secondary); }
+
+/* Status badge */
+.uf-action-badge {
+    font-size: 0.66rem; font-weight: 600;
+    padding: 0.1rem 0.4rem; border-radius: 4px;
+    display: flex; align-items: center; gap: 0.2rem;
+    flex-shrink: 0;
+}
+.uf-badge-active {
+    color: var(--accent-blue);
+    background: rgba(59,130,246,0.1);
+}
+.uf-badge-done {
+    color: #3fb950;
+    background: rgba(63,185,80,0.1);
+}
+.uf-badge-failed {
+    color: #f85149;
+    background: rgba(248,81,73,0.1);
+}
+.uf-badge-dot {
+    display: inline-block;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent-blue);
+    animation: ufPulse 1.5s infinite;
+}
+@keyframes ufPulse {
+    0%, 100% { opacity: 0.6; box-shadow: 0 0 3px rgba(59,130,246,0.3); }
+    50%      { opacity: 1;   box-shadow: 0 0 8px rgba(59,130,246,0.6); }
+}
+
+/* ── Action Body — collapsible detail ────────────────────── */
+.uf-action-body {
+    max-height: 0;
+    overflow: hidden;
+    padding: 0 0.65rem;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    transition: max-height 0.3s ease, padding 0.3s ease;
+}
+.uf-action-body.uf-body-open {
+    max-height: 350px;
+    overflow-y: auto;
+    padding: 0.35rem 0.65rem;
+}
+
+/* Detail lines */
+.uf-detail-line {
+    display: flex; gap: 0.35rem;
+    align-items: flex-start;
+    padding: 0.15rem 0;
+    line-height: 1.5;
+}
+.uf-detail-icon {
+    flex-shrink: 0; width: 1em; text-align: center;
+    font-size: 0.72rem;
+}
+.uf-detail-text { flex: 1; word-break: break-word; }
+.uf-detail-text.uf-text-reasoning {
+    color: #d2a8ff;
+    font-style: italic;
+    font-size: 0.74rem;
+}
+.uf-detail-text.uf-text-error {
+    color: #f85149;
+    font-weight: 500;
+}
+.uf-detail-text.uf-text-success {
+    color: #3fb950;
+}
+
+/* ── Connector between cards ─────────────────────────────── */
+.uf-connector {
+    width: 2px; height: 16px;
+    background: var(--border-default);
+    flex-shrink: 0;
+    position: relative;
+}
+.uf-connector::after {
+    content: '';
+    position: absolute;
+    bottom: -3px; left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--border-default);
+}
+.uf-connector-done        { background: #3fb950; }
+.uf-connector-done::after  { border-top-color: #3fb950; }
+.uf-connector-failed       { background: #f85149; }
+.uf-connector-failed::after { border-top-color: #f85149; }
+.uf-connector-active       { background: var(--accent-blue); animation: ufEdgePulse 1.5s infinite; }
+.uf-connector-active::after { border-top-color: var(--accent-blue); }
+@keyframes ufEdgePulse {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1; }
+}
+
+/* ── Attempt / Iteration separator ───────────────────────── */
+.uf-attempt-sep {
+    display: flex; align-items: center;
+    gap: 0.5rem; margin: 0.5rem 0;
+    width: 100%;
+}
+.uf-attempt-sep-line {
+    flex: 1; height: 1px;
+    background: rgba(59,130,246,0.25);
+}
+.uf-attempt-label {
+    font-size: 0.68rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--accent-blue);
+    background: rgba(59,130,246,0.08);
+    padding: 0.15rem 0.6rem; border-radius: 4px;
+    border: 1px solid rgba(59,130,246,0.2);
+    flex-shrink: 0;
+}
+
+/* ── Final result card ───────────────────────────────────── */
+.uf-result {
+    display: flex; align-items: center;
+    gap: 0.5rem; padding: 0.5rem 0.75rem;
+    border-radius: 8px; font-weight: 600;
+    font-size: 0.8rem; width: 100%;
+}
+.uf-result-success {
+    background: rgba(63,185,80,0.08);
+    border: 1px solid rgba(63,185,80,0.25);
+    color: #3fb950;
+}
+.uf-result-failed {
+    background: rgba(248,81,73,0.08);
+    border: 1px solid rgba(248,81,73,0.25);
+    color: #f85149;
+}
+.uf-result-blocked {
+    background: rgba(210,153,34,0.08);
+    border: 1px solid rgba(210,153,34,0.25);
+    color: #e3b341;
+}
+.uf-result-icon  { font-size: 1rem; flex-shrink: 0; }
+.uf-result-text  { flex: 1; word-break: break-word; }
+
+/* Rich analysis body inside action card */
+.uf-analysis-body {
+    font-size: 0.76rem; line-height: 1.6;
+    color: var(--text-primary);
+    padding: 0.35rem 0;
+}
+.uf-analysis-body p   { margin: 0.25rem 0; }
+.uf-analysis-body code {
+    font-size: 0.72rem; background: rgba(0,0,0,0.3);
+    padding: 0.1rem 0.3rem; border-radius: 3px;
+}
+.uf-analysis-body ul, .uf-analysis-body ol {
+    padding-left: 1.2rem; margin: 0.3rem 0;
+}
+.uf-analysis-meta {
+    display: flex; gap: 0.4rem; margin-top: 0.4rem; flex-wrap: wrap;
+}
+.uf-analysis-chip {
+    font-size: 0.65rem; font-weight: 600;
+    padding: 0.12rem 0.45rem; border-radius: 999px;
+    background: var(--bg-tertiary); color: var(--text-muted);
+    border: 1px solid var(--border-subtle);
+}
+
+/* Policy blocked guidance inside flow */
+.uf-flow .policy-blocked-guidance {
+    width: 100%;
+    margin: 0.25rem 0 0;
+    font-family: var(--font-sans);
+}
+
+/* ── Reasoning toggle inside flow header ─────────────────── */
+.uf-flow .validation-log-header {
+    width: 100%; margin-bottom: 0.4rem;
+    align-self: stretch;
+}
+
+
 /* Status badge additions */
 .status-badge.validating {
     background: rgba(210, 153, 34, 0.15);

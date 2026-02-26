@@ -2735,6 +2735,158 @@ function _updateTableBadge(event) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// LOGIC APPS–STYLE FLOW CARD HELPERS
+// ══════════════════════════════════════════════════════════════
+
+/** Initialize flow state on a log container */
+function _flowInit(logEl) {
+    if (logEl._flow) return;
+    logEl._flow = {
+        cards: {},        // key → card element
+        activeKey: null,  // currently active card key
+        count: 0,
+    };
+    // Keep the validation-log-header, remove any old log lines
+    const children = Array.from(logEl.children);
+    children.forEach(c => {
+        if (!c.classList.contains('validation-log-header')) c.remove();
+    });
+    logEl.classList.add('uf-flow');
+}
+
+/** Create a new action card in the flow */
+function _flowCard(logEl, key, icon, title) {
+    _flowInit(logEl);
+    const flow = logEl._flow;
+
+    // If card already exists for this key, just make it active
+    if (flow.cards[key]) {
+        flow.activeKey = key;
+        return flow.cards[key];
+    }
+
+    // Finalize previous active card
+    if (flow.activeKey && flow.cards[flow.activeKey]) {
+        const prev = flow.cards[flow.activeKey];
+        if (prev.classList.contains('uf-action-active')) {
+            _flowFinalize(logEl, flow.activeKey, 'done');
+        }
+    }
+
+    // Add connector
+    if (flow.count > 0) {
+        const conn = document.createElement('div');
+        conn.className = 'uf-connector uf-connector-active';
+        logEl.appendChild(conn);
+    }
+    flow.count++;
+
+    const card = document.createElement('div');
+    card.className = 'uf-action uf-action-active';
+    card.dataset.key = key;
+    card.innerHTML = `
+        <div class="uf-action-head">
+            <div class="uf-action-icon">${icon}</div>
+            <div class="uf-action-name">${escapeHtml(title)}</div>
+            <div class="uf-action-badge uf-badge-active">
+                <span class="uf-badge-dot"></span>
+            </div>
+        </div>
+        <div class="uf-action-body uf-body-open"></div>
+    `;
+    // Click header to expand/collapse
+    const head = card.querySelector('.uf-action-head');
+    head.addEventListener('click', () => {
+        const body = card.querySelector('.uf-action-body');
+        if (!body || !body.children.length) return;
+        body.classList.toggle('uf-body-open');
+    });
+    logEl.appendChild(card);
+    flow.cards[key] = card;
+    flow.activeKey = key;
+    logEl.scrollTop = logEl.scrollHeight;
+    return card;
+}
+
+/** Add a detail line to an existing action card */
+function _flowDetail(logEl, key, icon, text, extraCls) {
+    if (!logEl._flow?.cards[key]) return;
+    const body = logEl._flow.cards[key].querySelector('.uf-action-body');
+    if (!body) return;
+    const line = document.createElement('div');
+    line.className = 'uf-detail-line';
+    const textCls = extraCls ? ` ${extraCls}` : '';
+    line.innerHTML = `<span class="uf-detail-icon">${icon}</span><span class="uf-detail-text${textCls}">${text}</span>`;
+    body.appendChild(line);
+    body.classList.add('uf-body-open');
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Finalize an action card (done / failed) */
+function _flowFinalize(logEl, key, status, label) {
+    if (!logEl._flow?.cards[key]) return;
+    const card = logEl._flow.cards[key];
+    card.classList.remove('uf-action-active');
+    card.classList.add(status === 'failed' ? 'uf-action-failed' : 'uf-action-done');
+    const badge = card.querySelector('.uf-action-badge');
+    if (badge) {
+        badge.className = `uf-action-badge ${status === 'failed' ? 'uf-badge-failed' : 'uf-badge-done'}`;
+        badge.innerHTML = status === 'failed' ? '✗ Failed' : (label || '✓');
+    }
+    // Auto-collapse body of done cards
+    const body = card.querySelector('.uf-action-body');
+    if (body && status !== 'failed') {
+        body.classList.remove('uf-body-open');
+    }
+    // Update preceding connector
+    const prev = card.previousElementSibling;
+    if (prev && prev.classList.contains('uf-connector')) {
+        prev.classList.remove('uf-connector-active');
+        prev.classList.add(status === 'failed' ? 'uf-connector-failed' : 'uf-connector-done');
+    }
+    if (logEl._flow.activeKey === key) {
+        logEl._flow.activeKey = null;
+    }
+}
+
+/** Finalize whatever card is currently active */
+function _flowFinalizeActive(logEl, status) {
+    if (!logEl._flow?.activeKey) return;
+    _flowFinalize(logEl, logEl._flow.activeKey, status);
+}
+
+/** Add an attempt separator line */
+function _flowAttemptSep(logEl, label) {
+    _flowInit(logEl);
+    _flowFinalizeActive(logEl, 'done');
+    const sep = document.createElement('div');
+    sep.className = 'uf-attempt-sep';
+    sep.innerHTML = `<span class="uf-attempt-sep-line"></span><span class="uf-attempt-label">${escapeHtml(label)}</span><span class="uf-attempt-sep-line"></span>`;
+    logEl.appendChild(sep);
+    logEl._flow.count++;
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Add a final result block */
+function _flowResult(logEl, status, text) {
+    _flowFinalizeActive(logEl, status === 'success' ? 'done' : 'failed');
+    const conn = document.createElement('div');
+    conn.className = `uf-connector ${status === 'success' ? 'uf-connector-done' : (status === 'blocked' ? '' : 'uf-connector-failed')}`;
+    logEl.appendChild(conn);
+    const result = document.createElement('div');
+    const cls = status === 'success' ? 'uf-result-success' : (status === 'blocked' ? 'uf-result-blocked' : 'uf-result-failed');
+    const icon = status === 'success' ? '✅' : (status === 'blocked' ? '🛑' : '❌');
+    result.className = `uf-result ${cls}`;
+    result.innerHTML = `<div class="uf-result-icon">${icon}</div><div class="uf-result-text">${escapeHtml(text)}</div>`;
+    logEl.appendChild(result);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ══════════════════════════════════════════════════════════════
+// UPDATE EVENT HANDLER (API Version Update Pipeline)
+// ══════════════════════════════════════════════════════════════
+
 function _handleUpdateEvent(event) {
     const progressFill = document.getElementById('validation-progress-fill');
     const detailEl = document.getElementById('validation-detail');
@@ -2746,143 +2898,201 @@ function _handleUpdateEvent(event) {
     // Update the table badge with live status
     _updateTableBadge(event);
 
+    // Progress bar + detail text
     if (event.progress && progressFill) {
         progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
     }
     if (event.detail && detailEl) {
         detailEl.textContent = event.detail;
     }
-    if (event.step && badge) {
-        badge.textContent = event.step > 1 ? `Attempt ${event.step}` : '';
-        if (event.step > 1) badge.classList.add('visible');
+    if (event.step && event.step > 1 && badge) {
+        badge.textContent = `Attempt ${event.step}`;
+        badge.classList.add('visible');
     }
-
     if (event.phase === 'init_model' && event.model && modelBadge) {
         modelBadge.textContent = `🤖 ${event.model.display || event.model.id || event.model}`;
         modelBadge.classList.add('visible');
     }
 
-    // Icons per phase
-    let icon = '▸';
-    let logClass = event.type || 'progress';
+    if (!logEl) return;
+    _flowInit(logEl);
 
-    switch (event.type) {
-        case 'error':       icon = '❌'; break;
-        case 'done':        icon = '✅'; break;
-        case 'healing':     icon = '🤖'; break;
-        case 'healing_done': icon = '🔧'; break;
-        case 'agent_analysis': icon = '🧠'; logClass = 'analysis'; break;
-        default:
-            if (event.phase === 'checkout')                icon = '📥';
-            else if (event.phase === 'checkout_complete')  icon = '✓';
-            else if (event.phase === 'updating')           icon = '🔄';
-            else if (event.phase === 'update_complete')    icon = '✓';
-            else if (event.phase === 'saved')              icon = '💾';
-            else if (event.phase === 'init_model')         icon = '🤖';
-            else if (event.phase === 'static_policy_check')   icon = '📋';
-            else if (event.phase === 'static_policy_complete') icon = '✓';
-            else if (event.phase === 'static_policy_failed')   icon = '⚠️';
-            else if (event.phase === 'healing_failed')     icon = '⚠️';
-            else if (event.phase === 'analyzing_failure')  icon = '🧠';
-            else if (event.phase === 'what_if')            icon = '🔍';
-            else if (event.phase === 'what_if_complete')   icon = '✓';
-            else if (event.phase === 'what_if_failed')     icon = '💥';
-            else if (event.phase === 'deploying')          icon = '🚀';
-            else if (event.phase === 'deploy_complete')    icon = '📦';
-            else if (event.phase === 'deploy_failed')      icon = '💥';
-            else if (event.phase === 'policy_testing')     icon = '🛡️';
-            else if (event.phase === 'policy_testing_complete') icon = '✓';
-            else if (event.phase === 'policy_deploy')      icon = '📜';
-            else if (event.phase === 'policy_deploy_complete') icon = '✓';
-            else if (event.phase === 'cleanup')            icon = '🧹';
-            else if (event.phase === 'cleanup_complete')   icon = '✓';
-            else if (event.phase === 'promoting')          icon = '🏆';
-            else if (event.phase === 'fixing_template')    icon = '🔧';
-            else if (event.phase === 'template_fixed')     icon = '🔧';
-            break;
+    const phase = event.phase || '';
+    const type = event.type || '';
+    const detail = event.detail || '';
+
+    // ── Attempt separator ──
+    if (event.step && event.step > 1 && phase !== 'init_model') {
+        _flowAttemptSep(logEl, `Attempt ${event.step}`);
     }
 
-    if (logEl && event.detail) {
-        const logLine = document.createElement('div');
-        logLine.className = `validation-log-line validation-log-${logClass}`;
-        if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
-
-        // Agent analysis gets rendered as a rich card, not a plain log line
-        if (event.type === 'agent_analysis') {
-            logLine.className = 'validation-agent-analysis';
+    // ── Phase → flow card mapping ──
+    if (phase === 'checkout') {
+        _flowCard(logEl, 'checkout', '📥', 'Checking Out Template');
+        if (detail) _flowDetail(logEl, 'checkout', '▸', escapeHtml(detail));
+    } else if (phase === 'checkout_complete') {
+        if (detail) _flowDetail(logEl, 'checkout', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'checkout', 'done');
+    } else if (phase === 'updating') {
+        _flowCard(logEl, 'rewrite', '🔄', 'AI Rewriting Template');
+        if (detail) _flowDetail(logEl, 'rewrite', '▸', escapeHtml(detail));
+    } else if (phase === 'update_complete') {
+        if (detail) _flowDetail(logEl, 'rewrite', '✓', escapeHtml(detail), 'uf-text-success');
+    } else if (phase === 'saved') {
+        if (detail) _flowDetail(logEl, 'rewrite', '💾', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'rewrite', 'done');
+    } else if (phase === 'static_policy_check') {
+        _flowCard(logEl, 'policy', '📋', 'Static Policy Checks');
+        if (detail) _flowDetail(logEl, 'policy', '▸', escapeHtml(detail));
+    } else if (phase === 'static_policy_complete') {
+        if (detail) _flowDetail(logEl, 'policy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'policy', 'done');
+    } else if (phase === 'static_policy_failed') {
+        if (detail) _flowDetail(logEl, 'policy', '⚠️', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'policy', 'failed');
+    } else if (phase === 'what_if') {
+        _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
+        if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
+    } else if (phase === 'what_if_complete') {
+        if (detail) _flowDetail(logEl, 'whatif', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'whatif', 'done');
+    } else if (phase === 'what_if_failed') {
+        if (detail) _flowDetail(logEl, 'whatif', '💥', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'whatif', 'failed');
+    } else if (phase === 'deploying') {
+        _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
+        if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+    } else if (phase === 'deploy_complete') {
+        if (detail) _flowDetail(logEl, 'deploy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'deploy', 'done');
+    } else if (phase === 'deploy_failed') {
+        if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'deploy', 'failed');
+    } else if (type === 'healing') {
+        _flowCard(logEl, 'healing', '🤖', 'AI Auto-Healing');
+        if (detail) _flowDetail(logEl, 'healing', '▸', escapeHtml(detail));
+    } else if (type === 'healing_done') {
+        if (detail) _flowDetail(logEl, 'healing', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'healing', 'done');
+    } else if (phase === 'healing_failed') {
+        if (detail) _flowDetail(logEl, 'healing', '⚠️', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'healing', 'failed');
+    } else if (phase === 'analyzing_failure') {
+        _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure');
+        if (detail) _flowDetail(logEl, 'analysis', '▸', escapeHtml(detail));
+    } else if (type === 'agent_analysis') {
+        // Rich analysis card
+        _flowCard(logEl, 'agent_analysis', '🧠', 'Deployment Analysis');
+        const ac = logEl._flow.cards.agent_analysis;
+        const body = ac?.querySelector('.uf-action-body');
+        if (body) {
             const downgradeWarning = event.is_downgrade
-                ? `<div class="agent-analysis-downgrade">⚠️ This is an API version <strong>downgrade</strong> — the target version is older than the current one. Azure may reject properties that don't exist in older API versions.</div>`
-                : '';
-            logLine.innerHTML = `
-                <div class="agent-analysis-header">
-                    <span class="agent-analysis-icon">🧠</span>
-                    <span class="agent-analysis-title">Deployment Agent Analysis</span>
-                </div>
-                ${downgradeWarning}
-                <div class="agent-analysis-body">${renderMarkdown(event.detail)}</div>
-                <div class="agent-analysis-meta">
-                    ${event.from_api ? `<span class="agent-analysis-chip">${escapeHtml(event.from_api)} → ${escapeHtml(event.to_api)}</span>` : ''}
-                    <span class="agent-analysis-chip">${event.attempts || '?'} attempt(s)</span>
+                ? `<div class="agent-analysis-downgrade">⚠️ This is an API version <strong>downgrade</strong> — the target version is older than the current one.</div>` : '';
+            body.innerHTML = `
+                <div class="uf-analysis-body">${downgradeWarning}${renderMarkdown(detail)}</div>
+                <div class="uf-analysis-meta">
+                    ${event.from_api ? `<span class="uf-analysis-chip">${escapeHtml(event.from_api)} → ${escapeHtml(event.to_api)}</span>` : ''}
+                    <span class="uf-analysis-chip">${event.attempts || '?'} attempt(s)</span>
                 </div>
             `;
-        } else {
-            logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
+            body.classList.add('uf-body-open');
         }
-
-        logEl.appendChild(logLine);
-        logEl.scrollTop = logEl.scrollHeight;
+        _flowFinalize(logEl, 'agent_analysis', 'done', 'Analysis');
+    } else if (phase === 'fixing_template') {
+        _flowCard(logEl, 'fixing', '🔧', 'Fixing Template');
+        if (detail) _flowDetail(logEl, 'fixing', '▸', escapeHtml(detail));
+    } else if (phase === 'template_fixed') {
+        if (detail) _flowDetail(logEl, 'fixing', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'fixing', 'done');
+    } else if (phase === 'policy_testing') {
+        _flowCard(logEl, 'compliance', '🛡️', 'Runtime Compliance Test');
+        if (detail) _flowDetail(logEl, 'compliance', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_testing_complete') {
+        if (detail) _flowDetail(logEl, 'compliance', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'compliance', 'done');
+    } else if (phase === 'policy_deploy') {
+        _flowCard(logEl, 'policydeploy', '📜', 'Deploying Policy');
+        if (detail) _flowDetail(logEl, 'policydeploy', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_deploy_complete') {
+        if (detail) _flowDetail(logEl, 'policydeploy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'policydeploy', 'done');
+    } else if (phase === 'cleanup') {
+        _flowCard(logEl, 'cleanup', '🧹', 'Cleaning Up');
+        if (detail) _flowDetail(logEl, 'cleanup', '▸', escapeHtml(detail));
+    } else if (phase === 'cleanup_complete') {
+        if (detail) _flowDetail(logEl, 'cleanup', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'cleanup', 'done');
+    } else if (phase === 'promoting') {
+        _flowCard(logEl, 'publishing', '🏆', 'Publishing Version');
+        if (detail) _flowDetail(logEl, 'publishing', '▸', escapeHtml(detail));
+    } else if (type === 'done') {
+        _flowFinalizeActive(logEl, 'done');
+        _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
+    } else if (type === 'error') {
+        _flowFinalizeActive(logEl, 'failed');
+        _flowResult(logEl, 'failed', detail || 'Update failed');
+    } else if (detail) {
+        // Generic detail → add to whatever card is active
+        const activeKey = logEl._flow?.activeKey;
+        if (activeKey) {
+            _flowDetail(logEl, activeKey, '▸', escapeHtml(detail));
+        }
     }
 
-    // Update header text
+    // ── Outer card header updates ──
     const header = card?.querySelector('.validation-title');
     const iconEl = card?.querySelector('.validation-icon');
 
-    if (event.phase === 'checkout' && header) {
+    if (phase === 'checkout' && header) {
         header.textContent = 'Checking Out Template…';
         if (iconEl) { iconEl.textContent = '📥'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'updating' && header) {
+    } else if (phase === 'updating' && header) {
         header.textContent = 'Updating API Version…';
         if (iconEl) { iconEl.textContent = '🔄'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'static_policy_check' && header) {
+    } else if (phase === 'static_policy_check' && header) {
         header.textContent = 'Checking Governance Policies…';
         if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'what_if' && header) {
+    } else if (phase === 'what_if' && header) {
         header.textContent = 'Running ARM What-If Analysis…';
         if (iconEl) { iconEl.textContent = '🔍'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'deploying' && header) {
+    } else if (phase === 'deploying' && header) {
         header.textContent = 'Deploying to Validation RG…';
         if (iconEl) { iconEl.textContent = '🚀'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'policy_testing' && header) {
+    } else if (phase === 'policy_testing' && header) {
         header.textContent = 'Testing Runtime Compliance…';
         if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'cleanup' && header) {
+    } else if (phase === 'cleanup' && header) {
         header.textContent = 'Cleaning Up…';
         if (iconEl) { iconEl.textContent = '🧹'; }
-    } else if (event.phase === 'promoting' && header) {
+    } else if (phase === 'promoting' && header) {
         header.textContent = 'Publishing New Version…';
         if (iconEl) { iconEl.textContent = '🏆'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.type === 'healing' && header) {
+    } else if (type === 'healing' && header) {
         header.textContent = 'Auto-Healing — AI Fixing Template…';
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'analyzing_failure' && header) {
+    } else if (phase === 'analyzing_failure' && header) {
         header.textContent = 'Analyzing Failure…';
         if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.type === 'agent_analysis' && header) {
+    } else if (type === 'agent_analysis' && header) {
         header.textContent = 'Update Failed — See Analysis Below';
         if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.remove('validation-spinner'); }
     }
 
-    // Final states
-    if (event.type === 'done' && card) {
+    // Final states on outer card
+    if (type === 'done' && card) {
         card.className = 'validation-card validation-succeeded';
         if (header) header.textContent = `API Version Updated — v${event.new_semver || '?'}`;
         if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
-    } else if (event.type === 'error' && card) {
+    } else if (type === 'error' && card) {
         card.className = 'validation-card validation-failed';
         if (header) header.textContent = 'API Version Update Failed';
         if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
     }
 }
+
+// ══════════════════════════════════════════════════════════════
+// VALIDATION EVENT HANDLER (Onboarding Pipeline)
+// ══════════════════════════════════════════════════════════════
 
 function _handleValidationEvent(event) {
     const progressFill = document.getElementById('validation-progress-fill');
@@ -2892,6 +3102,7 @@ function _handleValidationEvent(event) {
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
 
+    // Progress bar + detail text
     if (event.progress && progressFill) {
         progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
     }
@@ -2902,130 +3113,152 @@ function _handleValidationEvent(event) {
         badge.textContent = event.step > 1 ? `Step ${event.step}` : 'Deploying…';
         badge.classList.add('visible');
     }
-
-    // Show model badge on init_model event
     if (event.phase === 'init_model' && event.model && modelBadge) {
         modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
         modelBadge.classList.add('visible');
     }
 
-    // Pick icon per event type
-    let icon = '▸';
-    let logClass = event.type || 'progress';
-    let isReasoning = false;
+    if (!logEl) return;
+    _flowInit(logEl);
 
-    switch (event.type) {
-        case 'error':           icon = '❌'; break;
-        case 'done':            icon = '✅'; break;
-        case 'iteration_start': icon = '🔄'; break;
-        case 'healing':         icon = '🤖'; break;
-        case 'healing_done':    icon = '🔧'; break;
-        case 'policy_blocked':  icon = '🛑'; logClass = 'policy-blocked'; break;
-        case 'standard_check':  icon = '📏'; logClass = 'standard'; break;
-        case 'llm_reasoning':   icon = '🧠'; logClass = 'reasoning'; isReasoning = true; break;
-        case 'policy_result':   icon = event.compliant !== undefined ? (event.compliant ? '✅' : '❌') : (event.passed ? '✅' : (event.severity === 'high' || event.severity === 'critical' ? '❌' : '⚠️')); break;
-        default:
-            if (event.phase === 'init_model')                   icon = '🤖';
-            else if (event.phase === 'standards_analysis')      icon = '📋';
-            else if (event.phase === 'standards_complete')       icon = '✓';
-            else if (event.phase === 'planning')                icon = '🧠';
-            else if (event.phase === 'planning_complete')       icon = '✓';
-            else if (event.phase === 'generating')              icon = '⚡';
-            else if (event.phase === 'generated')               icon = '📄';
-            else if (event.phase === 'policy_generation')       icon = '🛡️';
-            else if (event.phase === 'policy_generation_complete') icon = '✓';
-            else if (event.phase === 'policy_generation_warning') icon = '⚠️';
-            else if (event.phase === 'static_policy_check')     icon = '📋';
-            else if (event.phase === 'static_policy_complete')  icon = '✓';
-            else if (event.phase === 'static_policy_failed')    icon = '⚠️';
-            else if (event.phase === 'what_if')                 icon = '🔍';
-            else if (event.phase === 'what_if_complete')        icon = '✓';
-            else if (event.phase === 'deploying')               icon = '🚀';
-            else if (event.phase === 'deploy_progress')        icon = '🚀';
-            else if (event.phase === 'deploy_heartbeat')       icon = '🚀';
-            else if (event.phase === 'deploy_complete')         icon = '📦';
-            else if (event.phase === 'deploy_failed')           icon = '💥';
-            else if (event.phase === 'infra_retry')             icon = '🔄';
-            else if (event.phase === 'resource_check' || event.phase === 'resource_check_complete') icon = '🔎';
-            else if (event.phase === 'policy_testing')          icon = '🛡️';
-            else if (event.phase === 'policy_testing_complete')  icon = '✓';
-            else if (event.phase === 'policy_failed')           icon = '❌';
-            else if (event.phase === 'policy_blocked')          icon = '🛑';
-            else if (event.phase === 'fixing_policy')           icon = '🛡️';
-            else if (event.phase === 'policy_fixed')            icon = '🔧';
-            else if (event.phase === 'policy_skip')             icon = 'ℹ️';
-            else if (event.phase === 'policy_deploy')           icon = '📜';
-            else if (event.phase === 'policy_deploy_complete')  icon = '✓';
-            else if (event.phase === 'cleanup' || event.phase === 'cleanup_complete') icon = '🧹';
-            else if (event.phase === 'promoting')               icon = '🏆';
-            else if (event.phase === 'co_onboarding')           icon = '👶';
-            break;
+    const phase = event.phase || '';
+    const type = event.type || '';
+    const detail = event.detail || '';
+
+    // ── Iteration / attempt separator ──
+    if (type === 'iteration_start' && event.step && event.step > 1) {
+        _flowAttemptSep(logEl, `Attempt ${event.step}`);
+    }
+    if (phase === 'infra_retry') {
+        _flowAttemptSep(logEl, detail || 'Retrying');
     }
 
-    if (logEl && event.detail) {
-        const logLine = document.createElement('div');
-        logLine.className = `validation-log-line validation-log-${logClass}`;
-        if (event.phase) logLine.classList.add(`validation-phase-${event.phase}`);
-        if (isReasoning) logLine.classList.add('reasoning-line');
-        logLine.innerHTML = `<span class="log-icon">${icon}</span> <span class="log-text">${escapeHtml(event.detail)}</span>`;
-        logEl.appendChild(logLine);
-        logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    // Update header
-    const header = card?.querySelector('.validation-title');
-    const iconEl = card?.querySelector('.validation-icon');
-
-    if (event.phase === 'init_model' && header) {
-        header.textContent = 'Analyzing Organization Standards…';
-        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'standards_analysis' && header) {
-        header.textContent = 'Analyzing Organization Standards…';
-        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'planning' && header) {
-        header.textContent = 'AI Planning Architecture…';
-        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'generating' && header) {
-        header.textContent = 'Generating ARM Template…';
-        if (iconEl) { iconEl.textContent = '⚡'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'policy_generation' && header) {
-        header.textContent = 'Generating Azure Policy…';
-        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'static_policy_check' && header) {
-        header.textContent = 'Checking Governance Policies…';
-        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'policy_testing' && header) {
-        header.textContent = 'Testing Runtime Policy Compliance…';
-        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.type === 'healing' && header) {
-        header.textContent = 'Auto-Healing — AI Fixing Template…';
-        if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'what_if' && header) {
-        header.textContent = 'Running ARM What-If Analysis…';
-        if (iconEl) { iconEl.textContent = '🔍'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'deploying' && header) {
-        header.textContent = 'Deploying to Validation RG…';
-        if (iconEl) { iconEl.textContent = '🚀'; iconEl.classList.add('validation-spinner'); }
-    } else if (event.phase === 'cleanup' && header) {
-        header.textContent = 'Cleaning Up…';
-        if (iconEl) { iconEl.textContent = '🧹'; }
-    }
-
-    // Final states
-    if (event.type === 'done' && card) {
-        card.className = 'validation-card validation-succeeded';
-        if (header) header.textContent = `Service Approved — v${event.semver || event.version + '.0.0'}`;
-        if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
-        if (badge && event.issues_resolved > 0) {
-            badge.textContent = `Resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}`;
-            badge.classList.add('badge-success');
+    // ── Phase → flow card mapping ──
+    if (phase === 'standards_analysis' || phase === 'init_model') {
+        _flowCard(logEl, 'standards', '📋', 'Analyzing Standards');
+        if (detail) _flowDetail(logEl, 'standards', '▸', escapeHtml(detail));
+    } else if (phase === 'standards_complete') {
+        if (detail) _flowDetail(logEl, 'standards', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'standards', 'done');
+    } else if (type === 'standard_check') {
+        _flowDetail(logEl, logEl._flow.activeKey || 'standards', '📏', escapeHtml(detail));
+    } else if (phase === 'planning') {
+        _flowCard(logEl, 'planning', '🧠', 'AI Planning Architecture');
+        if (detail) _flowDetail(logEl, 'planning', '▸', escapeHtml(detail));
+    } else if (phase === 'planning_complete') {
+        if (detail) _flowDetail(logEl, 'planning', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'planning', 'done');
+    } else if (phase === 'generating') {
+        _flowCard(logEl, 'generating', '⚡', 'Generating ARM Template');
+        if (detail) _flowDetail(logEl, 'generating', '▸', escapeHtml(detail));
+    } else if (phase === 'generated') {
+        if (detail) _flowDetail(logEl, 'generating', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'generating', 'done');
+    } else if (phase === 'policy_generation') {
+        _flowCard(logEl, 'policyGen', '🛡️', 'Generating Azure Policy');
+        if (detail) _flowDetail(logEl, 'policyGen', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_generation_complete') {
+        if (detail) _flowDetail(logEl, 'policyGen', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'policyGen', 'done');
+    } else if (phase === 'policy_generation_warning') {
+        if (detail) _flowDetail(logEl, 'policyGen', '⚠️', escapeHtml(detail));
+    } else if (phase === 'static_policy_check') {
+        _flowCard(logEl, 'staticPolicy', '📋', 'Static Policy Checks');
+        if (detail) _flowDetail(logEl, 'staticPolicy', '▸', escapeHtml(detail));
+    } else if (phase === 'static_policy_complete') {
+        if (detail) _flowDetail(logEl, 'staticPolicy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'staticPolicy', 'done');
+    } else if (phase === 'static_policy_failed') {
+        if (detail) _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'staticPolicy', 'failed');
+    } else if (phase === 'what_if') {
+        _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
+        if (detail) _flowDetail(logEl, 'whatif', '▸', escapeHtml(detail));
+    } else if (phase === 'what_if_complete') {
+        if (detail) _flowDetail(logEl, 'whatif', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'whatif', 'done');
+    } else if (phase === 'deploying') {
+        _flowCard(logEl, 'deploy', '🚀', 'Deploying to Azure');
+        if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+    } else if (phase === 'deploy_progress' || phase === 'deploy_heartbeat') {
+        if (detail) _flowDetail(logEl, 'deploy', '▸', escapeHtml(detail));
+    } else if (phase === 'deploy_complete') {
+        if (detail) _flowDetail(logEl, 'deploy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'deploy', 'done');
+    } else if (phase === 'deploy_failed') {
+        if (detail) _flowDetail(logEl, 'deploy', '💥', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'deploy', 'failed');
+    } else if (phase === 'resource_check') {
+        _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
+        if (detail) _flowDetail(logEl, 'resourceCheck', '▸', escapeHtml(detail));
+    } else if (phase === 'resource_check_complete') {
+        if (detail) _flowDetail(logEl, 'resourceCheck', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'resourceCheck', 'done');
+    } else if (phase === 'policy_testing') {
+        _flowCard(logEl, 'policyTest', '🛡️', 'Runtime Policy Testing');
+        if (detail) _flowDetail(logEl, 'policyTest', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_testing_complete') {
+        if (detail) _flowDetail(logEl, 'policyTest', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'policyTest', 'done');
+    } else if (phase === 'policy_failed') {
+        if (detail) _flowDetail(logEl, 'policyTest', '❌', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'policyTest', 'failed');
+    } else if (phase === 'policy_skip') {
+        if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', 'ℹ️', escapeHtml(detail));
+    } else if (phase === 'fixing_policy') {
+        _flowCard(logEl, 'fixPolicy', '🛡️', 'Fixing Policy');
+        if (detail) _flowDetail(logEl, 'fixPolicy', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_fixed') {
+        if (detail) _flowDetail(logEl, 'fixPolicy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'fixPolicy', 'done');
+    } else if (phase === 'policy_deploy') {
+        _flowCard(logEl, 'policyDeploy', '📜', 'Deploying Policy');
+        if (detail) _flowDetail(logEl, 'policyDeploy', '▸', escapeHtml(detail));
+    } else if (phase === 'policy_deploy_complete') {
+        if (detail) _flowDetail(logEl, 'policyDeploy', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'policyDeploy', 'done');
+    } else if (phase === 'cleanup') {
+        _flowCard(logEl, 'cleanup', '🧹', 'Cleaning Up');
+        if (detail) _flowDetail(logEl, 'cleanup', '▸', escapeHtml(detail));
+    } else if (phase === 'cleanup_complete') {
+        if (detail) _flowDetail(logEl, 'cleanup', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'cleanup', 'done');
+    } else if (phase === 'promoting') {
+        _flowCard(logEl, 'promoting', '🏆', 'Publishing Version');
+        if (detail) _flowDetail(logEl, 'promoting', '▸', escapeHtml(detail));
+    } else if (phase === 'co_onboarding') {
+        _flowCard(logEl, 'coOnboard', '👶', 'Co-boarding Dependencies');
+        if (detail) _flowDetail(logEl, 'coOnboard', '▸', escapeHtml(detail));
+    } else if (type === 'healing') {
+        _flowCard(logEl, 'healing', '🤖', 'AI Auto-Healing');
+        if (detail) _flowDetail(logEl, 'healing', '▸', escapeHtml(detail));
+    } else if (type === 'healing_done') {
+        if (detail) _flowDetail(logEl, 'healing', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'healing', 'done');
+    } else if (type === 'llm_reasoning') {
+        // Reasoning goes into the currently active card as a collapsible detail
+        const k = logEl._flow.activeKey;
+        if (k && detail) {
+            _flowDetail(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
         }
-    } else if (event.type === 'policy_blocked' && card) {
-        card.className = 'validation-card validation-policy-blocked';
-        if (header) header.textContent = 'Policy Review Needed';
-        if (iconEl) { iconEl.textContent = '🛑'; iconEl.classList.remove('validation-spinner'); }
-        // Render guidance with retry button
-        if (logEl && event.violations) {
+    } else if (type === 'policy_result') {
+        // Policy result details go into the active card
+        const k = logEl._flow.activeKey;
+        if (k && detail) {
+            const passed = event.compliant !== undefined ? event.compliant : event.passed;
+            const icon = passed ? '✅' : ((event.severity === 'high' || event.severity === 'critical') ? '❌' : '⚠️');
+            const cls = passed ? 'uf-text-success' : 'uf-text-error';
+            _flowDetail(logEl, k, icon, escapeHtml(detail), cls);
+        }
+    } else if (type === 'done') {
+        _flowFinalizeActive(logEl, 'done');
+        const text = detail || `Service approved — v${event.semver || event.version + '.0.0'}`;
+        _flowResult(logEl, 'success', text);
+    } else if (type === 'policy_blocked') {
+        _flowFinalizeActive(logEl, 'failed');
+        _flowResult(logEl, 'blocked', 'Policy review needed');
+        // Render guidance
+        if (event.violations) {
             const guidanceEl = document.createElement('div');
             guidanceEl.className = 'policy-blocked-guidance';
             const violationList = event.violations.map(v =>
@@ -3038,9 +3271,9 @@ function _handleValidationEvent(event) {
                     <details><summary>Violations</summary><ul>${violationList}</ul></details>
                     <p class="policy-blocked-options"><strong>Options:</strong></p>
                     <ul>
-                        <li>Ask InfraForge to submit a <strong>policy exception request</strong> for this service</li>
+                        <li>Ask InfraForge to submit a <strong>policy exception request</strong></li>
                         <li>Ask the platform team to adjust governance standards</li>
-                        <li><button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(card.dataset.serviceId || '')}')">
+                        <li><button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(card?.dataset?.serviceId || '')}')">
                             Retry Onboarding</button> — the policy will be regenerated</li>
                     </ul>
                 </div>
@@ -3048,7 +3281,65 @@ function _handleValidationEvent(event) {
             logEl.appendChild(guidanceEl);
             logEl.scrollTop = logEl.scrollHeight;
         }
-    } else if (event.type === 'error' && card) {
+    } else if (type === 'error') {
+        _flowFinalizeActive(logEl, 'failed');
+        _flowResult(logEl, 'failed', detail || 'Onboarding failed');
+    } else if (detail) {
+        // Generic — add to active card
+        const k = logEl._flow?.activeKey;
+        if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
+    }
+
+    // ── Outer card header updates ──
+    const header = card?.querySelector('.validation-title');
+    const iconEl = card?.querySelector('.validation-icon');
+
+    if (phase === 'standards_analysis' && header) {
+        header.textContent = 'Analyzing Organization Standards…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'planning' && header) {
+        header.textContent = 'AI Planning Architecture…';
+        if (iconEl) { iconEl.textContent = '🧠'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'generating' && header) {
+        header.textContent = 'Generating ARM Template…';
+        if (iconEl) { iconEl.textContent = '⚡'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'policy_generation' && header) {
+        header.textContent = 'Generating Azure Policy…';
+        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'static_policy_check' && header) {
+        header.textContent = 'Checking Governance Policies…';
+        if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'policy_testing' && header) {
+        header.textContent = 'Testing Runtime Policy Compliance…';
+        if (iconEl) { iconEl.textContent = '🛡️'; iconEl.classList.add('validation-spinner'); }
+    } else if (type === 'healing' && header) {
+        header.textContent = 'Auto-Healing — AI Fixing Template…';
+        if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'what_if' && header) {
+        header.textContent = 'Running ARM What-If Analysis…';
+        if (iconEl) { iconEl.textContent = '🔍'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'deploying' && header) {
+        header.textContent = 'Deploying to Validation RG…';
+        if (iconEl) { iconEl.textContent = '🚀'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'cleanup' && header) {
+        header.textContent = 'Cleaning Up…';
+        if (iconEl) { iconEl.textContent = '🧹'; }
+    }
+
+    // Final states on outer card
+    if (type === 'done' && card) {
+        card.className = 'validation-card validation-succeeded';
+        if (header) header.textContent = `Service Approved — v${event.semver || event.version + '.0.0'}`;
+        if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
+        if (badge && event.issues_resolved > 0) {
+            badge.textContent = `Resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}`;
+            badge.classList.add('badge-success');
+        }
+    } else if (type === 'policy_blocked' && card) {
+        card.className = 'validation-card validation-policy-blocked';
+        if (header) header.textContent = 'Policy Review Needed';
+        if (iconEl) { iconEl.textContent = '🛑'; iconEl.classList.remove('validation-spinner'); }
+    } else if (type === 'error' && card) {
         card.className = 'validation-card validation-failed';
         if (header) header.textContent = 'Onboarding Failed';
         if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
@@ -3063,8 +3354,12 @@ function toggleReasoningVisibility() {
         btn.classList.toggle('active', reasoningVisible);
         btn.textContent = reasoningVisible ? '🧠 AI Thinking' : '🧠 Hidden';
     }
+    // Hide/show reasoning in both old log lines and new flow detail lines
     document.querySelectorAll('.reasoning-line').forEach(el => {
         el.style.display = reasoningVisible ? '' : 'none';
+    });
+    document.querySelectorAll('.uf-text-reasoning').forEach(el => {
+        el.closest('.uf-detail-line').style.display = reasoningVisible ? '' : 'none';
     });
 }
 
