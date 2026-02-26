@@ -1122,7 +1122,7 @@ function renderServiceTable(services) {
             const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}`;
             if (showRecBadge) {
                 // Two update targets: latest stable AND recommended
-                const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec';
+                const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec ↑';
                 versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
                     + `<span class="version-badge version-update version-update-clickable" id="${badgeId}" title="Update to latest stable: ${escapeHtml(update.latest_api_version)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}', '${escapeHtml(update.latest_api_version)}')">⬆ latest</span>`
                     + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}-rec" title="${recApi < tplApi ? 'Downgrade' : 'Update'} to Microsoft recommended: ${escapeHtml(recApi)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}-rec', '${escapeHtml(recApi)}')">${recLabel}</span>`;
@@ -1133,7 +1133,7 @@ function renderServiceTable(services) {
         } else if (versionLabel && showRecBadge) {
             // No latest update available but recommended differs — show standalone rec badge
             const badgeId = `update-badge-${svc.id.replace(/[^a-zA-Z0-9]/g, '-')}-rec`;
-            const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec';
+            const recLabel = recApi < tplApi ? '★ rec ↓' : '★ rec ↑';
             versionHtml = `<span class="version-badge version-active" title="Template API version">${escapeHtml(versionLabel)}</span>`
                 + `<span class="version-badge version-update version-update-rec version-update-clickable" id="${badgeId}" title="${recApi < tplApi ? 'Downgrade' : 'Update'} to Microsoft recommended: ${escapeHtml(recApi)}" onclick="event.stopPropagation(); startApiVersionUpdateFromTable('${escapeHtml(svc.id)}', '${badgeId}', '${escapeHtml(recApi)}')">${recLabel}</span>`;
         } else if (versionLabel) {
@@ -1721,7 +1721,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
         const hasSeparateRec = apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable
             && apiVersionStatus.default !== apiVersionStatus.template_api_version;
         const recIsDowngrade = hasSeparateRec && apiVersionStatus.default < apiVersionStatus.template_api_version;
-        const recActionLabel = recIsDowngrade ? '↓ Downgrade to Recommended' : '★ Update to Recommended';
+        const recActionLabel = recIsDowngrade ? '↓ Downgrade to Recommended' : '↑ Update to Recommended';
 
         // Show latest update button only if newer is available
         const latestBtn = apiVersionStatus.newer_available

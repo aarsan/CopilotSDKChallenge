@@ -6429,6 +6429,17 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             # the template guided by the plan. Otherwise fall back to the
             # simple deterministic apiVersion swap.
 
+            def _update_api_versions(resources_list, tgt_api):
+                """Recursively update apiVersion on all resources."""
+                count = 0
+                for r in resources_list:
+                    if isinstance(r, dict) and "apiVersion" in r:
+                        r["apiVersion"] = tgt_api
+                        count += 1
+                    if isinstance(r, dict) and "resources" in r:
+                        count += _update_api_versions(r["resources"], tgt_api)
+                return count
+
             _gen_model = get_model_display(Task.CODE_GENERATION)
             updated_template = None
 
@@ -6481,6 +6492,61 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         json.loads(cleaned)
                         updated_template = cleaned
 
+                        # ── Post-EXECUTE validation: verify resource type + apiVersion ──
+                        # The LLM sometimes returns templates with wrong resource types or
+                        # doesn't actually update the apiVersion. Catch this early.
+                        try:
+                            _exec_tpl = json.loads(cleaned)
+                            _exec_resources = _exec_tpl.get("resources", [])
+
+                            def _collect_resource_types(resources):
+                                """Recursively collect (type, apiVersion) tuples."""
+                                pairs = []
+                                for r in resources:
+                                    if isinstance(r, dict):
+                                        if r.get("type"):
+                                            pairs.append((r["type"].lower(), r.get("apiVersion", "")))
+                                        if "resources" in r and isinstance(r["resources"], list):
+                                            pairs.extend(_collect_resource_types(r["resources"]))
+                                return pairs
+
+                            _exec_pairs = _collect_resource_types(_exec_resources)
+                            _svc_type_lower = service_id.lower()
+                            # Check 1: at least one resource matches the service type
+                            _has_correct_type = any(t == _svc_type_lower for t, _ in _exec_pairs)
+                            # Check 2: the target apiVersion is present on the correct resource
+                            _has_target_api = any(
+                                t == _svc_type_lower and v == target_api
+                                for t, v in _exec_pairs
+                            )
+
+                            if not _has_correct_type:
+                                logger.warning(
+                                    f"EXECUTE validation failed: template missing resource type {service_id}. "
+                                    f"Found types: {[t for t, _ in _exec_pairs]}. Falling back to direct swap."
+                                )
+                                updated_template = None
+                                yield json.dumps({
+                                    "type": "progress", "phase": "execute_validation_failed",
+                                    "detail": f"⚠️ LLM output missing {service_id} resource — falling back to direct swap",
+                                    "progress": 0.19,
+                                }) + "\n"
+                            elif not _has_target_api:
+                                logger.warning(
+                                    f"EXECUTE validation failed: apiVersion not updated to {target_api}. "
+                                    f"Found: {[(t, v) for t, v in _exec_pairs if t == _svc_type_lower]}. Falling back to direct swap."
+                                )
+                                # Use the LLM template but force-update the apiVersion
+                                _update_api_versions(_exec_tpl.get("resources", []), target_api)
+                                updated_template = json.dumps(_exec_tpl, indent=2)
+                                yield json.dumps({
+                                    "type": "progress", "phase": "execute_api_fixup",
+                                    "detail": f"⚠️ LLM didn't set target apiVersion — force-applied {target_api}",
+                                    "progress": 0.19,
+                                }) + "\n"
+                        except Exception as _val_err:
+                            logger.warning(f"Post-EXECUTE validation error: {_val_err}")
+
                         yield json.dumps({
                             "type": "progress", "phase": "execute_complete",
                             "detail": f"✓ {_gen_model} rewrote template with migration plan applied",
@@ -6497,17 +6563,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
             # Fallback: deterministic apiVersion swap
             if updated_template is None:
-                def _update_api_versions(resources_list, target_api):
-                    """Recursively update apiVersion on all resources."""
-                    count = 0
-                    for r in resources_list:
-                        if isinstance(r, dict) and "apiVersion" in r:
-                            r["apiVersion"] = target_api
-                            count += 1
-                        if isinstance(r, dict) and "resources" in r:
-                            count += _update_api_versions(r["resources"], target_api)
-                    return count
-
                 updated_count = _update_api_versions(tpl.get("resources", []), target_api)
                 updated_template = json.dumps(tpl, indent=2)
 
