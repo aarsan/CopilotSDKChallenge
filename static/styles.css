@@ -1600,7 +1600,179 @@ body {
     cursor: default;
 }
 
-/* ─── Dependency Graph ─────────────────────────────────────── */
+/* ─── Hero Composition (front-and-center) ──────────────────── */
+.comp-hero-section {
+    margin-top: 0.5rem;
+}
+.comp-hero-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.comp-hero-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.comp-hero-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+.comp-hero-graph {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.comp-hero-graph-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 0.5rem 0;
+}
+.comp-hero-layer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+    width: 100%;
+}
+.comp-hero-layer-ext {
+    opacity: 0.65;
+}
+.comp-hero-connector {
+    display: flex;
+    justify-content: center;
+    padding: 0.35rem 0;
+}
+.comp-hero-arrow {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+.comp-hero-arrow-ext {
+    font-size: 0.7rem;
+    font-style: italic;
+}
+
+/* ── Hero Nodes ──────────────────────────── */
+.hero-node {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.75rem 1rem;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-muted);
+    min-width: 180px;
+    max-width: 260px;
+    flex: 1 1 180px;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+    position: relative;
+    cursor: default;
+}
+.hero-node:hover {
+    border-color: var(--accent-primary);
+    box-shadow: 0 2px 12px rgba(99,102,241,0.15);
+    transform: translateY(-1px);
+}
+.hero-node-ok {
+    border-left: 4px solid #16a34a;
+}
+.hero-node-warn {
+    border-left: 4px solid #d97706;
+}
+.hero-node-ext {
+    border-left: 4px dashed var(--text-muted);
+    opacity: 0.75;
+}
+.hero-node-upgradable {
+    border-color: rgba(59,130,246,0.45);
+    background: rgba(59,130,246,0.05);
+}
+.hero-node-icon {
+    flex-shrink: 0;
+    margin-top: 2px;
+    opacity: 0.9;
+}
+.hero-node-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+    flex: 1;
+}
+.hero-node-name {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.hero-node-cat {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-transform: capitalize;
+}
+.hero-node-ver-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-top: 0.15rem;
+}
+.hero-node-ver {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.hero-node-latest {
+    font-size: 0.65rem;
+    color: #16a34a;
+    font-weight: 600;
+}
+
+/* ── Hero Upgrade Button ─────────────────── */
+.hero-upgrade-btn {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(59,130,246,0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59,130,246,0.3);
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    white-space: nowrap;
+}
+.hero-upgrade-btn:hover {
+    background: rgba(59,130,246,0.3);
+    transform: scale(1.05);
+}
+.hero-upgrade-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ── Hero Actions Row ────────────────────── */
+.comp-hero-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+}
+
+/* ─── Dependency Graph (legacy / sidebar) ──────────────────── */
 .dep-graph {
     display: flex;
     flex-direction: column;

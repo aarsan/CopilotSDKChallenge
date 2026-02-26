@@ -4233,25 +4233,6 @@ function showTemplateDetail(templateId) {
 
         ${ctaHtml}
 
-        <!-- Compliance Profile -->
-        <div class="detail-section tmpl-compliance-profile-section">
-            <div class="compliance-profile-header">
-                <h4>📋 Compliance Profile</h4>
-                <span class="compliance-profile-hint">Select which standards apply to this template. Unassigned templates are scanned against all standards.</span>
-            </div>
-            <div id="tmpl-compliance-profile-picker" class="compliance-profile-picker">
-                ${_renderComplianceProfilePicker(tmpl)}
-            </div>
-        </div>
-
-        <!-- Compliance Scan -->
-        <div class="detail-section tmpl-scan-section">
-            <button class="btn btn-sm tmpl-scan-btn" onclick="runComplianceScan('${escapeHtml(tmpl.id)}')">
-                🛡️ Scan for Compliance
-            </button>
-            <div id="tmpl-scan-results"></div>
-        </div>
-
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
             <h4>🧪 Validation ${_copilotBadge()}</h4>
@@ -4298,119 +4279,51 @@ function showTemplateDetail(templateId) {
             <div id="tmpl-deploy-progress" style="display:none;"></div>
         </div>
 
-        <div class="detail-layout">
-            <div class="detail-main">
-                <div class="detail-section">
-                    <h4>Description</h4>
-                    <p>${escapeHtml(tmpl.description || 'No description')}</p>
-                </div>
-
-                ${provides.length ? `
-                <div class="detail-section">
-                    <h4>Creates (Provides)</h4>
-                    <div class="detail-tags">${provides.map(p => `<span class="tmpl-chip tmpl-chip-provides"><span class="az-chip-icon">${_azureIcon(p, 14)}</span>${escapeHtml(p)}</span>`).join('')}</div>
-                </div>` : ''}
-
-                ${requires.length ? `
-                <div class="detail-section">
-                    <h4>🔗 Infrastructure Dependencies</h4>
-                    <div class="tmpl-dep-list">
-                        ${requires.map(r => `
-                            <div class="tmpl-dep-item tmpl-dep-required">
-                                <strong><span class="az-chip-icon">${_azureIcon(r.type || r, 14)}</span>${_shortType(r.type || r)}</strong>
-                                <span>${escapeHtml(r.reason || '')}</span>
-                                <code>${escapeHtml(r.parameter || '')}</code>
-                            </div>
-                        `).join('')}
-                    </div>
-                    <p class="tmpl-dep-note">These are automatically wired at deploy time — InfraForge will handle resource selection.</p>
-                </div>` : ''}
-
-                ${(!isStandalone || (tmpl.service_ids && tmpl.service_ids.length)) ? `
-                <!-- Check for Updates -->
-                <div class="detail-section tmpl-updates-section">
-                    <div class="tmpl-updates-header">
-                        <h4>🔄 Dependency Updates</h4>
-                        <button class="btn btn-sm tmpl-check-updates-btn" id="tmpl-check-updates-btn" onclick="checkForUpdates('${escapeHtml(tmpl.id)}')">
-                            🔍 Check for Updates
-                        </button>
-                    </div>
-                    <div id="tmpl-updates-results"></div>
-                </div>` : ''}
-
-                ${(tmpl.service_ids && tmpl.service_ids.length && status !== 'approved') ? `
-                <div class="detail-section">
-                    <a href="#" class="tmpl-recompose-link" onclick="event.preventDefault(); recomposeBlueprint('${escapeHtml(tmpl.id)}')">
-                        🔄 Recompose from latest service versions
-                    </a>
-                </div>` : ''}
-
-                <!-- Request Changes -->
-                <div class="detail-section tmpl-revision-section">
-                    <h4>📝 Request Changes ${_copilotBadge()}</h4>
-                    <p class="tmpl-revision-desc">Describe what you want changed and the Copilot SDK will analyze, policy-check, and update the template automatically. Creates a new version.</p>
-                    <div class="tmpl-revision-input-group">
-                        <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
-                            rows="2"
-                            placeholder="e.g. Add a SQL database and Key Vault for secrets management…"
-                            onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
-                        <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
-                            onclick="submitRevision('${escapeHtml(tmpl.id)}')">
-                            ✏️ Submit
-                        </button>
-                    </div>
-                    <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
-                    <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
-                </div>
-
-                ${tmpl.content ? `
-                <div class="detail-section">
-                    <h4>Template Code</h4>
-                    <div class="detail-code-wrap">
-                        <pre><code>${escapeHtml(tmpl.content)}</code></pre>
-                    </div>
-                </div>` : ''}
-            </div>
-
-            <div class="detail-sidebar">
-                <!-- Template Version -->
-                <div class="detail-section comp-version-section">
-                    <div class="comp-template-ver">
-                        <span class="comp-ver-label">Template Version</span>
-                        <span class="comp-ver-num">${activeVer || 'Draft'}</span>
-                        <span class="comp-ver-status comp-ver-status-${status}">${statusBadgeMap[status] || status}</span>
-                    </div>
-                </div>
-
-                <!-- Composed From — services + versions -->
-                <div class="detail-section comp-deps-section">
-                    <h4>🧩 Composed From</h4>
-                    <div id="tmpl-composition" class="comp-deps-list">
-                        <div class="compose-loading">Loading…</div>
-                    </div>
-                </div>
-
-                <div class="detail-section">
-                    <h4>Format & Category</h4>
+        <!-- ══ Composed From — front and center ══ -->
+        <div class="detail-section comp-hero-section">
+            <div class="comp-hero-header">
+                <h3>🧩 Composed From</h3>
+                <div class="comp-hero-meta">
+                    <span class="comp-ver-label">v</span><span class="comp-ver-num">${activeVer || 'Draft'}</span>
+                    <span class="comp-ver-status comp-ver-status-${status}">${statusBadgeMap[status] || status}</span>
                     <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
                     <span class="category-badge">${escapeHtml(tmpl.category || '')}</span>
+                    ${(tmpl.tags && tmpl.tags.length) ? tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('') : ''}
                 </div>
+            </div>
+            <div id="tmpl-composition" class="comp-hero-graph">
+                <div class="compose-loading">Loading composition…</div>
+            </div>
+        </div>
 
-                ${(tmpl.tags && tmpl.tags.length) ? `
-                <div class="detail-section">
-                    <h4>Tags</h4>
-                    <div class="detail-tags">${tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('')}</div>
-                </div>` : ''}
+        <!-- ══ Request Changes chat ══ -->
+        <div class="detail-section tmpl-revision-section">
+            <h4>📝 Request Changes ${_copilotBadge()}</h4>
+            <p class="tmpl-revision-desc">Describe what you want changed and the Copilot SDK will analyze, policy-check, and update the template automatically. Creates a new version.</p>
+            <div class="tmpl-revision-input-group">
+                <textarea id="tmpl-revision-prompt" class="form-control tmpl-revision-textarea"
+                    rows="3"
+                    placeholder="e.g. Add a SQL database and Key Vault for secrets management…"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); submitRevision('${escapeHtml(tmpl.id)}'); }"></textarea>
+                <button class="btn btn-primary btn-sm" id="tmpl-revision-btn"
+                    onclick="submitRevision('${escapeHtml(tmpl.id)}')">
+                    ✏️ Submit
+                </button>
+            </div>
+            <div id="tmpl-revision-policy" class="tmpl-revision-policy" style="display:none;"></div>
+            <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
+        </div>
 
-                <!-- Version Log — collapsible -->
-                <div class="detail-section comp-verlog-section">
-                    <h4 class="comp-verlog-toggle" onclick="this.parentElement.classList.toggle('comp-verlog-open')">
-                        📋 Version Log <span class="comp-verlog-arrow">▸</span>
-                    </h4>
-                    <div id="tmpl-version-history" class="tmpl-version-history comp-verlog-body">
-                        <div class="compose-loading">Loading…</div>
-                    </div>
-                </div>
+        <!-- Compliance scan results (populated on demand) -->
+        <div id="tmpl-scan-results" style="display:none;"></div>
+
+        <!-- Version Log — collapsible -->
+        <div class="detail-section comp-verlog-section">
+            <h4 class="comp-verlog-toggle" onclick="this.parentElement.classList.toggle('comp-verlog-open')">
+                📋 Version Log <span class="comp-verlog-arrow">▸</span>
+            </h4>
+            <div id="tmpl-version-history" class="tmpl-version-history comp-verlog-body">
+                <div class="compose-loading">Loading…</div>
             </div>
         </div>
     `;
@@ -4532,37 +4445,50 @@ async function _loadTemplateComposition(templateId) {
             if (layerNodes.length) layers.push(layerNodes);
         }
 
-        // ── Render graph ─────────────────────────────────────
+        // ── Render hero graph ────────────────────────────────
         const anyUpgrade = components.some(c => c.upgrade_available);
+        const providesList = data.provides || [];
 
-        let html = '<div class="dep-graph">';
+        let html = '<div class="comp-hero-graph-inner">';
 
         // Layers (top = dependents, bottom = foundations)
         for (let li = 0; li < layers.length; li++) {
             const layer = layers[li];
-            html += '<div class="dep-graph-layer">';
+            html += '<div class="comp-hero-layer">';
             for (const c of layer) {
                 const shortName = c.name || c.service_id.split('/').pop();
                 const verDisplay = c.current_semver || '—';
-                const statusCls = c.status === 'approved' ? 'dep-node-ok' : 'dep-node-warn';
-                const upgradeCls = c.upgrade_available ? 'dep-node-upgradable' : '';
+                const statusCls = c.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
+                const upgradeCls = c.upgrade_available ? 'hero-node-upgradable' : '';
+                const catLabel = c.category ? c.category.charAt(0).toUpperCase() + c.category.slice(1) : '';
 
                 // Find edges FROM this node (what it depends on)
                 const myEdges = edges.filter(e => e.from === c.service_id);
-                const edgeAttr = myEdges.length
-                    ? `data-deps="${myEdges.map(e => e.to).join(',')}" data-reasons="${myEdges.map(e => e.reason).join('|')}"`
-                    : '';
+                const depNames = myEdges.map(e => {
+                    const dep = components.find(x => x.service_id === e.to);
+                    return dep ? (dep.name || e.to.split('/').pop()) : e.to.split('/').pop();
+                });
+
+                // Build tooltip text
+                const tooltipLines = [
+                    c.service_id,
+                    catLabel ? `Category: ${catLabel}` : '',
+                    `Version: ${verDisplay}`,
+                    c.upgrade_available ? `Latest: ${c.latest_semver}` : 'Up to date',
+                    depNames.length ? `Depends on: ${depNames.join(', ')}` : '',
+                ].filter(Boolean).join('\n');
 
                 html += `
-                    <div class="dep-node ${statusCls} ${upgradeCls}" data-sid="${escapeHtml(c.service_id)}" ${edgeAttr}>
-                        <div class="dep-node-icon">${_azureIcon(c.service_id, 18)}</div>
-                        <div class="dep-node-info">
-                            <div class="dep-node-name">${escapeHtml(shortName)}</div>
-                            <div class="dep-node-ver">
-                                <span class="dep-node-pinned" title="Pinned version in this template">📌 ${verDisplay}</span>
+                    <div class="hero-node ${statusCls} ${upgradeCls}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
+                        <div class="hero-node-icon">${_azureIcon(c.service_id, 28)}</div>
+                        <div class="hero-node-body">
+                            <div class="hero-node-name">${escapeHtml(shortName)}</div>
+                            ${catLabel ? `<div class="hero-node-cat">${escapeHtml(catLabel)}</div>` : ''}
+                            <div class="hero-node-ver-row">
+                                <span class="hero-node-ver">v${verDisplay}</span>
                                 ${c.upgrade_available
-                                    ? `<button class="dep-upgrade-btn" onclick="upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
-                                    : '<span class="dep-node-current">✓ latest</span>'}
+                                    ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
+                                    : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                         </div>
                     </div>`;
@@ -4571,23 +4497,23 @@ async function _loadTemplateComposition(templateId) {
 
             // Arrow connector between layers
             if (li < layers.length - 1) {
-                html += '<div class="dep-graph-connector"><span class="dep-graph-arrow">↓</span></div>';
+                html += '<div class="comp-hero-connector"><span class="comp-hero-arrow">↓</span></div>';
             }
         }
 
         // External dependencies (requires not satisfied within the template)
         if (requires.length) {
             html += `
-                <div class="dep-graph-connector"><span class="dep-graph-arrow dep-graph-arrow-ext">↓ external</span></div>
-                <div class="dep-graph-layer dep-graph-layer-ext">
+                <div class="comp-hero-connector"><span class="comp-hero-arrow comp-hero-arrow-ext">↓ external dep</span></div>
+                <div class="comp-hero-layer comp-hero-layer-ext">
                     ${requires.map(r => {
                         const rType = r.type || r;
                         return `
-                        <div class="dep-node dep-node-ext" data-sid="${escapeHtml(rType)}">
-                            <div class="dep-node-icon">${_azureIcon(rType, 18)}</div>
-                            <div class="dep-node-info">
-                                <div class="dep-node-name">${_shortType(rType)}</div>
-                                <div class="dep-node-ver"><span class="dep-node-ext-label">external dep</span></div>
+                        <div class="hero-node hero-node-ext" data-sid="${escapeHtml(rType)}" title="${escapeHtml(rType)}\nResolved at deploy time">
+                            <div class="hero-node-icon">${_azureIcon(rType, 28)}</div>
+                            <div class="hero-node-body">
+                                <div class="hero-node-name">${_shortType(rType)}</div>
+                                <div class="hero-node-cat" style="font-style:italic">external dep</div>
                             </div>
                         </div>`;
                     }).join('')}
@@ -4596,15 +4522,14 @@ async function _loadTemplateComposition(templateId) {
 
         html += '</div>';
 
-        // Recompose all button if any upgrades available
+        // Recompose all / check for updates row
+        html += '<div class="comp-hero-actions">';
         if (anyUpgrade) {
-            html += `
-                <div class="dep-graph-actions">
-                    <button class="btn btn-sm dep-upgrade-all-btn" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">
-                        🔄 Upgrade All Dependencies
-                    </button>
-                </div>`;
+            html += `<button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">🔄 Upgrade All Dependencies</button>`;
         }
+        html += `<button class="btn btn-sm tmpl-check-updates-btn" id="tmpl-check-updates-btn" onclick="checkForUpdates('${escapeHtml(templateId)}')">🔍 Check for Updates</button>`;
+        html += '</div>';
+        html += '<div id="tmpl-updates-results"></div>';
 
         container.innerHTML = html;
 
