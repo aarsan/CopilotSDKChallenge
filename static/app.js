@@ -1384,14 +1384,18 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                 badge.classList.remove('version-update-running');
                 badge.classList.add('version-update-done');
                 badge.innerHTML = '✓ Updated';
+                completed = true;
             } else if (event.type === 'error') {
                 badge.classList.remove('version-update-running');
                 badge.classList.add('version-update-error');
                 badge.innerHTML = '⚠ Failed';
+                completed = true;
             } else if (event.phase && phaseLabels[event.phase]) {
                 badge.innerHTML = `<span class="update-badge-spinner"></span> ${phaseLabels[event.phase]}`;
             }
         };
+
+        let completed = false;  // Track whether we received a terminal event
 
         while (true) {
             const { done, value } = await reader.read();
@@ -1417,6 +1421,20 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
                 updateBadge(last);
                 if (_openDrawerServiceId === serviceId) _handleUpdateEvent(last);
             } catch (e) {}
+        }
+
+        // Detect stream interruption — no terminal event received
+        if (!completed && !failed) {
+            showToast('Pipeline stream ended unexpectedly — the update may not have completed. Refreshing…', 'warning');
+            if (badge) {
+                badge.classList.remove('version-update-running');
+                badge.classList.add('version-update-error');
+                badge.innerHTML = '⚠ Interrupted';
+            }
+            // Send an interrupted event to the overlay so it shows a visible warning
+            if (_openDrawerServiceId === serviceId) {
+                _handleUpdateEvent({ type: 'error', phase: 'interrupted', detail: 'Pipeline stream ended unexpectedly — update may not have completed. Check the service status and retry if needed.' });
+            }
         }
 
         // Refresh data regardless of outcome
@@ -2643,6 +2661,7 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         const decoder = new TextDecoder();
         let buffer = '';
         let _updateFailed = false;
+        let _updateCompleted = false;  // tracks whether a terminal event was received
 
         while (true) {
             const { done, value } = await reader.read();
@@ -2657,7 +2676,8 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
                 try {
                     const event = JSON.parse(line);
                     console.log('[update] event:', event.type, event.phase, event.detail?.substring(0, 80));
-                    if (event.type === 'error') _updateFailed = true;
+                    if (event.type === 'error') { _updateFailed = true; _updateCompleted = true; }
+                    if (event.type === 'done') _updateCompleted = true;
                     _handleUpdateEvent(event);
                 } catch (e) { console.warn('[update] parse error:', e, line.substring(0, 100)); }
             }
@@ -2666,9 +2686,19 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         if (buffer.trim()) {
             try {
                 const last = JSON.parse(buffer);
-                if (last.type === 'error') _updateFailed = true;
+                if (last.type === 'error') { _updateFailed = true; _updateCompleted = true; }
+                if (last.type === 'done') _updateCompleted = true;
                 _handleUpdateEvent(last);
             } catch (e) {}
+        }
+
+        // Detect stream interruption: server closed the connection without a terminal event
+        if (!_updateCompleted && !_updateFailed) {
+            showToast('Pipeline stream ended unexpectedly — the update may not have completed. Refresh to check status.', 'warning');
+            const detail = document.getElementById('validation-detail');
+            if (detail) detail.textContent = 'Pipeline interrupted — the update may not have completed. Refresh to check status.';
+            _handleUpdateEvent({ type: 'error', phase: 'interrupted', detail: 'Pipeline stream ended without a completion signal. The server may have restarted. Refresh the page to check the current status.' });
+            _updateFailed = true;
         }
 
         // Only reload & re-render drawer on success — on error, keep the error card visible
