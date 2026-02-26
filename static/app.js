@@ -10189,6 +10189,8 @@ async function loadAzureResources() {
     if (refreshBtn) { refreshBtn.disabled = true; refreshBtn.textContent = '⏳ Scanning…'; }
     feed.innerHTML = '<div class="activity-empty"><span class="activity-empty-icon">⏳</span><p>Scanning Azure subscription for resource groups…</p></div>';
 
+    const _el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+
     try {
         const res = await fetch('/api/azure/resource-groups');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -10200,10 +10202,10 @@ async function loadAzureResources() {
         const validationRGs = managed.filter(r => r.rg_type === 'validation');
         const deploymentRGs = managed.filter(r => r.rg_type === 'deployment');
 
-        el('azure-rg-managed-count', managed.length);
-        el('azure-rg-validation-count', validationRGs.length);
-        el('azure-rg-deployment-count', deploymentRGs.length);
-        el('azure-rg-total-count', data.total || 0);
+        _el('azure-rg-managed-count', managed.length);
+        _el('azure-rg-validation-count', validationRGs.length);
+        _el('azure-rg-deployment-count', deploymentRGs.length);
+        _el('azure-rg-total-count', data.total || 0);
 
         const subEl = document.getElementById('azure-rg-sub');
         if (subEl) subEl.textContent = `Subscription: ${data.subscription_id || ''}`;
@@ -10229,15 +10231,33 @@ function _renderAzureResourceGroups(managed, unmanaged) {
 
     let html = '';
 
-    if (managed.length) {
-        html += '<div class="azure-rg-section"><h4 class="azure-rg-section-title">🔗 InfraForge-Managed Resource Groups</h4>';
-        html += managed.map(rg => _renderAzureRGCard(rg, true)).join('');
+    // Split managed into validation (orphaned) vs deployment (active)
+    const validationRGs = managed.filter(r => r.rg_type === 'validation');
+    const deploymentRGs = managed.filter(r => r.rg_type !== 'validation');
+
+    if (deploymentRGs.length) {
+        html += '<div class="azure-rg-section"><h4 class="azure-rg-section-title">🚀 InfraForge Deployments <span class="azure-rg-section-count">' + deploymentRGs.length + '</span></h4>';
+        html += '<p class="azure-rg-section-desc">Resource groups created and managed by InfraForge. These contain your deployed infrastructure.</p>';
+        html += deploymentRGs.map(rg => _renderAzureRGCard(rg, true)).join('');
         html += '</div>';
+    }
+
+    if (validationRGs.length) {
+        html += '<div class="azure-rg-section azure-rg-section-warn"><h4 class="azure-rg-section-title">🧪 Orphaned Validation Groups <span class="azure-rg-section-count azure-rg-section-count-warn">' + validationRGs.length + '</span></h4>';
+        html += '<p class="azure-rg-section-desc">Leftover resource groups from onboarding validation runs. These are safe to delete — use <b>Cleanup Orphaned</b> to remove them all.</p>';
+        html += validationRGs.map(rg => _renderAzureRGCard(rg, true)).join('');
+        html += '</div>';
+    }
+
+    if (!managed.length) {
+        html += '<div class="azure-rg-section"><h4 class="azure-rg-section-title">🔗 InfraForge-Managed</h4>';
+        html += '<p class="azure-rg-section-desc" style="color:var(--text-secondary);">No InfraForge-managed resource groups found. Deploy a template to create one.</p></div>';
     }
 
     if (unmanaged.length) {
         html += `<details class="azure-rg-section azure-rg-unmanaged-details">
-            <summary class="azure-rg-section-title azure-rg-unmanaged-summary">📁 Other Resource Groups (${unmanaged.length})</summary>`;
+            <summary class="azure-rg-section-title azure-rg-unmanaged-summary">📁 Pre-Existing Resource Groups — Not Managed by InfraForge <span class="azure-rg-section-count">${unmanaged.length}</span></summary>
+            <p class="azure-rg-section-desc">These resource groups existed before InfraForge or were created outside of InfraForge. They are shown for reference only — InfraForge does not manage or modify them.</p>`;
         html += unmanaged.map(rg => _renderAzureRGCard(rg, false)).join('');
         html += '</details>';
     }

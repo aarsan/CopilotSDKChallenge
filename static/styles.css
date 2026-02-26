@@ -5149,9 +5149,38 @@ body {
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem;
     padding-bottom: 0.4rem;
     border-bottom: 1px solid var(--border-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.azure-rg-section-count {
+    font-size: 0.72rem;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    padding: 0.1em 0.45em;
+    border-radius: 10px;
+    font-weight: 500;
+}
+.azure-rg-section-count-warn {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+}
+
+.azure-rg-section-desc {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem 0;
+    line-height: 1.4;
+}
+
+.azure-rg-section-warn {
+    border-left: 3px solid #f59e0b;
+    padding-left: 0.75rem;
+    border-radius: 4px;
 }
 
 .azure-rg-unmanaged-summary {
