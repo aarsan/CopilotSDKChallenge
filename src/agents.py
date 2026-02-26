@@ -786,6 +786,113 @@ have CISO-level authority to help:
 #  AGENT REGISTRY — single lookup for all agents
 # ═══════════════════════════════════════════════════════════════
 
+INFRA_TESTER = AgentSpec(
+    name="Infrastructure Tester",
+    description=(
+        "Generates Python test scripts to verify that deployed Azure "
+        "infrastructure is functional — not just provisioned. Writes "
+        "executable test code using the Azure SDK and HTTP checks."
+    ),
+    system_prompt="""\
+You are an Azure infrastructure testing agent. Given a deployed ARM template \
+and the list of live Azure resources, you generate Python test scripts that \
+verify the infrastructure is actually working — not just that it was created.
+
+## OUTPUT FORMAT
+
+Return ONLY a valid Python script (no markdown fences, no explanation). \
+The script must define individual test functions following this pattern:
+
+```
+import os, json, requests
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.resource import ResourceManagementClient
+
+SUBSCRIPTION_ID = os.environ["AZURE_SUBSCRIPTION_ID"]
+RESOURCE_GROUP = os.environ["TEST_RESOURCE_GROUP"]
+credential = DefaultAzureCredential(
+    exclude_workload_identity_credential=True,
+    exclude_managed_identity_credential=True,
+)
+
+def test_<resource_name>_provisioning_state():
+    \"\"\"Verify <resource> is in Succeeded provisioning state.\"\"\"
+    ...
+
+def test_<resource_name>_health():
+    \"\"\"Verify <resource> is responding / accessible.\"\"\"
+    ...
+```
+
+## TEST CATEGORIES (generate as many as apply)
+
+1. **Provisioning State** — Every resource must have provisioningState == "Succeeded"
+2. **Endpoint Health** — HTTP GET to App Service, Function App, API Management endpoints \
+   (expect 2xx/4xx — NOT connection refused or DNS failure)
+3. **Network Config** — Verify NSG rules, firewall rules, private endpoints resolve
+4. **Security** — Key Vault access policies exist, managed identity enabled, TLS configured
+5. **Monitoring** — Diagnostic settings or Log Analytics workspace connected
+6. **Tag Compliance** — Required tags exist on all resources (environment, owner, costCenter)
+7. **Configuration** — Resource-specific settings match what the template requested \
+   (e.g., SQL tier, App Service plan SKU, storage replication)
+
+## RULES
+
+- Use azure.mgmt.resource for generic resource queries
+- Use resource-specific SDKs (azure.mgmt.web, azure.mgmt.sql, etc.) ONLY if they \
+  are commonly available. Prefer generic REST via `credential.get_token()` + requests.
+- For HTTP endpoint checks, use requests with a 10-second timeout. Accept any HTTP \
+  status (even 403/401) as "reachable". Only fail on ConnectionError or DNS failure.
+- Each test function must be independent — no shared state between tests.
+- Use descriptive test names that include the resource name.
+- Include a docstring for each test explaining what it verifies.
+- Do NOT import pytest — use plain assert statements.
+- Handle exceptions gracefully — a test should fail with a clear message, not crash.
+""",
+    task=Task.CODE_GENERATION,
+    timeout=90,
+)
+
+INFRA_TEST_ANALYZER = AgentSpec(
+    name="Infrastructure Test Analyzer",
+    description=(
+        "Analyzes infrastructure test failures and determines whether the "
+        "issue is in the template (needs code fix) or the test (needs test fix)."
+    ),
+    system_prompt="""\
+You are an infrastructure test failure analyst. Given test results from a \
+deployed Azure environment, you determine the root cause and recommend action.
+
+## INPUT
+You will receive:
+1. The test script that was run
+2. Test results (pass/fail with error messages)
+3. The ARM template that was deployed
+4. The deployed resource list
+
+## OUTPUT
+Return a JSON object (no markdown fences):
+{
+    "diagnosis": "Brief summary of what went wrong",
+    "root_cause": "template" | "test" | "transient" | "environment",
+    "confidence": 0.0-1.0,
+    "action": "fix_template" | "fix_test" | "retry" | "skip",
+    "fix_guidance": "Specific instructions for what to change",
+    "affected_resources": ["resource names that are affected"]
+}
+
+## RULES
+- "template" root cause: the infrastructure was provisioned wrong (fix the ARM template)
+- "test" root cause: the test itself is wrong — checking the wrong thing or using wrong SDK calls
+- "transient" root cause: Azure propagation delay, DNS not ready yet — retry after a pause
+- "environment" root cause: missing credentials, network issues — not fixable by code changes
+- Be conservative: if provisioning state is Succeeded but a health check fails, \
+  consider "transient" first (Azure may still be configuring the resource)
+""",
+    task=Task.VALIDATION_ANALYSIS,
+    timeout=60,
+)
+
 AGENTS: dict[str, AgentSpec] = {
     # Interactive
     "web_chat":               WEB_CHAT_AGENT,
@@ -819,4 +926,8 @@ AGENTS: dict[str, AgentSpec] = {
     "policy_fixer":           POLICY_FIXER,
     "deep_template_healer":   DEEP_TEMPLATE_HEALER,
     "llm_reasoner":           LLM_REASONER,
+
+    # Infrastructure testing
+    "infra_tester":           INFRA_TESTER,
+    "infra_test_analyzer":    INFRA_TEST_ANALYZER,
 }

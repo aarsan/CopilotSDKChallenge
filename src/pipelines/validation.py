@@ -137,16 +137,136 @@ async def stream_validation(
             final_tpl = current_tpl
             final_status = "validated"
             issues_resolved = len(heal_history)
+            provisioned = result.get("provisioned_resources", [])
 
             yield json.dumps({
-                "phase": "complete",
+                "phase": "deploy_succeeded",
                 "status": "succeeded",
                 "issues_resolved": issues_resolved,
                 "deployment_id": result.get("deployment_id"),
-                "provisioned_resources": result.get("provisioned_resources", []),
+                "provisioned_resources": provisioned,
                 "outputs": result.get("outputs", {}),
                 "healed": issues_resolved > 0,
                 "deep_healed": deep_healed,
+            }) + "\n"
+
+            # ── Infrastructure Testing ──
+            # Enumerate resources with full properties for test generation
+            resource_details = []
+            try:
+                from src.tools.deploy_engine import _get_resource_client
+                rc = _get_resource_client()
+                loop = asyncio.get_event_loop()
+                live_resources = await loop.run_in_executor(
+                    None, lambda: list(rc.resources.list_by_resource_group(rg_name))
+                )
+                for r in live_resources:
+                    detail = {
+                        "id": r.id, "name": r.name, "type": r.type,
+                        "location": r.location,
+                        "tags": dict(r.tags) if r.tags else {},
+                    }
+                    try:
+                        full = await loop.run_in_executor(
+                            None,
+                            lambda r=r: rc.resources.get_by_id(r.id, api_version="2023-07-01"),
+                        )
+                        if full.properties:
+                            detail["properties"] = full.properties
+                    except Exception:
+                        pass
+                    resource_details.append(detail)
+            except Exception as e:
+                logger.warning(f"Resource enumeration failed (non-fatal): {e}")
+                # Fall back to basic provisioned list
+                resource_details = provisioned
+
+            # Run the infrastructure testing pipeline
+            testing_passed = True
+            test_feedback = None
+            try:
+                from src.pipelines.testing import stream_infra_testing
+                async for test_line in stream_infra_testing(
+                    arm_template=current_tpl,
+                    resource_group=rg_name,
+                    deployed_resources=resource_details,
+                    region=region,
+                ):
+                    yield test_line
+                    # Check if testing produced a fix_template feedback
+                    try:
+                        evt = json.loads(test_line)
+                        if evt.get("phase") == "testing_complete" and evt.get("status") == "failed":
+                            testing_passed = False
+                        if evt.get("phase") == "testing_feedback" and evt.get("action") == "fix_template":
+                            test_feedback = evt
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+            except Exception as e:
+                logger.warning(f"Infrastructure testing error (non-fatal): {e}")
+                yield json.dumps({
+                    "phase": "testing_complete",
+                    "status": "skipped",
+                    "detail": f"Testing pipeline error: {e}",
+                    "tests_passed": 0,
+                    "tests_failed": 0,
+                }) + "\n"
+
+            # If tests failed and analysis says fix_template, feed back
+            # for another heal attempt (if we have attempts left)
+            if test_feedback and not is_last:
+                test_error = test_feedback.get("fix_guidance", "Infrastructure tests failed")
+                yield json.dumps({
+                    "phase": "healing",
+                    "detail": f"Infrastructure tests found issues — adjusting the template: {test_error[:300]}",
+                    "error_summary": test_error[:500],
+                }) + "\n"
+
+                pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
+                try:
+                    from src.pipeline_helpers import copilot_heal_template, extract_param_values
+                    _heal_params = extract_param_values(
+                        current_tpl if isinstance(current_tpl, dict) else json.loads(pre_fix)
+                    )
+                    fixed_json = await copilot_heal_template(
+                        content=pre_fix,
+                        error=f"Infrastructure tests failed: {test_error}",
+                        previous_attempts=heal_history,
+                        parameters=_heal_params,
+                    )
+                    from src.pipeline_helpers import summarize_fix, build_final_params
+                    fix_summary = summarize_fix(pre_fix, fixed_json)
+                    heal_history.append({
+                        "step": len(heal_history) + 1,
+                        "phase": "infra_testing",
+                        "error": test_error[:500],
+                        "fix_summary": fix_summary,
+                    })
+                    current_tpl = json.loads(fixed_json)
+                    current_params = build_final_params(current_tpl, user_params)
+                    final_status = "failed"  # Will retry
+
+                    yield json.dumps({
+                        "phase": "healed",
+                        "detail": f"Template adjusted based on test feedback: {fix_summary}",
+                        "fix_summary": fix_summary,
+                    }) + "\n"
+                    continue  # Retry the deploy + test loop
+                except Exception as heal_err:
+                    logger.warning(f"Test-feedback healing failed: {heal_err}")
+                    # Fall through to complete
+
+            # Emit final completion
+            yield json.dumps({
+                "phase": "complete",
+                "status": "succeeded" if testing_passed else "tested_with_issues",
+                "issues_resolved": issues_resolved,
+                "deployment_id": result.get("deployment_id"),
+                "provisioned_resources": provisioned,
+                "outputs": result.get("outputs", {}),
+                "healed": issues_resolved > 0,
+                "deep_healed": deep_healed,
+                "testing_passed": testing_passed,
             }) + "\n"
             break
 

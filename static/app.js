@@ -6909,6 +6909,10 @@ function _renderDeployProgress(container, event, ctx) {
                     <div class="vf-stage-dot"></div><span>Fix</span>
                 </div>
                 <div class="vf-stage-connector-h"></div>
+                <div class="vf-stage" data-vf-stage="test">
+                    <div class="vf-stage-dot"></div><span>Test</span>
+                </div>
+                <div class="vf-stage-connector-h"></div>
                 <div class="vf-stage" data-vf-stage="verify">
                     <div class="vf-stage-dot"></div><span>Verify</span>
                 </div>
@@ -6933,7 +6937,7 @@ function _renderDeployProgress(container, event, ctx) {
                 s.classList.add(status === 'error' ? 'vf-stage-error' : 'vf-stage-active');
             }
         });
-        const order = ['deploy', 'analyze', 'fix', 'verify'];
+        const order = ['deploy', 'analyze', 'fix', 'test', 'verify'];
         const idx = order.indexOf(stageName);
         if (idx > 0) {
             for (let i = 0; i < idx; i++) {
@@ -7349,6 +7353,84 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
+    // ── Deploy succeeded (before testing) ──
+    if (phase === 'deploy_succeeded') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (curNode) _finalizeNode(curNode, 'success');
+        const provisioned = event.provisioned_resources || [];
+        const healMsg = (event.issues_resolved || 0) > 0
+            ? ` — resolved ${event.issues_resolved} issue${event.issues_resolved !== 1 ? 's' : ''}` : '';
+        _addActivity('✅', `Deployment succeeded — ${provisioned.length} resource(s) provisioned${healMsg}`, 'vf-activity-success');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    // ── Infrastructure Testing phases ──
+    if (phase === 'testing_start') {
+        _setActiveStage('test');
+        const node = _createNode('🧪', 'Infrastructure Testing');
+        _addActivity('🧪', escapeHtml(detail || 'Starting infrastructure tests…'), 'vf-activity-test');
+        return;
+    }
+
+    if (phase === 'testing_generate') {
+        _setActiveStage('test');
+        if (event.status === 'running') {
+            _addActivity('📝', escapeHtml(detail || 'Generating test scripts…'), 'vf-activity-test');
+        } else if (event.status === 'complete') {
+            _addActivity('✅', escapeHtml(detail || 'Tests generated'), 'vf-activity-success');
+        } else if (event.status === 'error') {
+            _addActivity('⚠️', escapeHtml(detail || 'Test generation failed'), 'vf-activity-issue');
+        }
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    if (phase === 'testing_execute') {
+        _setActiveStage('test');
+        _addActivity('🏃', escapeHtml(detail || 'Running tests…'), 'vf-activity-test');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    if (phase === 'test_result') {
+        const icon = event.status === 'passed' ? '✅' : '❌';
+        const cssClass = event.status === 'passed' ? 'vf-activity-success' : 'vf-activity-issue';
+        _addActivity(icon, escapeHtml(detail || `${event.test_name}: ${event.message}`), cssClass);
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    if (phase === 'testing_analyze') {
+        _setActiveStage('test');
+        const icon = event.status === 'complete' ? '🔍' : '🧠';
+        _addActivity(icon, escapeHtml(detail || 'Analyzing test results…'), 'vf-activity-analyze');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    if (phase === 'testing_feedback') {
+        _addActivity('📋', escapeHtml(detail || 'Test feedback'), 'vf-activity-issue');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
+    if (phase === 'testing_complete') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (event.status === 'passed') {
+            _addActivity('✅', escapeHtml(detail || 'All tests passed'), 'vf-activity-success');
+            if (curNode) _finalizeNode(curNode, 'success');
+        } else if (event.status === 'skipped') {
+            _addActivity('⏭️', escapeHtml(detail || 'Tests skipped'), 'vf-activity-info');
+            if (curNode) _finalizeNode(curNode, 'done');
+        } else {
+            _addActivity('⚠️', escapeHtml(detail || 'Some tests failed'), 'vf-activity-issue');
+            if (curNode) _finalizeNode(curNode, 'done');
+        }
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
     // ── Final result ──
     if (phase === 'complete' || phase === 'done') {
         const resources = event.provisioned_resources || [];
@@ -7359,7 +7441,7 @@ function _renderDeployProgress(container, event, ctx) {
         liveProgress.innerHTML = '';
 
         // Update stage bar
-        if (event.status === 'succeeded') {
+        if (isSuccess) {
             flowchart.querySelectorAll('.vf-stage').forEach(s => {
                 s.classList.remove('vf-stage-active', 'vf-stage-error');
                 s.classList.add('vf-stage-done');
@@ -7374,14 +7456,18 @@ function _renderDeployProgress(container, event, ctx) {
 
         // Finalize last active node
         const lastNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
-        if (lastNode) _finalizeNode(lastNode, event.status === 'succeeded' ? 'success' : 'done');
+        if (lastNode) _finalizeNode(lastNode, isSuccess ? 'success' : 'done');
 
         // Add edge to result
         _addEdge('vf-flow-edge-done');
 
         // Build final result node
         const resultDiv = document.createElement('div');
-        if (event.status === 'succeeded') {
+        const isSuccess = event.status === 'succeeded' || event.status === 'tested_with_issues';
+        const testingNote = event.testing_passed === false
+            ? '<div class="vf-result-test-note">⚠️ Some infrastructure tests had issues — the deployment succeeded but you may want to review the test results above.</div>'
+            : '';
+        if (isSuccess) {
             const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
             resultDiv.className = 'vf-result vf-result-success';
             resultDiv.innerHTML = `
@@ -7412,6 +7498,7 @@ function _renderDeployProgress(container, event, ctx) {
                     `).join('')}
                 </div>` : ''}
                 ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+                ${testingNote}
             `;
         } else {
             resultDiv.className = 'vf-result vf-result-fail';
