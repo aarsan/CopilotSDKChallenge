@@ -12340,3 +12340,342 @@ details[open] > .tmpl-deploy-group-optional {
         width: 100%;
     }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   CONCIERGE / CISO CHAT — Floating Drawer + FAB
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Floating Action Button ── */
+.concierge-fab {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1099;
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: all 0.25s ease;
+    animation: concierge-pulse 3s ease-in-out infinite;
+}
+
+.concierge-fab:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 24px rgba(99, 102, 241, 0.5), 0 3px 12px rgba(0, 0, 0, 0.4);
+}
+
+.concierge-fab.fab-active {
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    animation: none;
+}
+
+.concierge-fab-icon {
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+@keyframes concierge-pulse {
+    0%, 100% { box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3); }
+    50%      { box-shadow: 0 4px 24px rgba(99, 102, 241, 0.6), 0 2px 12px rgba(0, 0, 0, 0.3); }
+}
+
+/* ── Drawer ── */
+.concierge-drawer {
+    position: fixed;
+    bottom: 5.5rem;
+    right: 1.5rem;
+    width: 440px;
+    height: 560px;
+    max-height: calc(100vh - 7rem);
+    background: var(--surface-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
+    z-index: 1100;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(99, 102, 241, 0.15);
+    animation: conciergeSlideUp 0.25s ease;
+    overflow: hidden;
+}
+
+.concierge-drawer.hidden {
+    display: none;
+}
+
+@keyframes conciergeSlideUp {
+    from { transform: translateY(20px) scale(0.95); opacity: 0; }
+    to   { transform: translateY(0)    scale(1);    opacity: 1; }
+}
+
+/* ── Header ── */
+.concierge-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-default);
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(139, 92, 246, 0.05));
+    flex-shrink: 0;
+}
+
+.concierge-title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.concierge-icon {
+    font-size: 1.3rem;
+}
+
+.concierge-title h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.concierge-subtitle {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.concierge-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+/* ── Messages ── */
+.concierge-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.con-msg {
+    display: flex;
+    gap: 0.6rem;
+    max-width: 100%;
+}
+
+.con-msg-user {
+    flex-direction: row-reverse;
+}
+
+.con-msg-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--surface-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.con-msg-user .con-msg-avatar {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.con-msg-content {
+    max-width: 85%;
+}
+
+.con-msg-text {
+    padding: 0.6rem 0.8rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+}
+
+.con-msg-user .con-msg-text {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+
+.con-msg-assistant .con-msg-text {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-subtle);
+    border-bottom-left-radius: 4px;
+}
+
+/* Markdown inside concierge messages */
+.con-msg-text h1, .con-msg-text h2, .con-msg-text h3 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0.6rem 0 0.3rem;
+}
+.con-msg-text h1:first-child, .con-msg-text h2:first-child, .con-msg-text h3:first-child {
+    margin-top: 0;
+}
+.con-msg-assistant .con-msg-text h1,
+.con-msg-assistant .con-msg-text h2,
+.con-msg-assistant .con-msg-text h3 {
+    color: var(--text-primary);
+}
+.con-msg-user .con-msg-text h1,
+.con-msg-user .con-msg-text h2,
+.con-msg-user .con-msg-text h3 {
+    color: #fff;
+}
+.con-msg-text p { margin: 0 0 0.4rem; }
+.con-msg-text ul, .con-msg-text ol { margin: 0.3rem 0; padding-left: 1.2rem; }
+.con-msg-text li { margin-bottom: 0.2rem; }
+.con-msg-text table { width: 100%; border-collapse: collapse; margin: 0.5rem 0; font-size: 0.75rem; }
+.con-msg-text th, .con-msg-text td { padding: 0.3rem 0.5rem; border: 1px solid var(--border-subtle); text-align: left; }
+.con-msg-text th { background: var(--surface-tertiary); font-weight: 600; }
+.con-msg-text code { background: var(--surface-tertiary); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.78rem; }
+.con-msg-text pre { background: var(--surface-tertiary); padding: 0.5rem; border-radius: 6px; overflow-x: auto; margin: 0.4rem 0; }
+.con-msg-text pre code { background: none; padding: 0; }
+
+/* ── Welcome ── */
+.concierge-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 1.5rem 1rem;
+    gap: 0.5rem;
+}
+
+.concierge-welcome-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.3rem;
+}
+
+.concierge-welcome h4 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.concierge-welcome p {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    max-width: 320px;
+}
+
+.concierge-suggestions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.8rem;
+    width: 100%;
+    max-width: 360px;
+}
+
+.concierge-suggestion {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s ease;
+}
+
+.concierge-suggestion:hover {
+    background: var(--surface-tertiary);
+    border-color: #6366f1;
+    color: var(--text-primary);
+}
+
+/* ── Tool Activity ── */
+.concierge-tool-activity {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 1rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.concierge-tool-activity.hidden {
+    display: none;
+}
+
+/* ── Input Area ── */
+.concierge-input-area {
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--border-default);
+    background: var(--surface-secondary);
+    flex-shrink: 0;
+    border-radius: 0 0 16px 16px;
+}
+
+.concierge-input-wrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    padding: 0.4rem 0.5rem;
+}
+
+.concierge-input-wrapper textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    line-height: 1.4;
+    resize: none;
+    max-height: 100px;
+    font-family: inherit;
+}
+
+.concierge-input-wrapper textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.concierge-input-wrapper .btn-send {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 0;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+
+.concierge-input-wrapper .btn-send:hover {
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+}
+
+.concierge-input-wrapper .btn-send svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .concierge-drawer {
+        width: calc(100% - 2rem);
+        right: 1rem;
+        left: 1rem;
+        bottom: 5rem;
+    }
+}

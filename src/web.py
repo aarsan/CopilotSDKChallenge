@@ -10697,6 +10697,181 @@ async def websocket_governance_chat(websocket: WebSocket):
         pass
 
 
+# ── WebSocket: Concierge / CISO Chat ────────────────────────
+
+concierge_sessions: dict = {}
+
+@app.websocket("/ws/concierge-chat")
+async def websocket_concierge_chat(websocket: WebSocket):
+    """WebSocket endpoint for the Concierge / CISO Advisor agent.
+
+    An always-available general assistant with CISO-level authority to review,
+    modify, and grant exceptions to governance policies. Uses the Concierge
+    agent persona with the full CISO tool set.
+
+    Protocol identical to /ws/chat and /ws/governance-chat.
+    """
+    from src.agents import CONCIERGE_AGENT
+    from src.tools import get_concierge_tools
+
+    await websocket.accept()
+
+    session_token: Optional[str] = None
+    user_context: Optional[UserContext] = None
+
+    try:
+        # ── Step 1: Authenticate ─────────────────────────────
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+
+        if auth_msg.get("type") != "auth":
+            await websocket.send_json({"type": "error", "message": "Expected auth message"})
+            await websocket.close()
+            return
+
+        session_token = auth_msg.get("sessionToken", "")
+        user_context = await get_user_context(session_token)
+
+        if not user_context:
+            await websocket.send_json({"type": "error", "message": "Invalid or expired session"})
+            await websocket.close()
+            return
+
+        # ── Step 2: Create Copilot session with concierge context ─
+        client = await ensure_copilot_client()
+        if client is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Copilot SDK is not available. Concierge is disabled.",
+            })
+            await websocket.close()
+            return
+
+        personalized_system_message = (
+            CONCIERGE_AGENT.system_prompt + "\n" + user_context.to_prompt_context()
+        )
+
+        tools = get_concierge_tools()
+        try:
+            copilot_session = await client.create_session({
+                "model": get_active_model(),
+                "streaming": True,
+                "tools": tools,
+                "system_message": {"content": personalized_system_message},
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Concierge session: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to create concierge session: {e}",
+            })
+            await websocket.close()
+            return
+
+        con_key = f"concierge-{session_token}"
+        concierge_sessions[con_key] = {
+            "copilot_session": copilot_session,
+            "user_context": user_context,
+            "connected_at": time.time(),
+        }
+        await websocket.send_json({
+            "type": "auth_ok",
+            "user": {
+                "displayName": user_context.display_name,
+                "email": user_context.email,
+                "department": user_context.department,
+                "team": user_context.team,
+            },
+        })
+
+        # ── Step 3: Chat loop ────────────────────────────────
+        while True:
+            data = await websocket.receive_json()
+
+            if data.get("type") == "message":
+                user_message = data.get("content", "").strip()
+                if not user_message:
+                    continue
+
+                # Stream the response
+                response_chunks: list[str] = []
+                done_event = asyncio.Event()
+
+                def on_event(event):
+                    try:
+                        if event.type.value == "assistant.message_delta":
+                            delta = event.data.delta_content or ""
+                            response_chunks.append(delta)
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "delta",
+                                    "content": delta,
+                                })
+                            )
+                        elif event.type.value == "assistant.message":
+                            full_content = event.data.content or ""
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "done",
+                                    "content": full_content,
+                                })
+                            )
+                        elif event.type.value == "tool.call":
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "tool_call",
+                                    "name": tool_name,
+                                    "status": "running",
+                                })
+                            )
+                        elif event.type.value == "tool.result":
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            asyncio.get_event_loop().create_task(
+                                websocket.send_json({
+                                    "type": "tool_call",
+                                    "name": tool_name,
+                                    "status": "complete",
+                                })
+                            )
+                        elif event.type.value == "session.idle":
+                            done_event.set()
+                    except Exception as e:
+                        logger.error(f"Concierge event handler error: {e}")
+                        done_event.set()
+
+                unsubscribe = copilot_session.on(on_event)
+
+                try:
+                    await copilot_session.send({"prompt": user_message})
+                    await asyncio.wait_for(done_event.wait(), timeout=120)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Request timed out. Please try again.",
+                    })
+                finally:
+                    unsubscribe()
+
+                # Save conversation
+                full_response = "".join(response_chunks)
+                await save_chat_message(session_token, "user", f"[concierge] {user_message}")
+                await save_chat_message(session_token, "assistant", f"[concierge] {full_response}")
+
+            elif data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info(f"Concierge disconnected: {user_context.email if user_context else 'unknown'}")
+    except Exception as e:
+        logger.error(f"Concierge WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        pass
+
+
 # ── WebSocket Chat ───────────────────────────────────────────
 
 @app.websocket("/ws/chat")
