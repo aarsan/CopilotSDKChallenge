@@ -12496,6 +12496,162 @@ async def cleanup_azure_resource_groups_endpoint(request: Request):
     })
 
 
+# ── Admin: Backup & Restore API ───────────────────────────────
+
+@app.post("/api/admin/backup")
+async def create_backup_endpoint(request: Request):
+    """Create a database backup and return it as JSON download."""
+    from scripts.backup_restore import create_backup, save_backup_to_file
+
+    try:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        include_sessions = body.get("include_sessions", False)
+        save_to_disk = body.get("save_to_disk", True)
+        note = body.get("note", "")
+
+        backup = await create_backup(
+            include_sessions=include_sessions, note=note
+        )
+
+        # Optionally save to disk
+        filepath = None
+        if save_to_disk:
+            filepath = await save_backup_to_file(
+                include_sessions=include_sessions, note=note
+            )
+
+        return JSONResponse({
+            "status": "ok",
+            "metadata": backup["metadata"],
+            "filepath": filepath,
+            "backup": backup if not save_to_disk else None,
+        })
+    except Exception as e:
+        logger.error(f"Backup failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)[:200]}")
+
+
+@app.get("/api/admin/backup/download")
+async def download_backup_endpoint(
+    include_sessions: bool = False,
+    note: str = "",
+):
+    """Create and download a backup as a JSON file."""
+    from scripts.backup_restore import create_backup
+    from starlette.responses import Response
+
+    try:
+        backup = await create_backup(
+            include_sessions=include_sessions, note=note
+        )
+        content = json.dumps(backup, indent=2, default=str, ensure_ascii=False)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"infraforge_backup_{timestamp}.json"
+
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as e:
+        logger.error(f"Backup download failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)[:200]}")
+
+
+@app.post("/api/admin/restore")
+async def restore_backup_endpoint(request: Request):
+    """Restore the database from a JSON backup.
+
+    Accepts the backup JSON as the request body.
+    Query params:
+      mode: 'replace' (default) or 'merge'
+      skip_sessions: true (default) — skip user_sessions and chat_messages
+    """
+    from scripts.backup_restore import restore_from_backup
+
+    try:
+        body = await request.json()
+
+        # The body might be the backup itself, or a wrapper with options
+        if "tables" in body:
+            backup_data = body
+            mode = request.query_params.get("mode", "replace")
+        else:
+            backup_data = body.get("backup", body)
+            mode = body.get("mode", request.query_params.get("mode", "replace"))
+
+        if "tables" not in backup_data:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid backup format: missing 'tables' key",
+            )
+
+        skip_sessions = request.query_params.get("skip_sessions", "true") == "true"
+        skip_tables = []
+        if skip_sessions:
+            skip_tables = ["user_sessions", "chat_messages"]
+
+        summary = await restore_from_backup(
+            backup_data, mode=mode, skip_tables=skip_tables
+        )
+
+        return JSONResponse({
+            "status": "ok",
+            "summary": summary,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Restore failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)[:200]}")
+
+
+@app.get("/api/admin/backups")
+async def list_backups_endpoint():
+    """List available backup files on disk."""
+    from scripts.backup_restore import list_backup_files
+
+    try:
+        backups = list_backup_files()
+        return JSONResponse({"backups": backups, "total": len(backups)})
+    except Exception as e:
+        logger.error(f"List backups failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
+@app.post("/api/admin/restore/file")
+async def restore_from_file_endpoint(request: Request):
+    """Restore from a backup file on disk.
+
+    Body: { "filepath": "backups/infraforge_backup_xxx.json", "mode": "replace" }
+    """
+    from scripts.backup_restore import restore_from_file
+
+    try:
+        body = await request.json()
+        filepath = body.get("filepath", "")
+        mode = body.get("mode", "replace")
+        if not filepath:
+            raise HTTPException(status_code=400, detail="filepath is required")
+
+        summary = await restore_from_file(filepath, mode=mode)
+        return JSONResponse({"status": "ok", "summary": summary})
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Restore from file failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)[:200]}")
+
+
 # ── Approval Management API ──────────────────────────────────
 
 @app.get("/api/approvals")

@@ -9994,6 +9994,7 @@ function switchObsTab(tab) {
     if (tabBtn) tabBtn.classList.add('active');
     if (content) content.classList.remove('hidden');
     if (tab === 'azure-resources') loadAzureResources();
+    if (tab === 'data-mgmt') loadBackupsList();
 }
 
 async function loadDeploymentHistory() {
@@ -10235,10 +10236,44 @@ function _renderAzureResourceGroups(managed, unmanaged) {
     const validationRGs = managed.filter(r => r.rg_type === 'validation');
     const deploymentRGs = managed.filter(r => r.rg_type !== 'validation');
 
+    // ── 1:Many Template → Resource Groups mapping ──
     if (deploymentRGs.length) {
-        html += '<div class="azure-rg-section"><h4 class="azure-rg-section-title">🚀 InfraForge Deployments <span class="azure-rg-section-count">' + deploymentRGs.length + '</span></h4>';
-        html += '<p class="azure-rg-section-desc">Resource groups created and managed by InfraForge. These contain your deployed infrastructure.</p>';
-        html += deploymentRGs.map(rg => _renderAzureRGCard(rg, true)).join('');
+        // Group deployments by template_name (or "Ungrouped" if no template)
+        const byTemplate = {};
+        for (const rg of deploymentRGs) {
+            const tmplName = rg.deployment?.template_name || 'Ungrouped Deployments';
+            const tmplId = rg.deployment?.template_id || '';
+            const key = tmplId || tmplName;
+            if (!byTemplate[key]) {
+                byTemplate[key] = { name: tmplName, id: tmplId, rgs: [] };
+            }
+            byTemplate[key].rgs.push(rg);
+        }
+
+        const groups = Object.values(byTemplate);
+        // Sort groups by name
+        groups.sort((a, b) => a.name.localeCompare(b.name));
+
+        html += `<div class="azure-rg-section">
+            <h4 class="azure-rg-section-title">🚀 InfraForge Deployments <span class="azure-rg-section-count">${deploymentRGs.length}</span></h4>
+            <p class="azure-rg-section-desc">Resource groups created by InfraForge, grouped by template. Each template can have one or more resource groups deployed from it.</p>`;
+
+        for (const group of groups) {
+            const totalResources = group.rgs.reduce((sum, rg) => sum + (rg.resource_count || 0), 0);
+            html += `<div class="azure-tmpl-group">
+                <div class="azure-tmpl-group-header">
+                    <span class="azure-tmpl-group-icon">📋</span>
+                    <span class="azure-tmpl-group-name">${escapeHtml(group.name)}</span>
+                    <span class="azure-tmpl-group-stats">
+                        <span class="azure-tmpl-group-rg-count">${group.rgs.length} resource group${group.rgs.length !== 1 ? 's' : ''}</span>
+                        ${totalResources ? `<span class="azure-tmpl-group-res-count">${totalResources} resource${totalResources !== 1 ? 's' : ''}</span>` : ''}
+                    </span>
+                </div>
+                <div class="azure-tmpl-group-rgs">
+                    ${group.rgs.map(rg => _renderAzureRGCard(rg, true)).join('')}
+                </div>
+            </div>`;
+        }
         html += '</div>';
     }
 
@@ -10377,6 +10412,202 @@ async function cleanupOrphanedRGs() {
         alert(`Cleanup failed: ${err.message}`);
     } finally {
         if (btn) { btn.disabled = false; btn.textContent = '🧹 Cleanup Orphaned'; }
+    }
+}
+
+// ── Data Management: Backup & Restore ───────────────────────
+
+async function createBackup() {
+    const btn = document.getElementById('backup-create-btn');
+    const statusEl = document.getElementById('backup-status');
+    const includeSessions = document.getElementById('backup-include-sessions')?.checked || false;
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Creating…'; }
+    statusEl.innerHTML = '<span class="data-mgmt-progress">⏳ Creating backup…</span>';
+
+    try {
+        const res = await fetch('/api/admin/backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ include_sessions: includeSessions, save_to_disk: true }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const meta = data.metadata || {};
+        statusEl.innerHTML = `<div class="data-mgmt-success">
+            ✅ Backup created: <strong>${meta.total_rows || 0}</strong> rows across <strong>${meta.tables_backed_up || 0}</strong> tables.
+            ${data.filepath ? `<br><code>${escapeHtml(data.filepath)}</code>` : ''}
+        </div>`;
+        showToast('✅ Backup created successfully', 'success');
+        loadBackupsList();
+    } catch (err) {
+        statusEl.innerHTML = `<div class="data-mgmt-error">❌ Backup failed: ${escapeHtml(err.message)}</div>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '📦 Create Backup'; }
+    }
+}
+
+async function downloadBackup() {
+    const btn = document.getElementById('backup-download-btn');
+    const includeSessions = document.getElementById('backup-include-sessions')?.checked || false;
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Preparing…'; }
+
+    try {
+        const url = `/api/admin/backup/download?include_sessions=${includeSessions}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="(.+)"/);
+        const filename = match ? match[1] : 'infraforge_backup.json';
+
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+        showToast('⬇️ Backup downloaded', 'success');
+    } catch (err) {
+        alert('Download failed: ' + err.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '⬇️ Download Backup'; }
+    }
+}
+
+async function handleRestoreFileSelected(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const statusEl = document.getElementById('restore-status');
+    const mode = document.getElementById('restore-mode')?.value || 'replace';
+    const modeLabel = mode === 'replace' ? 'REPLACE all data' : 'MERGE (skip conflicts)';
+
+    if (!confirm(`⚠️ Restore database from "${file.name}"?\n\nMode: ${modeLabel}\n\nThis will ${mode === 'replace' ? 'DELETE all existing data and replace it with the backup' : 'add missing rows from the backup'}.\n\nAre you sure?`)) {
+        event.target.value = '';
+        return;
+    }
+
+    statusEl.innerHTML = '<span class="data-mgmt-progress">⏳ Reading file…</span>';
+
+    try {
+        const text = await file.text();
+        const backup = JSON.parse(text);
+
+        if (!backup.tables) {
+            statusEl.innerHTML = '<div class="data-mgmt-error">❌ Invalid backup file: missing "tables" key.</div>';
+            event.target.value = '';
+            return;
+        }
+
+        const meta = backup.metadata || {};
+        statusEl.innerHTML = `<span class="data-mgmt-progress">⏳ Restoring ${meta.total_rows || '?'} rows across ${meta.tables_backed_up || '?'} tables…</span>`;
+
+        const res = await fetch(`/api/admin/restore?mode=${mode}&skip_sessions=true`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: text,
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const summary = data.summary || {};
+        const restored = summary.tables_restored || [];
+        const errors = summary.errors || [];
+
+        let html = `<div class="data-mgmt-success">
+            ✅ Restore complete: <strong>${summary.total_rows_restored || 0}</strong> rows across <strong>${restored.length}</strong> tables (mode: ${summary.mode})
+        </div>`;
+
+        if (errors.length) {
+            html += `<div class="data-mgmt-error" style="margin-top:8px">
+                ⚠️ ${errors.length} error(s):
+                <ul>${errors.map(e => `<li><code>${escapeHtml(e.table)}</code> (${escapeHtml(e.phase)}): ${escapeHtml(e.error)}</li>`).join('')}</ul>
+            </div>`;
+        }
+
+        statusEl.innerHTML = html;
+        showToast(`✅ Restored ${summary.total_rows_restored || 0} rows`, 'success');
+
+    } catch (err) {
+        statusEl.innerHTML = `<div class="data-mgmt-error">❌ Restore failed: ${escapeHtml(err.message)}</div>`;
+    }
+
+    event.target.value = '';
+}
+
+async function loadBackupsList() {
+    const listEl = document.getElementById('backups-list');
+    if (!listEl) return;
+
+    try {
+        const res = await fetch('/api/admin/backups');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const backups = data.backups || [];
+
+        if (!backups.length) {
+            listEl.innerHTML = '<div class="data-mgmt-empty">No backup files found. Create one above.</div>';
+            return;
+        }
+
+        let html = '<div class="data-mgmt-backup-list">';
+        for (const b of backups) {
+            const meta = b.metadata || {};
+            html += `<div class="data-mgmt-backup-item">
+                <div class="data-mgmt-backup-name">📄 ${escapeHtml(b.filename)}</div>
+                <div class="data-mgmt-backup-meta">
+                    ${b.size_mb ? `<span>${b.size_mb} MB</span>` : ''}
+                    ${meta.total_rows ? `<span>${meta.total_rows} rows</span>` : ''}
+                    ${meta.tables_backed_up ? `<span>${meta.tables_backed_up} tables</span>` : ''}
+                    ${b.modified_at ? `<span>${new Date(b.modified_at).toLocaleString()}</span>` : ''}
+                </div>
+                <div class="data-mgmt-backup-actions">
+                    <button class="btn btn-sm btn-warning" onclick="restoreFromServerFile('${escapeHtml(b.path.replace(/\\/g, '\\\\'))}')">🔄 Restore</button>
+                </div>
+            </div>`;
+        }
+        html += '</div>';
+        listEl.innerHTML = html;
+    } catch (err) {
+        listEl.innerHTML = `<div class="data-mgmt-error">Failed to load backups: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+async function restoreFromServerFile(filepath) {
+    const mode = document.getElementById('restore-mode')?.value || 'replace';
+    const modeLabel = mode === 'replace' ? 'REPLACE all data' : 'MERGE (skip conflicts)';
+
+    if (!confirm(`⚠️ Restore from server backup?\n\nFile: ${filepath}\nMode: ${modeLabel}\n\nThis will ${mode === 'replace' ? 'DELETE all existing data first' : 'add missing rows'}.\n\nAre you sure?`)) return;
+
+    const statusEl = document.getElementById('restore-status');
+    statusEl.innerHTML = '<span class="data-mgmt-progress">⏳ Restoring from file…</span>';
+
+    try {
+        const res = await fetch('/api/admin/restore/file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filepath, mode }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const summary = data.summary || {};
+        statusEl.innerHTML = `<div class="data-mgmt-success">✅ Restored ${summary.total_rows_restored || 0} rows across ${(summary.tables_restored || []).length} tables</div>`;
+        showToast(`✅ Restored ${summary.total_rows_restored || 0} rows`, 'success');
+    } catch (err) {
+        statusEl.innerHTML = `<div class="data-mgmt-error">❌ Restore failed: ${escapeHtml(err.message)}</div>`;
     }
 }
 

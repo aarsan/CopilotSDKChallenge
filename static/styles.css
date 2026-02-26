@@ -5340,6 +5340,217 @@ body {
     cursor: wait;
 }
 
+/* ── Template → Resource Groups grouping ──────────────────── */
+
+.azure-tmpl-group {
+    margin: 0.8rem 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface-primary);
+}
+
+.azure-tmpl-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.7rem 1rem;
+    background: var(--surface-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.azure-tmpl-group-icon {
+    font-size: 1.1rem;
+}
+
+.azure-tmpl-group-name {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.azure-tmpl-group-stats {
+    display: flex;
+    gap: 0.8rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.azure-tmpl-group-rg-count,
+.azure-tmpl-group-res-count {
+    background: var(--surface-primary);
+    padding: 0.15em 0.6em;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+}
+
+.azure-tmpl-group-rgs {
+    padding: 0.3rem 0.5rem;
+}
+.azure-tmpl-group-rgs .azure-rg-card {
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    margin: 0;
+}
+.azure-tmpl-group-rgs .azure-rg-card:last-child {
+    border-bottom: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   DATA MANAGEMENT (Backup & Restore)
+   ══════════════════════════════════════════════════════════════ */
+
+.data-mgmt-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem;
+    padding: 0.5rem 0;
+}
+
+.data-mgmt-section {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+}
+
+.data-mgmt-section-title {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0 0 0.4rem 0;
+    color: var(--text-primary);
+}
+
+.data-mgmt-section-desc {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.8rem 0;
+    line-height: 1.5;
+}
+.data-mgmt-section-desc code {
+    background: var(--surface-primary);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.data-mgmt-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.data-mgmt-checkbox {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+}
+.data-mgmt-checkbox input { cursor: pointer; }
+
+.data-mgmt-select {
+    padding: 0.28em 0.6em;
+    font-size: 0.82rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-primary);
+    color: var(--text-primary);
+}
+
+.data-mgmt-status {
+    margin-top: 0.7rem;
+    min-height: 0;
+}
+
+.data-mgmt-progress {
+    font-size: 0.82rem;
+    color: var(--accent-blue);
+}
+
+.data-mgmt-success {
+    font-size: 0.82rem;
+    color: var(--accent-green, #4ade80);
+    background: rgba(74, 222, 128, 0.08);
+    border: 1px solid rgba(74, 222, 128, 0.2);
+    border-radius: 6px;
+    padding: 0.6rem 0.8rem;
+}
+.data-mgmt-success code {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.data-mgmt-error {
+    font-size: 0.82rem;
+    color: var(--accent-red, #f87171);
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    border-radius: 6px;
+    padding: 0.6rem 0.8rem;
+}
+.data-mgmt-error ul {
+    margin: 0.3rem 0 0 1rem;
+    padding: 0;
+    font-size: 0.78rem;
+}
+
+.data-mgmt-empty {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    padding: 0.6rem 0;
+}
+
+.data-mgmt-backup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.data-mgmt-backup-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--surface-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.9rem;
+}
+
+.data-mgmt-backup-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    flex-shrink: 0;
+    min-width: 0;
+    word-break: break-all;
+}
+
+.data-mgmt-backup-meta {
+    display: flex;
+    gap: 0.8rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+    flex: 1;
+}
+.data-mgmt-backup-meta span::before {
+    content: '·';
+    margin-right: 0.3rem;
+    color: var(--border);
+}
+.data-mgmt-backup-meta span:first-child::before { display: none; }
+
+.data-mgmt-backup-actions {
+    flex-shrink: 0;
+}
+
 
 /* ══════════════════════════════════════════════════════════════
    ACTIVITY MONITOR (Service Validations)

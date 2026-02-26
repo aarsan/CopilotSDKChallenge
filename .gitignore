@@ -1,5 +1,6 @@
 # InfraForge output files
 output/
+backups/
 
 # Python
 __pycache__/

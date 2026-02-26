@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=150">
+    <link rel="stylesheet" href="/static/styles.css?v=151">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -538,6 +538,7 @@
                         <button class="obs-tab active" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations</button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
+                        <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
                     </div>
 
                     <!-- Tab: Deployments -->
@@ -579,6 +580,54 @@
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">☁️</span>
                                 <p>Click <b>Refresh</b> to scan your Azure subscription for InfraForge-managed resource groups.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Data Management -->
+                    <div class="obs-tab-content hidden" id="obs-content-data-mgmt">
+                        <div class="data-mgmt-container">
+                            <!-- Backup Section -->
+                            <div class="data-mgmt-section">
+                                <h4 class="data-mgmt-section-title">📦 Backup</h4>
+                                <p class="data-mgmt-section-desc">Export all database tables to a JSON file. Backups include services, templates, governance data, deployments, and all configuration.</p>
+                                <div class="data-mgmt-actions">
+                                    <button class="btn btn-sm btn-primary" onclick="createBackup()" id="backup-create-btn">📦 Create Backup</button>
+                                    <button class="btn btn-sm btn-secondary" onclick="downloadBackup()" id="backup-download-btn">⬇️ Download Backup</button>
+                                    <label class="data-mgmt-checkbox"><input type="checkbox" id="backup-include-sessions"> Include sessions</label>
+                                </div>
+                                <div id="backup-status" class="data-mgmt-status"></div>
+                            </div>
+
+                            <!-- Restore Section -->
+                            <div class="data-mgmt-section">
+                                <h4 class="data-mgmt-section-title">🔄 Restore</h4>
+                                <p class="data-mgmt-section-desc">Restore the database from a backup JSON file. <strong>Replace</strong> mode clears existing data first; <strong>Merge</strong> skips conflicting rows.</p>
+                                <div class="data-mgmt-actions">
+                                    <input type="file" id="restore-file-input" accept=".json" style="display:none" onchange="handleRestoreFileSelected(event)">
+                                    <button class="btn btn-sm btn-warning" onclick="document.getElementById('restore-file-input').click()" id="restore-upload-btn">📂 Upload & Restore</button>
+                                    <select id="restore-mode" class="data-mgmt-select">
+                                        <option value="replace">Replace (clear + insert)</option>
+                                        <option value="merge">Merge (skip conflicts)</option>
+                                    </select>
+                                </div>
+                                <div id="restore-status" class="data-mgmt-status"></div>
+                            </div>
+
+                            <!-- Available Backups -->
+                            <div class="data-mgmt-section">
+                                <h4 class="data-mgmt-section-title">📋 Available Backups</h4>
+                                <p class="data-mgmt-section-desc">Backup files saved on the server.</p>
+                                <div class="data-mgmt-actions">
+                                    <button class="btn btn-sm btn-secondary" onclick="loadBackupsList()" id="backups-refresh-btn">🔄 Refresh</button>
+                                </div>
+                                <div id="backups-list" class="data-mgmt-list"></div>
+                            </div>
+
+                            <!-- SQL Schema -->
+                            <div class="data-mgmt-section">
+                                <h4 class="data-mgmt-section-title">🗂️ Database Schema</h4>
+                                <p class="data-mgmt-section-desc">DDL scripts for all InfraForge tables are available at <code>scripts/create_tables.sql</code>.</p>
                             </div>
                         </div>
                     </div>
@@ -1061,7 +1110,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=150"></script>
+    <script src="/static/app.js?v=151"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
