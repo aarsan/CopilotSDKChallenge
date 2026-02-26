@@ -10544,6 +10544,33 @@ async def websocket_governance_chat(websocket: WebSocket):
     session_token: Optional[str] = None
     user_context: Optional[UserContext] = None
 
+    # ── Serialised send infrastructure ───────────────────────
+    send_queue: asyncio.Queue = asyncio.Queue()
+    ws_closed = False
+    loop = asyncio.get_running_loop()
+
+    async def _ws_sender():
+        nonlocal ws_closed
+        while True:
+            msg = await send_queue.get()
+            if msg is None:
+                break
+            if ws_closed:
+                continue
+            try:
+                await websocket.send_json(msg)
+            except (WebSocketDisconnect, RuntimeError):
+                ws_closed = True
+            except Exception:
+                ws_closed = True
+
+    sender_task = asyncio.create_task(_ws_sender())
+
+    def _enqueue(data: dict):
+        if ws_closed:
+            return
+        loop.call_soon_threadsafe(send_queue.put_nowait, data)
+
     try:
         # ── Step 1: Authenticate ─────────────────────────────
         auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30)
@@ -10623,43 +10650,22 @@ async def websocket_governance_chat(websocket: WebSocket):
 
                 def on_event(event):
                     try:
-                        if event.type.value == "assistant.message_delta":
+                        evt_type = event.type.value
+                        if evt_type == "assistant.message_delta":
                             delta = event.data.delta_content or ""
                             response_chunks.append(delta)
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "delta",
-                                    "content": delta,
-                                })
-                            )
-                        elif event.type.value == "assistant.message":
+                            _enqueue({"type": "delta", "content": delta})
+                        elif evt_type == "assistant.message":
                             full_content = event.data.content or ""
                             if full_content:
-                                asyncio.get_event_loop().create_task(
-                                    websocket.send_json({
-                                        "type": "done",
-                                        "content": full_content,
-                                    })
-                                )
-                        elif event.type.value in ("tool.call", "tool.execution_start"):
+                                _enqueue({"type": "done", "content": full_content})
+                        elif evt_type in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "running",
-                                })
-                            )
-                        elif event.type.value in ("tool.result", "tool.execution_complete"):
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "running"})
+                        elif evt_type in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "complete",
-                                })
-                            )
-                        elif event.type.value == "session.idle":
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
+                        elif evt_type == "session.idle":
                             done_event.set()
                     except Exception as e:
                         logger.error(f"Governance event handler error: {e}")
@@ -10671,12 +10677,11 @@ async def websocket_governance_chat(websocket: WebSocket):
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
                 except asyncio.TimeoutError:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Request timed out. Please try again.",
-                    })
+                    _enqueue({"type": "error", "message": "Request timed out. Please try again."})
                 finally:
                     unsubscribe()
+
+                await asyncio.sleep(0.05)
 
                 # Save conversation
                 full_response = "".join(response_chunks)
@@ -10684,18 +10689,22 @@ async def websocket_governance_chat(websocket: WebSocket):
                 await save_chat_message(session_token, "assistant", f"[governance] {full_response}")
 
             elif data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
+                _enqueue({"type": "pong"})
 
     except WebSocketDisconnect:
+        ws_closed = True
         logger.info(f"Governance chat disconnected: {user_context.email if user_context else 'unknown'}")
     except Exception as e:
+        ws_closed = True
         logger.error(f"Governance WebSocket error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
     finally:
-        pass
+        ws_closed = True
+        send_queue.put_nowait(None)
+        sender_task.cancel()
+        try:
+            await sender_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ── WebSocket: Concierge / CISO Chat ────────────────────────
@@ -10719,6 +10728,40 @@ async def websocket_concierge_chat(websocket: WebSocket):
 
     session_token: Optional[str] = None
     user_context: Optional[UserContext] = None
+
+    # ── Serialised send infrastructure ───────────────────────
+    # SDK event callbacks fire from the event-loop thread but can
+    # burst many events concurrently.  Starlette's WebSocket.send
+    # is NOT safe for concurrent calls — interleaved frames corrupt
+    # the connection.  We funnel every outgoing message through an
+    # asyncio.Queue consumed by a single sender task.
+    send_queue: asyncio.Queue = asyncio.Queue()
+    ws_closed = False
+    loop = asyncio.get_running_loop()
+
+    async def _ws_sender():
+        """Single consumer: pulls from *send_queue* and writes to the WS."""
+        nonlocal ws_closed
+        while True:
+            msg = await send_queue.get()
+            if msg is None:          # poison pill → shut down
+                break
+            if ws_closed:
+                continue
+            try:
+                await websocket.send_json(msg)
+            except (WebSocketDisconnect, RuntimeError):
+                ws_closed = True
+            except Exception:
+                ws_closed = True
+
+    sender_task = asyncio.create_task(_ws_sender())
+
+    def _enqueue(data: dict):
+        """Non-async helper safe to call from sync on_event callbacks."""
+        if ws_closed:
+            return
+        loop.call_soon_threadsafe(send_queue.put_nowait, data)
 
     try:
         # ── Step 1: Authenticate ─────────────────────────────
@@ -10803,41 +10846,17 @@ async def websocket_concierge_chat(websocket: WebSocket):
                         if evt_type == "assistant.message_delta":
                             delta = event.data.delta_content or ""
                             response_chunks.append(delta)
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "delta",
-                                    "content": delta,
-                                })
-                            )
+                            _enqueue({"type": "delta", "content": delta})
                         elif evt_type == "assistant.message":
                             full_content = event.data.content or ""
-                            # Only send 'done' when there's actual content;
-                            # empty messages are tool-call turns, not final.
                             if full_content:
-                                asyncio.get_event_loop().create_task(
-                                    websocket.send_json({
-                                        "type": "done",
-                                        "content": full_content,
-                                    })
-                                )
+                                _enqueue({"type": "done", "content": full_content})
                         elif evt_type in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "running",
-                                })
-                            )
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "running"})
                         elif evt_type in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "complete",
-                                })
-                            )
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
                         elif evt_type == "session.idle":
                             done_event.set()
                     except Exception as e:
@@ -10850,19 +10869,16 @@ async def websocket_concierge_chat(websocket: WebSocket):
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
                 except asyncio.TimeoutError:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Request timed out. Please try again.",
-                    })
+                    _enqueue({"type": "error", "message": "Request timed out. Please try again."})
                 except Exception as send_err:
                     logger.error(f"[Concierge] Error during send: {send_err}", exc_info=True)
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Error: {send_err}",
-                    })
+                    _enqueue({"type": "error", "message": f"Error: {send_err}"})
                     done_event.set()
                 finally:
                     unsubscribe()
+
+                # Give the sender task a moment to flush queued messages
+                await asyncio.sleep(0.05)
 
                 # Save conversation
                 full_response = "".join(response_chunks)
@@ -10870,18 +10886,22 @@ async def websocket_concierge_chat(websocket: WebSocket):
                 await save_chat_message(session_token, "assistant", f"[concierge] {full_response}")
 
             elif data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
+                _enqueue({"type": "pong"})
 
     except WebSocketDisconnect:
+        ws_closed = True
         logger.info(f"Concierge disconnected: {user_context.email if user_context else 'unknown'}")
     except Exception as e:
+        ws_closed = True
         logger.error(f"Concierge WebSocket error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
     finally:
-        pass
+        ws_closed = True
+        send_queue.put_nowait(None)   # poison pill
+        sender_task.cancel()
+        try:
+            await sender_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ── WebSocket Chat ───────────────────────────────────────────
@@ -10902,6 +10922,33 @@ async def websocket_chat(websocket: WebSocket):
 
     session_token: Optional[str] = None
     user_context: Optional[UserContext] = None
+
+    # ── Serialised send infrastructure ───────────────────────
+    send_queue: asyncio.Queue = asyncio.Queue()
+    ws_closed = False
+    loop = asyncio.get_running_loop()
+
+    async def _ws_sender():
+        nonlocal ws_closed
+        while True:
+            msg = await send_queue.get()
+            if msg is None:
+                break
+            if ws_closed:
+                continue
+            try:
+                await websocket.send_json(msg)
+            except (WebSocketDisconnect, RuntimeError):
+                ws_closed = True
+            except Exception:
+                ws_closed = True
+
+    sender_task = asyncio.create_task(_ws_sender())
+
+    def _enqueue(data: dict):
+        if ws_closed:
+            return
+        loop.call_soon_threadsafe(send_queue.put_nowait, data)
 
     try:
         # ── Step 1: Authenticate ─────────────────────────────
@@ -10993,48 +11040,24 @@ async def websocket_chat(websocket: WebSocket):
 
                 def on_event(event):
                     try:
-                        if event.type.value == "assistant.message_delta":
+                        evt_type = event.type.value
+                        if evt_type == "assistant.message_delta":
                             delta = event.data.delta_content or ""
                             response_chunks.append(delta)
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "delta",
-                                    "content": delta,
-                                })
-                            )
-                        elif event.type.value == "assistant.message":
+                            _enqueue({"type": "delta", "content": delta})
+                        elif evt_type == "assistant.message":
                             full_content = event.data.content or ""
-                            # Only send 'done' when there's actual content;
-                            # empty messages are tool-call turns, not final.
                             if full_content:
-                                asyncio.get_event_loop().create_task(
-                                    websocket.send_json({
-                                        "type": "done",
-                                        "content": full_content,
-                                    })
-                                )
-                        elif event.type.value in ("tool.call", "tool.execution_start"):
+                                _enqueue({"type": "done", "content": full_content})
+                        elif evt_type in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "running",
-                                })
-                            )
-                            # Track catalog usage
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "running"})
                             if tool_name == "search_template_catalog":
                                 request_record["from_catalog"] = True
-                        elif event.type.value in ("tool.result", "tool.execution_complete"):
+                        elif evt_type in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
-                            asyncio.get_event_loop().create_task(
-                                websocket.send_json({
-                                    "type": "tool_call",
-                                    "name": tool_name,
-                                    "status": "complete",
-                                })
-                            )
-                        elif event.type.value == "session.idle":
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
+                        elif evt_type == "session.idle":
                             done_event.set()
                     except Exception as e:
                         logger.error(f"Event handler error: {e}")
@@ -11046,12 +11069,11 @@ async def websocket_chat(websocket: WebSocket):
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
                 except asyncio.TimeoutError:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Request timed out. Please try again.",
-                    })
+                    _enqueue({"type": "error", "message": "Request timed out. Please try again."})
                 finally:
                     unsubscribe()
+
+                await asyncio.sleep(0.05)
 
                 # Persist to database
                 full_response = "".join(response_chunks)
@@ -11060,16 +11082,19 @@ async def websocket_chat(websocket: WebSocket):
                 await log_usage(request_record)
 
             elif data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
+                _enqueue({"type": "pong"})
 
     except WebSocketDisconnect:
+        ws_closed = True
         logger.info(f"Client disconnected: {user_context.email if user_context else 'unknown'}")
     except Exception as e:
+        ws_closed = True
         logger.error(f"WebSocket error: {e}")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
     finally:
-        # Don't destroy the Copilot session on disconnect — user may reconnect
-        pass
+        ws_closed = True
+        send_queue.put_nowait(None)
+        sender_task.cancel()
+        try:
+            await sender_task
+        except (asyncio.CancelledError, Exception):
+            pass
