@@ -7908,6 +7908,55 @@ async def get_orchestration_playbook(process_id: str):
     return JSONResponse({"process_id": process_id, "playbook": text})
 
 
+@app.post("/api/orchestration/processes/refresh")
+async def refresh_orchestration_processes_endpoint():
+    """Re-seed orchestration process definitions from the Python source of truth.
+
+    Drops all existing process/step definitions and re-creates them from
+    the seed data in database.py.  Use after updating process definitions
+    in code so the running DB picks up the changes.
+    """
+    from src.database import refresh_orchestration_processes
+    count = await refresh_orchestration_processes()
+    return JSONResponse({
+        "status": "ok",
+        "message": f"Refreshed {count} orchestration process(es)",
+        "count": count,
+    })
+
+
+@app.get("/api/orchestration/pipeline-info")
+async def get_pipeline_info():
+    """Get pipeline framework status — registered handlers, process definitions,
+    and handler coverage for each process.
+
+    This shows which DB-defined step actions have Python handlers registered
+    and which are still unimplemented.
+    """
+    from src.database import get_all_processes
+
+    processes = await get_all_processes()
+
+    # For now, report which actions exist in each process.
+    # Once pipelines are migrated, this will also show handler registration.
+    result = []
+    for proc in processes:
+        step_actions = [s.get("action", "") for s in proc.get("steps", [])]
+        result.append({
+            "id": proc["id"],
+            "name": proc["name"],
+            "step_count": len(proc.get("steps", [])),
+            "actions": step_actions,
+            "enabled": proc.get("enabled", True),
+        })
+
+    return JSONResponse({
+        "processes": result,
+        "total": len(result),
+        "framework": "src.pipeline.PipelineRunner",
+    })
+
+
 # ══════════════════════════════════════════════════════════════
 # TEMPLATE FEEDBACK — CHAT WITH YOUR TEMPLATE
 # ══════════════════════════════════════════════════════════════

@@ -3783,3 +3783,24 @@ async def seed_orchestration_processes() -> int:
 
     logger.info(f"Seeded {count} orchestration processes")
     return count
+
+
+async def refresh_orchestration_processes() -> int:
+    """Drop and re-seed all orchestration processes from the Python source of truth.
+
+    Unlike ``seed_orchestration_processes`` (which skips if data exists),
+    this always replaces existing definitions.  Use this after updating
+    the process definitions in code so running databases pick up the
+    new step definitions.
+
+    Returns the number of processes seeded.
+    """
+    backend = await get_backend()
+
+    # Delete all existing steps and processes (steps first due to FK)
+    await backend.execute_write("DELETE FROM process_steps", ())
+    await backend.execute_write("DELETE FROM orchestration_processes", ())
+    logger.info("Cleared existing orchestration process definitions")
+
+    # Re-seed with current definitions
+    return await seed_orchestration_processes()
