@@ -100,3 +100,33 @@ def get_governance_tools() -> list:
         list_governance_policies,
         request_policy_modification,
     ]
+
+
+def get_concierge_tools() -> list:
+    """Return tools for the Concierge / CISO Advisor agent.
+
+    Combines governance read tools with CISO write tools (policy modification,
+    exception management, toggling) plus service catalog lookup. This gives the
+    concierge full authority to investigate AND act on policy concerns.
+    """
+    from src.tools.ciso_tools import (
+        modify_governance_policy,
+        toggle_policy,
+        grant_policy_exception,
+        list_policy_exceptions,
+    )
+
+    return [
+        # Read — governance awareness
+        list_security_standards,
+        list_compliance_frameworks,
+        list_governance_policies,
+        # Read — service catalog awareness
+        check_service_approval,
+        list_approved_services,
+        # Write — CISO authority
+        modify_governance_policy,
+        toggle_policy,
+        grant_policy_exception,
+        list_policy_exceptions,
+    ]

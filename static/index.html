@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=152">
+    <link rel="stylesheet" href="/static/styles.css?v=153">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -776,6 +776,62 @@
         </div>
     </div>
 
+    <!-- ── Concierge / CISO Chat Drawer ──────────────────────── -->
+    <div id="concierge-drawer" class="concierge-drawer hidden">
+        <div class="concierge-header">
+            <div class="concierge-title">
+                <span class="concierge-icon">🛡️</span>
+                <div>
+                    <h4>InfraForge Concierge</h4>
+                    <span class="concierge-subtitle">Ask anything · Policy concerns · CISO authority</span>
+                </div>
+            </div>
+            <div class="concierge-header-actions">
+                <button class="btn btn-sm btn-ghost" onclick="clearConciergeChat()" title="New conversation">🗒️</button>
+                <button class="modal-close" onclick="toggleConcierge()">×</button>
+            </div>
+        </div>
+        <div class="concierge-messages" id="concierge-messages">
+            <div class="concierge-welcome" id="concierge-welcome">
+                <div class="concierge-welcome-icon">🛡️</div>
+                <h4>How can I help?</h4>
+                <p>I'm your InfraForge concierge with CISO authority. Ask about policies, raise concerns, or get help with anything on the platform.</p>
+                <div class="concierge-suggestions">
+                    <button class="concierge-suggestion" onclick="sendConciergeQuickAction('I want to add an Azure Firewall but I\'m getting a policy error. Can you help?')">🔥 Policy blocking my Firewall</button>
+                    <button class="concierge-suggestion" onclick="sendConciergeQuickAction('I think our public IP policy is too restrictive and blocking productivity. Can you review it?')">⚖️ Policy is too restrictive</button>
+                    <button class="concierge-suggestion" onclick="sendConciergeQuickAction('What governance policies are currently active?')">📋 Show active policies</button>
+                    <button class="concierge-suggestion" onclick="sendConciergeQuickAction('Are there any active policy exceptions right now?')">🔓 Check policy exceptions</button>
+                </div>
+            </div>
+        </div>
+        <div class="concierge-tool-activity hidden" id="concierge-tool-activity">
+            <div class="tool-spinner"></div>
+            <span id="concierge-tool-text">Analyzing...</span>
+        </div>
+        <div class="concierge-input-area">
+            <div class="concierge-input-wrapper">
+                <textarea
+                    id="concierge-input"
+                    placeholder="Ask anything — policies, troubleshooting, guidance..."
+                    rows="1"
+                    onkeydown="handleConciergeKeyDown(event)"
+                    oninput="autoResizeTextarea(this)"
+                ></textarea>
+                <button id="concierge-send" class="btn btn-send" onclick="sendConciergeMessage()" title="Send">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13"></path>
+                        <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Concierge Floating Action Button ──────────────────── -->
+    <button class="concierge-fab" id="concierge-fab" onclick="toggleConcierge()" title="InfraForge Concierge — Ask anything">
+        <span class="concierge-fab-icon" id="concierge-fab-icon">🛡️</span>
+    </button>
+
     <!-- ── Service Governance Editor Modal ─────────────────── -->
     <div id="modal-service-onboard" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-service-onboard')">
         <div class="modal-dialog" onclick="event.stopPropagation()">
@@ -1110,7 +1166,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=152"></script>
+    <script src="/static/app.js?v=153"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

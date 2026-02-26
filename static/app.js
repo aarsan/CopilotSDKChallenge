@@ -9735,6 +9735,250 @@ function clearGovernanceChat() {
 }
 
 
+// ═══════════════════════════════════════════════════════════════
+//  CONCIERGE / CISO CHAT — Always-available assistant
+// ═══════════════════════════════════════════════════════════════
+
+let _conChatWs = null;
+let _conChatStreaming = false;
+let _conChatStreamDiv = null;
+let _conChatStreamContent = '';
+let _conChatOpen = false;
+
+function toggleConcierge() {
+    const drawer = document.getElementById('concierge-drawer');
+    const fab = document.getElementById('concierge-fab');
+    if (!drawer) return;
+    _conChatOpen = !_conChatOpen;
+    drawer.classList.toggle('hidden', !_conChatOpen);
+    if (fab) fab.classList.toggle('fab-active', _conChatOpen);
+
+    if (_conChatOpen) {
+        _connectConcierge();
+        setTimeout(() => {
+            const input = document.getElementById('concierge-input');
+            if (input) input.focus();
+        }, 100);
+    }
+}
+
+function _connectConcierge() {
+    if (_conChatWs && _conChatWs.readyState === WebSocket.OPEN) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/concierge-chat`;
+
+    _conChatWs = new WebSocket(wsUrl);
+
+    _conChatWs.onopen = () => {
+        _conChatWs.send(JSON.stringify({
+            type: 'auth',
+            sessionToken: sessionToken,
+        }));
+    };
+
+    _conChatWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        _handleConciergeMessage(data);
+    };
+
+    _conChatWs.onclose = () => {
+        _conChatWs = null;
+        if (_conChatOpen) {
+            setTimeout(() => _connectConcierge(), 3000);
+        }
+    };
+
+    _conChatWs.onerror = () => {
+        _conChatWs = null;
+    };
+}
+
+function _handleConciergeMessage(data) {
+    switch (data.type) {
+        case 'auth_ok':
+            break;
+        case 'delta':
+            _handleConStreamDelta(data.content);
+            break;
+        case 'done':
+            _handleConStreamDone(data.content);
+            break;
+        case 'tool_call':
+            _handleConToolCall(data.name, data.status);
+            break;
+        case 'error':
+            _handleConError(data.message);
+            break;
+        case 'pong':
+            break;
+    }
+}
+
+function _addConMessage(role, content, isStreaming = false) {
+    const container = document.getElementById('concierge-messages');
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `con-msg con-msg-${role}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'con-msg-avatar';
+    avatar.textContent = role === 'user'
+        ? (currentUser ? currentUser.displayName.split(' ').map(n => n[0]).join('').substring(0, 2) : '?')
+        : '🛡️';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'con-msg-content';
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'con-msg-text';
+
+    if (isStreaming) {
+        textDiv.classList.add('streaming-cursor');
+    } else {
+        textDiv.innerHTML = renderMarkdown(content);
+    }
+
+    contentDiv.appendChild(textDiv);
+    msgDiv.appendChild(avatar);
+    msgDiv.appendChild(contentDiv);
+    container.appendChild(msgDiv);
+
+    container.scrollTop = container.scrollHeight;
+    return textDiv;
+}
+
+function _handleConStreamDelta(content) {
+    if (!_conChatStreamDiv) return;
+    _conChatStreamContent += content;
+    _conChatStreamDiv.innerHTML = renderMarkdown(_conChatStreamContent);
+    _conChatStreamDiv.classList.add('streaming-cursor');
+    const container = document.getElementById('concierge-messages');
+    container.scrollTop = container.scrollHeight;
+}
+
+function _handleConStreamDone(fullContent) {
+    if (_conChatStreamDiv) {
+        _conChatStreamDiv.classList.remove('streaming-cursor');
+        const finalContent = fullContent || _conChatStreamContent;
+        _conChatStreamDiv.innerHTML = renderMarkdown(finalContent);
+    }
+    _conChatStreamDiv = null;
+    _conChatStreamContent = '';
+    _conChatStreaming = false;
+    document.getElementById('concierge-send').disabled = false;
+    document.getElementById('concierge-input').focus();
+
+    const toolEl = document.getElementById('concierge-tool-activity');
+    if (toolEl) toolEl.classList.add('hidden');
+
+    const container = document.getElementById('concierge-messages');
+    container.scrollTop = container.scrollHeight;
+}
+
+function _handleConToolCall(name, status) {
+    const toolEl = document.getElementById('concierge-tool-activity');
+    const textEl = document.getElementById('concierge-tool-text');
+    if (!toolEl || !textEl) return;
+
+    const toolLabels = {
+        'list_governance_policies': 'Querying governance policies…',
+        'list_security_standards': 'Querying security standards…',
+        'list_compliance_frameworks': 'Querying compliance frameworks…',
+        'check_service_approval': 'Checking service approval status…',
+        'list_approved_services': 'Browsing service catalog…',
+        'modify_governance_policy': '🛡️ Modifying policy…',
+        'toggle_policy': '🛡️ Toggling policy…',
+        'grant_policy_exception': '🔓 Granting policy exception…',
+        'list_policy_exceptions': 'Checking policy exceptions…',
+    };
+
+    if (status === 'running') {
+        textEl.textContent = toolLabels[name] || `Running ${name}…`;
+        toolEl.classList.remove('hidden');
+    } else {
+        toolEl.classList.add('hidden');
+    }
+}
+
+function _handleConError(message) {
+    _addConMessage('assistant', `⚠️ ${message}`);
+    _conChatStreaming = false;
+    document.getElementById('concierge-send').disabled = false;
+}
+
+function sendConciergeMessage() {
+    const input = document.getElementById('concierge-input');
+    const text = input.value.trim();
+
+    if (!text || _conChatStreaming || !_conChatWs || _conChatWs.readyState !== WebSocket.OPEN) return;
+
+    // Hide welcome
+    const welcome = document.getElementById('concierge-welcome');
+    if (welcome) welcome.classList.add('hidden');
+
+    // Add user message
+    _addConMessage('user', text);
+
+    // Send via WebSocket
+    _conChatWs.send(JSON.stringify({ type: 'message', content: text }));
+
+    // Clear input
+    input.value = '';
+    input.style.height = 'auto';
+    _conChatStreaming = true;
+    document.getElementById('concierge-send').disabled = true;
+
+    // Create placeholder for assistant response
+    _conChatStreamContent = '';
+    _conChatStreamDiv = _addConMessage('assistant', '', true);
+}
+
+function sendConciergeQuickAction(prompt) {
+    const input = document.getElementById('concierge-input');
+    input.value = prompt;
+    sendConciergeMessage();
+}
+
+function handleConciergeKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendConciergeMessage();
+    }
+}
+
+function clearConciergeChat() {
+    const container = document.getElementById('concierge-messages');
+    container.innerHTML = '';
+
+    // Re-add welcome
+    container.innerHTML = `
+        <div class="concierge-welcome" id="concierge-welcome">
+            <div class="concierge-welcome-icon">🛡️</div>
+            <h4>How can I help?</h4>
+            <p>I'm your InfraForge concierge with CISO authority. Ask about policies, raise concerns, or get help with anything on the platform.</p>
+            <div class="concierge-suggestions">
+                <button class="concierge-suggestion" onclick="sendConciergeQuickAction('I want to add an Azure Firewall but I\\'m getting a policy error. Can you help?')">🔥 Policy blocking my Firewall</button>
+                <button class="concierge-suggestion" onclick="sendConciergeQuickAction('I think our public IP policy is too restrictive and blocking productivity. Can you review it?')">⚖️ Policy is too restrictive</button>
+                <button class="concierge-suggestion" onclick="sendConciergeQuickAction('What governance policies are currently active?')">📋 Show active policies</button>
+                <button class="concierge-suggestion" onclick="sendConciergeQuickAction('Are there any active policy exceptions right now?')">🔓 Check policy exceptions</button>
+            </div>
+        </div>
+    `;
+
+    _conChatStreamDiv = null;
+    _conChatStreamContent = '';
+    _conChatStreaming = false;
+
+    // Close and reconnect for a fresh session
+    if (_conChatWs) {
+        _conChatWs.close();
+        _conChatWs = null;
+    }
+    setTimeout(() => _connectConcierge(), 300);
+}
+
+
 // ── Standards Import ─────────────────────────────────────────
 
 let _importedStandards = [];
