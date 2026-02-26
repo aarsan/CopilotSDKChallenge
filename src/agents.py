@@ -498,7 +498,8 @@ TEMPLATE_HEALER = AgentSpec(
     name="Template Healer",
     description=(
         "Fixes ARM templates after deployment validation errors. "
-        "Checks parameter defaults first, uses correct API versions, "
+        "Performs root-cause analysis, checks parameter defaults, "
+        "uses correct API versions, handles SKU and quota issues, "
         "and applies surgical fixes to resolve Azure deployment failures."
     ),
     system_prompt=(
@@ -506,7 +507,8 @@ TEMPLATE_HEALER = AgentSpec(
         "deployment or validation failures.\n\n"
         "CRITICAL RULES:\n"
         "1. Check parameter defaultValues FIRST — invalid resource names usually "
-        "come from bad parameter defaults.\n"
+        "come from bad parameter defaults (names must be globally unique, "
+        "3-24 chars, lowercase alphanumeric for storage, etc.).\n"
         "2. When fixing API version migration issues, ensure ALL resource properties "
         "are compatible with the TARGET API version. If a property was introduced in a "
         "newer API version and the template is being downgraded, REMOVE or replace that "
@@ -516,7 +518,22 @@ TEMPLATE_HEALER = AgentSpec(
         "4. For API version DOWNGRADES: older API versions may not support properties like "
         "networkProfile, managedServiceIdentity, extendedLocation, or other features added "
         "in later versions. Remove or restructure these properties.\n"
-        "5. Return ONLY raw JSON — no markdown, no code fences, no explanation."
+        "5. COMMON DEPLOYMENT FAILURES and fixes:\n"
+        "   - 'SKU not available' → Use a broadly available SKU (Standard_LRS for storage, "
+        "Standard_B1s for VMs, Basic for most PaaS).\n"
+        "   - 'Quota exceeded' → Reduce count or use a smaller SKU.\n"
+        "   - 'Resource name not available' → Make the name more unique "
+        "(append '[uniqueString(resourceGroup().id)]').\n"
+        "   - 'Location not supported' → Use \"[resourceGroup().location]\" parameter.\n"
+        "   - 'InvalidTemplateDeployment' → Check for circular dependencies, "
+        "missing dependsOn, or invalid resource references.\n"
+        "   - 'LinkedAuthorizationFailed' → Remove role assignments or managed identity "
+        "configurations that require elevated permissions.\n"
+        "   - 'MissingRegistrationForType' → The resource provider may not be registered; "
+        "suggest a different approach or simpler resource configuration.\n"
+        "6. NEVER hardcode locations — use \"[resourceGroup().location]\" or "
+        "\"[parameters('location')]\".\n"
+        "7. Return ONLY raw JSON — no markdown, no code fences, no explanation."
     ),
     task=Task.CODE_FIXING,
     timeout=90,

@@ -6148,7 +6148,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     8. Publish — Save new version, promote to active
 
     Streams NDJSON events for real-time progress tracking.
-    Auto-healing via Copilot SDK (up to 3 attempts).
+    Goal-driven auto-healing via Copilot SDK (up to 5 outer attempts with
+    deploy sub-loop). Two-phase healing: analyze root cause → plan → fix.
+    Escalates from surface healer to deep healer after threshold.
     """
     from src.database import (
         get_service, get_service_version, create_service_version,
@@ -6165,7 +6167,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     )
     from src.standards import get_standards_for_service
 
-    MAX_HEAL_ATTEMPTS = 3
+    MAX_HEAL_ATTEMPTS = 5
+    DEEP_HEAL_THRESHOLD = 3        # escalate to two-phase after this many deploy heals
+    MAX_DEPLOY_SUB_HEALS = 2       # deploy-specific retries per outer attempt
 
     svc = await get_service(service_id)
     if not svc:
@@ -6203,7 +6207,12 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     async def _stream():
         nonlocal _active_semver, active_ver_num
         from src.copilot_helpers import copilot_send
-        from src.agents import LLM_REASONER, TEMPLATE_HEALER
+        from src.agents import LLM_REASONER, TEMPLATE_HEALER, DEEP_TEMPLATE_HEALER
+        from src.pipeline_helpers import (
+            guard_locations, ensure_parameter_defaults,
+            sanitize_placeholder_guids, extract_param_values,
+            get_resource_type_hints,
+        )
 
         try:  # ← top-level error wrapper for the entire stream
 
@@ -6864,6 +6873,10 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                                 continue
                             _pre_template = arm_template
                             arm_template = cleaned
+                            # Apply guardrails
+                            arm_template = guard_locations(arm_template)
+                            arm_template = ensure_parameter_defaults(arm_template)
+                            arm_template = sanitize_placeholder_guids(arm_template)
                             _last_error = "; ".join(str(v) for v in violations[:3])
                             heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": _last_error, "fix_summary": f"Fixed {len(violations)} policy violation(s)"})
                             await update_service_version_template(service_id, new_ver, arm_template)
@@ -6965,34 +6978,91 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ What-If failed — no Copilot client for healing", "progress": 1.0}) + "\n"
                             await complete_pipeline_run(_run_id, "failed", error_detail="What-If failed, no Copilot client")
                             return
-                        fix_model = get_model_for_task(Task.CODE_FIXING)
+
+                        _total_whatif_heals = sum(1 for h in heal_history if h.get("phase") == "what_if")
+                        _use_deep_wif = _total_whatif_heals >= DEEP_HEAL_THRESHOLD
+                        _plan_model = get_model_for_task(Task.PLANNING)
+                        _fix_model = get_model_for_task(Task.CODE_FIXING)
+                        _plan_display = get_model_display(Task.PLANNING)
                         _fix_display = get_model_display(Task.CODE_FIXING)
-                        heal_prompt = f"This ARM template failed What-If:\n\nERROR:\n{what_if_error}\n\nTEMPLATE:\n{arm_template}{_migration_ctx}"
+
+                        # Phase 1: root cause analysis
+                        yield json.dumps({
+                            "type": "llm_reasoning", "phase": "analyzing_whatif_failure",
+                            "step": attempt,
+                            "detail": f"🧠 {_plan_display} analyzing What-If failure — root cause analysis…",
+                            "progress": 0.46 + (attempt - 1) * 0.15,
+                        }) + "\n"
+
+                        _wif_analysis_prompt = (
+                            f"You are debugging an ARM template What-If validation failure "
+                            f"(attempt {attempt}).\n\n"
+                            f"--- ERROR ---\n{what_if_error}\n--- END ERROR ---\n\n"
+                            f"--- CURRENT TEMPLATE (abbreviated) ---\n{arm_template[:8000]}\n--- END TEMPLATE ---\n\n"
+                        )
+                        if _migration_ctx:
+                            _wif_analysis_prompt += f"--- ARCHITECTURE INTENT ---\n{_migration_ctx}\n--- END INTENT ---\n\n"
                         if heal_history:
-                            heal_prompt += "\n\n--- PREVIOUS ATTEMPTS (do NOT repeat) ---\n"
+                            _wif_analysis_prompt += "--- PREVIOUS FAILED ATTEMPTS ---\n"
                             for pa in heal_history:
-                                heal_prompt += f"Step {pa.get('step','?')}: {pa['error'][:200]} → {pa['fix_summary']}\n"
-                            heal_prompt += "--- END PREVIOUS ATTEMPTS ---\n"
+                                _wif_analysis_prompt += (
+                                    f"Attempt {pa.get('step', '?')} ({pa.get('phase', '?')}): "
+                                    f"{pa['error'][:300]} → {pa.get('strategy', pa.get('fix_summary', 'unknown'))}\n"
+                                )
+                            _wif_analysis_prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
+                        _wif_analysis_prompt += (
+                            "Produce a ROOT CAUSE ANALYSIS followed by a STRATEGY.\n\n"
+                            "Format:\nROOT CAUSE:\n<1-3 sentences>\n\n"
+                            "STRATEGY FOR THIS ATTEMPT:\n<Specific, concrete approach>\n"
+                        )
+
+                        _wif_strategy = await copilot_send(
+                            _client, model=_plan_model,
+                            system_prompt=(
+                                "You are a senior Azure infrastructure engineer debugging ARM template "
+                                "validation failures. Analyze errors deeply and propose concrete fixes."
+                            ),
+                            prompt=_wif_analysis_prompt, timeout=60,
+                        )
+                        logger.info(f"[What-If Healer] Strategy (attempt {attempt}): {_wif_strategy[:300]}")
+
+                        # Phase 2: apply the strategy
                         yield json.dumps({
                             "type": "llm_reasoning", "phase": "healing",
                             "step": attempt,
-                            "detail": f"🔧 {_fix_display} fixing What-If failure with migration context…",
-                            "progress": 0.46 + (attempt - 1) * 0.15,
+                            "detail": f"🔧 {_fix_display} applying fix strategy…",
+                            "progress": 0.47 + (attempt - 1) * 0.15,
                         }) + "\n"
-                        raw = await copilot_send(_client, model=fix_model,
-                            system_prompt=TEMPLATE_HEALER.system_prompt,
-                            prompt=heal_prompt, timeout=90)
+
+                        _wif_fix_prompt = (
+                            f"Fix this ARM template following the STRATEGY below.\n\n"
+                            f"--- STRATEGY ---\n{_wif_strategy}\n--- END STRATEGY ---\n\n"
+                            f"--- ERROR ---\n{what_if_error}\n--- END ERROR ---\n\n"
+                            f"--- TEMPLATE ---\n{arm_template}\n--- END TEMPLATE ---\n\n"
+                            "FOLLOW the strategy. Return ONLY raw JSON — no markdown, no explanation.\n"
+                            "CRITICAL: Keep locations as \"[resourceGroup().location]\" or "
+                            "\"[parameters('location')]\". Ensure every parameter has defaultValue.\n"
+                        )
+                        _wif_healer_sys = DEEP_TEMPLATE_HEALER.system_prompt if _use_deep_wif else TEMPLATE_HEALER.system_prompt
+                        raw = await copilot_send(_client, model=_fix_model,
+                            system_prompt=_wif_healer_sys,
+                            prompt=_wif_fix_prompt, timeout=90)
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
                             cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                        if not cleaned.startswith("{"):
+                            _js = cleaned.find("{")
+                            _je = cleaned.rfind("}")
+                            if _js >= 0 and _je > _js:
+                                cleaned = cleaned[_js:_je + 1]
                         try:
                             json.loads(cleaned)
                         except (json.JSONDecodeError, ValueError) as je:
                             _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
                             logger.warning(f"What-If heal parse failed: {je}")
                             _last_error = _heal_err
-                            heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": _heal_err, "fix_summary": "Heal produced invalid JSON"})
+                            heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": _heal_err, "fix_summary": "Heal produced invalid JSON", "strategy": _wif_strategy[:300]})
                             yield json.dumps({
                                 "type": "progress", "phase": "healing_failed",
                                 "step": attempt,
@@ -7000,8 +7070,14 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                                 "progress": 0.48 + (attempt - 1) * 0.15,
                             }) + "\n"
                             continue
+
+                        # Apply guardrails
+                        cleaned = guard_locations(cleaned)
+                        cleaned = ensure_parameter_defaults(cleaned)
+                        cleaned = sanitize_placeholder_guids(cleaned)
+
                         arm_template = cleaned
-                        heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": what_if_error[:300], "fix_summary": "Fixed What-If validation failure"})
+                        heal_history.append({"step": len(heal_history) + 1, "phase": "what_if", "error": what_if_error[:300], "fix_summary": "Two-phase What-If fix", "strategy": _wif_strategy[:300]})
                         await update_service_version_template(service_id, new_ver, arm_template)
                         yield json.dumps({
                             "type": "healing_done", "phase": "template_fixed",
@@ -7076,66 +7152,253 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         "progress": 0.62 + (attempt - 1) * 0.15,
                     }) + "\n"
 
-                    if attempt < MAX_HEAL_ATTEMPTS:
-                        if _client is None:
-                            _client = await ensure_copilot_client()
-                        if not _client:
-                            await update_service_version_status(service_id, new_ver, "failed")
-                            await complete_pipeline_run(_run_id, "failed", error_detail="Deploy failed, no Copilot client for healing", heal_count=len(heal_history))
-                            yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ Deployment failed — no Copilot client for healing", "progress": 1.0}) + "\n"
-                            return
-                        fix_model = get_model_for_task(Task.CODE_FIXING)
-                        _fix_display = get_model_display(Task.CODE_FIXING)
-                        deploy_heal_prompt = f"This ARM template failed deployment:\n\nERROR:\n{deploy_error}\n\nTEMPLATE:\n{arm_template}{_migration_ctx}"
-                        if heal_history:
-                            deploy_heal_prompt += "\n\n--- PREVIOUS ATTEMPTS (do NOT repeat) ---\n"
-                            for pa in heal_history:
-                                deploy_heal_prompt += f"Step {pa.get('step','?')}: {pa['error'][:200]} → {pa['fix_summary']}\n"
-                            deploy_heal_prompt += "--- END PREVIOUS ATTEMPTS ---\n"
+                # ── Deploy sub-loop: goal-driven heal → re-deploy ──
+                # Instead of burning a full outer loop iteration, try
+                # targeted deploy-specific heals with immediate re-deploy.
+                # Uses two-phase healing: analyze root cause → plan → fix.
+                _deploy_heals = 0
+                _total_deploy_heals = sum(1 for h in heal_history if h.get("phase") == "deploy")
+                while not deploy_ok and _deploy_heals < MAX_DEPLOY_SUB_HEALS:
+                    _deploy_heals += 1
+                    _total_deploy_heals += 1
+                    if _client is None:
+                        _client = await ensure_copilot_client()
+                    if not _client:
+                        await update_service_version_status(service_id, new_ver, "failed")
+                        await complete_pipeline_run(_run_id, "failed", error_detail="Deploy failed, no Copilot client for healing", heal_count=len(heal_history))
+                        yield json.dumps({"type": "error", "phase": "failed", "detail": "✗ Deployment failed — no Copilot client for healing", "progress": 1.0}) + "\n"
+                        return
+
+                    _use_deep = _total_deploy_heals >= DEEP_HEAL_THRESHOLD
+                    _heal_label = "deep two-phase" if _use_deep else "two-phase"
+                    _plan_model = get_model_for_task(Task.PLANNING)
+                    _fix_model = get_model_for_task(Task.CODE_FIXING)
+                    _fix_display = get_model_display(Task.CODE_FIXING)
+                    _plan_display = get_model_display(Task.PLANNING)
+
+                    # ── Phase 1: Root cause analysis + strategy ──
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "analyzing_deploy_failure",
+                        "step": attempt, "sub_step": _deploy_heals,
+                        "detail": f"🧠 {_plan_display} analyzing deployment failure — root cause analysis…",
+                        "progress": 0.63 + (attempt - 1) * 0.10,
+                    }) + "\n"
+
+                    _analysis_prompt = (
+                        f"You are debugging an ARM template deployment failure "
+                        f"(outer attempt {attempt}, deploy heal {_deploy_heals}).\n\n"
+                        f"--- ERROR ---\n{deploy_error}\n--- END ERROR ---\n\n"
+                        f"--- CURRENT TEMPLATE (abbreviated) ---\n{arm_template[:8000]}\n--- END TEMPLATE ---\n\n"
+                    )
+                    if _migration_ctx:
+                        _analysis_prompt += f"--- ARCHITECTURE INTENT ---\n{_migration_ctx}\n--- END INTENT ---\n\n"
+
+                    if heal_history:
+                        _analysis_prompt += "--- PREVIOUS FAILED ATTEMPTS (do NOT repeat these strategies) ---\n"
+                        for pa in heal_history:
+                            _analysis_prompt += (
+                                f"Attempt {pa.get('step', '?')} (phase: {pa.get('phase', '?')}):\n"
+                                f"  Error: {pa['error'][:400]}\n"
+                                f"  Strategy tried: {pa.get('strategy', pa.get('fix_summary', 'unknown'))}\n"
+                                f"  Result: STILL FAILED\n\n"
+                            )
+                        _analysis_prompt += "--- END PREVIOUS ATTEMPTS ---\n\n"
+
+                    # Resource-type-specific knowledge
+                    try:
+                        _tpl_for_hints = json.loads(arm_template)
+                        _res_types = {r.get("type", "").lower() for r in _tpl_for_hints.get("resources", []) if isinstance(r, dict)}
+                        _type_hints = get_resource_type_hints(_res_types)
+                        if _type_hints:
+                            _analysis_prompt += f"--- RESOURCE-TYPE-SPECIFIC KNOWLEDGE ---\n{_type_hints}\n--- END KNOWLEDGE ---\n\n"
+                    except Exception:
+                        pass
+
+                    _analysis_prompt += (
+                        "Produce a ROOT CAUSE ANALYSIS followed by a STRATEGY.\n\n"
+                        "Format your response EXACTLY as:\n\n"
+                        "ROOT CAUSE:\n<1-3 sentences explaining the fundamental issue>\n\n"
+                        "WHAT WAS TRIED AND WHY IT FAILED:\n<For each previous attempt, or 'First attempt' if none>\n\n"
+                        "STRATEGY FOR THIS ATTEMPT:\n<Specific, concrete, DIFFERENT approach>\n\n"
+                        "Be specific. Don't say 'try a different API version' — say which "
+                        "version and why. Don't say 'fix the parameters' — say which "
+                        "parameter and what the correct value should be.\n"
+                    )
+
+                    _strategy_text = await copilot_send(
+                        _client, model=_plan_model,
+                        system_prompt=(
+                            "You are a senior Azure infrastructure engineer debugging ARM template "
+                            "deployment failures. You think like a developer — you analyze errors deeply, "
+                            "identify root causes, and propose concrete, specific fixes. "
+                            "You understand Azure resource provider requirements, API version "
+                            "compatibility, SKU availability, quota limits, and naming rules."
+                        ),
+                        prompt=_analysis_prompt, timeout=60,
+                    )
+                    logger.info(f"[Deploy Healer] Phase 1 strategy (attempt {attempt}, sub {_deploy_heals}): {_strategy_text[:300]}")
+
+                    # ── Phase 2: Apply the strategy to fix the template ──
+                    yield json.dumps({
+                        "type": "llm_reasoning", "phase": "healing",
+                        "step": attempt, "sub_step": _deploy_heals,
+                        "detail": f"🔧 {_fix_display} applying {_heal_label} fix strategy…",
+                        "progress": 0.64 + (attempt - 1) * 0.10,
+                    }) + "\n"
+
+                    _fix_prompt = (
+                        f"Fix this ARM template following the STRATEGY below.\n\n"
+                        f"--- STRATEGY (from root cause analysis) ---\n{_strategy_text}\n--- END STRATEGY ---\n\n"
+                        f"--- ERROR ---\n{deploy_error}\n--- END ERROR ---\n\n"
+                        f"--- CURRENT TEMPLATE ---\n{arm_template}\n--- END TEMPLATE ---\n\n"
+                    )
+
+                    try:
+                        _fix_tpl = json.loads(arm_template)
+                        _fix_params = extract_param_values(_fix_tpl)
+                        if _fix_params:
+                            _fix_prompt += (
+                                "--- PARAMETER VALUES SENT TO ARM ---\n"
+                                f"{json.dumps(_fix_params, indent=2, default=str)}\n"
+                                "--- END PARAMETER VALUES ---\n\n"
+                            )
+                    except Exception:
+                        pass
+
+                    _fix_prompt += (
+                        "FOLLOW the strategy above. Apply the SPECIFIC changes it recommends.\n"
+                        "Return ONLY the corrected raw JSON — no markdown fences, no explanation.\n\n"
+                        "CRITICAL RULES:\n"
+                        "1. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
+                        "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
+                        "   EXCEPTION: Globally-scoped resources MUST use location \"global\".\n"
+                        "2. Ensure EVERY parameter has a \"defaultValue\".\n"
+                        "3. Add tags: environment, owner, costCenter, project on every resource.\n"
+                        "4. NEVER use placeholder GUIDs like '00000000-0000-0000-0000-000000000000'.\n"
+                    )
+
+                    _healer_sys = DEEP_TEMPLATE_HEALER.system_prompt if _use_deep else TEMPLATE_HEALER.system_prompt
+                    raw = await copilot_send(
+                        _client, model=_fix_model,
+                        system_prompt=_healer_sys,
+                        prompt=_fix_prompt, timeout=90,
+                    )
+                    cleaned = raw.strip()
+                    if cleaned.startswith("```"):
+                        _lines = cleaned.split("\n")
+                        cleaned = "\n".join(_lines[1:-1] if _lines[-1].strip() == "```" else _lines[1:])
+                    # Extract JSON if surrounded by non-JSON text
+                    if not cleaned.startswith("{"):
+                        _js = cleaned.find("{")
+                        _je = cleaned.rfind("}")
+                        if _js >= 0 and _je > _js:
+                            cleaned = cleaned[_js:_je + 1]
+
+                    try:
+                        json.loads(cleaned)
+                    except (json.JSONDecodeError, ValueError) as je:
+                        _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
+                        logger.warning(f"Deploy heal parse failed (sub {_deploy_heals}): {je}")
+                        _last_error = _heal_err
+                        heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": _heal_err, "fix_summary": "Heal produced invalid JSON", "strategy": _strategy_text[:300]})
                         yield json.dumps({
-                            "type": "llm_reasoning", "phase": "healing",
-                            "step": attempt,
-                            "detail": f"🔧 {_fix_display} fixing deployment failure with migration context…",
-                            "progress": 0.63 + (attempt - 1) * 0.15,
-                        }) + "\n"
-                        raw = await copilot_send(_client, model=fix_model,
-                            system_prompt=TEMPLATE_HEALER.system_prompt,
-                            prompt=deploy_heal_prompt,
-                            timeout=90)
-                        cleaned = raw.strip()
-                        if cleaned.startswith("```"):
-                            lines = cleaned.split("\n")
-                            cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                        try:
-                            json.loads(cleaned)
-                        except (json.JSONDecodeError, ValueError) as je:
-                            _heal_err = f"Healer returned invalid JSON: {str(je)[:150]}"
-                            logger.warning(f"Deploy heal parse failed: {je}")
-                            _last_error = _heal_err
-                            heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": _heal_err, "fix_summary": "Heal produced invalid JSON"})
-                            yield json.dumps({
-                                "type": "progress", "phase": "healing_failed",
-                                "step": attempt,
-                                "detail": f"⚠ Auto-heal produced invalid JSON — will retry" if attempt < MAX_HEAL_ATTEMPTS else f"⚠ Auto-heal produced invalid JSON",
-                                "progress": 0.65 + (attempt - 1) * 0.15,
-                            }) + "\n"
-                            continue
-                        arm_template = cleaned
-                        heal_history.append({"step": len(heal_history) + 1, "phase": "deploy", "error": deploy_error[:300], "fix_summary": "Fixed deployment failure"})
-                        await update_service_version_template(service_id, new_ver, arm_template)
-                        yield json.dumps({
-                            "type": "healing_done", "phase": "template_fixed",
-                            "step": attempt,
-                            "detail": "🔧 Template fixed — retrying…",
-                            "progress": 0.65 + (attempt - 1) * 0.15,
+                            "type": "progress", "phase": "healing_failed",
+                            "step": attempt, "sub_step": _deploy_heals,
+                            "detail": f"⚠ Auto-heal produced invalid JSON — {'will retry' if _deploy_heals < MAX_DEPLOY_SUB_HEALS else 'sub-loop exhausted'}",
+                            "progress": 0.65 + (attempt - 1) * 0.10,
                         }) + "\n"
                         continue
+
+                    # Apply guardrails
+                    cleaned = guard_locations(cleaned)
+                    cleaned = ensure_parameter_defaults(cleaned)
+                    cleaned = sanitize_placeholder_guids(cleaned)
+
+                    arm_template = cleaned
+                    heal_history.append({
+                        "step": len(heal_history) + 1, "phase": "deploy",
+                        "error": deploy_error[:300],
+                        "fix_summary": f"Two-phase {'deep ' if _use_deep else ''}fix applied",
+                        "strategy": _strategy_text[:300],
+                    })
+                    await update_service_version_template(service_id, new_ver, arm_template)
+
+                    yield json.dumps({
+                        "type": "healing_done", "phase": "template_fixed",
+                        "step": attempt, "sub_step": _deploy_heals,
+                        "detail": f"🔧 Template fixed via {_heal_label} healing — re-deploying…",
+                        "progress": 0.65 + (attempt - 1) * 0.10,
+                    }) + "\n"
+
+                    # ── Immediate re-deploy (skip policy/what-if) ──
+                    try:
+                        tpl_obj = json.loads(arm_template)
+                        params_obj = {
+                            k: {"value": v.get("defaultValue", "")}
+                            for k, v in tpl_obj.get("parameters", {}).items()
+                            if "defaultValue" in v
+                            and not (isinstance(v.get("defaultValue"), str)
+                                     and v["defaultValue"].startswith("[") and v["defaultValue"].endswith("]"))
+                        }
+                        deploy_name = f"infraforge-update-{_run_id}-h{_deploy_heals}"
+                        deploy_props = _DP(mode=_DM.INCREMENTAL,
+                                          template=tpl_obj, parameters=params_obj)
+
+                        yield json.dumps({
+                            "type": "progress", "phase": "deploying",
+                            "step": attempt, "sub_step": _deploy_heals,
+                            "detail": f"Re-deploying to {rg_name} (heal {_deploy_heals})…",
+                            "progress": 0.66 + (attempt - 1) * 0.10,
+                            "resource_group": rg_name,
+                        }) + "\n"
+
+                        deploy_result = await loop.run_in_executor(
+                            None,
+                            lambda: client.deployments.begin_create_or_update(
+                                rg_name, deploy_name,
+                                {"properties": deploy_props}
+                            ).result()
+                        )
+                        await update_service_version_deployment_info(
+                            service_id, new_ver, deployment_name=deploy_name)
+                        deploy_ok = True
+
+                        yield json.dumps({
+                            "type": "progress", "phase": "deploy_complete",
+                            "step": attempt, "sub_step": _deploy_heals,
+                            "detail": f"✓ Deployment succeeded after {_heal_label} healing",
+                            "progress": 0.68 + (attempt - 1) * 0.10,
+                        }) + "\n"
+                    except Exception as _redeploy_err:
+                        deploy_error = str(_redeploy_err)
+                        _last_error = deploy_error
+                        logger.warning(f"Re-deploy failed (sub {_deploy_heals}): {_redeploy_err}")
+                        _deploy_brief = _brief_azure_error(deploy_error)
+                        yield json.dumps({
+                            "type": "progress", "phase": "deploy_failed",
+                            "step": attempt, "sub_step": _deploy_heals,
+                            "detail": f"{_deploy_brief}",
+                            "progress": 0.67 + (attempt - 1) * 0.10,
+                        }) + "\n"
+                        # Sub-loop continues to next heal iteration
+
+                if not deploy_ok:
+                    # Deploy sub-loop exhausted — fall back to outer loop
+                    if attempt < MAX_HEAL_ATTEMPTS:
+                        yield json.dumps({
+                            "type": "healing", "phase": "escalating",
+                            "step": attempt,
+                            "detail": f"🔄 Deploy sub-heals exhausted — restarting full validation pipeline (attempt {attempt + 1}/{MAX_HEAL_ATTEMPTS})…",
+                            "progress": 0.68 + (attempt - 1) * 0.10,
+                        }) + "\n"
+                        continue  # back to outer loop: re-run policy + what-if + deploy
                     else:
+                        # All attempts exhausted
                         await update_service_version_status(service_id, new_ver, "failed")
-                        await complete_pipeline_run(_run_id, "failed", error_detail=f"Deploy failed after {attempt} attempt(s): {deploy_error[:300]}", heal_count=len(heal_history))
+                        await complete_pipeline_run(_run_id, "failed", error_detail=f"Deploy failed after {attempt} attempt(s) + {_total_deploy_heals} heals: {deploy_error[:300]}", heal_count=len(heal_history))
                         yield json.dumps({
                             "type": "error", "phase": "failed",
-                            "detail": f"✗ Deployment failed after {attempt} attempt(s)",
+                            "detail": f"✗ Deployment failed after {attempt} attempt(s) with {_total_deploy_heals} heal cycles",
                             "progress": 1.0,
                         }) + "\n"
                         # Try cleanup

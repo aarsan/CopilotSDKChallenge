@@ -1375,6 +1375,8 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
             static_policy_failed: 'Policy issues',
             what_if: 'What-If…', what_if_complete: 'What-If OK', what_if_failed: 'What-If issue',
             deploying: 'Deploying…', deploy_complete: 'Deployed', deploy_failed: 'Deploy issue',
+            analyzing_deploy_failure: 'Analyzing…', analyzing_whatif_failure: 'Analyzing…',
+            escalating: 'Escalating…',
             policy_testing: 'Compliance…', policy_testing_complete: 'Compliant',
             policy_deploy: 'Deploying policy…', policy_deploy_complete: 'Policy deployed',
             cleanup: 'Cleaning up…', cleanup_complete: 'Cleaned up',
@@ -3401,7 +3403,12 @@ function _handleUpdateEvent(event) {
     } else if (type === 'healing') {
         // Healing detail → goes into the LAST failed card (even though finalized)
         const healKey = logEl._flow._lastFailedKey || 'deploy';
-        _flowDetailOnCard(logEl, healKey, '🤖', escapeHtml(detail));
+        if (phase === 'escalating') {
+            // Escalation message — reset the failed card for a new attempt
+            _flowDetailOnCard(logEl, healKey, '🔄', escapeHtml(detail), 'uf-text-warning');
+        } else {
+            _flowDetailOnCard(logEl, healKey, '🤖', escapeHtml(detail));
+        }
     } else if (type === 'healing_done') {
         const healKey = logEl._flow._lastFailedKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, healKey, '✓', escapeHtml(detail), 'uf-text-success');
@@ -3468,6 +3475,14 @@ function _handleUpdateEvent(event) {
             if (logEl._flow?.cards[targetKey]) {
                 _flowDetailOnCard(logEl, targetKey, '🧠', escapeHtml(detail), 'uf-text-reasoning');
             }
+        } else if (phase === 'analyzing_deploy_failure' || phase === 'analyzing_whatif_failure') {
+            // Root cause analysis goes into the failed card
+            const healKey = logEl._flow._lastFailedKey || 'deploy';
+            _flowDetailOnCard(logEl, healKey, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+        } else if (phase === 'healing') {
+            // Healing reasoning goes into the last failed card
+            const healKey = logEl._flow._lastFailedKey || 'deploy';
+            _flowDetailOnCard(logEl, healKey, '🔧', escapeHtml(detail), 'uf-text-reasoning');
         } else {
             const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
             if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
