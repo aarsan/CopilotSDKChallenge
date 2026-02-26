@@ -613,17 +613,56 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     f"Deploying {tmpl_meta['resource_count']} resource(s) into '{ctx.rg_name}' ({ctx.region})…",
                     ctx.progress(att_base + 0.16), step=attempt)
 
-        try:
-            deploy_result = await execute_deployment(
-                resource_group=ctx.rg_name, template=template_json,
-                parameters=extract_param_values(template_json), region=ctx.region,
-                deployment_name=f"validate-{attempt}",
-                initiated_by="InfraForge Validator",
-            )
-            deploy_status = deploy_result.get("status", "unknown")
-        except Exception as e:
-            deploy_result = {"status": "failed", "error": str(e)}
-            deploy_status = "failed"
+        # Run deployment with progress forwarding to keep the NDJSON
+        # stream alive.  Without this, Azure Firewall deployments
+        # (10-20 min) cause an HTTP timeout → "network error" on the
+        # browser side.
+        _deploy_q: asyncio.Queue = asyncio.Queue()
+
+        async def _on_deploy_progress(evt: dict):
+            await _deploy_q.put(evt)
+
+        async def _do_deploy():
+            try:
+                return await execute_deployment(
+                    resource_group=ctx.rg_name, template=template_json,
+                    parameters=extract_param_values(template_json), region=ctx.region,
+                    deployment_name=f"validate-{attempt}",
+                    initiated_by="InfraForge Validator",
+                    on_progress=_on_deploy_progress,
+                )
+            except Exception as exc:
+                return {"status": "failed", "error": str(exc)}
+
+        _deploy_task = asyncio.create_task(_do_deploy())
+
+        # Forward deploy-engine progress as NDJSON heartbeats
+        while not _deploy_task.done():
+            try:
+                evt = await asyncio.wait_for(_deploy_q.get(), timeout=20)
+                detail = evt.get("detail", "Deployment in progress…")
+                yield emit("progress", "deploy_progress", detail,
+                           ctx.progress(att_base + 0.17), step=attempt)
+            except asyncio.TimeoutError:
+                # Heartbeat — keeps HTTP stream alive even when Azure
+                # is silently provisioning resources
+                yield emit("progress", "deploy_heartbeat",
+                           "Deployment in progress — waiting for Azure…",
+                           ctx.progress(att_base + 0.17), step=attempt)
+
+        # Drain any remaining queued events
+        while not _deploy_q.empty():
+            try:
+                evt = _deploy_q.get_nowait()
+                detail = evt.get("detail", "")
+                if detail:
+                    yield emit("progress", "deploy_progress", detail,
+                               ctx.progress(att_base + 0.18), step=attempt)
+            except asyncio.QueueEmpty:
+                break
+
+        deploy_result = _deploy_task.result()
+        deploy_status = deploy_result.get("status", "unknown")
 
         ctx.deployed_rg = ctx.rg_name
 

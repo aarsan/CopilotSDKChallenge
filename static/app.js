@@ -2550,11 +2550,18 @@ async function triggerOnboarding(serviceId) {
         await showServiceDetail(serviceId);
 
     } catch (err) {
-        showToast(`Onboarding failed: ${err.message}`, 'error');
-        const detail = document.getElementById('validation-detail');
-        if (detail) detail.textContent = `Error: ${err.message}`;
-        const cardEl = document.getElementById('validation-card');
-        if (cardEl) cardEl.className = 'validation-card validation-failed';
+        const isNetworkErr = err.name === 'TypeError' || /network|fetch|aborted|failed to fetch/i.test(err.message);
+        if (isNetworkErr) {
+            showToast('Connection interrupted — your deployment may still be running in Azure. Refresh to check status.', 'warning');
+            const detail = document.getElementById('validation-detail');
+            if (detail) detail.textContent = 'Connection lost — deployment may still be running. Refresh the page to check the latest status.';
+        } else {
+            showToast(`Onboarding failed: ${err.message}`, 'error');
+            const detail = document.getElementById('validation-detail');
+            if (detail) detail.textContent = `Error: ${err.message}`;
+            const cardEl = document.getElementById('validation-card');
+            if (cardEl) cardEl.className = 'validation-card validation-failed';
+        }
     }
 }
 
@@ -2673,11 +2680,18 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         }
 
     } catch (err) {
-        showToast(`API version update failed: ${err.message}`, 'error');
-        const detail = document.getElementById('validation-detail');
-        if (detail) detail.textContent = `Error: ${err.message}`;
-        const cardEl = document.getElementById('validation-card');
-        if (cardEl) cardEl.className = 'validation-card validation-failed';
+        const isNetworkErr = err.name === 'TypeError' || /network|fetch|aborted|failed to fetch/i.test(err.message);
+        if (isNetworkErr) {
+            showToast('Connection interrupted — the update may still be running. Refresh to check status.', 'warning');
+            const detail = document.getElementById('validation-detail');
+            if (detail) detail.textContent = 'Connection lost — update may still be running. Refresh the page to check the latest status.';
+        } else {
+            showToast(`API version update failed: ${err.message}`, 'error');
+            const detail = document.getElementById('validation-detail');
+            if (detail) detail.textContent = `Error: ${err.message}`;
+            const cardEl = document.getElementById('validation-card');
+            if (cardEl) cardEl.className = 'validation-card validation-failed';
+        }
     } finally {
         _apiUpdateRunning = false;
         _apiUpdateAbort = null;
@@ -2925,8 +2939,11 @@ function _handleValidationEvent(event) {
             else if (event.phase === 'what_if')                 icon = '🔍';
             else if (event.phase === 'what_if_complete')        icon = '✓';
             else if (event.phase === 'deploying')               icon = '🚀';
+            else if (event.phase === 'deploy_progress')        icon = '🚀';
+            else if (event.phase === 'deploy_heartbeat')       icon = '🚀';
             else if (event.phase === 'deploy_complete')         icon = '📦';
             else if (event.phase === 'deploy_failed')           icon = '💥';
+            else if (event.phase === 'infra_retry')             icon = '🔄';
             else if (event.phase === 'resource_check' || event.phase === 'resource_check_complete') icon = '🔎';
             else if (event.phase === 'policy_testing')          icon = '🛡️';
             else if (event.phase === 'policy_testing_complete')  icon = '✓';
