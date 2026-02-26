@@ -3372,70 +3372,118 @@ async def seed_orchestration_processes() -> int:
             "name": "Service Onboarding",
             "description": (
                 "End-to-end process for bringing a new Azure service into the "
-                "approved catalog. Ensures governance, generates ARM template, "
-                "validates it against Azure, and promotes to approved."
+                "approved catalog. Configures model routing, fetches org standards, "
+                "plans architecture via LLM, generates ARM + Azure Policy, validates "
+                "with a full healing loop, deploys policy, and promotes to approved."
             ),
             "trigger_event": "service_requested",
             "steps": [
                 {
                     "step_order": 1,
-                    "name": "Create service entry",
+                    "name": "Initialize",
                     "description": (
-                        "Register the service in the catalog with status='under_review'. "
-                        "Set name, category, risk_tier based on the resource type. "
-                        "Use the RESOURCE_DEPENDENCIES map to determine the category."
+                        "Configure per-task model routing (planning, code_generation, "
+                        "code_fixing, policy_gen, analysis). Clean up stale draft/failed "
+                        "versions from previous runs."
                     ),
-                    "action": "upsert_service",
+                    "action": "initialize",
                     "on_success": "next",
                     "on_failure": "abort",
-                    "config_json": '{"initial_status": "under_review"}',
                 },
                 {
                     "step_order": 2,
-                    "name": "Generate ARM template",
+                    "name": "Analyze organization standards",
                     "description": (
-                        "Check if a builtin skeleton exists (has_builtin_skeleton). "
-                        "If yes, use generate_arm_template. "
-                        "If no, use generate_arm_template_with_copilot to have the LLM "
-                        "produce one. ALL parameters MUST have defaultValues."
+                        "Fetch applicable organization standards for the service type. "
+                        "Build ARM generation context and policy generation context. "
+                        "If use_version is set, load existing draft and skip generation."
                     ),
-                    "action": "generate_arm",
-                    "on_success": "next",
-                    "on_failure": "retry_with_llm",
-                    "config_json": '{"max_retries": 3}',
-                },
-                {
-                    "step_order": 3,
-                    "name": "Create service version",
-                    "description": (
-                        "Save the ARM template as version 1 with status='draft'. "
-                        "Use create_service_version(service_id, arm_json)."
-                    ),
-                    "action": "create_service_version",
+                    "action": "analyze_standards",
                     "on_success": "next",
                     "on_failure": "abort",
                 },
                 {
+                    "step_order": 3,
+                    "name": "Plan architecture",
+                    "description": (
+                        "LLM planning call to reason about ARM template structure, "
+                        "security config, parameters, and standards compliance. "
+                        "Produces a structured plan handed to the code generation model."
+                    ),
+                    "action": "plan_architecture",
+                    "on_success": "next",
+                    "on_failure": "next",
+                    "config_json": '{"skippable": true}',
+                },
+                {
                     "step_order": 4,
+                    "name": "Generate ARM template",
+                    "description": (
+                        "Generate ARM template via built-in skeleton or Copilot SDK. "
+                        "Sanitize, inject standard tags, stamp metadata. "
+                        "Create service version with status=validating."
+                    ),
+                    "action": "generate_arm",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 5,
+                    "name": "Generate Azure Policy",
+                    "description": (
+                        "Generate Azure Policy definition via LLM or deterministic "
+                        "fallback. Policy will be tested against deployed resources "
+                        "during validation and deployed to Azure after."
+                    ),
+                    "action": "generate_policy",
+                    "on_success": "next",
+                    "on_failure": "next",
+                    "config_json": '{"skippable": true}',
+                },
+                {
+                    "step_order": 6,
                     "name": "Validate via ARM deploy",
                     "description": (
-                        "Deploy the ARM template to a temporary resource group using "
-                        "What-If validation. If it fails, run the self-heal loop "
-                        "(up to 5 attempts) to fix the template. Save each fix as a "
-                        "new version. Delete the temp resource group after validation."
+                        "Full healing loop: parse JSON → static policy check → "
+                        "What-If → deploy → resource verification → runtime policy "
+                        "compliance. Up to max_heal_attempts iterations with LLM "
+                        "two-phase healing (analyze root cause, then fix)."
                     ),
                     "action": "validate_arm_deploy",
                     "on_success": "next",
                     "on_failure": "mark_failed",
-                    "config_json": '{"max_heal_attempts": 5, "cleanup": true}',
+                    "config_json": '{"max_heal_attempts": 5}',
                 },
                 {
-                    "step_order": 5,
+                    "step_order": 7,
+                    "name": "Deploy Azure Policy",
+                    "description": (
+                        "Deploy the generated Azure Policy definition to enforce "
+                        "governance on the service's resource type. Non-blocking — "
+                        "failure does not abort the pipeline."
+                    ),
+                    "action": "deploy_policy",
+                    "on_success": "next",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 8,
+                    "name": "Cleanup",
+                    "description": (
+                        "Delete the temporary validation resource group and clean up "
+                        "Azure Policy artifacts (definition + assignment)."
+                    ),
+                    "action": "cleanup",
+                    "on_success": "next",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 9,
                     "name": "Approve and promote",
                     "description": (
-                        "If validation passed, set service status='approved', "
-                        "set the validated version as active_version. "
-                        "Use promote_service_after_validation and set_active_service_version."
+                        "Mark service version as approved, set as active version. "
+                        "Emit final summary with resource count, policy results, "
+                        "heal history, and promotion status."
                     ),
                     "action": "promote_service",
                     "on_success": "done",
@@ -3783,3 +3831,24 @@ async def seed_orchestration_processes() -> int:
 
     logger.info(f"Seeded {count} orchestration processes")
     return count
+
+
+async def refresh_orchestration_processes() -> int:
+    """Drop and re-seed all orchestration processes from the Python source of truth.
+
+    Unlike ``seed_orchestration_processes`` (which skips if data exists),
+    this always replaces existing definitions.  Use this after updating
+    the process definitions in code so running databases pick up the
+    new step definitions.
+
+    Returns the number of processes seeded.
+    """
+    backend = await get_backend()
+
+    # Delete all existing steps and processes (steps first due to FK)
+    await backend.execute_write("DELETE FROM process_steps", ())
+    await backend.execute_write("DELETE FROM orchestration_processes", ())
+    logger.info("Cleared existing orchestration process definitions")
+
+    # Re-seed with current definitions
+    return await seed_orchestration_processes()
