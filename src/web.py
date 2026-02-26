@@ -6201,6 +6201,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
 
     async def _stream():
+        nonlocal _active_semver, active_ver_num
         from src.copilot_helpers import copilot_send
         from src.agents import LLM_REASONER, TEMPLATE_HEALER
 
