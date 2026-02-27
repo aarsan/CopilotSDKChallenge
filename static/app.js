@@ -8968,30 +8968,19 @@ async function fixAndValidateTemplate(templateId) {
     showTemplateDetail(templateId);
     await new Promise(r => setTimeout(r, 200));
 
-    // Find or create a results container
-    let resultsDiv = document.getElementById('tmpl-validate-results');
-    if (!resultsDiv) {
-        const formSection = document.getElementById('tmpl-validate-form');
-        if (formSection) {
-            formSection.style.display = 'block';
-            resultsDiv = document.createElement('div');
-            resultsDiv.id = 'tmpl-validate-results';
-            resultsDiv.className = 'tmpl-validate-results';
-            formSection.appendChild(resultsDiv);
-        } else {
-            // Create inline
-            const body = document.getElementById('detail-template-body');
-            if (body) {
-                resultsDiv = document.createElement('div');
-                resultsDiv.id = 'tmpl-validate-results';
-                resultsDiv.className = 'tmpl-validate-results';
-                body.prepend(resultsDiv);
-            }
-        }
-    }
-    if (resultsDiv) {
+    // Create a visible progress container at the top of the detail body.
+    // The existing tmpl-validate-results lives inside the hidden tmpl-validate-form,
+    // so we create a fresh one outside it to ensure visibility.
+    let resultsDiv = document.getElementById('fix-validate-progress');
+    if (resultsDiv) resultsDiv.remove();
+    const detailBody = document.getElementById('detail-template-body');
+    if (detailBody) {
+        resultsDiv = document.createElement('div');
+        resultsDiv.id = 'fix-validate-progress';
+        resultsDiv.className = 'tmpl-validate-results detail-section';
         resultsDiv.style.display = 'block';
         resultsDiv.innerHTML = '<div class="compose-loading">🔧 Working on it… Rebuilding, fixing, and validating against Azure.</div>';
+        detailBody.prepend(resultsDiv);
     }
 
     const tracker = { running: true, events: [], finalEvent: null, abortController: new AbortController() };
