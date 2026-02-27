@@ -5092,12 +5092,17 @@ async def fix_and_validate_template(template_id: str, request: Request):
     async def _stream():
         import uuid as _uuid
 
+        _events = []
+        def _record(evt_dict):
+            _events.append(evt_dict)
+            return _json.dumps(evt_dict) + "\n"
+
         # ── Phase 1: Blueprint recompose OR standalone heal ──
         if is_blueprint and svc_ids:
-            yield _json.dumps({
+            yield _record({
                 "phase": "recomposing",
                 "detail": "This is a blueprint — let me rebuild it from the latest service templates first…",
-            }) + "\n"
+            })
 
             try:
                 result = await _recompose_with_pinned(
@@ -5109,75 +5114,75 @@ async def fix_and_validate_template(template_id: str, request: Request):
                     created_by="fix-and-validate",
                 )
                 test_results = result.get("test_results", {})
-                yield _json.dumps({
+                yield _record({
                     "phase": "recomposed",
                     "detail": f"Rebuilt from {len(result.get('services_recomposed', []))} services — {test_results.get('passed', 0)}/{test_results.get('total', 0)} structural tests pass.",
                     "version": result.get("version", {}).get("semver", ""),
                     "resource_count": result.get("resource_count", 0),
                     "param_count": result.get("parameter_count", 0),
-                }) + "\n"
+                })
 
                 if not test_results.get("all_passed"):
-                    yield _json.dumps({
+                    yield _record({
                         "phase": "structural_fix",
                         "detail": "Some structural issues remain — running auto-heal…",
-                    }) + "\n"
+                    })
                     # Auto-heal the recomposed version
                     from starlette.requests import Request as _Req
                     heal_resp = await auto_heal_template(template_id)
                     heal_data = _json.loads(heal_resp.body.decode())
-                    yield _json.dumps({
+                    yield _record({
                         "phase": "structural_fixed",
                         "detail": f"Structural fix: {heal_data.get('message', 'done')}",
                         "all_passed": heal_data.get("all_passed", False),
-                    }) + "\n"
+                    })
             except Exception as e:
-                yield _json.dumps({
+                yield _record({
                     "phase": "recompose_error",
                     "detail": f"Recompose failed: {e}. Falling back to current template.",
-                }) + "\n"
+                })
         else:
             # Standalone: run structural auto-heal first
-            yield _json.dumps({
+            yield _record({
                 "phase": "structural_check",
                 "detail": "Checking the template structure and fixing any issues…",
-            }) + "\n"
+            })
 
             try:
                 heal_resp = await auto_heal_template(template_id)
                 heal_data = _json.loads(heal_resp.body.decode())
                 if heal_data.get("all_passed") or heal_data.get("status") == "already_healthy":
-                    yield _json.dumps({
+                    yield _record({
                         "phase": "structural_ok",
                         "detail": "Structure looks good — moving to ARM validation.",
-                    }) + "\n"
+                    })
                 else:
-                    yield _json.dumps({
+                    yield _record({
                         "phase": "structural_fixed",
                         "detail": f"Structural fix: {heal_data.get('message', 'done')}",
                         "all_passed": heal_data.get("all_passed", False),
-                    }) + "\n"
+                    })
             except Exception as e:
-                yield _json.dumps({
+                yield _record({
                     "phase": "structural_error",
                     "detail": f"Structural check error: {e}. Proceeding with ARM validation anyway.",
-                }) + "\n"
+                })
 
         # ── Phase 2: ARM validation with self-healing ──
-        yield _json.dumps({
+        yield _record({
             "phase": "arm_validation_start",
             "detail": "Structure verified — now deploying to Azure to test the real thing…",
-        }) + "\n"
+        })
 
         # Get the latest version (may have been updated by recompose/heal)
         _tmpl = await get_template_by_id(template_id)
         _versions = await get_template_versions(template_id)
         if not _versions:
-            yield _json.dumps({
+            yield _record({
                 "phase": "complete",
                 "status": "failed",
                 "error": "No template versions found after fix phase.",
-            }) + "\n"
+            })
             return
 
         _latest = _versions[0]
@@ -5185,11 +5190,11 @@ async def fix_and_validate_template(template_id: str, request: Request):
         try:
             _tpl = _json.loads(_arm_content) if isinstance(_arm_content, str) else _arm_content
         except Exception:
-            yield _json.dumps({
+            yield _record({
                 "phase": "complete",
                 "status": "failed",
                 "error": "Template content is not valid JSON after fix phase.",
-            }) + "\n"
+            })
             return
 
         _version_num = _latest["version"]
@@ -5253,6 +5258,7 @@ async def fix_and_validate_template(template_id: str, request: Request):
                 yield line
                 try:
                     evt = _json.loads(line.strip())
+                    _events.append(evt)
                     if evt.get("phase") == "complete":
                         s = evt.get("status", "failed")
                         final_status = "completed" if s in ("succeeded", "tested_with_issues") else "failed"
@@ -5260,16 +5266,17 @@ async def fix_and_validate_template(template_id: str, request: Request):
                 except Exception:
                     pass
         except Exception as val_err:
-            yield _json.dumps({
+            yield _record({
                 "phase": "complete",
                 "status": "failed",
                 "error": str(val_err),
-            }) + "\n"
+            })
 
         try:
             await complete_pipeline_run(
                 _run_id, final_status,
                 result_summary=f"Fix & Validate: {final_status}, heals={heal_count}",
+                events_json=_json.dumps(_events),
             )
         except Exception:
             pass

@@ -4856,7 +4856,16 @@ function _reconnectTemplateValidation(templateId) {
     const tracker = _activeTemplateValidations[templateId];
     if (!tracker || !tracker.events.length) return;
 
-    const resultsDiv = document.getElementById('tmpl-validate-results');
+    let resultsDiv = document.getElementById('fix-validate-progress');
+    if (!resultsDiv) {
+        const detailBody = document.getElementById('detail-template-body');
+        if (detailBody) {
+            resultsDiv = document.createElement('div');
+            resultsDiv.id = 'fix-validate-progress';
+            resultsDiv.className = 'tmpl-validate-results detail-section';
+            detailBody.prepend(resultsDiv);
+        }
+    }
     const btn = document.getElementById('tmpl-validate-btn');
     if (!resultsDiv) return;
 
@@ -4951,7 +4960,7 @@ function _renderTemplatePipelineRuns(runs, templateId) {
                 ${healCount > 0 ? `<span class="run-item-heals" title="${healCount} heal cycle(s)">🔧 ${healCount}</span>` : ''}
                 <span class="run-item-duration">${dur}</span>
                 <span class="run-item-date">${started}</span>
-                ${hasEvents ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); replayPipelineRun('${escapeHtml(templateId)}', ${idx})" title="Replay this run as a visual flowchart">▶ Replay</button>` : ''}
+                ${r.status === 'running' ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); document.getElementById('fix-validate-progress')?.scrollIntoView({behavior: 'smooth'})" title="View live progress">👀 View Live</button>` : (hasEvents ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); replayPipelineRun('${escapeHtml(templateId)}', ${idx})" title="Replay this run as a visual flowchart">▶ Replay</button>` : '')}
             </div>
             ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
         </div>`;
