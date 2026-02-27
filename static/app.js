@@ -9009,6 +9009,24 @@ function _renderDeployProgress(container, event, ctx) {
     }
 
     // ── Live progress (overwrite — resource provisioning, validating, etc) ──
+    // Deduplicate: if the detail text hasn't changed, just add a dot to
+    // show the process is alive instead of repeating the same line.
+    if (!state._lastProgressDetail) state._lastProgressDetail = '';
+    if (!state._progressDotCount) state._progressDotCount = 0;
+
+    const progressKey = (detail || '') + '|' + (event.succeeded || 0) + '/' + (event.total || 0);
+    if (progressKey === state._lastProgressDetail) {
+        // Same status — just add a dot to the existing progress text
+        state._progressDotCount++;
+        const dotEl = liveProgress.querySelector('.vf-progress-dots');
+        if (dotEl) {
+            dotEl.textContent = '.'.repeat(Math.min(state._progressDotCount, 30));
+        }
+        return;
+    }
+    state._lastProgressDetail = progressKey;
+    state._progressDotCount = 0;
+
     const pct = Math.round(progress * 100);
     const phaseIcons = {
         starting: '🚀', resource_group: '📁', validating: '🔍',
@@ -9019,7 +9037,7 @@ function _renderDeployProgress(container, event, ctx) {
         <div class="vf-progress-bar">
             <div class="vf-progress-fill" style="width: ${pct}%"></div>
         </div>
-        <div class="vf-progress-phase">${pIcon} ${escapeHtml(detail || phase)}</div>
+        <div class="vf-progress-phase">${pIcon} ${escapeHtml(detail || phase)}<span class="vf-progress-dots"></span></div>
         ${event.resources ? `
         <div class="vf-resource-chips">
             ${event.resources.map(r => `

@@ -13039,6 +13039,7 @@ details[open] > .tmpl-deploy-group-optional {
     border-radius: 2px; transition: width 0.3s ease;
 }
 .vf-progress-phase { font-size: 0.75rem; color: var(--text-secondary); }
+.vf-progress-dots { color: var(--text-muted, #666); letter-spacing: 1px; }
 .vf-resource-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.3rem; }
 .vf-res-chip {
     font-size: 0.68rem; padding: 0.1rem 0.4rem; border-radius: 4px;
