@@ -1740,6 +1740,35 @@ body {
     font-weight: 600;
 }
 
+/* ── Hero Dependency Icons ──────────────── */
+.hero-node-deps {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+.hero-dep-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.05);
+    cursor: default;
+    transition: background 0.15s;
+}
+.hero-dep-icon:hover {
+    background: rgba(255,255,255,0.12);
+}
+.hero-dep-icon img,
+.hero-dep-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
 /* ── Hero Upgrade Button ─────────────────── */
 .hero-upgrade-btn {
     font-size: 0.65rem;

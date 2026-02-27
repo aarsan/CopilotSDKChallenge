@@ -4489,6 +4489,17 @@ async function _loadTemplateComposition(templateId) {
                     return dep ? (dep.name || e.to.split('/').pop()) : e.to.split('/').pop();
                 });
 
+                // Build dependency icon strip (small icons of what this node depends on)
+                let depIconsHtml = '';
+                if (myEdges.length) {
+                    const depIcons = myEdges.map(e => {
+                        const dep = components.find(x => x.service_id === e.to);
+                        const depName = dep ? (dep.name || e.to.split('/').pop()) : e.to.split('/').pop();
+                        return `<span class="hero-dep-icon" title="Depends on: ${escapeHtml(depName)}">${_azureIcon(e.to, 14)}</span>`;
+                    }).join('');
+                    depIconsHtml = `<div class="hero-node-deps">${depIcons}</div>`;
+                }
+
                 // Build tooltip text
                 const tooltipLines = [
                     c.service_id,
@@ -4510,6 +4521,7 @@ async function _loadTemplateComposition(templateId) {
                                     ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
                                     : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
+                            ${depIconsHtml}
                         </div>
                     </div>`;
             }
