@@ -4768,6 +4768,29 @@ body {
 .btn-replay:hover {
     background: var(--accent-indigo);
 }
+
+/* Live pulse animation for "Watch Live" button */
+.btn-live-pulse {
+    background: var(--accent-green, #22c55e);
+    animation: live-pulse 1.5s ease-in-out infinite;
+}
+.btn-live-pulse:hover {
+    background: var(--accent-green, #16a34a);
+}
+@keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Inline flowchart inside a pipeline run item */
+.run-item-flowchart {
+    padding: 0.5rem 0.8rem 0.8rem;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-tertiary, var(--bg-secondary));
+    border-radius: 0 0 8px 8px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
 .replay-header {
     display: flex;
     align-items: center;

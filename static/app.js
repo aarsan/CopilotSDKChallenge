@@ -4856,16 +4856,7 @@ function _reconnectTemplateValidation(templateId) {
     const tracker = _activeTemplateValidations[templateId];
     if (!tracker || !tracker.events.length) return;
 
-    let resultsDiv = document.getElementById('fix-validate-progress');
-    if (!resultsDiv) {
-        const detailBody = document.getElementById('detail-template-body');
-        if (detailBody) {
-            resultsDiv = document.createElement('div');
-            resultsDiv.id = 'fix-validate-progress';
-            resultsDiv.className = 'tmpl-validate-results detail-section';
-            detailBody.prepend(resultsDiv);
-        }
-    }
+    const resultsDiv = document.getElementById('tmpl-validate-results');
     const btn = document.getElementById('tmpl-validate-btn');
     if (!resultsDiv) return;
 
@@ -4927,6 +4918,9 @@ function _renderTemplatePipelineRuns(runs, templateId) {
         return s > 0 ? `${m}m ${s}s` : `${m}m`;
     };
 
+    // Check if there's an active live validation running for this template
+    const liveTracker = _activeTemplateValidations[templateId];
+
     const items = runs.map((r, idx) => {
         const started = (r.started_at || '').replace('T', ' ').substring(0, 19);
         const dur = formatDuration(r.duration_secs);
@@ -4934,6 +4928,7 @@ function _renderTemplatePipelineRuns(runs, templateId) {
         const hasEvents = r.events && r.events.length > 0;
         const summary = r.summary || {};
         const verDisplay = r.semver || (r.version_num ? `v${r.version_num}` : '');
+        const isRunning = r.status === 'running' || (!r.status && !r.completed_at);
 
         let detailRows = '';
         if (r.error_detail) {
@@ -4952,17 +4947,26 @@ function _renderTemplatePipelineRuns(runs, templateId) {
             detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
         }
 
+        // Action button: "Watch Live" for running, "View Flowchart" for completed with events
+        let actionBtn = '';
+        if (isRunning && liveTracker && liveTracker.running) {
+            actionBtn = `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); scrollToLiveProgress()" title="Watch this run in real time">👁 Watch Live</button>`;
+        } else if (hasEvents) {
+            actionBtn = `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); expandPipelineRun(this, '${escapeHtml(templateId)}', ${idx})" title="View the deployment flowchart for this run">📊 View</button>`;
+        }
+
         return `
         <div class="run-item run-item-${r.status || 'unknown'}">
-            <div class="run-item-header" onclick="this.parentElement.querySelector('.run-item-detail')?.classList.toggle('hidden')">
+            <div class="run-item-header" onclick="toggleRunDetail(this)">
                 <span class="run-item-status ${statusClass(r.status)}">${statusIcon(r.status)}</span>
                 <span class="run-item-pipeline">Template Validation</span>
                 ${healCount > 0 ? `<span class="run-item-heals" title="${healCount} heal cycle(s)">🔧 ${healCount}</span>` : ''}
                 <span class="run-item-duration">${dur}</span>
                 <span class="run-item-date">${started}</span>
-                ${r.status === 'running' ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); document.getElementById('fix-validate-progress')?.scrollIntoView({behavior: 'smooth'})" title="View live progress">👀 View Live</button>` : (hasEvents ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); replayPipelineRun('${escapeHtml(templateId)}', ${idx})" title="Replay this run as a visual flowchart">▶ Replay</button>` : '')}
+                ${actionBtn}
             </div>
             ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
+            <div class="run-item-flowchart" style="display:none;"></div>
         </div>`;
     }).join('');
 
@@ -4974,6 +4978,69 @@ function _renderTemplatePipelineRuns(runs, templateId) {
         </div>
         <div class="version-list">${items}</div>
     </div>`;
+}
+
+/** Toggle run detail rows visibility */
+function toggleRunDetail(headerEl) {
+    const detail = headerEl.parentElement.querySelector('.run-item-detail');
+    if (detail) detail.classList.toggle('hidden');
+}
+
+/** Scroll to the live fix-and-validate progress container */
+function scrollToLiveProgress() {
+    const liveDiv = document.getElementById('fix-validate-progress');
+    if (liveDiv) {
+        liveDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+        showToast('No active validation running right now', 'info');
+    }
+}
+
+/** Expand a pipeline run inline to show its deployment flowchart */
+async function expandPipelineRun(btnEl, templateId, runIndex) {
+    const runItem = btnEl.closest('.run-item');
+    if (!runItem) return;
+    const flowchartDiv = runItem.querySelector('.run-item-flowchart');
+    if (!flowchartDiv) return;
+
+    // Toggle: if already showing, collapse it
+    if (flowchartDiv.style.display !== 'none') {
+        flowchartDiv.style.display = 'none';
+        flowchartDiv.innerHTML = '';
+        flowchartDiv._vfState = null;
+        btnEl.textContent = '📊 View';
+        return;
+    }
+
+    // Load runs from cache or fetch
+    if (!_templatePipelineRunCache[templateId]) {
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pipeline-runs`);
+            if (!res.ok) return;
+            _templatePipelineRunCache[templateId] = await res.json();
+        } catch (_) { return; }
+    }
+
+    const runs = _templatePipelineRunCache[templateId];
+    if (!runs || !runs[runIndex]) return;
+    const run = runs[runIndex];
+    const events = run.events || [];
+    if (!events.length) {
+        showToast('No event data saved for this run', 'info');
+        return;
+    }
+
+    // Show and populate the flowchart
+    flowchartDiv.style.display = 'block';
+    flowchartDiv.innerHTML = '';
+    flowchartDiv._vfState = null;
+    btnEl.textContent = '📊 Hide';
+
+    for (const event of events) {
+        _renderDeployProgress(flowchartDiv, event, 'validate');
+    }
+
+    flowchartDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 /** Replay a stored pipeline run by feeding its events into the visual flowchart */
