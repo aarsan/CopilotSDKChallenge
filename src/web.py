@@ -4185,87 +4185,114 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                 step_end(sid, "warning", int((time.time() - s_dt) * 1000),
                          "What-If skipped (advisory)")
 
-            # ── Step 7: VERSION ──
-            sid = f"{job_id}-version"
-            step_start(sid)
-            s4 = time.time()
-
-            changes_desc = "; ".join(
-                c.get("description", "") for c in changes_made if c.get("description")
-            ) or "Compliance remediation applied"
-            changelog = f"Compliance remediation: {changes_desc}"
-            step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
-
-            # Get fresh semver for the version bump
-            # Service deps store versions in service_versions, not template_versions
-            is_service_dep = tid in dep_service_ids and tid != template_id
-
-            if is_service_dep:
-                latest_svc = await get_latest_service_version(tid)
-                latest_semver = (latest_svc.get("semver") or "1.0.0") if latest_svc else "1.0.0"
-            else:
-                latest_semver = await get_latest_semver(tid) or "1.0.0"
-
-            new_semver = compute_next_semver(latest_semver, step_change_type)
-            step_log(sid, f"Version bump: {latest_semver} → {new_semver} ({step_change_type})")
-            step_log(sid, f"Changelog: {changelog[:120]}{'…' if len(changelog) > 120 else ''}")
-
-            if is_service_dep:
-                new_ver = await create_service_version(
-                    tid,
-                    fixed_content,
-                    semver=new_semver,
-                    changelog=changelog,
-                    created_by="compliance-remediation",
-                )
-            else:
-                new_ver = await create_template_version(
-                    tid,
-                    fixed_content,
-                    changelog=changelog,
-                    change_type=step_change_type,
-                    created_by="compliance-remediation",
-                )
-
-            new_version_num = new_ver.get("version", "?")
-            new_semver_actual = new_ver.get("semver", new_semver)
-            step_log(sid, f"Created version #{new_version_num} (v{new_semver_actual})")
-            step_end(sid, "success", int((time.time() - s4) * 1000))
-
-            # ── Step 8: PUBLISH ──
-            sid = f"{job_id}-publish"
-            step_start(sid)
-            s5 = time.time()
-
-            now_iso = datetime.now(timezone.utc).isoformat()
-
-            if is_service_dep:
-                # Service deps store ARM in service_versions (already written in
-                # step 6).  Also update catalog_templates.content if a row exists,
-                # so compliance re-scans and other code paths see the fix.
-                step_log(sid, f"Service version v{new_semver_actual} stored for {tid}")
+            # ── Check if ARM template actually changed ──
+            # Normalise both to sorted JSON for comparison so that
+            # cosmetic whitespace / key-order differences don't count.
+            def _normalise_arm(s: str) -> str:
                 try:
-                    updated = await backend.execute_write(
+                    return json.dumps(json.loads(s), sort_keys=True, indent=2)
+                except Exception:
+                    return s.strip()
+
+            template_unchanged = _normalise_arm(fixed_content) == _normalise_arm(current_arm)
+
+            if template_unchanged:
+                # ── Step 7: VERSION (skipped — no changes) ──
+                sid = f"{job_id}-version"
+                step_start(sid)
+                s4 = time.time()
+                step_log(sid, "ARM template is identical to previous version — no changes were needed")
+                step_log(sid, "Skipping version creation to avoid duplicate entries")
+                step_end(sid, "success", int((time.time() - s4) * 1000), "Skipped (no changes)")
+
+                # ── Step 8: PUBLISH (skipped — no changes) ──
+                sid = f"{job_id}-publish"
+                step_start(sid)
+                s5 = time.time()
+                step_log(sid, "No new version to publish — template already compliant")
+                step_end(sid, "success", int((time.time() - s5) * 1000), "Skipped (no changes)")
+            else:
+                # ── Step 7: VERSION ──
+                sid = f"{job_id}-version"
+                step_start(sid)
+                s4 = time.time()
+
+                changes_desc = "; ".join(
+                    c.get("description", "") for c in changes_made if c.get("description")
+                ) or "Compliance remediation applied"
+                changelog = f"Compliance remediation: {changes_desc}"
+                step_change_type = steps[0].get("change_type", "patch") if steps else "patch"
+
+                # Get fresh semver for the version bump
+                # Service deps store versions in service_versions, not template_versions
+                is_service_dep = tid in dep_service_ids and tid != template_id
+
+                if is_service_dep:
+                    latest_svc = await get_latest_service_version(tid)
+                    latest_semver = (latest_svc.get("semver") or "1.0.0") if latest_svc else "1.0.0"
+                else:
+                    latest_semver = await get_latest_semver(tid) or "1.0.0"
+
+                new_semver = compute_next_semver(latest_semver, step_change_type)
+                step_log(sid, f"Version bump: {latest_semver} → {new_semver} ({step_change_type})")
+                step_log(sid, f"Changelog: {changelog[:120]}{'…' if len(changelog) > 120 else ''}")
+
+                if is_service_dep:
+                    new_ver = await create_service_version(
+                        tid,
+                        fixed_content,
+                        semver=new_semver,
+                        changelog=changelog,
+                        created_by="compliance-remediation",
+                    )
+                else:
+                    new_ver = await create_template_version(
+                        tid,
+                        fixed_content,
+                        changelog=changelog,
+                        change_type=step_change_type,
+                        created_by="compliance-remediation",
+                    )
+
+                new_version_num = new_ver.get("version", "?")
+                new_semver_actual = new_ver.get("semver", new_semver)
+                step_log(sid, f"Created version #{new_version_num} (v{new_semver_actual})")
+                step_end(sid, "success", int((time.time() - s4) * 1000))
+
+                # ── Step 8: PUBLISH ──
+                sid = f"{job_id}-publish"
+                step_start(sid)
+                s5 = time.time()
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                if is_service_dep:
+                    # Service deps store ARM in service_versions (already written in
+                    # step 6).  Also update catalog_templates.content if a row exists,
+                    # so compliance re-scans and other code paths see the fix.
+                    step_log(sid, f"Service version v{new_semver_actual} stored for {tid}")
+                    try:
+                        updated = await backend.execute_write(
+                            "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
+                            (fixed_content, now_iso, tid),
+                        )
+                        if updated:
+                            step_log(sid, f"Catalog content synced for {tid}")
+                    except Exception:
+                        pass  # No catalog_templates row for this service — that's OK
+                else:
+                    step_log(sid, "Updating catalog template content…")
+                    await backend.execute_write(
                         "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
                         (fixed_content, now_iso, tid),
                     )
-                    if updated:
-                        step_log(sid, f"Catalog content synced for {tid}")
-                except Exception:
-                    pass  # No catalog_templates row for this service — that's OK
-            else:
-                step_log(sid, "Updating catalog template content…")
-                await backend.execute_write(
-                    "UPDATE catalog_templates SET content = ?, updated_at = ? WHERE id = ?",
-                    (fixed_content, now_iso, tid),
-                )
-                step_log(sid, f"Catalog updated for {tid}")
+                    step_log(sid, f"Catalog updated for {tid}")
 
-            step_log(sid, f"New template published: v{new_semver_actual}")
-            step_end(sid, "success", int((time.time() - s5) * 1000))
+                step_log(sid, f"New template published: v{new_semver_actual}")
+                step_end(sid, "success", int((time.time() - s5) * 1000))
 
             # ── Persist remediation log onto the new version ──
-            if not is_service_dep and new_version_num != "?":
+            if not template_unchanged and not is_service_dep and new_version_num != "?":
                 try:
                     from src.database import update_template_validation_status
                     await update_template_validation_status(
@@ -4279,21 +4306,39 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                     logger.warning(f"Failed to persist remediation log for {tid} v{new_version_num}: {log_err}")
 
             # ── Job complete ──
-            result = {
-                "template_id": tid,
-                "template_name": tname,
-                "success": True,
-                "old_version": ver_num,
-                "old_semver": current_semver or None,
-                "new_version": new_version_num,
-                "new_semver": new_semver_actual,
-                "changes_made": changes_made,
-                "changelog": changelog,
-                "deploy_proof": deploy_proof,
-                "verify_iterations": verify_iteration,
-                "verify_clean": not remaining_violations,
-                "remaining_violations": len(remaining_violations) if remaining_violations else 0,
-            }
+            if template_unchanged:
+                result = {
+                    "template_id": tid,
+                    "template_name": tname,
+                    "success": True,
+                    "old_version": ver_num,
+                    "old_semver": current_semver or None,
+                    "new_version": None,
+                    "new_semver": None,
+                    "changes_made": [],
+                    "changelog": "No changes needed — template already compliant",
+                    "deploy_proof": deploy_proof,
+                    "verify_iterations": verify_iteration,
+                    "verify_clean": not remaining_violations,
+                    "remaining_violations": len(remaining_violations) if remaining_violations else 0,
+                    "skipped_version": True,
+                }
+            else:
+                result = {
+                    "template_id": tid,
+                    "template_name": tname,
+                    "success": True,
+                    "old_version": ver_num,
+                    "old_semver": current_semver or None,
+                    "new_version": new_version_num,
+                    "new_semver": new_semver_actual,
+                    "changes_made": changes_made,
+                    "changelog": changelog,
+                    "deploy_proof": deploy_proof,
+                    "verify_iterations": verify_iteration,
+                    "verify_clean": not remaining_violations,
+                    "remaining_violations": len(remaining_violations) if remaining_violations else 0,
+                }
             emit({"type": "job_end", "job_id": job_id, "status": "success",
                   "result": result, "duration_ms": int((time.time() - t0) * 1000)})
             return result
@@ -4364,10 +4409,12 @@ async def compliance_remediate_execute(template_id: str, request: Request):
         successful_dep_tids = [
             r["template_id"] for r in results
             if r.get("success") and r.get("template_id") != template_id
+            and not r.get("skipped_version")  # only deps that actually changed
         ]
         # Also handle the case where the parent itself was fixed
         parent_was_fixed = any(
             r.get("success") and r.get("template_id") == template_id
+            and not r.get("skipped_version")
             for r in results
         )
 
