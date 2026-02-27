@@ -4512,6 +4512,12 @@ function showTemplateDetail(templateId) {
         <!-- Compliance scan results (populated on demand) -->
         <div id="tmpl-scan-results" style="display:none;"></div>
 
+        <!-- Pipeline Runs — visual history with flowchart replay -->
+        <div id="tmpl-pipeline-runs-container" class="detail-section" style="display:none;"></div>
+
+        <!-- Pipeline Run Replay — full-screen flowchart for a past run -->
+        <div id="tmpl-pipeline-replay" style="display:none;"></div>
+
         <!-- Version Log — collapsible -->
         <div class="detail-section comp-verlog-section">
             <h4 class="comp-verlog-toggle" onclick="this.parentElement.classList.toggle('comp-verlog-open')">
@@ -4528,6 +4534,7 @@ function showTemplateDetail(templateId) {
     // Load composition info (also updates template version display with semver)
     _loadTemplateComposition(templateId);
     _loadTemplateVersionHistory(templateId);
+    _loadTemplatePipelineRuns(templateId);
 
     // Reconnect to active/completed validation if one exists
     _reconnectTemplateValidation(templateId);
@@ -4561,6 +4568,159 @@ function _reconnectTemplateValidation(templateId) {
             btn.disabled = false;
             btn.innerHTML = '🧪 Run Validation';
         }
+    }
+}
+
+// ── Template Pipeline Run History ──────────────────────────────
+
+/** Load and render pipeline run history for a template */
+async function _loadTemplatePipelineRuns(templateId) {
+    const container = document.getElementById('tmpl-pipeline-runs-container');
+    if (!container) return;
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pipeline-runs`);
+        if (!res.ok) return;
+        const runs = await res.json();
+        if (!runs || runs.length === 0) return;
+        container.innerHTML = _renderTemplatePipelineRuns(runs, templateId);
+        container.style.display = '';
+    } catch (_) { /* ignore */ }
+}
+
+/** Render visual pipeline run history list for templates */
+function _renderTemplatePipelineRuns(runs, templateId) {
+    const statusIcon = (s) => ({
+        completed: '✅', failed: '❌', running: '🔄',
+    })[s] || '⏳';
+
+    const statusClass = (s) => ({
+        completed: 'run-status-completed',
+        failed: 'run-status-failed',
+        running: 'run-status-running',
+    })[s] || 'run-status-unknown';
+
+    const formatDuration = (secs) => {
+        if (!secs && secs !== 0) return '—';
+        if (secs < 60) return `${Math.round(secs)}s`;
+        const m = Math.floor(secs / 60);
+        const s = Math.round(secs % 60);
+        return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    };
+
+    const items = runs.map((r, idx) => {
+        const started = (r.started_at || '').replace('T', ' ').substring(0, 19);
+        const dur = formatDuration(r.duration_secs);
+        const healCount = r.heal_count || 0;
+        const hasEvents = r.events && r.events.length > 0;
+        const summary = r.summary || {};
+        const verDisplay = r.semver || (r.version_num ? `v${r.version_num}` : '');
+
+        let detailRows = '';
+        if (r.error_detail) {
+            detailRows += `<div class="run-detail-row run-detail-error"><strong>Error:</strong> ${escapeHtml(r.error_detail.substring(0, 300))}</div>`;
+        }
+        if (healCount > 0) {
+            detailRows += `<div class="run-detail-row"><strong>Heal cycles:</strong> ${healCount}</div>`;
+        }
+        if (verDisplay) {
+            detailRows += `<div class="run-detail-row"><strong>Version:</strong> ${escapeHtml(verDisplay)}</div>`;
+        }
+        if (summary.region) {
+            detailRows += `<div class="run-detail-row"><strong>Region:</strong> ${escapeHtml(summary.region)}</div>`;
+        }
+        if (r.run_id) {
+            detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
+        }
+
+        return `
+        <div class="run-item run-item-${r.status || 'unknown'}">
+            <div class="run-item-header" onclick="this.parentElement.querySelector('.run-item-detail')?.classList.toggle('hidden')">
+                <span class="run-item-status ${statusClass(r.status)}">${statusIcon(r.status)}</span>
+                <span class="run-item-pipeline">Template Validation</span>
+                ${healCount > 0 ? `<span class="run-item-heals" title="${healCount} heal cycle(s)">🔧 ${healCount}</span>` : ''}
+                <span class="run-item-duration">${dur}</span>
+                <span class="run-item-date">${started}</span>
+                ${hasEvents ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); replayPipelineRun('${escapeHtml(templateId)}', ${idx})" title="Replay this run as a visual flowchart">▶ Replay</button>` : ''}
+            </div>
+            ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="version-history">
+        <div class="version-history-header">
+            <span>📊 Pipeline Runs</span>
+            <span class="version-count">${runs.length} run${runs.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="version-list">${items}</div>
+    </div>`;
+}
+
+/** Replay a stored pipeline run by feeding its events into the visual flowchart */
+let _templatePipelineRunCache = {};
+
+async function replayPipelineRun(templateId, runIndex) {
+    const replayDiv = document.getElementById('tmpl-pipeline-replay');
+    if (!replayDiv) return;
+
+    // Load the runs if not cached
+    if (!_templatePipelineRunCache[templateId]) {
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pipeline-runs`);
+            if (!res.ok) return;
+            _templatePipelineRunCache[templateId] = await res.json();
+        } catch (_) { return; }
+    }
+
+    const runs = _templatePipelineRunCache[templateId];
+    if (!runs || !runs[runIndex]) return;
+    const run = runs[runIndex];
+    const events = run.events || [];
+    if (!events.length) {
+        showToast('No event data available for this run', 'info');
+        return;
+    }
+
+    // Show replay area and clear previous state
+    replayDiv.style.display = 'block';
+    replayDiv.innerHTML = '';
+    replayDiv._vfState = null; // Reset flowchart state
+
+    // Add a header with run info and close button
+    const started = (run.started_at || '').replace('T', ' ').substring(0, 19);
+    const verDisplay = run.semver || (run.version_num ? `v${run.version_num}` : '');
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'replay-header';
+    headerDiv.innerHTML = `
+        <div class="replay-header-info">
+            <span class="replay-title">📊 Pipeline Run Replay</span>
+            <span class="replay-meta">${started}${verDisplay ? ` · ${escapeHtml(verDisplay)}` : ''} · Run: ${escapeHtml(run.run_id || '?')}</span>
+        </div>
+        <button class="btn btn-xs replay-close-btn" onclick="closeReplay()">✕ Close</button>
+    `;
+    replayDiv.appendChild(headerDiv);
+
+    // Create the replay canvas (same container used by _renderDeployProgress)
+    const canvas = document.createElement('div');
+    canvas.id = 'tmpl-replay-canvas';
+    replayDiv.appendChild(canvas);
+
+    // Feed all events instantly to build the static flowchart
+    for (const event of events) {
+        _renderDeployProgress(canvas, event, 'validate');
+    }
+
+    // Scroll the replay into view
+    replayDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** Close the pipeline replay panel */
+function closeReplay() {
+    const replayDiv = document.getElementById('tmpl-pipeline-replay');
+    if (replayDiv) {
+        replayDiv.style.display = 'none';
+        replayDiv.innerHTML = '';
+        replayDiv._vfState = null;
     }
 }
 

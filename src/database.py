@@ -809,6 +809,13 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_pipeline_runs_service ON pipeline_runs(service_id, started_at DESC)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_runs_runid')
     CREATE UNIQUE INDEX idx_pipeline_runs_runid ON pipeline_runs(run_id)""",
+    # ── pipeline_events_json column — stores full NDJSON event stream for replay ──
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'pipeline_events_json'
+    )
+    ALTER TABLE pipeline_runs ADD pipeline_events_json NVARCHAR(MAX) DEFAULT NULL
+    """,
     # ── Governance reviews ────────────────────────────────────
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'governance_reviews')
@@ -3659,6 +3666,7 @@ async def complete_pipeline_run(
     summary: dict | None = None,
     error_detail: str | None = None,
     heal_count: int = 0,
+    events_json: str | None = None,
 ) -> None:
     """Mark a pipeline run as completed/failed/interrupted."""
     backend = await get_backend()
@@ -3696,6 +3704,10 @@ async def complete_pipeline_run(
     if semver:
         updates.append("semver = ?")
         params.append(semver)
+
+    if events_json is not None:
+        updates.append("pipeline_events_json = ?")
+        params.append(events_json)
 
     params.append(run_id)
     await backend.execute_write(
@@ -3736,6 +3748,14 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
                 r["summary"] = json.loads(r["summary_json"])
             except (json.JSONDecodeError, TypeError):
                 r["summary"] = {}
+        # Parse pipeline_events_json if present
+        if isinstance(r.get("pipeline_events_json"), str):
+            try:
+                r["events"] = json.loads(r["pipeline_events_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["events"] = []
+        else:
+            r["events"] = []
     return rows
 
 

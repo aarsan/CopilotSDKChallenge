@@ -4361,6 +4361,75 @@ body {
 .run-status-failed { color: var(--accent-red); }
 .run-status-running { color: var(--accent-blue); }
 
+/* ── Pipeline Run Replay ───────────────────────────────────── */
+.run-item-heals {
+    font-size: 0.68rem;
+    color: var(--accent-yellow);
+    margin-left: auto;
+}
+.btn-replay {
+    font-size: 0.62rem;
+    padding: 0.15rem 0.5rem;
+    background: var(--accent-blue);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-left: 0.4rem;
+    white-space: nowrap;
+}
+.btn-replay:hover {
+    background: var(--accent-indigo);
+}
+.replay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px 8px 0 0;
+    margin-bottom: 0;
+}
+.replay-header-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+.replay-title {
+    font-weight: 600;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+.replay-meta {
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+}
+.replay-close-btn {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+.replay-close-btn:hover {
+    background: var(--accent-red);
+    color: #fff;
+    border-color: var(--accent-red);
+}
+#tmpl-pipeline-replay {
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-top: 0.5rem;
+}
+#tmpl-replay-canvas {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
 /* ── Governance Reviews Section ────────────────────────────── */
 .governance-reviews-section {
     margin-top: 0.25rem;
