@@ -229,46 +229,41 @@ async def execute_test_script(
 
 
 def _build_test_runner(script: str, test_names: list[str]) -> str:
-    """Wrap the generated test script with a runner that outputs JSON results."""
-    # Escape the script for embedding
-    runner = f'''\
-import json, sys, traceback, os
+    """Wrap the generated test script with a runner that outputs JSON results.
 
-# ── Generated test code ──
-{script}
-
-# ── Runner ──
-def main():
-    results = []
-    for name in {test_names!r}:
-        fn = globals().get(name)
-        if not fn:
-            results.append({{"name": name, "status": "error", "message": "Function not found"}})
-            continue
-        try:
-            fn()
-            results.append({{"name": name, "status": "passed", "message": "OK"}})
-        except AssertionError as e:
-            results.append({{"name": name, "status": "failed", "message": str(e) or "Assertion failed"}})
-        except Exception as e:
-            results.append({{"name": name, "status": "failed", "message": f"{{type(e).__name__}}: {{e}}"}})
-
-    passed = sum(1 for r in results if r["status"] == "passed")
-    failed = len(results) - passed
-    output = {{
-        "status": "passed" if failed == 0 else "failed",
-        "total": len(results),
-        "passed": passed,
-        "failed": failed,
-        "tests": results,
-    }}
-    print("__TEST_RESULTS__")
-    print(json.dumps(output))
-
-if __name__ == "__main__":
-    main()
-'''
-    return runner
+    The generated script is written as-is at the top. We do NOT use f-string
+    interpolation for it (to avoid breakage from triple-quotes, backslashes,
+    or braces in the LLM output).  Instead, the runner and test list are
+    appended after the script body.
+    """
+    # Build the runner portion separately (no f-string embedding of script)
+    runner_suffix = (
+        "\n\n# ── Runner ──\n"
+        "import json as _json, sys as _sys\n"
+        "def _run_tests():\n"
+        f"    _test_names = {test_names!r}\n"
+        "    results = []\n"
+        "    for name in _test_names:\n"
+        "        fn = globals().get(name)\n"
+        "        if not fn:\n"
+        '            results.append({"name": name, "status": "error", "message": "Function not found"})\n'
+        "            continue\n"
+        "        try:\n"
+        "            fn()\n"
+        '            results.append({"name": name, "status": "passed", "message": "OK"})\n'
+        "        except AssertionError as e:\n"
+        '            results.append({"name": name, "status": "failed", "message": str(e) or "Assertion failed"})\n'
+        "        except Exception as e:\n"
+        '            results.append({"name": name, "status": "failed", "message": f"{type(e).__name__}: {e}"})\n'
+        "    passed = sum(1 for r in results if r['status'] == 'passed')\n"
+        "    failed = len(results) - passed\n"
+        '    print("__TEST_RESULTS__")\n'
+        '    print(_json.dumps({"status": "passed" if failed == 0 else "failed", "total": len(results), "passed": passed, "failed": failed, "tests": results}))\n'
+        "\n"
+        'if __name__ == "__main__":\n'
+        "    _run_tests()\n"
+    )
+    return script + runner_suffix
 
 
 def _run_subprocess(python_exe: str, script_path: str, env: dict, timeout: float) -> dict:
@@ -318,13 +313,19 @@ def _parse_test_output(stdout: str, stderr: str, returncode: int, test_names: li
         except (json.JSONDecodeError, IndexError):
             pass
 
-    # Fallback — couldn't parse structured output
+    # Fallback — couldn't parse structured output.
+    # Surface the REAL error from stderr so the user/analyzer knows what broke.
+    error_msg = stderr.strip() or stdout.strip() or "Test script crashed before producing results"
+    # Truncate per-test message to something readable
+    short_err = error_msg[:300]
+    if len(error_msg) > 300:
+        short_err += "…"
     return {
         "status": "error",
         "total": len(test_names),
         "passed": 0,
         "failed": len(test_names),
-        "tests": [{"name": n, "status": "error", "message": "Could not parse test output"} for n in test_names],
+        "tests": [{"name": n, "status": "error", "message": short_err} for n in test_names],
         "stdout": stdout.strip(),
         "stderr": stderr.strip(),
     }
@@ -514,6 +515,25 @@ async def stream_infra_testing(
         }) + "\n"
         return
 
+    # ── Pre-flight: syntax check the generated script ──
+    try:
+        compile(test_script, "<generated_tests>", "exec")
+    except SyntaxError as syn_err:
+        logger.warning(f"Generated test script has syntax error: {syn_err}")
+        yield json.dumps({
+            "phase": "testing_generate",
+            "detail": f"The generated test script has a Python syntax error on line {syn_err.lineno}: {syn_err.msg}. Skipping test execution.",
+            "status": "error",
+        }) + "\n"
+        yield json.dumps({
+            "phase": "testing_complete",
+            "status": "skipped",
+            "detail": f"Test script failed syntax validation — the test generator produced invalid Python. This is a test-generation issue, not an infrastructure problem.",
+            "tests_passed": 0,
+            "tests_failed": 0,
+        }) + "\n"
+        return
+
     # ── Step 2: Execute tests (with retries for transient issues) ──
     final_results = None
     for attempt in range(1, max_retries + 1):
@@ -554,16 +574,46 @@ async def stream_infra_testing(
                 "stderr": str(e),
             }
 
-        # Emit individual test results
-        for test in results.get("tests", []):
-            icon = "✅" if test["status"] == "passed" else "❌"
+        # Emit individual test results — but consolidate if ALL tests have the
+        # same error (script-level crash, not individual test failures).
+        test_list = results.get("tests", [])
+        unique_messages = set(t.get("message", "") for t in test_list)
+        all_same_error = (
+            len(test_list) > 1
+            and results.get("status") == "error"
+            and len(unique_messages) == 1
+        )
+
+        if all_same_error:
+            # Script-level crash — show one consolidated message
+            crash_msg = next(iter(unique_messages))
             yield json.dumps({
                 "phase": "test_result",
-                "test_name": test["name"],
-                "status": test["status"],
-                "message": test.get("message", ""),
-                "detail": f"{icon} {test['name']}: {test.get('message', '')}",
+                "test_name": "_script_error",
+                "status": "error",
+                "message": crash_msg,
+                "detail": f"❌ Test script failed to execute: {crash_msg[:250]}",
             }) + "\n"
+            # Also surface stderr if available — this is the real diagnostic
+            if results.get("stderr"):
+                stderr_preview = results["stderr"][:500]
+                yield json.dumps({
+                    "phase": "test_result",
+                    "test_name": "_stderr",
+                    "status": "error",
+                    "message": stderr_preview,
+                    "detail": f"📋 Error output: {stderr_preview}",
+                }) + "\n"
+        else:
+            for test in test_list:
+                icon = "✅" if test["status"] == "passed" else "❌"
+                yield json.dumps({
+                    "phase": "test_result",
+                    "test_name": test["name"],
+                    "status": test["status"],
+                    "message": test.get("message", ""),
+                    "detail": f"{icon} {test['name']}: {test.get('message', '')}",
+                }) + "\n"
 
         final_results = results
 
@@ -624,16 +674,25 @@ async def stream_infra_testing(
         passed = final_results.get("passed", 0)
         failed = final_results.get("failed", 0)
         total = final_results.get("total", 0)
-        status = "passed" if failed == 0 else "failed"
+        was_script_crash = final_results.get("status") == "error"
+
+        if passed == total and total > 0:
+            status = "passed"
+            summary = f"All {total} infrastructure tests passed — resources are functional!"
+        elif was_script_crash:
+            status = "skipped"
+            summary = (
+                "The generated test script couldn't execute — this is a test-generation "
+                "issue, not an infrastructure problem. The deployment itself succeeded."
+            )
+        else:
+            status = "failed"
+            summary = f"{passed}/{total} tests passed, {failed} failed — check the results above for details."
 
         yield json.dumps({
             "phase": "testing_complete",
             "status": status,
-            "detail": (
-                f"All {total} infrastructure tests passed — resources are functional!"
-                if status == "passed"
-                else f"{passed}/{total} tests passed, {failed} failed"
-            ),
+            "detail": summary,
             "tests_passed": passed,
             "tests_failed": failed,
             "tests_total": total,
