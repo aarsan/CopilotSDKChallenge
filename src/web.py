@@ -1977,6 +1977,7 @@ async def compose_template_from_services(request: Request):
 
     # ── Validate selections & gather ARM templates ────────────
     service_templates: list[dict] = []   # (svc, template_dict, selection)
+    pinned_versions: dict = {}  # service_id → {version, semver}
 
     for sel in selections:
         sid = sel.get("service_id", "")
@@ -2000,6 +2001,10 @@ async def compose_template_from_services(request: Request):
             if ver and ver.get("arm_template"):
                 try:
                     tpl_dict = _json.loads(ver["arm_template"])
+                    pinned_versions[sid] = {
+                        "version": int(chosen_version),
+                        "semver": ver.get("semver"),
+                    }
                 except Exception:
                     pass
             if not tpl_dict:
@@ -2012,6 +2017,10 @@ async def compose_template_from_services(request: Request):
             if active and active.get("arm_template"):
                 try:
                     tpl_dict = _json.loads(active["arm_template"])
+                    pinned_versions[sid] = {
+                        "version": active.get("version"),
+                        "semver": active.get("semver"),
+                    }
                 except Exception:
                     pass
         if not tpl_dict and has_builtin_skeleton(sid):
@@ -2057,6 +2066,10 @@ async def compose_template_from_services(request: Request):
         if dep_active and dep_active.get("arm_template"):
             try:
                 dep_tpl = _json.loads(dep_active["arm_template"])
+                pinned_versions[dep_sid] = {
+                    "version": dep_active.get("version"),
+                    "semver": dep_active.get("semver"),
+                }
             except Exception:
                 pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
@@ -2213,6 +2226,7 @@ async def compose_template_from_services(request: Request):
         "outputs": list(combined_outputs.keys()),
         "is_blueprint": len(service_templates) > 1,
         "service_ids": service_ids,
+        "pinned_versions": pinned_versions,
         "status": "draft",
         "registered_by": "template-composer",
         # Dependency metadata
@@ -4935,6 +4949,7 @@ async def recompose_blueprint(template_id: str):
     # ── Gather current ARM templates for each service ─────────
     service_templates: list[dict] = []
     service_version_details: list[dict] = []  # Track versions for verbosity
+    pinned_versions: dict = {}  # service_id → {version, semver}
     for sid in svc_ids:
         svc = await get_service(sid)
         if not svc:
@@ -4949,6 +4964,10 @@ async def recompose_blueprint(template_id: str):
                 version_info["source"] = "catalog"
                 version_info["version"] = active.get("version")
                 version_info["semver"] = active.get("semver")
+                pinned_versions[sid] = {
+                    "version": active.get("version"),
+                    "semver": active.get("semver"),
+                }
             except Exception:
                 pass
         if not tpl_dict and has_builtin_skeleton(sid):
@@ -4983,6 +5002,10 @@ async def recompose_blueprint(template_id: str):
         if dep_active and dep_active.get("arm_template"):
             try:
                 dep_tpl = _json.loads(dep_active["arm_template"])
+                pinned_versions[dep_sid] = {
+                    "version": dep_active.get("version"),
+                    "semver": dep_active.get("semver"),
+                }
             except Exception:
                 pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
@@ -5120,6 +5143,7 @@ async def recompose_blueprint(template_id: str):
         "outputs": list(combined_outputs.keys()),
         "is_blueprint": len(service_templates) > 1,
         "service_ids": svc_ids,
+        "pinned_versions": pinned_versions,
         "status": tmpl.get("status", "draft"),
         "registered_by": tmpl.get("registered_by", "template-composer"),
         "template_type": dep_analysis["template_type"],
@@ -5182,6 +5206,7 @@ async def get_template_composition(template_id: str):
     template_semver = await get_latest_semver(template_id)
 
     service_ids = tmpl.get("service_ids", [])
+    pinned_versions = tmpl.get("pinned_versions", {})
     provides = set(tmpl.get("provides", []))
     requires = tmpl.get("requires", [])
     components = []
@@ -5202,18 +5227,29 @@ async def get_template_composition(template_id: str):
             })
             continue
 
+        # Use pinned version (from compose time) as "current in template"
+        pinned = pinned_versions.get(sid) or {}
+        pinned_int = pinned.get("version")
+        pinned_semver = pinned.get("semver")
+
+        # Get the current active version (what the service is at NOW)
         active = await get_active_service_version(sid)
-        active_semver = active.get("semver") if active else None
         active_int = active.get("version") if active else None
+        active_semver = active.get("semver") if active else None
 
-        # Get all versions to find the latest
+        # If no pinned version recorded (legacy templates), fall back to active
+        if pinned_int is None:
+            pinned_int = active_int
+            pinned_semver = active_semver
+
+        # Get all versions to find the absolute latest
         all_versions = await get_service_versions(sid)
-        latest_semver = all_versions[0].get("semver") if all_versions else active_semver
         latest_int = all_versions[0].get("version") if all_versions else active_int
+        latest_semver = all_versions[0].get("semver") if all_versions else active_semver
 
-        # Upgrade check: prefer integer comparison for reliability
+        # Upgrade check: compare pinned version against active service version
         upgrade_available = (
-            latest_int is not None and active_int is not None and latest_int > active_int
+            pinned_int is not None and active_int is not None and active_int > pinned_int
         )
 
         components.append({
@@ -5221,10 +5257,10 @@ async def get_template_composition(template_id: str):
             "name": svc.get("name", sid.split("/")[-1]),
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
-            "current_version": active_int,
-            "current_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
-            "latest_version": latest_int,
-            "latest_semver": latest_semver or (f"{latest_int}.0.0" if latest_int else None),
+            "current_version": pinned_int,
+            "current_semver": pinned_semver or (f"{pinned_int}.0.0" if pinned_int else None),
+            "latest_version": active_int,
+            "latest_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
             "upgrade_available": upgrade_available,
         })
 
@@ -8745,6 +8781,7 @@ async def compose_template_from_prompt(request: Request):
     }
 
     service_templates: list[dict] = []
+    pinned_versions: dict = {}  # service_id → {version, semver}
     for sid in final_service_ids:
         svc = await get_service(sid)
         if not svc:
@@ -8754,6 +8791,10 @@ async def compose_template_from_prompt(request: Request):
         if active and active.get("arm_template"):
             try:
                 tpl_dict = _json.loads(active["arm_template"])
+                pinned_versions[sid] = {
+                    "version": active.get("version"),
+                    "semver": active.get("semver"),
+                }
             except Exception:
                 pass
         if not tpl_dict and has_builtin_skeleton(sid):
@@ -8878,6 +8919,7 @@ async def compose_template_from_prompt(request: Request):
         "outputs": list(combined_outputs.keys()),
         "is_blueprint": len(service_templates) > 1,
         "service_ids": composed_service_ids,
+        "pinned_versions": pinned_versions,
         "status": "draft",
         "registered_by": "prompt-composer",
         "template_type": dep_analysis["template_type"],

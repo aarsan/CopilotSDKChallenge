@@ -749,6 +749,15 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE catalog_templates ADD compliance_profile_json NVARCHAR(MAX) DEFAULT NULL
     """,
+    # ── Pinned service versions on composed templates ──
+    # Maps service_id → {version, semver} at compose time
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('catalog_templates') AND name = 'pinned_versions_json'
+    )
+    ALTER TABLE catalog_templates ADD pinned_versions_json NVARCHAR(MAX) DEFAULT NULL
+    """,
     # ── Azure API version tracking on services ──
     """
     IF NOT EXISTS (
@@ -1662,9 +1671,9 @@ async def upsert_template(tmpl: dict) -> None:
              tags_json, resources_json, parameters_json, outputs_json,
              service_ids_json, is_blueprint, registered_by, status,
              template_type, provides_json, requires_json, optional_refs_json,
-             compliance_profile_json,
+             compliance_profile_json, pinned_versions_json,
              created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             tmpl["id"],
@@ -1687,6 +1696,7 @@ async def upsert_template(tmpl: dict) -> None:
             json.dumps(tmpl.get("requires", [])),
             json.dumps(tmpl.get("optional_refs", [])),
             cp_json,
+            json.dumps(tmpl.get("pinned_versions")) if tmpl.get("pinned_versions") else None,
             now,
             now,
         ),
@@ -1739,6 +1749,9 @@ async def get_all_templates(
         t["outputs"] = json.loads(t.pop("outputs_json", None) or "[]")
         t["service_ids"] = json.loads(t.pop("service_ids_json", None) or "[]")
         t["is_blueprint"] = bool(t.get("is_blueprint"))
+        # Pinned service versions (compose-time snapshot)
+        _pv_raw = t.pop("pinned_versions_json", None)
+        t["pinned_versions"] = json.loads(_pv_raw) if _pv_raw else {}
         # Dependency metadata
         t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
         t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
@@ -1762,6 +1775,8 @@ def _parse_template_row(row: dict) -> dict:
     t["outputs"] = json.loads(t.pop("outputs_json", "[]") or "[]")
     t["service_ids"] = json.loads(t.pop("service_ids_json", "[]") or "[]")
     t["is_blueprint"] = bool(t.get("is_blueprint"))
+    _pv_raw = t.pop("pinned_versions_json", None)
+    t["pinned_versions"] = json.loads(_pv_raw) if _pv_raw else {}
     t["provides"] = json.loads(t.pop("provides_json", None) or "[]")
     t["requires"] = json.loads(t.pop("requires_json", None) or "[]")
     t["optional_refs"] = json.loads(t.pop("optional_refs_json", None) or "[]")
