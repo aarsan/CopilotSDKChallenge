@@ -13812,3 +13812,338 @@ details[open] > .tmpl-deploy-group-optional {
         bottom: 5rem;
     }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   FABRIC ANALYTICS DASHBOARD
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Fabric Status Banner ───────────────────────────────────── */
+
+.analytics-status-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.75rem 1.1rem;
+    border-radius: 10px;
+    margin-bottom: 1.25rem;
+    border: 1px solid var(--border);
+    background: var(--card-bg);
+}
+.analytics-status-ok   { border-color: #34d39955; background: rgba(52,211,153,0.06); }
+.analytics-status-warn { border-color: #f59e4255; background: rgba(245,158,66,0.06); }
+.analytics-status-error{ border-color: #ef444455; background: rgba(239,68,68,0.06); }
+
+.analytics-status-icon {
+    font-size: 1.35rem;
+    flex-shrink: 0;
+}
+.analytics-status-text {
+    flex: 1;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.analytics-status-text strong {
+    color: var(--text-primary);
+    margin-right: 0.4rem;
+}
+.analytics-status-actions {
+    flex-shrink: 0;
+}
+
+/* ── KPI Row ────────────────────────────────────────────────── */
+
+.analytics-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.85rem;
+    margin-bottom: 1.25rem;
+}
+
+.analytics-kpi-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    text-align: center;
+    transition: border-color 0.15s;
+}
+.analytics-kpi-card:hover {
+    border-color: var(--accent);
+}
+
+.analytics-kpi-value {
+    font-size: 1.85rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+}
+
+.analytics-kpi-label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.2rem;
+    font-weight: 500;
+}
+
+.analytics-kpi-sub {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+}
+
+/* ── Chart Grid ─────────────────────────────────────────────── */
+
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 1rem;
+}
+
+.analytics-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+}
+.analytics-card-wide {
+    grid-column: 1 / -1;
+}
+
+.analytics-card-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.analytics-card-header h3 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+.analytics-card-subtitle {
+    font-size: 0.73rem;
+    color: var(--text-tertiary);
+}
+
+.analytics-chart {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.analytics-chart-placeholder,
+.analytics-chart-empty {
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 0.82rem;
+    padding: 2rem 0;
+}
+
+/* ── Legend ──────────────────────────────────────────────────── */
+
+.analytics-legend {
+    display: flex;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+}
+.analytics-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+}
+.analytics-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* ── Bar Chart (vertical, stacked) ──────────────────────────── */
+
+.analytics-bar-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    overflow-x: auto;
+    padding-bottom: 1.5rem;
+    position: relative;
+}
+
+.analytics-bar-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.analytics-bar-stack {
+    display: flex;
+    flex-direction: column-reverse;
+    width: 100%;
+    border-radius: 3px 3px 0 0;
+    overflow: hidden;
+}
+
+.analytics-bar-seg {
+    transition: opacity 0.15s;
+    min-height: 2px;
+}
+.analytics-bar-seg:hover {
+    opacity: 0.8;
+}
+
+.analytics-bar-label {
+    font-size: 0.62rem;
+    color: var(--text-tertiary);
+    margin-top: 0.3rem;
+    text-align: center;
+    white-space: nowrap;
+    position: absolute;
+    bottom: 0;
+    transform: rotate(-45deg);
+    transform-origin: top left;
+}
+
+/* ── Horizontal Bar Chart ───────────────────────────────────── */
+
+.analytics-hbar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.45rem;
+}
+
+.analytics-hbar-label {
+    width: 110px;
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.analytics-hbar-track {
+    flex: 1;
+    height: 18px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.analytics-hbar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+    min-width: 2px;
+}
+
+.analytics-hbar-value {
+    width: 40px;
+    font-size: 0.73rem;
+    color: var(--text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Donut Chart ────────────────────────────────────────────── */
+
+.analytics-donut-wrap {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.analytics-donut-svg {
+    width: 120px;
+    height: 120px;
+    flex-shrink: 0;
+    transform: rotate(-90deg);
+}
+
+.analytics-donut-arc {
+    transition: opacity 0.15s;
+}
+.analytics-donut-arc:hover {
+    opacity: 0.75;
+}
+
+.analytics-donut-total {
+    font-size: 18px;
+    font-weight: 700;
+    fill: var(--text-primary);
+    transform: rotate(90deg);
+    transform-origin: center;
+}
+
+.analytics-donut-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.analytics-donut-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.73rem;
+    color: var(--text-secondary);
+}
+.analytics-donut-legend-val {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    font-size: 0.7rem;
+}
+
+/* ── Sync History ───────────────────────────────────────────── */
+
+.analytics-sync-history {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.analytics-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    background: var(--bg-secondary);
+}
+.analytics-sync-status { flex-shrink: 0; }
+.analytics-sync-time {
+    color: var(--text-tertiary);
+    width: 60px;
+    flex-shrink: 0;
+}
+.analytics-sync-detail {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 800px) {
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+    .analytics-kpi-row {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .analytics-donut-wrap {
+        flex-direction: column;
+    }
+}

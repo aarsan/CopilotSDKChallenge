@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=182">
+    <link rel="stylesheet" href="/static/styles.css?v=183">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -92,6 +92,9 @@
                 <button class="nav-btn" id="nav-activity" onclick="navigateTo('activity')">
                     <span class="nav-icon">📡</span> Observability
                     <span class="nav-badge" id="nav-activity-badge" style="display:none"></span>
+                </button>
+                <button class="nav-btn" id="nav-analytics" onclick="navigateTo('analytics')">
+                    <span class="nav-icon">📈</span> Fabric Analytics
                 </button>
                 <button class="nav-btn" id="nav-chat" onclick="navigateTo('chat')">
                     <span class="nav-icon">💬</span> Infrastructure Designer
@@ -655,6 +658,157 @@
                 </div>
             </div>
 
+            <!-- ═══ PAGE: Fabric Analytics ═══════════════════ -->
+            <div class="page page-scroll hidden" id="page-analytics">
+                <!-- Fabric Status Banner -->
+                <div class="analytics-status-banner" id="analytics-fabric-banner">
+                    <div class="analytics-status-icon" id="analytics-fabric-icon">⏳</div>
+                    <div class="analytics-status-text">
+                        <strong>Microsoft Fabric</strong>
+                        <span id="analytics-fabric-status">Checking connection…</span>
+                    </div>
+                    <div class="analytics-status-actions">
+                        <button class="btn btn-sm btn-primary" id="analytics-sync-btn" onclick="triggerFabricSync()" disabled>
+                            🔄 Sync to OneLake
+                        </button>
+                    </div>
+                </div>
+
+                <!-- KPI Row -->
+                <div class="analytics-kpi-row">
+                    <div class="analytics-kpi-card">
+                        <div class="analytics-kpi-value" id="kpi-total-pipelines">—</div>
+                        <div class="analytics-kpi-label">Pipeline Runs</div>
+                        <div class="analytics-kpi-sub" id="kpi-pipeline-rate">—</div>
+                    </div>
+                    <div class="analytics-kpi-card">
+                        <div class="analytics-kpi-value" id="kpi-total-deployments">—</div>
+                        <div class="analytics-kpi-label">Deployments</div>
+                        <div class="analytics-kpi-sub" id="kpi-deployment-rate">—</div>
+                    </div>
+                    <div class="analytics-kpi-card">
+                        <div class="analytics-kpi-value" id="kpi-total-services">—</div>
+                        <div class="analytics-kpi-label">Services</div>
+                        <div class="analytics-kpi-sub" id="kpi-approved-services">—</div>
+                    </div>
+                    <div class="analytics-kpi-card">
+                        <div class="analytics-kpi-value" id="kpi-compliance-score">—</div>
+                        <div class="analytics-kpi-label">Avg Compliance</div>
+                        <div class="analytics-kpi-sub" id="kpi-compliance-pass">—</div>
+                    </div>
+                    <div class="analytics-kpi-card">
+                        <div class="analytics-kpi-value" id="kpi-gov-reviews">—</div>
+                        <div class="analytics-kpi-label">Gov Reviews</div>
+                        <div class="analytics-kpi-sub" id="kpi-gov-approved">—</div>
+                    </div>
+                </div>
+
+                <!-- Charts Grid -->
+                <div class="analytics-grid">
+                    <!-- Pipeline Trends (wide) -->
+                    <div class="analytics-card analytics-card-wide">
+                        <div class="analytics-card-header">
+                            <h3>Pipeline Execution Trends</h3>
+                            <span class="analytics-card-subtitle">Last 30 days</span>
+                        </div>
+                        <div class="analytics-chart" id="chart-pipeline-trend">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Pipeline by Type -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Pipelines by Type</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-pipeline-type">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Governance Verdicts -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Governance Verdicts</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-gov-verdicts">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Deployments by Region -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Deployments by Region</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-deploy-region">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Service Catalog by Category -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Services by Category</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-service-category">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Security Posture -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Security Posture</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-security-posture">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Compliance Score Distribution -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Compliance Scores</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-compliance-dist">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Governance Trends (wide) -->
+                    <div class="analytics-card analytics-card-wide">
+                        <div class="analytics-card-header">
+                            <h3>Governance Review Trends</h3>
+                            <span class="analytics-card-subtitle">Last 30 days</span>
+                        </div>
+                        <div class="analytics-chart" id="chart-gov-trend">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+
+                    <!-- Fabric Sync Status -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>OneLake Sync History</h3>
+                        </div>
+                        <div class="analytics-sync-history" id="analytics-sync-history">
+                            <div class="analytics-chart-placeholder">No syncs yet</div>
+                        </div>
+                    </div>
+
+                    <!-- Top Templates -->
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Top Deployed Templates</h3>
+                        </div>
+                        <div class="analytics-chart" id="chart-top-templates">
+                            <div class="analytics-chart-placeholder">Loading…</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ═══ PAGE: Chat / Infrastructure Designer ═════ -->
             <div class="page page-chat hidden" id="page-chat">
                 <!-- Messages -->
@@ -1199,7 +1353,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=182"></script>
+    <script src="/static/app.js?v=183"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

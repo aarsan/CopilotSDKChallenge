@@ -11518,6 +11518,147 @@ async def list_governance_policies(category: Optional[str] = None):
         return JSONResponse({"policies": [], "categories": [], "total": 0})
 
 
+# ── Fabric Analytics API ─────────────────────────────────────
+
+
+@app.get("/api/analytics/dashboard")
+async def get_analytics_dashboard():
+    """Get full analytics dashboard data.
+
+    Aggregates pipeline, governance, service, deployment, and compliance
+    analytics from SQL Server.  Data is also synced to Microsoft Fabric
+    OneLake for Power BI / Semantic Model consumption.
+    """
+    from src.fabric import AnalyticsEngine
+    try:
+        dashboard = await AnalyticsEngine.get_full_dashboard()
+        return JSONResponse(dashboard)
+    except Exception as e:
+        logger.error(f"Analytics dashboard error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/analytics/pipelines")
+async def get_pipeline_analytics():
+    """Pipeline execution trends and success rates."""
+    from src.fabric import AnalyticsEngine
+    try:
+        return JSONResponse(await AnalyticsEngine.get_pipeline_analytics())
+    except Exception as e:
+        logger.error(f"Pipeline analytics error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/analytics/governance")
+async def get_governance_analytics():
+    """Governance review verdict distribution and trends."""
+    from src.fabric import AnalyticsEngine
+    try:
+        return JSONResponse(await AnalyticsEngine.get_governance_analytics())
+    except Exception as e:
+        logger.error(f"Governance analytics error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/analytics/services")
+async def get_service_analytics():
+    """Service catalog adoption metrics."""
+    from src.fabric import AnalyticsEngine
+    try:
+        return JSONResponse(await AnalyticsEngine.get_service_analytics())
+    except Exception as e:
+        logger.error(f"Service analytics error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/analytics/deployments")
+async def get_deployment_analytics():
+    """Deployment success rates and regional distribution."""
+    from src.fabric import AnalyticsEngine
+    try:
+        return JSONResponse(await AnalyticsEngine.get_deployment_analytics())
+    except Exception as e:
+        logger.error(f"Deployment analytics error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/analytics/compliance")
+async def get_compliance_analytics():
+    """Compliance assessment score trends."""
+    from src.fabric import AnalyticsEngine
+    try:
+        return JSONResponse(await AnalyticsEngine.get_compliance_analytics())
+    except Exception as e:
+        logger.error(f"Compliance analytics error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/fabric/sync")
+async def trigger_fabric_sync():
+    """Trigger a data sync from SQL Server to Microsoft Fabric OneLake.
+
+    Exports denormalized analytics tables as CSV to OneLake DFS,
+    making data available for Fabric Semantic Models and Power BI.
+    """
+    from src.fabric import get_sync_engine
+    engine = get_sync_engine()
+    if not engine:
+        return JSONResponse({
+            "status": "not_configured",
+            "message": "Fabric is not configured. Set FABRIC_WORKSPACE_ID and FABRIC_ONELAKE_DFS_ENDPOINT in .env",
+        }, status_code=503)
+    try:
+        result = await engine.sync_all()
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Fabric sync error: {e}")
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.post("/api/fabric/sync/{table_name}")
+async def trigger_fabric_sync_table(table_name: str):
+    """Sync a single table to Fabric OneLake."""
+    from src.fabric import get_sync_engine, SYNC_TABLES
+    if table_name not in SYNC_TABLES:
+        return JSONResponse(
+            {"error": f"Unknown table: {table_name}. Available: {list(SYNC_TABLES.keys())}"},
+            status_code=400,
+        )
+    engine = get_sync_engine()
+    if not engine:
+        return JSONResponse({"status": "not_configured"}, status_code=503)
+    try:
+        result = await engine.sync_table(table_name)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Fabric sync error for {table_name}: {e}")
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@app.get("/api/fabric/status")
+async def get_fabric_status():
+    """Get Fabric integration status and health."""
+    from src.fabric import get_fabric_client, get_sync_engine, SYNC_TABLES
+    client = get_fabric_client()
+    if not client:
+        return JSONResponse({
+            "configured": False,
+            "message": "Fabric integration not configured",
+        })
+
+    health = await client.health_check()
+    engine = get_sync_engine()
+    return JSONResponse({
+        "configured": True,
+        "health": health,
+        "sync": {
+            "last_sync": engine.last_sync if engine else None,
+            "history": engine.sync_history if engine else [],
+            "tables": list(SYNC_TABLES.keys()),
+        },
+    })
+
+
 # ── WebSocket: Governance Chat ───────────────────────────────
 
 governance_sessions: dict = {}

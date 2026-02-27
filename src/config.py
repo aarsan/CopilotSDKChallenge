@@ -83,6 +83,12 @@ GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 # Azure SQL Database with Azure AD auth (pyodbc + DefaultAzureCredential).
 AZURE_SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING", "")
 
+# ── Microsoft Fabric Integration ─────────────────────────────
+# Fabric workspace for analytics sync (OneLake DFS).
+FABRIC_WORKSPACE_ID = os.getenv("FABRIC_WORKSPACE_ID", "")
+FABRIC_ONELAKE_DFS_ENDPOINT = os.getenv("FABRIC_ONELAKE_DFS_ENDPOINT", "")
+FABRIC_LAKEHOUSE_NAME = os.getenv("FABRIC_LAKEHOUSE_NAME", "infraforge_lakehouse")
+
 # ── Supported IaC Formats ────────────────────────────────────
 IAC_FORMATS = ["bicep", "terraform", "arm"]
 
