@@ -134,14 +134,60 @@ class AzureSQLBackend(DatabaseBackend):
             conn.close()
 
     def _get_connection(self):
-        """Get a SQL connection with cached Azure AD token auth."""
-        import pyodbc
+        """Get a SQL connection with cached Azure AD token auth.
 
+        Uses a connection pool to avoid re-establishing connections on
+        every query. pyodbc connections to Azure SQL take 500ms-2s each
+        due to TCP + TLS + AAD handshake, so reuse is critical.
+        """
+        import pyodbc
+        import threading
+
+        if not hasattr(self, '_pool'):
+            self._pool = []
+            self._pool_lock = threading.Lock()
+            self._pool_max = 4
+
+        # Try to reuse a pooled connection
+        with self._pool_lock:
+            while self._pool:
+                conn = self._pool.pop()
+                try:
+                    # Quick liveness check
+                    conn.cursor().execute("SELECT 1")
+                    return conn
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        # No pooled connections available — create a new one
         token_struct = self._get_token_struct()
         return pyodbc.connect(
             self.connection_string,
             attrs_before={1256: token_struct},
         )
+
+    def _return_connection(self, conn):
+        """Return a connection to the pool instead of closing it."""
+        import threading
+
+        if not hasattr(self, '_pool_lock'):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
+
+        with self._pool_lock:
+            if len(self._pool) < self._pool_max:
+                self._pool.append(conn)
+            else:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     async def execute(self, sql: str, params: tuple = ()) -> list[dict]:
         import asyncio
@@ -153,10 +199,18 @@ class AzureSQLBackend(DatabaseBackend):
                 cursor.execute(sql, params)
                 if cursor.description:
                     columns = [col[0] for col in cursor.description]
-                    return [dict(zip(columns, row)) for row in cursor.fetchall()]
-                return []
-            finally:
-                conn.close()
+                    result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                else:
+                    result = []
+            except Exception:
+                # Connection may be broken — don't return it to pool
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                raise
+            self._return_connection(conn)
+            return result
 
         return await asyncio.get_event_loop().run_in_executor(None, _run)
 
@@ -169,9 +223,15 @@ class AzureSQLBackend(DatabaseBackend):
                 cursor = conn.cursor()
                 cursor.execute(sql, params)
                 conn.commit()
-                return cursor.rowcount
-            finally:
-                conn.close()
+                rowcount = cursor.rowcount
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                raise
+            self._return_connection(conn)
+            return rowcount
 
         return await asyncio.get_event_loop().run_in_executor(None, _run)
 
@@ -1543,6 +1603,16 @@ async def upsert_service(svc: dict) -> None:
             "INSERT INTO service_policies (service_id, policy_text) VALUES (?, ?)",
             (svc["id"], policy_text),
         )
+    invalidate_service_cache()
+
+
+# ── In-memory TTL cache for get_all_services ─────────────────
+_svc_cache: dict[str, tuple[float, list[dict]]] = {}
+_SVC_CACHE_TTL = 30  # seconds
+
+def invalidate_service_cache():
+    """Call after any write to services / service_approved_* / service_policies."""
+    _svc_cache.clear()
 
 
 async def get_all_services(
@@ -1553,7 +1623,16 @@ async def get_all_services(
 
     Uses batch queries (4 total) instead of per-service queries to avoid
     N+1 performance issues — critical when thousands of services exist.
+    Results are cached for 30 seconds to avoid repeating heavy queries.
     """
+    import time as _time
+    cache_key = f"{category or ''}|{status or ''}"
+    cached = _svc_cache.get(cache_key)
+    if cached:
+        ts, data = cached
+        if _time.monotonic() - ts < _SVC_CACHE_TTL:
+            return data
+
     backend = await get_backend()
 
     where_clauses: list[str] = []
@@ -1644,6 +1723,7 @@ async def get_all_services(
 
         result.append(svc)
 
+    _svc_cache[cache_key] = (_time.monotonic(), result)
     return result
 
 
@@ -1654,6 +1734,23 @@ async def get_service(service_id: str) -> Optional[dict]:
         if svc["id"] == service_id:
             return svc
     return None
+
+
+async def get_services_basic(service_ids: list[str]) -> dict[str, dict]:
+    """Get lightweight service info (id, name, category, status) for a list of IDs.
+
+    Single SQL query, no hydration — much faster than get_all_services()
+    when you only need basic metadata.  Returns a dict keyed by service ID.
+    """
+    if not service_ids:
+        return {}
+    backend = await get_backend()
+    placeholders = ", ".join("?" for _ in service_ids)
+    rows = await backend.execute(
+        f"SELECT id, name, category, status FROM services WHERE id IN ({placeholders})",
+        tuple(service_ids),
+    )
+    return {r["id"]: dict(r) for r in rows}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2745,6 +2842,58 @@ async def get_active_service_version(service_id: str) -> dict | None:
     if not rows or not rows[0].get("active_version"):
         return None
     return await get_service_version(service_id, rows[0]["active_version"])
+
+
+async def get_version_summary_batch(service_ids: list[str]) -> dict[str, dict]:
+    """Get active + latest version info for multiple services in 1 SQL query.
+
+    Returns a dict keyed by service_id, each containing:
+      active_version, active_semver, latest_version, latest_semver
+    """
+    if not service_ids:
+        return {}
+    backend = await get_backend()
+    placeholders = ", ".join("?" for _ in service_ids)
+
+    # Single query: active version (join on active_version) UNION latest version (max)
+    rows = await backend.execute(
+        f"""SELECT sv.service_id, 'active' AS kind, sv.version, sv.semver
+            FROM services s
+            INNER JOIN service_versions sv
+              ON sv.service_id = s.id AND sv.version = s.active_version
+            WHERE s.id IN ({placeholders})
+            UNION ALL
+            SELECT sv.service_id, 'latest' AS kind, sv.version, sv.semver
+            FROM service_versions sv
+            INNER JOIN (
+                SELECT service_id, MAX(version) AS max_ver
+                FROM service_versions
+                WHERE service_id IN ({placeholders})
+                GROUP BY service_id
+            ) mx ON sv.service_id = mx.service_id AND sv.version = mx.max_ver""",
+        tuple(service_ids) + tuple(service_ids),
+    )
+
+    result: dict[str, dict] = {}
+    for sid in service_ids:
+        result[sid] = {
+            "active_version": None, "active_semver": None,
+            "latest_version": None, "latest_semver": None,
+        }
+
+    for r in rows:
+        sid = r["service_id"]
+        if sid not in result:
+            continue
+        kind = r["kind"]
+        if kind == "active":
+            result[sid]["active_version"] = r["version"]
+            result[sid]["active_semver"] = r["semver"]
+        elif kind == "latest":
+            result[sid]["latest_version"] = r["version"]
+            result[sid]["latest_semver"] = r["semver"]
+
+    return result
 
 
 # ══════════════════════════════════════════════════════════════

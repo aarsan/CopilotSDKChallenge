@@ -5316,13 +5316,14 @@ async def get_template_composition(template_id: str):
     """Get the services that compose this template, with version info,
     dependency edges, and upgrade availability.
 
-    Returns each service's name, current version in the template,
-    latest available version, whether an upgrade is available, and
-    the dependency graph edges between components.
+    Performance: uses a single combined SQL approach — get_template_by_id
+    first, then a batch query for services + versions together, minimizing
+    Azure SQL round-trips.
     """
+    import asyncio
     from src.database import (
-        get_template_by_id, get_service, get_active_service_version,
-        get_service_versions, get_latest_semver,
+        get_template_by_id, get_services_basic,
+        get_version_summary_batch, get_latest_semver,
     )
     from src.template_engine import RESOURCE_DEPENDENCIES
 
@@ -5330,17 +5331,32 @@ async def get_template_composition(template_id: str):
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    # Get proper semver for the template
-    template_semver = await get_latest_semver(template_id)
-
     service_ids = tmpl.get("service_ids", [])
+    if not service_ids:
+        return JSONResponse({
+            "template_id": template_id,
+            "template_version": tmpl.get("active_version"),
+            "template_semver": None,
+            "template_status": tmpl.get("status", "draft"),
+            "components": [],
+            "edges": [],
+            "requires": [],
+            "provides": [],
+        })
+
     pinned_versions = tmpl.get("pinned_versions", {})
     provides = set(tmpl.get("provides", []))
     requires = tmpl.get("requires", [])
-    components = []
 
+    # Batch: services + versions + semver (3 fast queries, connection is warm)
+    svc_map = await get_services_basic(service_ids)
+    version_map = await get_version_summary_batch(service_ids)
+    template_semver = await get_latest_semver(template_id)
+
+    # ── Assemble components using batch data ──
+    components = []
     for sid in service_ids:
-        svc = await get_service(sid)
+        svc = svc_map.get(sid)
         if not svc:
             components.append({
                 "service_id": sid,
@@ -5355,27 +5371,20 @@ async def get_template_composition(template_id: str):
             })
             continue
 
-        # Use pinned version (from compose time) as "current in template"
         pinned = pinned_versions.get(sid) or {}
         pinned_int = pinned.get("version")
         pinned_semver = pinned.get("semver")
 
-        # Get the current active version (what the service is at NOW)
-        active = await get_active_service_version(sid)
-        active_int = active.get("version") if active else None
-        active_semver = active.get("semver") if active else None
+        ver_info = version_map.get(sid, {})
+        active_int = ver_info.get("active_version")
+        active_semver = ver_info.get("active_semver")
+        latest_int = ver_info.get("latest_version") or active_int
+        latest_semver = ver_info.get("latest_semver") or active_semver
 
-        # If no pinned version recorded (legacy templates), fall back to active
         if pinned_int is None:
             pinned_int = active_int
             pinned_semver = active_semver
 
-        # Get all versions to find the absolute latest
-        all_versions = await get_service_versions(sid)
-        latest_int = all_versions[0].get("version") if all_versions else active_int
-        latest_semver = all_versions[0].get("semver") if all_versions else active_semver
-
-        # Upgrade check: compare pinned version against active service version
         upgrade_available = (
             pinned_int is not None and active_int is not None and active_int > pinned_int
         )
@@ -5393,14 +5402,12 @@ async def get_template_composition(template_id: str):
         })
 
     # Build dependency edges between components
-    # Each edge: { from: service_id, to: service_id, reason: str, required: bool }
-    edges = []
     component_ids = {c["service_id"] for c in components}
+    edges = []
     for sid in service_ids:
         deps = RESOURCE_DEPENDENCIES.get(sid, [])
         for dep in deps:
             dep_type = dep["type"]
-            # Only include edges to other components in this template
             if dep_type in component_ids:
                 edges.append({
                     "from": sid,
@@ -5408,9 +5415,7 @@ async def get_template_composition(template_id: str):
                     "reason": dep.get("reason", ""),
                     "required": dep.get("required", False),
                 })
-            # Also check if any provides match (e.g. VNet provides subnets)
             elif dep_type in provides and dep_type not in component_ids:
-                # Auto-created by another component
                 for other_sid in service_ids:
                     other_deps = RESOURCE_DEPENDENCIES.get(other_sid, [])
                     for od in other_deps:
