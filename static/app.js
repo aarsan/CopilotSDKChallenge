@@ -5,11 +5,26 @@
  * and AI chat for complex design tasks (infrastructure generation).
  */
 
-// ── Copilot SDK Badge ────────────────────────────────────────
+// ── Technology Branding Badges ────────────────────────────────
 function _copilotBadge(full) {
     return full
-        ? '<span class="copilot-badge copilot-badge-lg">✦ GitHub Copilot SDK</span>'
-        : '<span class="copilot-badge">✦ Copilot SDK</span>';
+        ? '<span class="tech-badge-copilot tech-badge-copilot-lg">✦ GitHub Copilot SDK</span>'
+        : '<span class="tech-badge-copilot">✦ Copilot SDK</span>';
+}
+
+function _fabricBadge(full) {
+    return full
+        ? '<span class="tech-badge-fabric tech-badge-fabric-lg">◆ Microsoft Fabric</span>'
+        : '<span class="tech-badge-fabric">◆ Fabric IQ</span>';
+}
+
+// Inline tag for flow card headers
+function _copilotTag() {
+    return '<span class="uf-tech-tag uf-tech-tag-copilot">COPILOT SDK</span>';
+}
+
+function _fabricTag() {
+    return '<span class="uf-tech-tag uf-tech-tag-fabric">FABRIC IQ</span>';
 }
 
 // ── Workflow Pipeline Renderer ──────────────────────────────
@@ -294,16 +309,30 @@ function navigateTo(page) {
     // Update header
     const titles = {
         dashboard: ['Dashboard', 'Overview'],
-        services: ['Service Catalog', 'Powered by GitHub Copilot SDK'],
-        templates: ['Template Catalog', 'Powered by GitHub Copilot SDK'],
-        governance: ['Governance Standards', 'Powered by GitHub Copilot SDK'],
-        activity: ['Observability', 'Deployments & service validation'],
-        analytics: ['Fabric Analytics', 'Microsoft Fabric · Work IQ'],
-        chat: ['Infrastructure Designer', 'Powered by GitHub Copilot SDK'],
+        services: ['Service Catalog', ''],
+        templates: ['Template Catalog', ''],
+        governance: ['Governance Standards', ''],
+        activity: ['Observability', ''],
+        analytics: ['Fabric Analytics', ''],
+        chat: ['Infrastructure Designer', ''],
+    };
+    // Tech-branded subtitles (as HTML badges)
+    const subtitleBadges = {
+        services: _copilotBadge(true),
+        templates: _copilotBadge(true),
+        governance: _copilotBadge(true),
+        activity: _copilotBadge(false) + ' ' + _fabricBadge(false),
+        analytics: _fabricBadge(true),
+        chat: _copilotBadge(true),
     };
     const [title, subtitle] = titles[page] || ['InfraForge', ''];
     document.getElementById('page-title').textContent = title;
-    document.getElementById('page-subtitle').textContent = subtitle;
+    const subtitleEl = document.getElementById('page-subtitle');
+    if (subtitleBadges[page]) {
+        subtitleEl.innerHTML = subtitleBadges[page];
+    } else {
+        subtitleEl.textContent = subtitle;
+    }
 
     // Update page-specific action buttons in header
     updatePageActions(page);
@@ -1709,7 +1738,7 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         })}
 
         <div class="model-routing-display" id="model-routing-container">
-            <span class="model-routing-label">🤖 Model Routing</span>
+            <span class="model-routing-label">🤖 Model Routing <span class="mr-sdk-tag">COPILOT SDK</span></span>
             <div class="model-routing-chips" id="model-routing-chips">Loading…</div>
         </div>
 
@@ -3589,7 +3618,7 @@ function _handleUpdateEvent(event) {
     // _flowCard reopens the existing card with an iteration separator.
     if (phase === 'init_model') {
         // Model routing — show as first card with pipeline setup info
-        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup');
+        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
         if (event.model_routing) {
             for (const [taskKey, info] of Object.entries(event.model_routing)) {
                 const friendlyTask = taskKey === 'planning' ? 'Planning' : taskKey === 'code_generation' ? 'Code Generation' : taskKey === 'code_fixing' ? 'Auto-Healing' : taskKey;
@@ -3620,16 +3649,16 @@ function _handleUpdateEvent(event) {
         }
         _flowFinalize(logEl, 'checkout', 'done');
     } else if (phase === 'planning') {
-        _flowCard(logEl, 'planning', '🧠', 'Thinking & Planning');
+        _flowCard(logEl, 'planning', '🧠', 'Thinking & Planning ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'planning', '▸', escapeHtml(detail));
     } else if (phase === 'planning_complete') {
         if (detail) _flowDetail(logEl, 'planning', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'planning', 'done');
     } else if (phase === 'executing') {
-        _flowCard(logEl, 'rewrite', '⚡', 'Rewriting Template');
+        _flowCard(logEl, 'rewrite', '⚡', 'Rewriting Template ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'rewrite', '▸', escapeHtml(detail));
     } else if (phase === 'updating') {
-        _flowCard(logEl, 'rewrite', '🔄', 'Rewriting Template');
+        _flowCard(logEl, 'rewrite', '🔄', 'Rewriting Template ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'rewrite', '▸', escapeHtml(detail));
     } else if (phase === 'execute_complete' || phase === 'update_complete') {
         if (detail) _flowDetail(logEl, 'rewrite', '✓', escapeHtml(detail), 'uf-text-success');
@@ -3645,7 +3674,7 @@ function _handleUpdateEvent(event) {
 
     // ── Governance review gate ───────────────────────────────
     } else if (phase === 'governance_review') {
-        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '▸', escapeHtml(detail));
     } else if (phase === 'ciso_review') {
         const rev = event.review || {};
@@ -3668,14 +3697,14 @@ function _handleUpdateEvent(event) {
         if (detail) _flowDetail(logEl, 'governance', '✓', escapeHtml(detail), gateClass);
         _flowFinalize(logEl, 'governance', event.gate_decision === 'blocked' ? 'failed' : 'done', event.gate_decision === 'approved' ? 'Approved' : event.gate_decision === 'blocked' ? 'Blocked' : 'Conditional');
     } else if (phase === 'governance_skipped') {
-        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'governance', 'done', 'Skipped');
 
     // ── Governance resolution events ─────────────────────────
     } else if (phase === 'governance_heal_start' || phase === 'governance_heal_strategy' || phase === 'governance_heal_complete') {
         if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         }
         const icon = phase === 'governance_heal_complete' ? '✅' : phase === 'governance_heal_strategy' ? '📋' : '🤖';
         const cls = phase === 'governance_heal_complete' ? 'uf-text-success' : '';
@@ -3689,7 +3718,7 @@ function _handleUpdateEvent(event) {
         _flowFinalize(logEl, 'gov-resolve', 'done', 'Exception');
     } else if (phase === 'governance_heal_failed') {
         if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         }
         _flowDetail(logEl, 'gov-resolve', '❌', escapeHtml(detail), 'uf-text-error');
         _flowFinalize(logEl, 'gov-resolve', 'failed', 'Failed');
@@ -3753,7 +3782,7 @@ function _handleUpdateEvent(event) {
 
     // ── Template Regeneration (re-plan + re-generate) ──────────
     } else if (phase === 'replanning') {
-        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture');
+        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'regen', '🧠', escapeHtml(detail));
     } else if (phase === 'regenerating') {
         if (detail) _flowDetail(logEl, 'regen', '⚙️', escapeHtml(detail));
@@ -3764,11 +3793,11 @@ function _handleUpdateEvent(event) {
         _flowFinalize(logEl, 'regen', 'done');
 
     } else if (phase === 'analyzing_failure') {
-        _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure');
+        _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'analysis', '▸', escapeHtml(detail));
     } else if (type === 'agent_analysis') {
         // Rich analysis card
-        _flowCard(logEl, 'agent_analysis', '🧠', 'Deployment Analysis');
+        _flowCard(logEl, 'agent_analysis', '🧠', 'Deployment Analysis ' + _copilotTag());
         const ac = logEl._flow.cards.agent_analysis;
         const body = ac?.querySelector('.uf-action-body');
         if (body) {
@@ -3892,7 +3921,7 @@ function _handleUpdateEvent(event) {
         header.textContent = 'Publishing New Version…';
         if (iconEl) { iconEl.textContent = '🏆'; iconEl.classList.add('validation-spinner'); }
     } else if (type === 'healing' && header) {
-        header.textContent = 'Auto-Healing — AI Fixing Template…';
+        header.innerHTML = 'Auto-Healing — AI Fixing Template… ' + _copilotTag();
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
     } else if (phase === 'analyzing_failure' && header) {
         header.textContent = 'Analyzing Failure…';
@@ -3949,7 +3978,7 @@ function _handleValidationEvent(event) {
     // Cards reuse their key across iterations — _flowCard reopens
     // a finalized card and inserts an iteration separator inside it.
     if (phase === 'init_model') {
-        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup');
+        _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
         if (event.model_routing) {
             for (const [taskKey, info] of Object.entries(event.model_routing)) {
                 const friendlyTask = taskKey === 'planning' ? 'Planning' : taskKey === 'code_generation' ? 'Code Generation' : taskKey === 'code_fixing' ? 'Auto-Healing' : taskKey === 'policy_gen' ? 'Policy Generation' : taskKey === 'analysis' ? 'Analysis' : taskKey;
@@ -3980,19 +4009,19 @@ function _handleValidationEvent(event) {
     } else if (type === 'standard_check') {
         _flowDetail(logEl, logEl._flow.activeKey || 'standards', '📏', escapeHtml(detail));
     } else if (phase === 'planning') {
-        _flowCard(logEl, 'planning', '🧠', 'AI Planning Architecture');
+        _flowCard(logEl, 'planning', '🧠', 'AI Planning Architecture ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'planning', '▸', escapeHtml(detail));
     } else if (phase === 'planning_complete') {
         if (detail) _flowDetail(logEl, 'planning', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'planning', 'done');
     } else if (phase === 'generating') {
-        _flowCard(logEl, 'generating', '⚡', 'Generating ARM Template');
+        _flowCard(logEl, 'generating', '⚡', 'Generating ARM Template ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'generating', '▸', escapeHtml(detail));
     } else if (phase === 'generated') {
         if (detail) _flowDetail(logEl, 'generating', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'generating', 'done');
     } else if (phase === 'policy_generation') {
-        _flowCard(logEl, 'policyGen', '🛡️', 'Generating Azure Policy');
+        _flowCard(logEl, 'policyGen', '🛡️', 'Generating Azure Policy ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'policyGen', '▸', escapeHtml(detail));
     } else if (phase === 'policy_generation_complete') {
         if (detail) _flowDetail(logEl, 'policyGen', '✓', escapeHtml(detail), 'uf-text-success');
@@ -4002,7 +4031,7 @@ function _handleValidationEvent(event) {
 
     // ── Governance review gate ───────────────────────────────
     } else if (phase === 'governance_review') {
-        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '▸', escapeHtml(detail));
     } else if (phase === 'ciso_review') {
         const rev = event.review || {};
@@ -4025,14 +4054,14 @@ function _handleValidationEvent(event) {
         if (detail) _flowDetail(logEl, 'governance', '✓', escapeHtml(detail), gateClass);
         _flowFinalize(logEl, 'governance', event.gate_decision === 'blocked' ? 'failed' : 'done', event.gate_decision === 'approved' ? 'Approved' : event.gate_decision === 'blocked' ? 'Blocked' : 'Conditional');
     } else if (phase === 'governance_skipped') {
-        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'governance', 'done', 'Skipped');
 
     // ── Governance resolution events (update handler) ────────
     } else if (phase === 'governance_heal_start' || phase === 'governance_heal_strategy' || phase === 'governance_heal_complete') {
         if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         }
         const icon = phase === 'governance_heal_complete' ? '✅' : phase === 'governance_heal_strategy' ? '📋' : '🤖';
         const cls = phase === 'governance_heal_complete' ? 'uf-text-success' : '';
@@ -4046,7 +4075,7 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'gov-resolve', 'done', 'Exception');
     } else if (phase === 'governance_heal_failed') {
         if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         }
         _flowDetail(logEl, 'gov-resolve', '❌', escapeHtml(detail), 'uf-text-error');
         _flowFinalize(logEl, 'gov-resolve', 'failed', 'Failed');
@@ -4167,7 +4196,7 @@ function _handleValidationEvent(event) {
 
     // ── Template Regeneration (re-plan + re-generate) ──────────
     } else if (phase === 'replanning') {
-        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture');
+        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'regen', '🧠', escapeHtml(detail));
     } else if (phase === 'regenerating') {
         if (detail) _flowDetail(logEl, 'regen', '⚙️', escapeHtml(detail));
@@ -4268,7 +4297,7 @@ function _handleValidationEvent(event) {
         header.textContent = 'Running Infrastructure Tests…';
         if (iconEl) { iconEl.textContent = '🧪'; iconEl.classList.add('validation-spinner'); }
     } else if (type === 'healing' && header) {
-        header.textContent = 'Auto-Healing — AI Fixing Template…';
+        header.innerHTML = 'Auto-Healing — AI Fixing Template… ' + _copilotTag();
         if (iconEl) { iconEl.textContent = '🤖'; iconEl.classList.add('validation-spinner'); }
     } else if (phase === 'what_if' && header) {
         header.textContent = 'Running ARM What-If Analysis…';
@@ -13572,7 +13601,7 @@ function showAgentDetail(agentKey) {
         ${agent.model_reason ? `
         <div class="ao-detail-model-reason">
             <span class="ao-detail-model-reason-icon">🧠</span>
-            <span class="ao-detail-model-reason-text"><strong>Model routing:</strong> ${escapeHtml(agent.model_reason)}</span>
+            <span class="ao-detail-model-reason-text"><strong>Model routing:</strong> ${escapeHtml(agent.model_reason)} <span class="mr-sdk-tag">COPILOT SDK</span></span>
         </div>` : ''}
 
         <div class="ao-detail-prompt-section">
