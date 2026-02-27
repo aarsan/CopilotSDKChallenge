@@ -4294,9 +4294,33 @@ async def auto_heal_template(template_id: str):
     # Also check validation (deploy) failures
     if isinstance(validation_results, dict) and validation_results:
         if not validation_results.get("validation_passed", True):
+            _had_heal_err = False
             for h in validation_results.get("heal_history", []):
                 if h.get("error"):
                     failed_tests.append(f"- Deploy: {h['error'][:200]}")
+                    _had_heal_err = True
+            # If validation failed but no heal_history recorded the error,
+            # run ARM What-If now to capture the actual deployment error.
+            if not _had_heal_err:
+                try:
+                    from src.azure_deployer import AzureDeployer
+                    _deployer = AzureDeployer()
+                    _tpl_check = _json.loads(arm_content)
+                    from src.pipeline_helpers import extract_param_values, build_final_params
+                    _check_params = build_final_params(_tpl_check, "eastus2")
+                    _wif_result = await _deployer.what_if(
+                        resource_group=f"infraforge-val-heal-check",
+                        template=_tpl_check,
+                        parameters=_check_params,
+                        region="eastus2",
+                    )
+                    if _wif_result.get("error"):
+                        failed_tests.append(f"- ARM Validation: {_wif_result['error'][:300]}")
+                except Exception as _wif_e:
+                    # What-If itself may throw with the validation error message
+                    _wif_err_str = str(_wif_e)
+                    if _wif_err_str:
+                        failed_tests.append(f"- ARM Validation: {_wif_err_str[:300]}")
 
     # If no recorded failures, run structural tests now to find issues
     if not failed_tests and tmpl.get("status") in ("failed", "draft"):
@@ -4324,6 +4348,16 @@ async def auto_heal_template(template_id: str):
                         missing = TAG_REQ - set(k.lower() for k in tags)
                         if missing:
                             failed_tests.append(f"- Tags: Resource [{i}] ({r.get('type','?')}) missing {', '.join(missing)}")
+
+            # Check for utcNow() in variables (ARM only allows it in parameter defaults)
+            _vars = _tpl.get("variables", {})
+            for _vname, _vval in _vars.items():
+                if isinstance(_vval, str) and "utcNow" in _vval:
+                    failed_tests.append(
+                        f"- ARM Function: Variable '{_vname}' uses utcNow() — "
+                        f"this function is only valid in parameter defaultValue expressions. "
+                        f"Move it to a parameter default or remove it."
+                    )
         except Exception:
             failed_tests.append("- JSON: Template is not valid JSON")
 
