@@ -14218,252 +14218,466 @@ details[open] > .tmpl-deploy-group-optional {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   AGENT ACTIVITY — Observability tab
+   AGENT ACTIVITY — Org-chart observability tab
    ═══════════════════════════════════════════════════════════════ */
 
-/* ── Stats bar (reuses .obs-stat from parent) ─────────────── */
-.agent-stats-bar {
-    display: flex;
-    gap: 1rem;
-    margin-bottom: 1.25rem;
-    flex-wrap: wrap;
-}
-
-/* ── Section title ────────────────────────────────────────── */
-.agent-section-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin: 1.5rem 0 0.75rem;
-    padding-bottom: 0.4rem;
-    border-bottom: 1px solid var(--border-primary);
-}
-
-/* ── Category groups ──────────────────────────────────────── */
-.agent-category {
-    margin-bottom: 1.25rem;
-}
-
-.agent-category-header {
+/* ── Summary strip ────────────────────────────────────────── */
+.ao-summary {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-    padding: 0.4rem 0;
-    font-size: 0.8rem;
-    font-weight: 600;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    margin-bottom: 1.25rem;
 }
-
-.agent-category-icon { font-size: 1rem; }
-
-.agent-category-name {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+.ao-sum-item { display: flex; align-items: baseline; gap: 0.35rem; }
+.ao-sum-val {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
 }
-
-.agent-category-count {
+.ao-val-ok { color: var(--accent-green); }
+.ao-val-err { color: var(--accent-red); }
+.ao-sum-lbl {
+    font-size: 0.65rem;
     color: var(--text-muted);
-    font-weight: 400;
-    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.ao-sum-sep {
+    width: 1px;
+    height: 1.2rem;
+    background: var(--border-default);
+}
+
+/* ── Hub (top center) ─────────────────────────────────────── */
+.ao-hub {
+    text-align: center;
+    padding: 1rem 0 0.5rem;
+}
+.ao-hub-icon {
+    font-size: 2rem;
+    line-height: 1;
+    margin-bottom: 0.25rem;
+}
+.ao-hub-label {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.ao-hub-sub {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+}
+
+/* ── Trunk connector ──────────────────────────────────────── */
+.ao-trunk {
+    width: 2px;
+    height: 1.25rem;
+    background: var(--border-default);
+    margin: 0 auto;
+}
+
+/* ── Branch grid ──────────────────────────────────────────── */
+.ao-branches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+/* ── Branch (one category) ────────────────────────────────── */
+.ao-branch {
+    display: flex;
+    flex-direction: column;
+}
+
+.ao-branch-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    background: color-mix(in srgb, var(--cat-color, #6b7280) 10%, var(--surface-secondary));
+    border: 1px solid color-mix(in srgb, var(--cat-color, #6b7280) 25%, var(--border-default));
+    border-radius: 8px 8px 0 0;
+}
+.ao-branch-icon { font-size: 1rem; }
+.ao-branch-name {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--cat-color, var(--text-primary));
+}
+.ao-branch-role {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    font-style: italic;
     margin-left: auto;
 }
-
-.agent-category-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 0.65rem;
+.ao-branch-count {
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--cat-color, var(--text-muted));
+    background: color-mix(in srgb, var(--cat-color, #6b7280) 15%, transparent);
+    padding: 0.1rem 0.4rem;
+    border-radius: 10px;
+    min-width: 1.2rem;
+    text-align: center;
 }
 
-/* ── Agent card ───────────────────────────────────────────── */
-.agent-card {
+/* Rail: colored left border for the cards area */
+.ao-branch-rail {
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, var(--cat-color, #6b7280), transparent);
+    opacity: 0.4;
+}
+
+/* ── Cards container ──────────────────────────────────────── */
+.ao-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem;
     background: var(--surface-secondary);
-    border: 1px solid var(--border-primary);
-    border-radius: 8px;
-    padding: 0.7rem 0.85rem;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    border: 1px solid var(--border-default);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
 }
 
-.agent-card:hover {
-    border-color: var(--accent-blue);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-blue) 25%, transparent);
+/* ── Baseball card ────────────────────────────────────────── */
+.ao-card {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 0 0.6rem;
+    padding: 0.55rem 0.65rem;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.1s, box-shadow 0.15s;
 }
-
-.agent-card-active {
+.ao-card:hover {
+    border-color: var(--cat-color, var(--accent-blue));
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    transform: translateY(-1px);
+}
+.ao-card-hot {
     border-left: 3px solid var(--accent-green);
 }
 
-.agent-card-header {
+/* Avatar circle */
+.ao-card-avatar {
+    grid-row: 1 / 4;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.35rem;
+    justify-content: center;
+    border: 2px solid;
+    flex-shrink: 0;
 }
+.ao-card-avatar-icon { font-size: 1.2rem; line-height: 1; }
 
-.agent-card-name {
-    font-weight: 600;
-    font-size: 0.78rem;
+/* Name */
+.ao-card-name {
+    font-size: 0.76rem;
+    font-weight: 700;
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: calc(100% - 40px);
+    line-height: 1.3;
 }
 
-.agent-card-sdk-badge {
-    display: inline-flex;
-    align-items: center;
-    background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-    color: var(--accent-blue);
-    font-size: 0.58rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    padding: 0.15rem 0.4rem;
-    border-radius: 4px;
-    text-transform: uppercase;
-    flex-shrink: 0;
+/* Model / role */
+.ao-card-role {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.agent-card-desc {
-    font-size: 0.7rem;
+/* Description */
+.ao-card-desc {
+    grid-column: 2;
+    font-size: 0.65rem;
     color: var(--text-secondary);
-    line-height: 1.4;
-    margin-bottom: 0.4rem;
+    line-height: 1.35;
+    margin-top: 0.15rem;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
 
-.agent-card-meta {
+/* Footer stats */
+.ao-card-footer {
+    grid-column: 1 / -1;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.35rem;
-    font-size: 0.65rem;
+    gap: 0.35rem;
+    margin-top: 0.35rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid var(--border-default);
+    font-size: 0.6rem;
 }
-
-.agent-card-model {
+.ao-card-calls {
+    font-weight: 700;
+    color: var(--accent-green);
+}
+.ao-card-calls-lbl {
     color: var(--text-muted);
-    background: var(--surface-tertiary);
-    padding: 0.1rem 0.4rem;
-    border-radius: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 150px;
 }
-
-.agent-card-task {
+.ao-card-errs {
+    color: var(--accent-red);
+    font-weight: 600;
+}
+.ao-card-idle {
     color: var(--text-muted);
     font-style: italic;
 }
-
-.agent-card-stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    font-size: 0.65rem;
-    color: var(--text-secondary);
-}
-
-.agent-card-stat {
-    background: var(--surface-tertiary);
-    padding: 0.1rem 0.35rem;
-    border-radius: 3px;
-}
-
-.agent-card-stat-err {
-    color: var(--accent-red);
-    background: color-mix(in srgb, var(--accent-red) 12%, transparent);
-}
-
-.agent-card-stat-last {
-    color: var(--text-muted);
+.ao-card-sdk {
     margin-left: auto;
+    font-weight: 700;
+    font-size: 0.55rem;
+    letter-spacing: 0.06em;
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+    padding: 0.08rem 0.3rem;
+    border-radius: 3px;
+    text-transform: uppercase;
 }
 
-/* ── Activity feed ────────────────────────────────────────── */
-.agent-activity-feed {
+/* ── Detail overlay ───────────────────────────────────────── */
+.ao-detail-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    animation: ao-fade-in 0.15s ease;
+}
+.ao-detail-overlay.hidden { display: none; }
+
+@keyframes ao-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.ao-detail-panel {
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    width: 100%;
+    max-width: 520px;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 1.5rem;
+    position: relative;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    animation: ao-slide-up 0.2s ease;
+}
+
+@keyframes ao-slide-up {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+}
+
+.ao-detail-close {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.25rem;
+    line-height: 1;
+    border-radius: 4px;
+}
+.ao-detail-close:hover {
+    color: var(--text-primary);
+    background: var(--surface-tertiary);
+}
+
+/* Detail header */
+.ao-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    margin-bottom: 1rem;
+}
+.ao-detail-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.6rem;
+    border: 3px solid;
+    flex-shrink: 0;
+}
+.ao-detail-info { flex: 1; min-width: 0; }
+.ao-detail-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.ao-detail-cat {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+    margin-top: 0.2rem;
+}
+.ao-detail-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+.ao-detail-desc {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-default);
+}
+
+/* Detail stats row */
+.ao-detail-stats {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+.ao-dstat {
+    flex: 1;
+    min-width: 100px;
+    text-align: center;
+    padding: 0.5rem;
+    background: var(--surface-tertiary);
+    border-radius: 6px;
+}
+.ao-dstat-val {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ao-dstat-lbl {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 0.15rem;
+}
+
+/* Metrics row */
+.ao-detail-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-default);
+}
+.ao-dmetric { text-align: center; }
+.ao-dmetric-num {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    display: block;
+}
+.ao-dmetric-err { color: var(--accent-red); }
+.ao-dmetric-lbl {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* Feed in detail panel */
+.ao-detail-feed-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+}
+.ao-detail-feed {
     display: flex;
     flex-direction: column;
     gap: 2px;
 }
-
-.agent-feed-row {
+.ao-dfeed-row {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.7rem;
+    font-size: 0.65rem;
+    padding: 0.3rem 0.5rem;
     border-radius: 4px;
-    background: var(--surface-secondary);
-    border: 1px solid transparent;
-    transition: background 0.1s;
-}
-
-.agent-feed-row:hover {
     background: var(--surface-tertiary);
 }
-
-.agent-feed-row-err {
-    border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
-    background: color-mix(in srgb, var(--accent-red) 5%, var(--surface-secondary));
+.ao-dfeed-row:hover { background: var(--bg-hover); }
+.ao-dfeed-err {
+    background: color-mix(in srgb, var(--accent-red) 6%, var(--surface-tertiary));
 }
-
-.agent-feed-status { flex-shrink: 0; }
-
-.agent-feed-agent {
-    font-weight: 600;
-    color: var(--text-primary);
-    white-space: nowrap;
-    min-width: 110px;
-}
-
-.agent-feed-model {
-    color: var(--text-muted);
-    font-size: 0.62rem;
-    white-space: nowrap;
-    min-width: 70px;
-}
-
-.agent-feed-dur {
+.ao-dfeed-dur {
     color: var(--accent-blue);
     font-family: var(--font-mono);
-    font-size: 0.62rem;
-    min-width: 50px;
-    text-align: right;
+    min-width: 40px;
 }
-
-.agent-feed-size {
+.ao-dfeed-size {
     color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 0.6rem;
-    min-width: 60px;
 }
-
-.agent-feed-error {
+.ao-dfeed-error {
     color: var(--accent-red);
-    font-size: 0.62rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 200px;
+    max-width: 160px;
 }
-
-.agent-feed-time {
+.ao-dfeed-time {
     color: var(--text-muted);
-    font-size: 0.6rem;
     margin-left: auto;
     white-space: nowrap;
 }
 
+.ao-detail-no-activity {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    padding: 1rem;
+    font-style: italic;
+}
+
 /* ── Responsive ───────────────────────────────────────────── */
 @media (max-width: 768px) {
-    .agent-category-cards {
+    .ao-branches {
         grid-template-columns: 1fr;
     }
-    .agent-feed-model,
-    .agent-feed-size {
-        display: none;
+    .ao-detail-panel {
+        max-width: 100%;
+    }
+    .ao-detail-metrics {
+        grid-template-columns: repeat(2, 1fr);
     }
 }

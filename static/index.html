@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=185">
+    <link rel="stylesheet" href="/static/styles.css?v=186">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -558,37 +558,29 @@
 
                     <!-- Tab: Agent Activity -->
                     <div class="obs-tab-content hidden" id="obs-content-agents">
-                        <!-- Agent Stats Bar -->
-                        <div class="agent-stats-bar" id="agent-stats-bar">
-                            <div class="obs-stat">
-                                <span class="obs-stat-num" id="agent-total-count">0</span>
-                                <span class="obs-stat-label">Agents</span>
-                            </div>
-                            <div class="obs-stat">
-                                <span class="obs-stat-num obs-stat-ok" id="agent-total-calls">0</span>
-                                <span class="obs-stat-label">SDK Calls</span>
-                            </div>
-                            <div class="obs-stat">
-                                <span class="obs-stat-num obs-stat-fail" id="agent-total-errors">0</span>
-                                <span class="obs-stat-label">Errors</span>
-                            </div>
-                            <div class="obs-stat">
-                                <span class="obs-stat-num" id="agent-avg-latency">0</span>
-                                <span class="obs-stat-label">Avg Latency (ms)</span>
-                            </div>
+                        <!-- Compact summary strip -->
+                        <div class="ao-summary" id="ao-summary">
+                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-agent-ct">0</span><span class="ao-sum-lbl">Agents</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-ok" id="ao-call-ct">0</span><span class="ao-sum-lbl">SDK Calls</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-err" id="ao-err-ct">0</span><span class="ao-sum-lbl">Errors</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-lat-avg">—</span><span class="ao-sum-lbl">Avg Latency</span></div>
                         </div>
 
-                        <!-- Agent Grid -->
-                        <div class="agent-grid" id="agent-grid">
+                        <!-- Org chart tree -->
+                        <div class="ao-org" id="ao-org">
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">🤖</span>
                                 <p>Loading agent registry…</p>
                             </div>
                         </div>
 
-                        <!-- Recent Activity Feed -->
-                        <h4 class="agent-section-title" id="agent-feed-title" style="display:none">📡 Recent Copilot SDK Invocations</h4>
-                        <div class="agent-activity-feed" id="agent-activity-feed"></div>
+                        <!-- Expanded agent detail overlay (hidden until card click) -->
+                        <div class="ao-detail-overlay hidden" id="ao-detail-overlay">
+                            <div class="ao-detail-panel" id="ao-detail-panel"></div>
+                        </div>
                     </div>
 
                     <!-- Tab: Azure Resources -->
@@ -1389,7 +1381,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=185"></script>
+    <script src="/static/app.js?v=186"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

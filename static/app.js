@@ -13116,52 +13116,54 @@ function _timeShort(isoStr) {
 
 
 // ══════════════════════════════════════════════════════════════
-// AGENT ACTIVITY — Copilot SDK observability dashboard
+// AGENT ACTIVITY — Org-chart style agent dashboard
 // ══════════════════════════════════════════════════════════════
 
-const AGENT_CATEGORY_ICONS = {
-    'Interactive': '💬',
-    'Orchestrator': '🎯',
-    'Standards': '📋',
-    'ARM Generation': '🏗️',
-    'Deployment Pipeline': '🚀',
-    'Compliance': '🛡️',
-    'Artifact & Healing': '🔧',
-    'Infrastructure Testing': '🧪',
-    'Governance Review': '⚖️',
+const AO_CAT_META = {
+    'Interactive':             { icon: '💬', color: '#3b82f6', role: 'User-Facing' },
+    'Orchestrator':            { icon: '🎯', color: '#8b5cf6', role: 'Routing & Planning' },
+    'Standards':               { icon: '📋', color: '#06b6d4', role: 'Policy Extraction' },
+    'ARM Generation':          { icon: '🏗️', color: '#f59e0b', role: 'Template Authoring' },
+    'Deployment Pipeline':     { icon: '🚀', color: '#10b981', role: 'Deploy & Heal' },
+    'Compliance':              { icon: '🛡️', color: '#ef4444', role: 'Policy Enforcement' },
+    'Artifact & Healing':      { icon: '🔧', color: '#ec4899', role: 'Fix & Generate' },
+    'Infrastructure Testing':  { icon: '🧪', color: '#14b8a6', role: 'Verify & Test' },
+    'Governance Review':       { icon: '⚖️', color: '#6366f1', role: 'Review Gates' },
 };
 
-const AGENT_CATEGORY_COLORS = {
-    'Interactive': '#3b82f6',
-    'Orchestrator': '#8b5cf6',
-    'Standards': '#06b6d4',
-    'ARM Generation': '#f59e0b',
-    'Deployment Pipeline': '#10b981',
-    'Compliance': '#ef4444',
-    'Artifact & Healing': '#ec4899',
-    'Infrastructure Testing': '#14b8a6',
-    'Governance Review': '#6366f1',
+// Individual agent icons based on their key — gives each card a unique "avatar"
+const AO_AGENT_ICONS = {
+    web_chat: '💬', ciso_advisor: '🔐', concierge: '🛎️',
+    gap_analyst: '🔍', arm_template_editor: '✏️', policy_checker: '📋', request_parser: '🧩',
+    standards_extractor: '📄',
+    arm_modifier: '🛠️', arm_generator: '🏗️',
+    template_healer: '💊', error_culprit_detector: '🎯', deploy_failure_analyst: '📊',
+    remediation_planner: '📝', remediation_executor: '⚡',
+    artifact_generator: '✨', policy_fixer: '🩹', deep_template_healer: '🔬', llm_reasoner: '🧠',
+    infra_tester: '🧪', infra_test_analyzer: '🔎',
+    ciso_reviewer: '🛡️', cto_reviewer: '🏛️',
 };
+
+// Cached API data for detail panel
+let _aoData = null;
 
 async function loadAgentActivity() {
-    const grid = document.getElementById('agent-grid');
-    const feed = document.getElementById('agent-activity-feed');
-    const feedTitle = document.getElementById('agent-feed-title');
-    if (!grid) return;
+    const org = document.getElementById('ao-org');
+    if (!org) return;
 
     try {
         const res = await fetch('/api/agents/activity');
-        if (!res.ok) throw new Error('Failed to load agent activity');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        _aoData = data;
 
         const agents = data.agents || [];
         const counters = data.counters || {};
-        const activity = data.activity || [];
         const routing = data.routing_table || [];
 
         // Build model lookup from routing table
         const taskModelMap = {};
-        routing.forEach(r => { taskModelMap[r.task] = r.model; });
+        routing.forEach(r => { taskModelMap[r.task] = r.model_name || r.model_id || r.task; });
 
         // Compute summary stats
         let totalCalls = 0, totalErrors = 0, totalMs = 0;
@@ -13172,11 +13174,11 @@ async function loadAgentActivity() {
         });
         const avgLatency = totalCalls > 0 ? Math.round(totalMs / totalCalls) : 0;
 
-        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-        el('agent-total-count', agents.length);
-        el('agent-total-calls', totalCalls);
-        el('agent-total-errors', totalErrors);
-        el('agent-avg-latency', avgLatency);
+        const _s = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        _s('ao-agent-ct', agents.length);
+        _s('ao-call-ct', totalCalls.toLocaleString());
+        _s('ao-err-ct', totalErrors);
+        _s('ao-lat-avg', totalCalls > 0 ? `${avgLatency}ms` : '—');
 
         // Group agents by category
         const categories = {};
@@ -13185,101 +13187,183 @@ async function loadAgentActivity() {
             categories[a.category].push(a);
         });
 
-        // Render agent grid
+        // ── Render org chart ──
         let html = '';
-        for (const [cat, catAgents] of Object.entries(categories)) {
-            const icon = AGENT_CATEGORY_ICONS[cat] || '🤖';
-            const color = AGENT_CATEGORY_COLORS[cat] || '#6b7280';
-            html += `<div class="agent-category">
-                <div class="agent-category-header">
-                    <span class="agent-category-icon">${icon}</span>
-                    <span class="agent-category-name" style="color:${color}">${cat}</span>
-                    <span class="agent-category-count">${catAgents.length} agent${catAgents.length !== 1 ? 's' : ''}</span>
-                </div>
-                <div class="agent-category-cards">`;
+
+        // Hub node
+        html += `<div class="ao-hub">
+            <div class="ao-hub-icon">⚙️</div>
+            <div class="ao-hub-label">InfraForge Agent Network</div>
+            <div class="ao-hub-sub">${agents.length} agents · ${Object.keys(categories).length} teams · Copilot SDK</div>
+        </div>`;
+        html += `<div class="ao-trunk"></div>`;
+
+        // Category groups
+        const catEntries = Object.entries(categories);
+        html += `<div class="ao-branches">`;
+
+        catEntries.forEach(([cat, catAgents]) => {
+            const meta = AO_CAT_META[cat] || { icon: '🤖', color: '#6b7280', role: cat };
+
+            html += `<div class="ao-branch">`;
+            html += `<div class="ao-branch-head" style="--cat-color: ${meta.color}">
+                <span class="ao-branch-icon">${meta.icon}</span>
+                <span class="ao-branch-name">${cat}</span>
+                <span class="ao-branch-role">${meta.role}</span>
+                <span class="ao-branch-count">${catAgents.length}</span>
+            </div>`;
+            html += `<div class="ao-branch-rail" style="--cat-color: ${meta.color}"></div>`;
+            html += `<div class="ao-cards">`;
 
             catAgents.forEach(a => {
                 const agentKey = a.name.toUpperCase().replace(/\s+/g, '_');
                 const c = counters[agentKey] || counters[a.key] || {};
                 const calls = c.calls || 0;
                 const errors = c.errors || 0;
-                const avgMs = calls > 0 ? Math.round((c.total_ms || 0) / calls) : 0;
-                const lastCalled = c.last_called ? _timeAgo(c.last_called) : 'never';
                 const model = taskModelMap[a.task] || a.task;
-                const hasActivity = calls > 0;
+                const agentIcon = AO_AGENT_ICONS[a.key] || meta.icon;
+                const isActive = calls > 0;
 
-                html += `<div class="agent-card ${hasActivity ? 'agent-card-active' : ''}">
-                    <div class="agent-card-header">
-                        <span class="agent-card-name">${a.name}</span>
-                        <span class="agent-card-sdk-badge" title="Powered by GitHub Copilot SDK">SDK</span>
+                html += `<div class="ao-card ${isActive ? 'ao-card-hot' : ''}" data-agent-key="${a.key}" onclick="showAgentDetail('${a.key}')" style="--cat-color: ${meta.color}">
+                    <div class="ao-card-avatar" style="background: ${meta.color}22; border-color: ${meta.color}66">
+                        <span class="ao-card-avatar-icon">${agentIcon}</span>
                     </div>
-                    <div class="agent-card-desc">${a.description.length > 120 ? a.description.substring(0, 117) + '…' : a.description}</div>
-                    <div class="agent-card-meta">
-                        <span class="agent-card-model" title="Model: ${model}">🧠 ${_truncateModel(model)}</span>
-                        <span class="agent-card-task">${a.task}</span>
-                    </div>
-                    <div class="agent-card-stats">
-                        <span class="agent-card-stat" title="Total SDK calls">${calls} call${calls !== 1 ? 's' : ''}</span>
-                        ${errors > 0 ? `<span class="agent-card-stat agent-card-stat-err" title="Errors">${errors} err</span>` : ''}
-                        ${avgMs > 0 ? `<span class="agent-card-stat" title="Average latency">${avgMs}ms avg</span>` : ''}
-                        <span class="agent-card-stat agent-card-stat-last" title="Last called">${lastCalled}</span>
+                    <div class="ao-card-name">${a.name}</div>
+                    <div class="ao-card-role">${_truncateModel(model)}</div>
+                    <div class="ao-card-desc">${a.description.length > 90 ? a.description.substring(0, 87) + '…' : a.description}</div>
+                    <div class="ao-card-footer">
+                        ${isActive
+                            ? `<span class="ao-card-calls">${calls}</span><span class="ao-card-calls-lbl">calls</span>${errors > 0 ? `<span class="ao-card-errs">${errors} err</span>` : ''}`
+                            : `<span class="ao-card-idle">Idle</span>`}
+                        <span class="ao-card-sdk">SDK</span>
                     </div>
                 </div>`;
             });
 
             html += `</div></div>`;
-        }
-        grid.innerHTML = html;
+        });
 
-        // Render recent activity feed
-        if (activity.length > 0 && feedTitle) {
-            feedTitle.style.display = '';
-            feed.innerHTML = activity.slice(0, 50).map(e => {
-                const statusIcon = e.status === 'ok' ? '✅' : '❌';
-                const dur = e.duration_ms ? `${Math.round(e.duration_ms)}ms` : '';
-                const ts = _timeShort(e.timestamp);
-                const errorHtml = e.error ? `<span class="agent-feed-error" title="${_escapeHtml(e.error)}">⚠ ${e.error.substring(0, 80)}</span>` : '';
-                return `<div class="agent-feed-row ${e.status === 'error' ? 'agent-feed-row-err' : ''}">
-                    <span class="agent-feed-status">${statusIcon}</span>
-                    <span class="agent-feed-agent">${e.agent}</span>
-                    <span class="agent-feed-model">${_truncateModel(e.model)}</span>
-                    <span class="agent-feed-dur">${dur}</span>
-                    <span class="agent-feed-size">${_formatBytes(e.prompt_len)}→${_formatBytes(e.response_len)}</span>
-                    ${errorHtml}
-                    <span class="agent-feed-time">${ts}</span>
-                </div>`;
-            }).join('');
-        } else if (feedTitle) {
-            feedTitle.style.display = 'none';
-            feed.innerHTML = '';
-        }
+        html += `</div>`;
+        org.innerHTML = html;
 
     } catch (err) {
         console.warn('Agent activity load failed:', err);
-        grid.innerHTML = `
+        org.innerHTML = `
             <div class="activity-empty">
                 <span class="activity-empty-icon">⚠️</span>
                 <p>Failed to load agent activity data.</p>
+                <p style="font-size:0.7rem;color:var(--text-muted)">${escapeHtml(String(err))}</p>
             </div>`;
     }
 }
 
+/** Show the detail panel for a clicked agent card */
+function showAgentDetail(agentKey) {
+    if (!_aoData) return;
+    const overlay = document.getElementById('ao-detail-overlay');
+    const panel = document.getElementById('ao-detail-panel');
+    if (!overlay || !panel) return;
+
+    const agent = (_aoData.agents || []).find(a => a.key === agentKey);
+    if (!agent) return;
+
+    const counters = _aoData.counters || {};
+    const activity = _aoData.activity || [];
+    const routing = _aoData.routing_table || [];
+    const taskModelMap = {};
+    routing.forEach(r => { taskModelMap[r.task] = r.model_name || r.model_id || r.task; });
+
+    const agentNameKey = agent.name.toUpperCase().replace(/\s+/g, '_');
+    const c = counters[agentNameKey] || counters[agentKey] || {};
+    const calls = c.calls || 0;
+    const errors = c.errors || 0;
+    const avgMs = calls > 0 ? Math.round((c.total_ms || 0) / calls) : 0;
+    const lastCalled = c.last_called ? _timeAgo(c.last_called) : 'Never';
+
+    const model = taskModelMap[agent.task] || agent.task;
+    const meta = AO_CAT_META[agent.category] || { icon: '🤖', color: '#6b7280', role: '' };
+    const agentIcon = AO_AGENT_ICONS[agentKey] || meta.icon;
+
+    // Filter activity for this agent
+    const agentActivity = activity.filter(e =>
+        (e.agent || '').toUpperCase().replace(/\s+/g, '_') === agentNameKey ||
+        (e.agent_key || '') === agentKey
+    ).slice(0, 20);
+
+    panel.innerHTML = `
+        <button class="ao-detail-close" onclick="hideAgentDetail()" title="Close">✕</button>
+        <div class="ao-detail-header" style="--cat-color: ${meta.color}">
+            <div class="ao-detail-avatar" style="background: ${meta.color}22; border-color: ${meta.color}">
+                ${agentIcon}
+            </div>
+            <div class="ao-detail-info">
+                <div class="ao-detail-name">${agent.name}</div>
+                <div class="ao-detail-cat">
+                    <span style="color:${meta.color}">${meta.icon} ${agent.category}</span>
+                    <span class="ao-detail-badge">SDK</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="ao-detail-desc">${agent.description}</div>
+
+        <div class="ao-detail-stats">
+            <div class="ao-dstat">
+                <div class="ao-dstat-val">${_truncateModel(model)}</div>
+                <div class="ao-dstat-lbl">Model</div>
+            </div>
+            <div class="ao-dstat">
+                <div class="ao-dstat-val">${agent.task}</div>
+                <div class="ao-dstat-lbl">Pipeline Task</div>
+            </div>
+            <div class="ao-dstat">
+                <div class="ao-dstat-val">${agent.timeout}s</div>
+                <div class="ao-dstat-lbl">Timeout</div>
+            </div>
+        </div>
+
+        <div class="ao-detail-metrics">
+            <div class="ao-dmetric"><span class="ao-dmetric-num">${calls}</span><span class="ao-dmetric-lbl">Calls</span></div>
+            <div class="ao-dmetric"><span class="ao-dmetric-num ao-dmetric-err">${errors}</span><span class="ao-dmetric-lbl">Errors</span></div>
+            <div class="ao-dmetric"><span class="ao-dmetric-num">${avgMs ? avgMs + 'ms' : '—'}</span><span class="ao-dmetric-lbl">Avg Latency</span></div>
+            <div class="ao-dmetric"><span class="ao-dmetric-num">${lastCalled}</span><span class="ao-dmetric-lbl">Last Called</span></div>
+        </div>
+
+        ${agentActivity.length > 0 ? `
+        <div class="ao-detail-feed-title">Recent Invocations</div>
+        <div class="ao-detail-feed">
+            ${agentActivity.map(e => {
+                const icon = e.status === 'ok' ? '✅' : '❌';
+                const dur = e.duration_ms ? `${Math.round(e.duration_ms)}ms` : '';
+                const ts = _timeShort(e.timestamp);
+                return `<div class="ao-dfeed-row ${e.status === 'error' ? 'ao-dfeed-err' : ''}">
+                    <span>${icon}</span>
+                    <span class="ao-dfeed-dur">${dur}</span>
+                    <span class="ao-dfeed-size">${_formatBytes(e.prompt_len)}→${_formatBytes(e.response_len)}</span>
+                    ${e.error ? `<span class="ao-dfeed-error" title="${escapeHtml(e.error)}">⚠ ${e.error.substring(0, 60)}</span>` : ''}
+                    <span class="ao-dfeed-time">${ts}</span>
+                </div>`;
+            }).join('')}
+        </div>` : `<div class="ao-detail-no-activity">No invocations recorded yet.</div>`}
+    `;
+
+    overlay.classList.remove('hidden');
+}
+
+function hideAgentDetail() {
+    const overlay = document.getElementById('ao-detail-overlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
 function _truncateModel(model) {
     if (!model) return '';
-    // Shorten common model names
     return model
         .replace('claude-sonnet-4-20250514', 'Claude Sonnet 4')
+        .replace('Claude Sonnet 4', 'Claude Sonnet 4')
         .replace('gpt-4.1-nano-2025-04-14', 'GPT-4.1 Nano')
+        .replace('GPT-4.1 Nano', 'GPT-4.1 Nano')
         .replace('gpt-4.1-2025-04-14', 'GPT-4.1')
-        .replace('o3-mini-2025-01-31', 'o3-mini');
-}
-
-function _formatBytes(len) {
-    if (!len || len === 0) return '0';
-    if (len < 1024) return `${len}c`;
-    return `${(len / 1024).toFixed(1)}k`;
-}
-
+        .replace('GPT-4.1', 'GPT-4.1')
 function _timeAgo(isoStr) {
     if (!isoStr) return 'never';
     try {
