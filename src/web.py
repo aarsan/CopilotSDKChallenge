@@ -5275,7 +5275,8 @@ async def fix_and_validate_template(template_id: str, request: Request):
         try:
             await complete_pipeline_run(
                 _run_id, final_status,
-                result_summary=f"Fix & Validate: {final_status}, heals={heal_count}",
+                summary={"detail": f"Fix & Validate: {final_status}, heals={heal_count}"},
+                heal_count=heal_count,
                 events_json=_json.dumps(_events),
             )
         except Exception:
