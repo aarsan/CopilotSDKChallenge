@@ -215,9 +215,13 @@ async def invalidate_session(session_token: str) -> None:
 def _build_user_context(claims: dict, access_token: Optional[str] = None) -> UserContext:
     """Build a UserContext from Entra ID token claims.
 
-    In a full implementation, this would also call the Microsoft Graph API
-    to fetch group membership, manager info, and custom extension attributes
-    like cost center. For now, we extract what's available in the token claims.
+    Uses the Microsoft Graph API to enrich the user context with:
+    - Manager name (for approval routing)
+    - Department and job title (if not in token claims)
+    - Cost center from directory extensions
+
+    This is the Work IQ integration point — organizational knowledge
+    from Microsoft Graph enriches every agent interaction.
     """
     # Standard claims from the ID token
     ctx = UserContext(
@@ -245,7 +249,72 @@ def _build_user_context(claims: dict, access_token: Optional[str] = None) -> Use
     # Try to extract cost center from custom claims (configured in Entra ID)
     ctx.cost_center = claims.get("extension_costCenter", claims.get("costCenter", ""))
 
+    # ── Microsoft Graph API enrichment (Work IQ) ──────────────
+    # Fetch manager chain, department, and additional profile data
+    # from the organizational knowledge graph.
+    if access_token:
+        try:
+            graph_data = _fetch_graph_profile(access_token)
+            if graph_data:
+                # Enrich with Graph data (only if not already in claims)
+                if not ctx.job_title and graph_data.get("jobTitle"):
+                    ctx.job_title = graph_data["jobTitle"]
+                if not ctx.department and graph_data.get("department"):
+                    ctx.department = graph_data["department"]
+                if graph_data.get("officeLocation"):
+                    ctx.team = graph_data["officeLocation"]
+                # Manager from Graph (the key Work IQ feature)
+                if graph_data.get("manager_name"):
+                    ctx.manager = graph_data["manager_name"]
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(f"Graph API enrichment failed (non-fatal): {e}")
+
     return ctx
+
+
+def _fetch_graph_profile(access_token: str) -> Optional[dict]:
+    """Fetch user profile and manager from Microsoft Graph.
+
+    Uses the /me endpoint and /me/manager to get organizational data
+    for Work IQ integration — identity-aware infrastructure intelligence.
+
+    Returns a dict with profile fields and manager_name, or None on failure.
+    """
+    import requests
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    result = {}
+
+    try:
+        # Fetch user profile
+        profile_resp = requests.get(
+            "https://graph.microsoft.com/v1.0/me"
+            "?$select=displayName,jobTitle,department,officeLocation,mail",
+            headers=headers,
+            timeout=5,
+        )
+        if profile_resp.status_code == 200:
+            profile = profile_resp.json()
+            result["jobTitle"] = profile.get("jobTitle", "")
+            result["department"] = profile.get("department", "")
+            result["officeLocation"] = profile.get("officeLocation", "")
+
+        # Fetch manager
+        mgr_resp = requests.get(
+            "https://graph.microsoft.com/v1.0/me/manager"
+            "?$select=displayName,mail",
+            headers=headers,
+            timeout=5,
+        )
+        if mgr_resp.status_code == 200:
+            mgr = mgr_resp.json()
+            result["manager_name"] = mgr.get("displayName", "")
+
+    except Exception:
+        pass  # Network issues are non-fatal
+
+    return result if result else None
 
 
 # ── Demo / Development Mode ─────────────────────────────────

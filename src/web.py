@@ -5885,6 +5885,22 @@ async def validate_template(template_id: str, request: Request):
                 events_json=events_str,
             )
 
+            # Log usage for Work IQ analytics
+            if final_status == "completed":
+                try:
+                    await log_usage({
+                        "timestamp": time.time(),
+                        "user": "",
+                        "department": "",
+                        "cost_center": "",
+                        "prompt": f"Validate template: {_tmpl_name}",
+                        "resource_types": svc_ids or [],
+                        "estimated_cost": 0.0,
+                        "from_catalog": True,
+                    })
+                except Exception:
+                    pass
+
     return StreamingResponse(
         _tracked_stream(),
         media_type="application/x-ndjson",
@@ -10986,6 +11002,35 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             async for line in stream_onboarding():
                 _track(line)
                 yield line
+
+            # Log usage for Work IQ analytics
+            try:
+                tracker = _active_validations.get(service_id, {})
+                if tracker.get("status") == "succeeded":
+                    # Get user context if authenticated
+                    auth_header = request.headers.get("Authorization", "")
+                    user_email = ""
+                    user_dept = ""
+                    user_cc = ""
+                    if auth_header.startswith("Bearer "):
+                        user = await get_user_context(auth_header[7:])
+                        if user:
+                            user_email = user.email
+                            user_dept = user.department
+                            user_cc = user.cost_center
+                    await log_usage({
+                        "timestamp": time.time(),
+                        "user": user_email,
+                        "department": user_dept,
+                        "cost_center": user_cc,
+                        "prompt": f"Onboard service: {service_id}",
+                        "resource_types": [service_id],
+                        "estimated_cost": 0.0,
+                        "from_catalog": False,
+                    })
+            except Exception:
+                pass  # Non-critical
+
         finally:
             async def _cleanup_tracker():
                 await asyncio.sleep(300)
