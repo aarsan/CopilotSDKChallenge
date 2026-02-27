@@ -13363,7 +13363,9 @@ function _truncateModel(model) {
         .replace('gpt-4.1-nano-2025-04-14', 'GPT-4.1 Nano')
         .replace('GPT-4.1 Nano', 'GPT-4.1 Nano')
         .replace('gpt-4.1-2025-04-14', 'GPT-4.1')
-        .replace('GPT-4.1', 'GPT-4.1')
+        .replace('GPT-4.1', 'GPT-4.1');
+}
+
 function _timeAgo(isoStr) {
     if (!isoStr) return 'never';
     try {
