@@ -3474,7 +3474,7 @@ function _flowCard(logEl, key, icon, title) {
     card.innerHTML = `
         <div class="uf-action-head">
             <div class="uf-action-icon">${icon}</div>
-            <div class="uf-action-name">${escapeHtml(title)}</div>
+            <div class="uf-action-name">${title}</div>
             <div class="uf-action-badge uf-badge-active">
                 <span class="uf-badge-dot"></span>
             </div>
