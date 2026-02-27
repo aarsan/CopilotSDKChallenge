@@ -2126,6 +2126,11 @@ body {
     color: #16a34a;
     font-weight: 600;
 }
+.hero-node-unknown {
+    font-size: 0.62rem;
+    color: var(--accent-amber, #f59e0b);
+    font-weight: 600;
+}
 
 /* ── Hero Dependency Icons ──────────────── */
 .hero-node-deps {

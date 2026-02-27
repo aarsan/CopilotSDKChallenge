@@ -5382,13 +5382,15 @@ async def get_template_composition(template_id: str):
         latest_int = ver_info.get("latest_version") or active_int
         latest_semver = ver_info.get("latest_semver") or active_semver
 
-        if pinned_int is None:
-            pinned_int = active_int
-            pinned_semver = active_semver
-
-        upgrade_available = (
-            pinned_int is not None and active_int is not None and active_int > pinned_int
-        )
+        # If no pinned version recorded, we DON'T know what version is
+        # actually baked into the composed template. Show "unknown" rather
+        # than lying by pretending it's the latest.
+        upgrade_available = False
+        if pinned_int is not None and active_int is not None:
+            upgrade_available = active_int > pinned_int
+        elif pinned_int is None and active_int is not None:
+            # No pin = we don't know → flag as "needs recompose" 
+            upgrade_available = True
 
         components.append({
             "service_id": sid,
@@ -5400,6 +5402,7 @@ async def get_template_composition(template_id: str):
             "latest_version": active_int,
             "latest_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
             "upgrade_available": upgrade_available,
+            "version_known": pinned_int is not None,
         })
 
     # Build dependency edges between components
