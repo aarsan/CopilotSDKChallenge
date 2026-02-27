@@ -2,11 +2,16 @@
 Template Deploy Pipeline — migrated from web.py's ``deploy_template`` endpoint.
 
 Exports ``stream_deploy()`` — an async generator that yields NDJSON lines
-compatible with the existing frontend event protocol:
+using the same **phase-based event protocol** as the validation pipeline,
+so the frontend's flowchart renderer (``_renderDeployProgress``) can
+render deploy runs identically:
 
-  {"type": "status",  "message": "...", "progress": 0.5}
-  {"type": "agent",   "content": "...", "action": "..."}
-  {"type": "result",  "status": "succeeded|needs_work", ...}
+  {"phase": "starting",        "resource_group": "...", "region": "..."}
+  {"phase": "step",            "detail": "..."}
+  {"phase": "error",           "error": "..."}
+  {"phase": "healing",         "detail": "...", "error_brief": "..."}
+  {"phase": "healed",          "detail": "...", "fix_summary": "..."}
+  {"phase": "complete",        "status": "succeeded", ...}
 
 The deploy pipeline follows the deterministic process-as-code pattern:
   1. Sanitize the template (parameter defaults, GUIDs, DNS zones)
@@ -78,12 +83,11 @@ async def stream_deploy(
 
     # ── STEP 1: SANITIZE ─────────────────────────────────────
     yield json.dumps({
-        "type": "status",
-        "message": f"🚀 Deploying **{template_name}** to `{resource_group}`…",
-        "progress": 0.02,
-        "deployment_name": deployment_name,
+        "phase": "starting",
         "resource_group": resource_group,
         "region": region,
+        "is_blueprint": is_blueprint,
+        "detail": f"Deploying **{template_name}** to `{resource_group}`…",
     }) + "\n"
 
     current_template_json = ensure_parameter_defaults(json.dumps(tpl, indent=2))
@@ -98,17 +102,18 @@ async def stream_deploy(
         is_last = attempt == MAX_DEPLOY_HEAL_ATTEMPTS
         att_base = (attempt - 1) / MAX_DEPLOY_HEAL_ATTEMPTS
 
-        if attempt > 1:
-            yield json.dumps({
-                "type": "agent",
-                "action": "retry",
-                "content": f"🔄 Let me try again with the fixed template (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
-            }) + "\n"
+        # Emit a step node for each attempt
+        yield json.dumps({
+            "phase": "step",
+            "detail": f"Deploying to Azure (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…" if attempt > 1 else "Deploying to Azure…",
+            "context": "retry" if attempt > 1 else "",
+            "progress": att_base,
+        }) + "\n"
 
         # ── STEP 2: WHAT-IF VALIDATION ────────────────────
         yield json.dumps({
-            "type": "status",
-            "message": "Let me check with Azure if this template will work (running What-If)…",
+            "phase": "progress",
+            "detail": "Let me check with Azure if this template will work (running What-If)…",
             "progress": att_base + 0.03 / MAX_DEPLOY_HEAL_ATTEMPTS,
         }) + "\n"
 
@@ -129,8 +134,8 @@ async def stream_deploy(
 
             if is_transient_error(what_if_errors):
                 yield json.dumps({
-                    "type": "status",
-                    "message": "Azure is having a moment — I'll wait a bit and try again…",
+                    "phase": "progress",
+                    "detail": "Azure is having a moment — I'll wait a bit and try again…",
                     "progress": att_base + 0.05 / MAX_DEPLOY_HEAL_ATTEMPTS,
                 }) + "\n"
                 await asyncio.sleep(10)
@@ -138,9 +143,12 @@ async def stream_deploy(
 
             # Template error — heal it
             yield json.dumps({
-                "type": "agent",
-                "action": "healing",
-                "content": f"🧠 Azure rejected the template — let me read the error and fix it (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
+                "phase": "healing",
+                "detail": f"Azure rejected the template — analyzing error and fixing (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
+                "error_brief": what_if_errors[:200],
+                "error_summary": what_if_errors[:500],
+                "repeated_error": attempt > 1,
+                "what_was_tried": [h["fix_summary"] for h in heal_history],
             }) + "\n"
 
             healed = await _run_heal_step(
@@ -153,9 +161,11 @@ async def stream_deploy(
                 final_params.update({k: v for k, v in user_params.items() if v is not None})
 
                 yield json.dumps({
-                    "type": "agent",
-                    "action": "healed",
-                    "content": f"🔧 Got it — {healed['fix_summary']}",
+                    "phase": "healed",
+                    "detail": f"Got it — {healed['fix_summary']}",
+                    "fix_summary": healed["fix_summary"],
+                    "deep_healed": healed.get("deep", False),
+                    "error_brief": what_if_errors[:200],
                 }) + "\n"
 
                 heal_history.append({
@@ -177,9 +187,8 @@ async def stream_deploy(
                 if is_last:
                     break
                 yield json.dumps({
-                    "type": "agent",
-                    "action": "heal_failed",
-                    "content": "Hmm, I couldn't fix the What-If error this time — let me try a different angle…",
+                    "phase": "progress",
+                    "detail": "Couldn't fix the What-If error this time — trying a different angle…",
                 }) + "\n"
             continue
 
@@ -188,8 +197,8 @@ async def stream_deploy(
             f"{v} {k}" for k, v in wif.get("change_counts", {}).items()
         )
         yield json.dumps({
-            "type": "status",
-            "message": f"✅ Template looks good — {change_summary or 'Azure accepted it'}",
+            "phase": "progress",
+            "detail": f"✅ Template looks good — {change_summary or 'Azure accepted it'}",
             "progress": att_base + 0.08 / MAX_DEPLOY_HEAL_ATTEMPTS,
         }) + "\n"
 
@@ -229,8 +238,8 @@ async def stream_deploy(
                 phase = event.get("phase", "")
                 if phase not in ("error",):
                     yield json.dumps({
-                        "type": "status",
-                        "message": event.get("detail", ""),
+                        "phase": "progress",
+                        "detail": event.get("detail", ""),
                         "progress": att_base + (
                             event.get("progress", 0) * 0.8
                         ) / MAX_DEPLOY_HEAL_ATTEMPTS,
@@ -243,8 +252,8 @@ async def stream_deploy(
             event = progress_queue.get_nowait()
             if event.get("phase") not in ("error",):
                 yield json.dumps({
-                    "type": "status",
-                    "message": event.get("detail", ""),
+                    "phase": "progress",
+                    "detail": event.get("detail", ""),
                     "progress": att_base + (
                         event.get("progress", 0) * 0.8
                     ) / MAX_DEPLOY_HEAL_ATTEMPTS,
@@ -279,20 +288,24 @@ async def stream_deploy(
                         f"as version {new_ver['version']}"
                     )
                     yield json.dumps({
-                        "type": "agent",
-                        "action": "saved",
-                        "content": (
-                            f"💾 I've saved the fixed template as "
-                            f"version {new_ver['version']}."
-                        ),
+                        "phase": "progress",
+                        "detail": f"💾 Saved the fixed template as version {new_ver['version']}.",
                     }) + "\n"
                 except Exception as e:
                     logger.warning(
                         f"Failed to save healed template version: {e}"
                     )
 
+            issues_resolved = len(heal_history)
             yield json.dumps({
-                "type": "result",
+                "phase": "deploy_succeeded",
+                "detail": "Deployment complete",
+                "provisioned_resources": result.get("provisioned_resources", []),
+                "issues_resolved": issues_resolved if issues_resolved > 0 else 0,
+            }) + "\n"
+
+            yield json.dumps({
+                "phase": "complete",
                 "status": "succeeded",
                 "step": attempt,
                 "deployment_id": result.get("deployment_id"),
@@ -301,6 +314,8 @@ async def stream_deploy(
                 ),
                 "outputs": result.get("outputs", {}),
                 "healed": attempt > 1,
+                "issues_resolved": issues_resolved if issues_resolved > 0 else 0,
+                "heal_history": heal_history,
             }) + "\n"
             return
 
@@ -325,8 +340,8 @@ async def stream_deploy(
 
         if is_transient_error(deploy_error):
             yield json.dumps({
-                "type": "status",
-                "message": "Azure is being flaky right now — waiting a moment before trying again…",
+                "phase": "progress",
+                "detail": "Azure is being flaky right now — waiting a moment before trying again…",
                 "progress": att_base + 0.15 / MAX_DEPLOY_HEAL_ATTEMPTS,
             }) + "\n"
             await asyncio.sleep(10)
@@ -336,12 +351,12 @@ async def stream_deploy(
             break
 
         yield json.dumps({
-            "type": "agent",
-            "action": "healing",
-            "content": (
-                f"🧠 The deployment hit an error — let me analyze what went wrong and fix it "
-                f"(attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…"
-            ),
+            "phase": "healing",
+            "detail": f"The deployment hit an error — analyzing and fixing (attempt {attempt}/{MAX_DEPLOY_HEAL_ATTEMPTS})…",
+            "error_brief": deploy_error[:200],
+            "error_summary": deploy_error[:500],
+            "repeated_error": attempt > 1,
+            "what_was_tried": [h["fix_summary"] for h in heal_history],
         }) + "\n"
 
         healed = await _run_heal_step(
@@ -354,17 +369,18 @@ async def stream_deploy(
             final_params.update({k: v for k, v in user_params.items() if v is not None})
 
             yield json.dumps({
-                "type": "agent",
-                "action": "healed",
-                "content": f"🔧 Got it — {healed['fix_summary']}",
+                "phase": "healed",
+                "detail": f"Got it — {healed['fix_summary']}",
+                "fix_summary": healed["fix_summary"],
+                "deep_healed": healed.get("deep", False),
+                "error_brief": deploy_error[:200],
             }) + "\n"
             if healed.get("deep"):
                 yield json.dumps({
-                    "type": "agent",
-                    "action": "deep_healed",
-                    "content": (
-                        f"🔬 I had to dig deeper — the real issue was in the "
-                        f"`{healed.get('culprit', '?')}` template. I fixed it, "
+                    "phase": "progress",
+                    "detail": (
+                        f"Had to dig deeper — the real issue was in the "
+                        f"`{healed.get('culprit', '?')}` template. Fixed it, "
                         f"verified it on its own, and rebuilt the parent."
                     ),
                 }) + "\n"
@@ -386,12 +402,8 @@ async def stream_deploy(
                 "attempt": attempt,
             })
             yield json.dumps({
-                "type": "agent",
-                "action": "heal_failed",
-                "content": (
-                    "Hmm, I couldn't fix this particular error "
-                    "— let me try a different approach…"
-                ),
+                "phase": "progress",
+                "detail": "Couldn't fix this particular error — trying a different approach…",
             }) + "\n"
 
     # ── STEP 6: EXHAUSTED → LLM summarizes ───────────────
@@ -401,11 +413,10 @@ async def stream_deploy(
     )
 
     yield json.dumps({
-        "type": "agent",
-        "action": "analyzing",
-        "content": (
-            f"🧠 I've tried {len(heal_history)} fix{'es' if len(heal_history) != 1 else ''} "
-            f"but the issue persists. Let me write up what I've found…"
+        "phase": "progress",
+        "detail": (
+            f"Tried {len(heal_history)} fix{'es' if len(heal_history) != 1 else ''} "
+            f"but the issue persists. Analyzing…"
         ),
     }) + "\n"
 
@@ -415,16 +426,12 @@ async def stream_deploy(
     )
 
     yield json.dumps({
-        "type": "agent",
-        "action": "analysis",
-        "content": analysis,
-    }) + "\n"
-
-    yield json.dumps({
-        "type": "result",
+        "phase": "complete",
         "status": "needs_work",
         "step": len(heal_history),
         "deployment_id": deployment_name,
+        "heal_history": heal_history,
+        "analysis": analysis,
     }) + "\n"
 
 
@@ -563,6 +570,7 @@ async def _get_deploy_agent_analysis(
             system_prompt=DEPLOY_FAILURE_ANALYST.system_prompt.format(attempts=attempts),
             prompt=prompt,
             timeout=30,
+            agent_name="DEPLOY_FAILURE_ANALYST",
         )
         return result or _fallback_deploy_analysis(error, heal_history)
 

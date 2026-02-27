@@ -126,6 +126,7 @@ async def run_ciso_review(
             system_prompt=spec.system_prompt,
             prompt=prompt,
             timeout=spec.timeout,
+            agent_name="CISO_REVIEWER",
         )
         review = _extract_json(raw)
         if not review or "verdict" not in review:
@@ -176,6 +177,7 @@ async def run_cto_review(
             system_prompt=spec.system_prompt,
             prompt=prompt,
             timeout=spec.timeout,
+            agent_name="CTO_REVIEWER",
         )
         review = _extract_json(raw)
         if not review or "verdict" not in review:

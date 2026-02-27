@@ -542,6 +542,7 @@ async def analyze_template_feedback(
                 system_prompt=GAP_ANALYST.system_prompt,
                 prompt=prompt,
                 timeout=60,
+                agent_name="GAP_ANALYST",
             )
             # Strip markdown fences if present
             if raw.startswith("```"):
@@ -819,6 +820,7 @@ async def apply_template_code_edit(
             system_prompt=ARM_TEMPLATE_EDITOR.system_prompt,
             prompt=prompt,
             timeout=90,
+            agent_name="ARM_TEMPLATE_EDITOR",
         )
         # Strip markdown fences
         if raw.startswith("```"):
@@ -988,6 +990,7 @@ async def check_revision_policy(
                 system_prompt=POLICY_CHECKER.system_prompt,
                 prompt=prompt,
                 timeout=30,
+                agent_name="POLICY_CHECKER",
             )
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -1144,6 +1147,7 @@ async def determine_services_from_prompt(
                 system_prompt=REQUEST_PARSER.system_prompt,
                 prompt=prompt,
                 timeout=60,
+                agent_name="REQUEST_PARSER",
             )
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]

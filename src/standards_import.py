@@ -84,6 +84,7 @@ async def import_standards_from_text(
             system_prompt=_SYSTEM_PROMPT,
             prompt=prompt,
             timeout=120,
+            agent_name="STANDARDS_EXTRACTOR",
         )
     except Exception as e:
         logger.error(f"Standards import LLM call failed: {e}")

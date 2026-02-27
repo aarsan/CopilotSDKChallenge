@@ -660,6 +660,7 @@ async def _copilot_heal_template(
         system_prompt=TEMPLATE_HEALER.system_prompt,
         prompt=prompt,
         timeout=90,
+        agent_name="TEMPLATE_HEALER",
     )
     if fixed.startswith("```"):
         lines = fixed.split("\n")[1:]
@@ -798,6 +799,7 @@ async def _deep_heal_composed_template(
                         "Reply with ONLY the exact service ID from the list above."
                     ),
                     timeout=30,
+                    agent_name="ERROR_CULPRIT_DETECTOR",
                 )
                 for sid in service_ids:
                     if sid.lower() in resp.lower():
@@ -1502,6 +1504,50 @@ async def get_model_routing_settings():
             "Reasoning tasks use o3-mini, code generation uses Claude Sonnet 4, "
             "and fixing uses GPT-4.1. The chat model is user-selectable."
         ),
+    })
+
+
+@app.get("/api/agents/activity")
+async def get_agents_activity():
+    """Return agent registry, routing table, live activity counters, and recent activity log."""
+    from src.agents import AGENTS, AgentSpec
+    from src.copilot_helpers import get_agent_activity, get_agent_counters
+
+    # Build agent registry with categories
+    AGENT_CATEGORIES = {
+        "Interactive": ["web_chat", "ciso_advisor", "concierge"],
+        "Orchestrator": ["gap_analyst", "arm_template_editor", "policy_checker", "request_parser"],
+        "Standards": ["standards_extractor"],
+        "ARM Generation": ["arm_modifier", "arm_generator"],
+        "Deployment Pipeline": ["template_healer", "error_culprit_detector", "deploy_failure_analyst"],
+        "Compliance": ["remediation_planner", "remediation_executor"],
+        "Artifact & Healing": ["artifact_generator", "policy_fixer", "deep_template_healer", "llm_reasoner"],
+        "Infrastructure Testing": ["infra_tester", "infra_test_analyzer"],
+        "Governance Review": ["ciso_reviewer", "cto_reviewer"],
+    }
+
+    registry = []
+    for category, keys in AGENT_CATEGORIES.items():
+        for key in keys:
+            spec = AGENTS.get(key)
+            if spec:
+                registry.append({
+                    "key": key,
+                    "name": spec.name,
+                    "description": spec.description,
+                    "task": spec.task.value if hasattr(spec.task, "value") else str(spec.task),
+                    "timeout": spec.timeout,
+                    "category": category,
+                })
+
+    counters = get_agent_counters()
+    activity = get_agent_activity(limit=200)
+
+    return JSONResponse({
+        "agents": registry,
+        "routing_table": get_routing_table(),
+        "counters": counters,
+        "activity": activity,
     })
 
 
@@ -3175,6 +3221,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
             system_prompt=REMEDIATION_PLANNER.system_prompt,
             prompt=retry_prompt,
             timeout=90,
+            agent_name="REMEDIATION_PLANNER",
         )
 
         # Robust JSON extraction
@@ -3678,6 +3725,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                         prompt=retry_prompt,
                         timeout=300,
                         on_event=on_progress,
+                        agent_name="REMEDIATION_EXECUTOR",
                     )
                     step_log(sid, f"AI response: {len(raw):,} chars, {_token_count[0]} chunks")
 
@@ -3865,6 +3913,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
                     system_prompt=REMEDIATION_EXECUTOR.system_prompt,
                     prompt=re_prompt,
                     timeout=300, on_event=on_re_progress,
+                    agent_name="REMEDIATION_EXECUTOR",
                 )
                 step_log(sid, f"AI re-fix response: {len(re_raw):,} chars")
 
@@ -6089,6 +6138,7 @@ async def _get_deploy_agent_analysis(
             system_prompt=DEPLOY_AGENT_PROMPT.format(attempts=attempts),
             prompt=prompt,
             timeout=30,
+            agent_name="DEPLOY_FAILURE_ANALYST",
         )
         return result or _fallback_deploy_analysis(error, heal_history)
 
@@ -6877,6 +6927,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         system_prompt=LLM_REASONER.system_prompt,
                         prompt=planning_prompt,
                         timeout=90,
+                        agent_name="LLM_REASONER",
                     )
             except Exception as e:
                 logger.warning(f"Planning phase failed (non-fatal): {e}")
@@ -6965,6 +7016,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             ),
                             prompt=execute_prompt,
                             timeout=90,
+                            agent_name="ARM_MODIFIER",
                         )
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
@@ -7292,7 +7344,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             }) + "\n"
                             raw = await copilot_send(_client, model=fix_model,
                                 system_prompt=TEMPLATE_HEALER.system_prompt,
-                                prompt=fix_prompt, timeout=90)
+                                prompt=fix_prompt, timeout=90,
+                                agent_name="TEMPLATE_HEALER")
                             cleaned = raw.strip()
                             if cleaned.startswith("```"):
                                 lines = cleaned.split("\n")
@@ -7463,6 +7516,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                                 "validation failures. Analyze errors deeply and propose concrete fixes."
                             ),
                             prompt=_wif_analysis_prompt, timeout=60,
+                            agent_name="DEEP_TEMPLATE_HEALER",
                         )
                         logger.info(f"[What-If Healer] Strategy (attempt {attempt}): {_wif_strategy[:300]}")
 
@@ -7486,7 +7540,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         _wif_healer_sys = DEEP_TEMPLATE_HEALER.system_prompt if _use_deep_wif else TEMPLATE_HEALER.system_prompt
                         raw = await copilot_send(_client, model=_fix_model,
                             system_prompt=_wif_healer_sys,
-                            prompt=_wif_fix_prompt, timeout=90)
+                            prompt=_wif_fix_prompt, timeout=90,
+                            agent_name="DEEP_TEMPLATE_HEALER")
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
@@ -7675,6 +7730,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             "compatibility, SKU availability, quota limits, and naming rules."
                         ),
                         prompt=_analysis_prompt, timeout=60,
+                        agent_name="DEEP_TEMPLATE_HEALER",
                     )
                     logger.info(f"[Deploy Healer] Phase 1 strategy (attempt {attempt}, sub {_deploy_heals}): {_strategy_text[:300]}")
 
@@ -7722,6 +7778,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         _client, model=_fix_model,
                         system_prompt=_healer_sys,
                         prompt=_fix_prompt, timeout=90,
+                        agent_name="DEEP_TEMPLATE_HEALER",
                     )
                     cleaned = raw.strip()
                     if cleaned.startswith("```"):
@@ -9599,6 +9656,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             system_prompt=POLICY_FIXER.system_prompt,
             prompt=prompt,
             timeout=90,
+            agent_name="POLICY_FIXER",
         )
         if fixed.startswith("```"):
             lines = fixed.split("\n")[1:]
@@ -10531,6 +10589,7 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
                 system_prompt=ARTIFACT_GENERATOR.system_prompt,
                 prompt=generation_prompt,
                 timeout=60,
+                agent_name="ARTIFACT_GENERATOR",
             )
 
             # Strip markdown code fences if the model wrapped them anyway

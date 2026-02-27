@@ -861,13 +861,34 @@ def test_<resource_name>_health():
 ## TEST CATEGORIES (generate as many as apply)
 
 1. **Provisioning State** — Every resource must have provisioningState == "Succeeded"
-2. **Endpoint Health** — HTTP GET to App Service, Function App, API Management endpoints \
+2. **API Version Validation** — CRITICAL: For EVERY resource in the ARM template, verify \
+   that the apiVersion used actually exists for that resource provider. Query the Azure \
+   Resource Provider API (`/providers/<namespace>?api-version=2021-04-01`) to get the \
+   list of valid API versions for each resource type, then assert the template's apiVersion \
+   is in that list. A wrong API version MUST cause a test FAILURE — this is non-negotiable. \
+   Example test pattern:
+   ```
+   def test_<resource_name>_api_version():
+       \"\"\"Verify the API version used for <resource_type> is valid.\"\"\"
+       from azure.mgmt.resource import ResourceManagementClient
+       client = ResourceManagementClient(credential, SUBSCRIPTION_ID)
+       provider = client.providers.get("<namespace>")
+       resource_type_name = "<type_suffix>"  # e.g. "sites" for Microsoft.Web/sites
+       valid_versions = []
+       for rt in provider.resource_types:
+           if rt.resource_type.lower() == resource_type_name.lower():
+               valid_versions = rt.api_versions
+               break
+       assert "<apiVersion>" in valid_versions, \
+           f"API version <apiVersion> is not valid for <resource_type>. Valid: {valid_versions}"
+   ```
+3. **Endpoint Health** — HTTP GET to App Service, Function App, API Management endpoints \
    (expect 2xx/4xx — NOT connection refused or DNS failure)
-3. **Network Config** — Verify NSG rules, firewall rules, private endpoints resolve
-4. **Security** — Key Vault access policies exist, managed identity enabled, TLS configured
-5. **Monitoring** — Diagnostic settings or Log Analytics workspace connected
-6. **Tag Compliance** — Required tags exist on all resources (environment, owner, costCenter)
-7. **Configuration** — Resource-specific settings match what the template requested \
+4. **Network Config** — Verify NSG rules, firewall rules, private endpoints resolve
+5. **Security** — Key Vault access policies exist, managed identity enabled, TLS configured
+6. **Monitoring** — Diagnostic settings or Log Analytics workspace connected
+7. **Tag Compliance** — Required tags exist on all resources (environment, owner, costCenter)
+8. **Configuration** — Resource-specific settings match what the template requested \
    (e.g., SQL tier, App Service plan SKU, storage replication)
 
 ## RULES
@@ -917,6 +938,9 @@ Return a JSON object (no markdown fences):
 
 ## RULES
 - "template" root cause: the infrastructure was provisioned wrong (fix the ARM template)
+- "template" root cause ALSO applies when: an API version is invalid or deprecated — \
+  the template must be updated to use a valid apiVersion for that resource type. \
+  API version failures are ALWAYS a template issue, never a test issue.
 - "test" root cause: the test itself is wrong — checking the wrong thing or using wrong SDK calls
 - "transient" root cause: Azure propagation delay, DNS not ready yet — retry after a pause
 - "environment" root cause: missing credentials, network issues — not fixable by code changes

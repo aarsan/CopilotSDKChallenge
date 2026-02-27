@@ -969,6 +969,7 @@ async def modify_arm_template_with_copilot(
                 system_prompt=ARM_MODIFIER.system_prompt,
                 prompt=actual_prompt,
                 timeout=90,
+                agent_name="ARM_MODIFIER",
             )
             result = _extract_json_from_llm_response(raw)
 
@@ -1094,6 +1095,7 @@ async def generate_arm_template_with_copilot(
                 system_prompt=ARM_GENERATOR.system_prompt,
                 prompt=actual_prompt,
                 timeout=60,
+                agent_name="ARM_GENERATOR",
             )
             result = _extract_json_from_llm_response(raw)
 

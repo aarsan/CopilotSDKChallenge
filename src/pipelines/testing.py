@@ -118,7 +118,12 @@ async def generate_test_script(
         f"--- DEPLOYED RESOURCES ---\n{json.dumps(resource_summary, indent=2)}\n--- END RESOURCES ---\n\n"
         f"Generate tests that verify these resources are functional. "
         f"Focus on provisioning state, endpoint reachability, security config, "
-        f"and tag compliance. Return ONLY the Python code."
+        f"and tag compliance.\n\n"
+        f"CRITICAL: You MUST generate an API version validation test for EVERY resource "
+        f"in the ARM template. Query the Azure Resource Provider API to get valid API "
+        f"versions and assert the template's apiVersion is in the valid list. "
+        f"A wrong API version MUST cause a hard test failure.\n\n"
+        f"Return ONLY the Python code."
     )
 
     from src.web import ensure_copilot_client
@@ -130,6 +135,7 @@ async def generate_test_script(
         system_prompt=INFRA_TESTER.system_prompt,
         prompt=prompt,
         timeout=INFRA_TESTER.timeout,
+        agent_name="INFRA_TESTER",
     )
 
     # Strip markdown fences if present
@@ -382,6 +388,7 @@ async def analyze_test_failures(
         system_prompt=INFRA_TEST_ANALYZER.system_prompt,
         prompt=prompt,
         timeout=INFRA_TEST_ANALYZER.timeout,
+        agent_name="INFRA_TEST_ANALYZER",
     )
 
     # Parse JSON from response

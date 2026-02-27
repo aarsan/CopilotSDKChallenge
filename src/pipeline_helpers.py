@@ -863,6 +863,7 @@ async def copilot_heal_template(
         system_prompt=TEMPLATE_HEALER.system_prompt,
         prompt=prompt,
         timeout=90,
+        agent_name="TEMPLATE_HEALER",
     )
     if fixed.startswith("```"):
         lines = fixed.split("\n")[1:]
@@ -958,6 +959,7 @@ async def copilot_fix_two_phase(
         ),
         prompt=analysis_prompt,
         timeout=60,
+        agent_name="DEEP_TEMPLATE_HEALER",
     )
 
     logger.info(f"[Healer] Phase 1 strategy (attempt {attempt_num}): {strategy_text[:300]}")
@@ -1006,6 +1008,7 @@ async def copilot_fix_two_phase(
         system_prompt=DEEP_TEMPLATE_HEALER.system_prompt,
         prompt=fix_prompt,
         timeout=90,
+        agent_name="DEEP_TEMPLATE_HEALER",
     )
     if fixed.startswith("```"):
         lines = fixed.split("\n")[1:]
