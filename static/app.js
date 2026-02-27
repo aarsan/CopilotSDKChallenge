@@ -8935,6 +8935,36 @@ function _renderDeployProgress(container, event, ctx) {
             : '';
         if (isSuccess) {
             const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''} along the way` : '';
+
+            // Build a friendly resource summary grouped by type
+            const typeGroups = {};
+            const typeIcons = {
+                'azurefirewalls': '🛡️', 'firewallpolicies': '📋', 'virtualnetworks': '🌐',
+                'subnets': '📡', 'networksecuritygroups': '🔒', 'publicipaddresses': '🔗',
+                'storageaccounts': '💾', 'keyvault': '🔑', 'sites': '🌍', 'serverfarms': '📊',
+                'databases': '🗄️', 'servers': '🖥️', 'disks': '💽', 'virtualmachines': '🖥️',
+            };
+            const friendlyType = (t) => (t || '').split('/').pop().replace(/([A-Z])/g, ' $1').trim();
+            for (const r of resources) {
+                const shortType = (r.type || '').split('/').pop().toLowerCase();
+                const label = friendlyType(r.type);
+                if (!typeGroups[label]) typeGroups[label] = { icon: typeIcons[shortType] || '📦', items: [] };
+                typeGroups[label].items.push(r.name);
+            }
+
+            // Show only meaningful outputs (IP addresses, names, locations — skip raw resource IDs)
+            const meaningfulOutputs = [];
+            for (const [k, v] of Object.entries(outputs)) {
+                const val = String(v);
+                // Skip raw subscription/resource-group paths
+                if (val.startsWith('/subscriptions/')) continue;
+                // Skip internal-looking keys
+                if (k.startsWith('resourceId') || k.endsWith('Id')) continue;
+                // Friendly key label
+                const label = k.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+                meaningfulOutputs.push({ key: label, value: val });
+            }
+
             resultDiv.className = 'vf-result vf-result-success';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
@@ -8943,28 +8973,38 @@ function _renderDeployProgress(container, event, ctx) {
                 </div>
                 ${resources.length ? `
                 <div class="vf-result-section">
-                    <div class="vf-result-label">Resources Provisioned (${resources.length})</div>
-                    <div class="vf-resource-list">
-                        ${resources.map(r => `
-                            <div class="vf-resource-item">
-                                <span class="vf-resource-type">${escapeHtml(r.type)}</span>
-                                <span class="vf-resource-name">${escapeHtml(r.name)}</span>
+                    <div class="vf-result-label">${resources.length} resources provisioned successfully</div>
+                    <div class="vf-resource-list vf-resource-grouped">
+                        ${Object.entries(typeGroups).map(([label, g]) => `
+                            <div class="vf-resource-group-item">
+                                <span class="vf-rg-icon">${g.icon}</span>
+                                <span class="vf-rg-label">${escapeHtml(label)}</span>
+                                <span class="vf-rg-count">${g.items.length > 1 ? `×${g.items.length}` : ''}</span>
                             </div>
                         `).join('')}
                     </div>
                 </div>` : ''}
-                ${Object.keys(outputs).length ? `
+                ${meaningfulOutputs.length ? `
                 <div class="vf-result-section">
-                    <div class="vf-result-label">Outputs</div>
-                    ${Object.entries(outputs).map(([k, v]) => `
-                        <div class="vf-output-item">
-                            <span class="vf-output-key">${escapeHtml(k)}</span>
-                            <code class="vf-output-val">${escapeHtml(String(v))}</code>
-                        </div>
-                    `).join('')}
+                    <div class="vf-result-label">Key Details</div>
+                    <div class="vf-output-list-friendly">
+                        ${meaningfulOutputs.map(o => `
+                            <div class="vf-output-friendly">
+                                <span class="vf-of-key">${escapeHtml(o.key)}</span>
+                                <span class="vf-of-val">${escapeHtml(o.value)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
                 </div>` : ''}
-                ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
                 ${testingNote}
+                <details class="vf-technical-details">
+                    <summary>View technical details</summary>
+                    <div class="vf-tech-content">
+                        ${resources.map(r => `<div class="vf-tech-row"><span class="vf-tech-type">${escapeHtml(r.type)}</span> <span class="vf-tech-name">${escapeHtml(r.name)}</span></div>`).join('')}
+                        ${Object.entries(outputs).map(([k, v]) => `<div class="vf-tech-row"><span class="vf-tech-key">${escapeHtml(k)}</span> <code>${escapeHtml(String(v))}</code></div>`).join('')}
+                        ${event.deployment_id ? `<div class="vf-tech-row">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
+                    </div>
+                </details>
             `;
         } else {
             resultDiv.className = 'vf-result vf-result-fail';

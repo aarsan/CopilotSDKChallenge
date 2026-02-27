@@ -13003,11 +13003,32 @@ details[open] > .tmpl-deploy-group-optional {
     margin-bottom: 0.3rem;
 }
 .vf-resource-list { display: flex; flex-direction: column; gap: 0.15rem; }
+.vf-resource-list.vf-resource-grouped { flex-direction: row; flex-wrap: wrap; gap: 0.4rem; }
+.vf-resource-group-item {
+    display: flex; align-items: center; gap: 0.3rem;
+    font-size: 0.78rem; padding: 0.3rem 0.6rem;
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+}
+.vf-rg-icon { font-size: 0.9rem; }
+.vf-rg-label { font-weight: 500; }
+.vf-rg-count { font-size: 0.68rem; color: var(--text-muted); }
 .vf-resource-item { display: flex; gap: 0.5rem; font-size: 0.75rem; padding: 0.2rem 0; }
 .vf-resource-type {
     font-size: 0.68rem; color: var(--text-muted); font-family: var(--font-mono);
 }
 .vf-resource-name { font-weight: 500; }
+.vf-output-list-friendly { display: flex; flex-direction: column; gap: 0.2rem; }
+.vf-output-friendly { display: flex; gap: 0.5rem; align-items: baseline; font-size: 0.78rem; padding: 0.15rem 0; }
+.vf-of-key { color: var(--text-secondary); text-transform: capitalize; min-width: 8rem; }
+.vf-of-val { font-weight: 500; color: var(--accent); font-family: var(--font-mono); font-size: 0.72rem; }
+.vf-technical-details { margin-top: 0.6rem; font-size: 0.7rem; }
+.vf-technical-details summary { cursor: pointer; color: var(--text-muted); font-size: 0.68rem; }
+.vf-tech-content { margin-top: 0.3rem; padding: 0.4rem 0.6rem; background: var(--bg-tertiary, var(--bg-secondary)); border-radius: 4px; max-height: 20rem; overflow-y: auto; }
+.vf-tech-row { font-size: 0.65rem; padding: 0.1rem 0; color: var(--text-muted); font-family: var(--font-mono); word-break: break-all; }
+.vf-tech-type { color: var(--text-secondary); }
+.vf-tech-name { color: var(--text-primary); }
+.vf-tech-key { font-weight: 600; color: var(--text-secondary); margin-right: 0.3rem; }
 .vf-output-item {
     display: flex; gap: 0.5rem; align-items: baseline;
     font-size: 0.75rem; padding: 0.15rem 0;
