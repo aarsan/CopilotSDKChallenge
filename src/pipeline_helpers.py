@@ -440,6 +440,8 @@ def resolve_variables_for_composition(
                 }
                 resolved_variables[vname] = vval
             else:
+                # Store expression — will be remapped below after all
+                # vars_as_params entries are built.
                 resolved_variables[vname] = vval
         else:
             # Complex object/array — serialize as parameter default
@@ -449,6 +451,47 @@ def resolve_variables_for_composition(
                 "metadata": {"description": f"Variable '{vname}' (auto-promoted)"},
             }
             resolved_variables[vname] = vval
+
+    # ── Remap references inside ARM expression variables ──
+    # Expression variables (starting with '[') are stored raw above.  They
+    # may reference other parameters or variables by their original names.
+    # Those names need to be remapped to suffixed equivalents so the
+    # composed template doesn't have dangling references.
+    for vname in list(resolved_variables):
+        vval = resolved_variables[vname]
+        if not (isinstance(vval, str) and vval.startswith("[")):
+            continue
+        expr = vval
+
+        # Remap non-standard parameter references
+        for pname in all_non_standard:
+            suffixed = f"{pname}{suffix}"
+            expr = expr.replace(
+                f"parameters('{pname}')",
+                f"parameters('{suffixed}')",
+            )
+
+        # Remap variable references to their composed names
+        for other_vname in vars_as_params:
+            other_vval = src_vars.get(other_vname)
+            _is_expr = isinstance(other_vval, str) and other_vval.startswith("[")
+            _is_utc = _is_expr and "utcNow" in other_vval
+            if _is_expr and not _is_utc:
+                # Expression variable → stays as variable with suffix
+                suffixed_var = f"{other_vname}{suffix}"
+                expr = expr.replace(
+                    f"variables('{other_vname}')",
+                    f"variables('{suffixed_var}')",
+                )
+            else:
+                # Literal/utcNow variable → promoted to parameter
+                suffixed_param = vars_as_params[other_vname]
+                expr = expr.replace(
+                    f"variables('{other_vname}')",
+                    f"parameters('{suffixed_param}')",
+                )
+
+        resolved_variables[vname] = expr
 
     # ── Process resources: remap parameter AND variable references ──
     processed_resources = []

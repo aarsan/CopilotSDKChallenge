@@ -113,7 +113,12 @@ async def stream_validation(
         for pname, pdef in tpl_params.items():
             if pname not in current_params:
                 if "defaultValue" in pdef:
-                    current_params[pname] = pdef["defaultValue"]
+                    dv = pdef["defaultValue"]
+                    # Skip ARM expressions — they only work as in-template
+                    # defaults, not as explicit parameter values.
+                    if isinstance(dv, str) and dv.startswith("["):
+                        continue
+                    current_params[pname] = dv
                 else:
                     current_params[pname] = f"if-val-{pname[:20]}"
 
