@@ -127,6 +127,9 @@ class Task(str, Enum):
     # Prose — design documents, summaries
     DESIGN_DOCUMENT     = "design_document"
 
+    # Governance — CISO/CTO template review gate
+    GOVERNANCE_REVIEW   = "governance_review"
+
 
 # ── Model Assignment ─────────────────────────────────────────
 
@@ -179,6 +182,11 @@ TASK_MODEL_MAP: dict[Task, ModelAssignment] = {
         model_id="gpt-4.1",
         reason="Design documents need clear technical prose with good structure "
                "and consistent formatting.",
+    ),
+    Task.GOVERNANCE_REVIEW: ModelAssignment(
+        model_id="claude-sonnet-4",
+        reason="Governance reviews (CISO/CTO) need deep reasoning about security, "
+               "architecture, and compliance to produce structured verdicts.",
     ),
 }
 

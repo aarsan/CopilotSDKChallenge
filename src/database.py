@@ -800,6 +800,34 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     CREATE INDEX idx_pipeline_runs_service ON pipeline_runs(service_id, started_at DESC)""",
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_runs_runid')
     CREATE UNIQUE INDEX idx_pipeline_runs_runid ON pipeline_runs(run_id)""",
+    # ── Governance reviews ────────────────────────────────────
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'governance_reviews')
+    CREATE TABLE governance_reviews (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        service_id      NVARCHAR(200) NOT NULL,
+        version         INT NOT NULL,
+        semver          NVARCHAR(20) DEFAULT NULL,
+        pipeline_type   NVARCHAR(50) DEFAULT 'onboarding',
+        run_id          NVARCHAR(50) DEFAULT NULL,
+        agent           NVARCHAR(20) NOT NULL,
+        verdict         NVARCHAR(30) NOT NULL,
+        confidence      FLOAT DEFAULT 0,
+        summary         NVARCHAR(MAX) DEFAULT '',
+        findings_json   NVARCHAR(MAX) DEFAULT '[]',
+        risk_score      INT DEFAULT NULL,
+        architecture_score INT DEFAULT NULL,
+        security_posture NVARCHAR(30) DEFAULT NULL,
+        cost_assessment NVARCHAR(30) DEFAULT NULL,
+        gate_decision   NVARCHAR(30) DEFAULT NULL,
+        gate_reason     NVARCHAR(MAX) DEFAULT NULL,
+        model_used      NVARCHAR(100) DEFAULT NULL,
+        reviewed_at     NVARCHAR(50) NOT NULL,
+        created_by      NVARCHAR(200) DEFAULT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_gov_reviews_service')
+    CREATE INDEX idx_gov_reviews_service ON governance_reviews(service_id, version DESC)""",
 ]
 
 
@@ -3676,6 +3704,84 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
+# GOVERNANCE REVIEWS
+# ══════════════════════════════════════════════════════════════
+
+async def save_governance_review(
+    service_id: str,
+    version: int,
+    review: dict,
+    *,
+    semver: str | None = None,
+    pipeline_type: str = "onboarding",
+    run_id: str | None = None,
+    gate_decision: str | None = None,
+    gate_reason: str | None = None,
+    created_by: str | None = None,
+) -> None:
+    """Persist a single governance review (CISO or CTO) to the database."""
+    backend = await get_backend()
+    findings_json = json.dumps(review.get("findings", []), default=str)
+    await backend.execute(
+        """INSERT INTO governance_reviews
+           (service_id, version, semver, pipeline_type, run_id,
+            agent, verdict, confidence, summary, findings_json,
+            risk_score, architecture_score, security_posture, cost_assessment,
+            gate_decision, gate_reason, model_used, reviewed_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            service_id,
+            version,
+            semver,
+            pipeline_type,
+            run_id,
+            review.get("agent", "unknown"),
+            review.get("verdict", "unknown"),
+            review.get("confidence", 0),
+            (review.get("summary") or "")[:4000],
+            findings_json,
+            review.get("risk_score"),
+            review.get("architecture_score"),
+            review.get("security_posture"),
+            review.get("cost_assessment"),
+            gate_decision,
+            gate_reason,
+            review.get("model_used"),
+            review.get("reviewed_at", ""),
+            created_by,
+        ),
+    )
+
+
+async def get_governance_reviews(
+    service_id: str,
+    version: int | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Get governance reviews for a service, optionally filtered by version."""
+    backend = await get_backend()
+    if version is not None:
+        rows = await backend.execute(
+            f"SELECT TOP {limit} * FROM governance_reviews "
+            "WHERE service_id = ? AND version = ? ORDER BY id DESC",
+            (service_id, version),
+        )
+    else:
+        rows = await backend.execute(
+            f"SELECT TOP {limit} * FROM governance_reviews "
+            "WHERE service_id = ? ORDER BY id DESC",
+            (service_id,),
+        )
+    for r in rows:
+        if isinstance(r.get("findings_json"), str):
+            try:
+                r["findings"] = json.loads(r["findings_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["findings"] = []
+    return rows
+
+
+# ══════════════════════════════════════════════════════════════
 # ORCHESTRATION PROCESS HELPERS
 # ══════════════════════════════════════════════════════════════
 
@@ -3805,6 +3911,20 @@ async def seed_orchestration_processes() -> int:
                 },
                 {
                     "step_order": 6,
+                    "name": "Governance review gate",
+                    "description": (
+                        "Run CISO and CTO structured reviews on the generated ARM "
+                        "template in parallel. CISO reviews security and compliance "
+                        "(can block); CTO reviews architecture and cost (advisory). "
+                        "Results are persisted to governance_reviews table."
+                    ),
+                    "action": "governance_review",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                    "config_json": '{"skippable": false}',
+                },
+                {
+                    "step_order": 7,
                     "name": "Validate via ARM deploy",
                     "description": (
                         "Full healing loop: parse JSON → static policy check → "
@@ -3818,7 +3938,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"max_heal_attempts": 5}',
                 },
                 {
-                    "step_order": 7,
+                    "step_order": 8,
                     "name": "Infrastructure smoke tests",
                     "description": (
                         "Generate and execute Python infrastructure tests against the "
@@ -3833,7 +3953,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"skippable": true}',
                 },
                 {
-                    "step_order": 8,
+                    "step_order": 9,
                     "name": "Deploy Azure Policy",
                     "description": (
                         "Deploy the generated Azure Policy definition to enforce "
@@ -3845,7 +3965,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 9,
+                    "step_order": 10,
                     "name": "Cleanup",
                     "description": (
                         "Delete the temporary validation resource group and clean up "
@@ -3856,7 +3976,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 10,
+                    "step_order": 11,
                     "name": "Approve and promote",
                     "description": (
                         "Mark service version as approved, set as active version. "

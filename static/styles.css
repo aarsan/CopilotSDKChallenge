@@ -4272,6 +4272,157 @@ body {
 .run-status-failed { color: var(--accent-red); }
 .run-status-running { color: var(--accent-blue); }
 
+/* ── Governance Reviews Section ────────────────────────────── */
+.governance-reviews-section {
+    margin-top: 0.25rem;
+}
+.gov-version-group {
+    margin-bottom: 0.75rem;
+}
+.gov-version-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
+    font-size: 0.75rem;
+    flex-wrap: wrap;
+}
+.gov-version-label {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.gov-gate {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+}
+.gov-gate.gov-verdict-approved { color: var(--accent-green); background: rgba(76, 175, 80, 0.1); }
+.gov-gate.gov-verdict-conditional { color: var(--accent-amber); background: rgba(255, 193, 7, 0.1); }
+.gov-gate.gov-verdict-blocked { color: var(--accent-red); background: rgba(239, 83, 80, 0.1); }
+.gov-review-date {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    margin-left: auto;
+}
+.gov-review-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 0.4rem;
+    transition: border-color 0.15s;
+}
+.gov-review-card.gov-verdict-approved { border-left: 3px solid var(--accent-green); }
+.gov-review-card.gov-verdict-conditional { border-left: 3px solid var(--accent-amber); }
+.gov-review-card.gov-verdict-blocked { border-left: 3px solid var(--accent-red); }
+.gov-review-card.gov-verdict-advisory { border-left: 3px solid var(--accent-blue); }
+.gov-review-card.gov-verdict-revision { border-left: 3px solid var(--accent-amber); }
+.gov-review-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.35rem;
+}
+.gov-agent {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+}
+.gov-verdict {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.gov-verdict.gov-verdict-approved { color: var(--accent-green); }
+.gov-verdict.gov-verdict-conditional { color: var(--accent-amber); }
+.gov-verdict.gov-verdict-blocked { color: var(--accent-red); }
+.gov-verdict.gov-verdict-advisory { color: var(--accent-blue); }
+.gov-verdict.gov-verdict-revision { color: var(--accent-amber); }
+.gov-confidence {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+.gov-review-summary {
+    font-size: 0.73rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    margin-bottom: 0.35rem;
+}
+.gov-review-scores {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.35rem;
+}
+.gov-score-chip {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.gov-review-findings {
+    margin-top: 0.25rem;
+}
+.gov-finding {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.3rem 0;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 0.72rem;
+}
+.gov-finding-severity {
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    min-width: 3.5rem;
+    text-align: center;
+}
+.gov-finding-critical .gov-finding-severity { background: rgba(239, 83, 80, 0.15); color: var(--accent-red); }
+.gov-finding-high .gov-finding-severity { background: rgba(255, 152, 0, 0.15); color: var(--accent-amber); }
+.gov-finding-medium .gov-finding-severity { background: rgba(33, 150, 243, 0.12); color: var(--accent-blue); }
+.gov-finding-low .gov-finding-severity { background: var(--bg-tertiary); color: var(--text-muted); }
+.gov-finding-category {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    min-width: 4rem;
+}
+.gov-finding-text {
+    color: var(--text-secondary);
+    flex: 1;
+}
+.gov-finding-rec {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 0.15rem;
+    margin-left: 8rem;
+}
+.gov-findings-minor {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    padding: 0.3rem 0;
+    border-top: 1px solid var(--border-subtle);
+}
+.gov-review-meta {
+    font-size: 0.62rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+}
+
 /* ── Template Modify Section ──────────────────────────────── */
 .template-modify-section {
     border-top: 1px solid var(--border-subtle);

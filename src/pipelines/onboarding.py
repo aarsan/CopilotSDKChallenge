@@ -9,11 +9,12 @@ service onboarding flow:
   3. plan_architecture  — LLM planning call
   4. generate_arm       — ARM template generation (skeleton or LLM)
   5. generate_policy    — Azure Policy generation
-  6. validate_arm_deploy — HealingLoop with all checks
-  7. infra_testing      — AI-generated infrastructure smoke tests
-  8. deploy_policy      — deploy Azure Policy to Azure
-  9. cleanup            — delete temp RG + policy
- 10. promote_service    — mark approved, set active version
+  6. governance_review  — CISO + CTO structured review gate
+  7. validate_arm_deploy — HealingLoop with all checks
+  8. infra_testing      — AI-generated infrastructure smoke tests
+  9. deploy_policy      — deploy Azure Policy to Azure
+ 10. cleanup            — delete temp RG + policy
+ 11. promote_service    — mark approved, set active version
 
 The endpoint still lives in web.py — it just delegates to
 ``runner.execute(ctx)`` now.
@@ -632,6 +633,113 @@ async def step_generate_policy(ctx: PipelineContext, step: StepDef):
                     ctx.progress(0.7))
         yield emit("progress", "policy_generation_complete",
                     "✓ Fallback Azure Policy generated", ctx.progress(1.0))
+
+
+@runner.step("governance_review")
+async def step_governance_review(ctx: PipelineContext, step: StepDef):
+    """Phase 5.5: CISO + CTO governance review gate.
+
+    Runs both reviews in parallel. CISO can block; CTO is advisory.
+    Results are persisted to the governance_reviews table.
+    """
+    from src.governance import run_governance_review, format_review_summary
+    from src.database import save_governance_review
+    from src.web import ensure_copilot_client
+
+    yield emit("progress", "governance_review",
+               "🏛️ Running governance review — CISO (security) + CTO (architecture)…",
+               ctx.progress(0.05))
+
+    _client = await ensure_copilot_client()
+    if _client is None:
+        yield emit("progress", "governance_skipped",
+                    "⚠️ Copilot SDK not available — skipping governance review",
+                    ctx.progress(1.0))
+        return
+
+    # Get standards context if available
+    standards_ctx = ctx.artifacts.get("standards_ctx", "")
+    version_str = ctx.semver or str(ctx.version_num or "")
+
+    try:
+        result = await run_governance_review(
+            _client,
+            ctx.template,
+            service_id=ctx.service_id,
+            version=version_str,
+            standards_ctx=standards_ctx,
+        )
+
+        # Emit individual reviews
+        ciso = result["ciso"]
+        cto = result["cto"]
+
+        yield emit("progress", "ciso_review",
+                    format_review_summary(ciso),
+                    ctx.progress(0.4),
+                    review=ciso)
+
+        yield emit("progress", "cto_review",
+                    format_review_summary(cto),
+                    ctx.progress(0.6),
+                    review=cto)
+
+        # Persist both reviews
+        _save_kwargs = dict(
+            semver=ctx.semver,
+            pipeline_type="onboarding",
+            run_id=ctx.run_id,
+            gate_decision=result["gate_decision"],
+            gate_reason=result["gate_reason"],
+            created_by="pipeline",
+        )
+        try:
+            if ctx.version_num is not None:
+                await save_governance_review(ctx.service_id, ctx.version_num, ciso, **_save_kwargs)
+                await save_governance_review(ctx.service_id, ctx.version_num, cto, **_save_kwargs)
+        except Exception as save_err:
+            logger.warning("Failed to persist governance reviews: %s", save_err)
+
+        # Gate decision
+        gate = result["gate_decision"]
+        gate_reason = result["gate_reason"]
+
+        if gate == "blocked":
+            yield emit("progress", "governance_blocked",
+                        f"🚫 Governance gate: BLOCKED — {gate_reason}",
+                        ctx.progress(0.9),
+                        gate_decision=gate, gate_reason=gate_reason)
+            yield emit("progress", "governance_complete",
+                        f"🚫 Deployment blocked by CISO. Resolve critical findings before proceeding.",
+                        ctx.progress(1.0),
+                        gate_decision=gate, gate_reason=gate_reason,
+                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+            raise StepFailure("governance_review", f"CISO blocked deployment: {gate_reason}")
+
+        elif gate == "conditional":
+            yield emit("progress", "governance_complete",
+                        f"⚠️ Governance gate: CONDITIONAL — {gate_reason}. Proceeding with noted concerns.",
+                        ctx.progress(1.0),
+                        gate_decision=gate, gate_reason=gate_reason,
+                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+        else:
+            yield emit("progress", "governance_complete",
+                        f"✅ Governance gate: APPROVED — {gate_reason}",
+                        ctx.progress(1.0),
+                        gate_decision=gate, gate_reason=gate_reason,
+                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+
+        # Store result for later steps
+        ctx.artifacts["governance_result"] = result
+
+    except StepFailure:
+        raise
+    except Exception as exc:
+        logger.error("Governance review failed: %s", exc, exc_info=True)
+        yield emit("progress", "governance_complete",
+                    f"⚠️ Governance review error: {exc} — proceeding without gate",
+                    ctx.progress(1.0),
+                    gate_decision="conditional", gate_reason=f"Review error: {exc}")
 
 
 @runner.step("validate_arm_deploy")

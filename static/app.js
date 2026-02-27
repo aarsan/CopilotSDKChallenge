@@ -1551,6 +1551,9 @@ async function showServiceDetail(serviceId) {
         // Lazy-load pipeline runs
         _loadPipelineRuns(serviceId);
 
+        // Lazy-load governance reviews
+        _loadGovernanceReviews(serviceId);
+
         // If a table-initiated update is running or recently completed,
         // show the running card and replay buffered events
         const runningEntry = _runningTableUpdates.get(serviceId);
@@ -1706,6 +1709,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
         ${_renderChildResources(childResources, parentResource)}
 
         <div id="pipeline-runs-container" class="pipeline-runs-section" style="display:none;"></div>
+
+        <div id="governance-reviews-container" class="governance-reviews-section" style="display:none;"></div>
 
         ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
     `;
@@ -2403,6 +2408,109 @@ async function _loadPipelineRuns(serviceId) {
         container.innerHTML = _renderPipelineRuns(runs);
         container.style.display = '';
     } catch (_) { /* ignore */ }
+}
+
+// ── Governance Reviews ─────────────────────────────────────────
+async function _loadGovernanceReviews(serviceId) {
+    const container = document.getElementById('governance-reviews-container');
+    if (!container) return;
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/governance-reviews`);
+        if (!res.ok) return;
+        const reviews = await res.json();
+        if (!reviews || reviews.length === 0) return;
+        container.innerHTML = _renderGovernanceReviews(reviews);
+        container.style.display = '';
+    } catch (_) { /* ignore */ }
+}
+
+function _renderGovernanceReviews(reviews) {
+    const verdictIcon = (v) => ({
+        approved: '✅', conditional: '⚠️', blocked: '🚫', advisory: '💡', needs_revision: '🔧',
+    })[v] || '❓';
+
+    const verdictClass = (v) => ({
+        approved: 'gov-verdict-approved', conditional: 'gov-verdict-conditional',
+        blocked: 'gov-verdict-blocked', advisory: 'gov-verdict-advisory',
+        needs_revision: 'gov-verdict-revision',
+    })[v] || '';
+
+    const agentIcon = (a) => a === 'ciso' ? '🛡️' : a === 'cto' ? '🏗️' : '🏛️';
+    const agentLabel = (a) => a === 'ciso' ? 'CISO' : a === 'cto' ? 'CTO' : a.toUpperCase();
+
+    // Group reviews by version (most recent first)
+    const grouped = {};
+    for (const r of reviews) {
+        const key = r.semver || `v${r.version}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(r);
+    }
+
+    let html = '';
+    for (const [ver, revs] of Object.entries(grouped)) {
+        const gate = revs[0]?.gate_decision;
+        const gateIcon = verdictIcon(gate);
+        const gateClass = verdictClass(gate);
+
+        const reviewCards = revs.map(r => {
+            const findings = r.findings || [];
+            const criticalFindings = findings.filter(f => f.severity === 'critical' || f.severity === 'high');
+            const otherFindings = findings.filter(f => f.severity !== 'critical' && f.severity !== 'high');
+
+            let findingsHtml = '';
+            if (criticalFindings.length) {
+                findingsHtml += criticalFindings.map(f => `
+                    <div class="gov-finding gov-finding-${f.severity}">
+                        <span class="gov-finding-severity">${f.severity}</span>
+                        <span class="gov-finding-category">${escapeHtml(f.category)}</span>
+                        <span class="gov-finding-text">${escapeHtml(f.finding)}</span>
+                        ${f.recommendation ? `<div class="gov-finding-rec">${escapeHtml(f.recommendation)}</div>` : ''}
+                    </div>
+                `).join('');
+            }
+            if (otherFindings.length) {
+                findingsHtml += `<div class="gov-findings-minor">${otherFindings.length} additional finding(s)</div>`;
+            }
+
+            const scores = [];
+            if (r.risk_score != null) scores.push(`Risk: ${r.risk_score}/10`);
+            if (r.architecture_score != null) scores.push(`Architecture: ${r.architecture_score}/10`);
+            if (r.security_posture) scores.push(`Security: ${r.security_posture}`);
+            if (r.cost_assessment) scores.push(`Cost: ${r.cost_assessment}`);
+
+            return `
+            <div class="gov-review-card ${verdictClass(r.verdict)}">
+                <div class="gov-review-header">
+                    <span class="gov-agent">${agentIcon(r.agent)} ${agentLabel(r.agent)}</span>
+                    <span class="gov-verdict ${verdictClass(r.verdict)}">${verdictIcon(r.verdict)} ${r.verdict}</span>
+                    ${r.confidence ? `<span class="gov-confidence">${Math.round(r.confidence * 100)}%</span>` : ''}
+                </div>
+                ${r.summary ? `<div class="gov-review-summary">${escapeHtml(r.summary)}</div>` : ''}
+                ${scores.length ? `<div class="gov-review-scores">${scores.map(s => `<span class="gov-score-chip">${escapeHtml(s)}</span>`).join('')}</div>` : ''}
+                ${findingsHtml ? `<div class="gov-review-findings">${findingsHtml}</div>` : ''}
+                ${r.model_used ? `<div class="gov-review-meta">Model: ${escapeHtml(r.model_used)}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        html += `
+        <div class="gov-version-group">
+            <div class="gov-version-header">
+                <span class="gov-version-label">${escapeHtml(ver)}</span>
+                <span class="gov-gate ${gateClass}">${gateIcon} Gate: ${gate || 'unknown'}</span>
+                <span class="gov-review-date">${(revs[0]?.reviewed_at || '').replace('T', ' ').substring(0, 19)}</span>
+            </div>
+            ${reviewCards}
+        </div>`;
+    }
+
+    return `
+    <div class="version-history">
+        <div class="version-history-header">
+            <span>🏛️ Governance Reviews</span>
+            <span class="version-count">${reviews.length} review${reviews.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="version-list">${html}</div>
+    </div>`;
 }
 
 function _renderPipelineRuns(runs) {
@@ -3364,6 +3472,35 @@ function _handleUpdateEvent(event) {
         if (detail) _flowDetail(logEl, 'rewrite', '🏷️', escapeHtml(detail));
         if (event.bump_reason) _flowDetail(logEl, 'rewrite', 'ℹ️', `Strategy: ${escapeHtml(event.bump_reason)}`);
         _flowFinalize(logEl, 'rewrite', 'done');
+
+    // ── Governance review gate ───────────────────────────────
+    } else if (phase === 'governance_review') {
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        if (detail) _flowDetail(logEl, 'governance', '▸', escapeHtml(detail));
+    } else if (phase === 'ciso_review') {
+        const rev = event.review || {};
+        const verdictClass = rev.verdict === 'approved' ? 'uf-text-success' : rev.verdict === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
+        _flowDetail(logEl, 'governance', '🛡️', `<strong>CISO:</strong> ${escapeHtml(detail)}`, verdictClass);
+        if (rev.findings && rev.findings.length) {
+            const critCount = rev.findings.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+            if (critCount > 0) _flowDetail(logEl, 'governance', '⚠️', `${critCount} critical/high finding(s) require attention`);
+        }
+    } else if (phase === 'cto_review') {
+        const rev = event.review || {};
+        const verdictClass = rev.verdict === 'approved' ? 'uf-text-success' : rev.verdict === 'needs_revision' ? 'uf-text-warning' : '';
+        _flowDetail(logEl, 'governance', '🏗️', `<strong>CTO:</strong> ${escapeHtml(detail)}`, verdictClass);
+    } else if (phase === 'governance_blocked') {
+        _flowDetail(logEl, 'governance', '🚫', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'governance', 'failed', 'Blocked');
+    } else if (phase === 'governance_complete') {
+        const gateClass = event.gate_decision === 'approved' ? 'uf-text-success' : event.gate_decision === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
+        if (detail) _flowDetail(logEl, 'governance', '✓', escapeHtml(detail), gateClass);
+        _flowFinalize(logEl, 'governance', event.gate_decision === 'blocked' ? 'failed' : 'done', event.gate_decision === 'approved' ? 'Approved' : event.gate_decision === 'blocked' ? 'Blocked' : 'Conditional');
+    } else if (phase === 'governance_skipped') {
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
+        _flowFinalize(logEl, 'governance', 'done', 'Skipped');
+
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'policy', '📋', 'Static Policy Checks');
         if (detail) _flowDetail(logEl, 'policy', '▸', escapeHtml(detail));
@@ -3651,6 +3788,35 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'policyGen', 'done');
     } else if (phase === 'policy_generation_warning') {
         if (detail) _flowDetail(logEl, 'policyGen', '⚠️', escapeHtml(detail));
+
+    // ── Governance review gate ───────────────────────────────
+    } else if (phase === 'governance_review') {
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        if (detail) _flowDetail(logEl, 'governance', '▸', escapeHtml(detail));
+    } else if (phase === 'ciso_review') {
+        const rev = event.review || {};
+        const verdictClass = rev.verdict === 'approved' ? 'uf-text-success' : rev.verdict === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
+        _flowDetail(logEl, 'governance', '🛡️', `<strong>CISO:</strong> ${escapeHtml(detail)}`, verdictClass);
+        if (rev.findings && rev.findings.length) {
+            const critCount = rev.findings.filter(f => f.severity === 'critical' || f.severity === 'high').length;
+            if (critCount > 0) _flowDetail(logEl, 'governance', '⚠️', `${critCount} critical/high finding(s) require attention`);
+        }
+    } else if (phase === 'cto_review') {
+        const rev = event.review || {};
+        const verdictClass = rev.verdict === 'approved' ? 'uf-text-success' : rev.verdict === 'needs_revision' ? 'uf-text-warning' : '';
+        _flowDetail(logEl, 'governance', '🏗️', `<strong>CTO:</strong> ${escapeHtml(detail)}`, verdictClass);
+    } else if (phase === 'governance_blocked') {
+        _flowDetail(logEl, 'governance', '🚫', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'governance', 'failed', 'Blocked');
+    } else if (phase === 'governance_complete') {
+        const gateClass = event.gate_decision === 'approved' ? 'uf-text-success' : event.gate_decision === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
+        if (detail) _flowDetail(logEl, 'governance', '✓', escapeHtml(detail), gateClass);
+        _flowFinalize(logEl, 'governance', event.gate_decision === 'blocked' ? 'failed' : 'done', event.gate_decision === 'approved' ? 'Approved' : event.gate_decision === 'blocked' ? 'Blocked' : 'Conditional');
+    } else if (phase === 'governance_skipped') {
+        _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
+        if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
+        _flowFinalize(logEl, 'governance', 'done', 'Skipped');
+
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'staticPolicy', '📋', 'Static Policy Checks');
         if (detail) _flowDetail(logEl, 'staticPolicy', '▸', escapeHtml(detail));

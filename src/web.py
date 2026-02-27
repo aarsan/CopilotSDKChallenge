@@ -6814,6 +6814,98 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "bump_reason": "API version migration" + (" with PLAN→EXECUTE" if migration_plan else " (direct swap)"),
             }) + "\n"
 
+            # ── Governance review gate ─────────────────────────────────
+            try:
+                from src.governance import run_governance_review, format_review_summary
+                from src.database import save_governance_review
+
+                yield json.dumps({
+                    "type": "progress", "phase": "governance_review",
+                    "detail": "🏛️ Running governance review — CISO (security) + CTO (architecture)…",
+                    "progress": 0.27,
+                }) + "\n"
+
+                _gov_client = await ensure_copilot_client()
+                if _gov_client:
+                    gov_result = await run_governance_review(
+                        _gov_client,
+                        updated_template,
+                        service_id=service_id,
+                        version=new_semver,
+                    )
+
+                    # Emit individual reviews
+                    ciso_rev = gov_result["ciso"]
+                    cto_rev = gov_result["cto"]
+
+                    yield json.dumps({
+                        "type": "progress", "phase": "ciso_review",
+                        "detail": format_review_summary(ciso_rev),
+                        "progress": 0.29,
+                        "review": ciso_rev,
+                    }) + "\n"
+
+                    yield json.dumps({
+                        "type": "progress", "phase": "cto_review",
+                        "detail": format_review_summary(cto_rev),
+                        "progress": 0.31,
+                        "review": cto_rev,
+                    }) + "\n"
+
+                    # Persist reviews
+                    try:
+                        _gov_save_kw = dict(
+                            semver=new_semver,
+                            pipeline_type="update",
+                            gate_decision=gov_result["gate_decision"],
+                            gate_reason=gov_result["gate_reason"],
+                            created_by="pipeline",
+                        )
+                        await save_governance_review(service_id, new_ver, ciso_rev, **_gov_save_kw)
+                        await save_governance_review(service_id, new_ver, cto_rev, **_gov_save_kw)
+                    except Exception as _gs_err:
+                        logger.warning("Failed to persist governance reviews: %s", _gs_err)
+
+                    # Gate result
+                    _gate = gov_result["gate_decision"]
+                    _gate_reason = gov_result["gate_reason"]
+
+                    if _gate == "blocked":
+                        yield json.dumps({
+                            "type": "progress", "phase": "governance_blocked",
+                            "detail": f"🚫 Governance gate: BLOCKED — {_gate_reason}",
+                            "progress": 0.33,
+                            "gate_decision": _gate, "gate_reason": _gate_reason,
+                        }) + "\n"
+                        yield json.dumps({
+                            "type": "error", "phase": "governance_blocked",
+                            "detail": f"Deployment blocked by CISO. Resolve critical findings before proceeding.",
+                        }) + "\n"
+                        return
+
+                    yield json.dumps({
+                        "type": "progress", "phase": "governance_complete",
+                        "detail": f"{'✅' if _gate == 'approved' else '⚠️'} Governance gate: {_gate.upper()} — {_gate_reason}",
+                        "progress": 0.34,
+                        "gate_decision": _gate, "gate_reason": _gate_reason,
+                        "ciso_verdict": ciso_rev.get("verdict"),
+                        "cto_verdict": cto_rev.get("verdict"),
+                    }) + "\n"
+                else:
+                    yield json.dumps({
+                        "type": "progress", "phase": "governance_complete",
+                        "detail": "⚠️ Copilot SDK not available — skipping governance review",
+                        "progress": 0.34,
+                    }) + "\n"
+
+            except Exception as gov_exc:
+                logger.warning("Governance review failed: %s", gov_exc)
+                yield json.dumps({
+                    "type": "progress", "phase": "governance_complete",
+                    "detail": f"⚠️ Governance review error — proceeding without gate",
+                    "progress": 0.34,
+                }) + "\n"
+
             # ── Validation loop: validate→what-if→deploy→policy→cleanup→promote ─
             # Copilot SDK auto-healing with migration plan context and heal history
             _client = None  # lazy-init only when healing needed
@@ -10301,6 +10393,19 @@ async def get_service_pipeline_runs(service_id: str, limit: int = 20):
 
     runs = await get_pipeline_runs(service_id, limit=min(limit, 100))
     return JSONResponse(runs)
+
+
+@app.get("/api/services/{service_id:path}/governance-reviews")
+async def get_service_governance_reviews(
+    service_id: str,
+    version: int | None = None,
+    limit: int = 20,
+):
+    """Get governance reviews for a service, optionally filtered by version."""
+    from src.database import get_governance_reviews
+
+    reviews = await get_governance_reviews(service_id, version=version, limit=min(limit, 100))
+    return JSONResponse(reviews)
 
 
 @app.post("/api/services/{service_id:path}/versions/{version:int}/modify")
