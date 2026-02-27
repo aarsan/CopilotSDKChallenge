@@ -13301,6 +13301,7 @@ function showAgentDetail(agentKey) {
                 <div class="ao-detail-cat">
                     <span style="color:${meta.color}">${meta.icon} ${agent.category}</span>
                     <span class="ao-detail-badge">SDK</span>
+                    <span class="ao-detail-badge ao-detail-badge-key">${agentKey}</span>
                 </div>
             </div>
         </div>
@@ -13320,6 +13321,27 @@ function showAgentDetail(agentKey) {
                 <div class="ao-dstat-val">${agent.timeout}s</div>
                 <div class="ao-dstat-lbl">Timeout</div>
             </div>
+            <div class="ao-dstat">
+                <div class="ao-dstat-val">~${(agent.prompt_tokens_est || 0).toLocaleString()}</div>
+                <div class="ao-dstat-lbl">Prompt Tokens</div>
+            </div>
+        </div>
+
+        ${agent.model_reason ? `
+        <div class="ao-detail-model-reason">
+            <span class="ao-detail-model-reason-icon">🧠</span>
+            <span class="ao-detail-model-reason-text"><strong>Model routing:</strong> ${escapeHtml(agent.model_reason)}</span>
+        </div>` : ''}
+
+        <div class="ao-detail-prompt-section">
+            <div class="ao-detail-prompt-header">
+                <span class="ao-detail-prompt-label">📋 System Prompt</span>
+                <span class="ao-detail-prompt-size">${((agent.prompt_length || 0) / 1024).toFixed(1)} KB</span>
+            </div>
+            <div class="ao-detail-prompt-preview">${escapeHtml(agent.prompt_preview || '')}</div>
+            <button class="ao-detail-prompt-btn" onclick="viewAgentPrompt('${agentKey}')">
+                View Full System Prompt
+            </button>
         </div>
 
         <div class="ao-detail-metrics">
@@ -13348,6 +13370,80 @@ function showAgentDetail(agentKey) {
     `;
 
     overlay.classList.remove('hidden');
+}
+
+/** Fetch and display the full system prompt for an agent */
+async function viewAgentPrompt(agentKey) {
+    // Show the prompt overlay
+    let promptOverlay = document.getElementById('ao-prompt-overlay');
+    if (!promptOverlay) {
+        promptOverlay = document.createElement('div');
+        promptOverlay.id = 'ao-prompt-overlay';
+        promptOverlay.className = 'ao-prompt-overlay';
+        promptOverlay.innerHTML = `
+            <div class="ao-prompt-panel" id="ao-prompt-panel">
+                <div class="ao-prompt-top">
+                    <span class="ao-prompt-title" id="ao-prompt-title">System Prompt</span>
+                    <div class="ao-prompt-actions">
+                        <button class="ao-prompt-copy-btn" id="ao-prompt-copy" title="Copy to clipboard">📋 Copy</button>
+                        <button class="ao-prompt-close-btn" onclick="closeAgentPrompt()">✕</button>
+                    </div>
+                </div>
+                <div class="ao-prompt-body" id="ao-prompt-body">Loading…</div>
+            </div>`;
+        document.body.appendChild(promptOverlay);
+
+        // Close on backdrop click
+        promptOverlay.addEventListener('click', e => {
+            if (e.target === promptOverlay) closeAgentPrompt();
+        });
+    }
+
+    promptOverlay.classList.remove('hidden');
+    promptOverlay.style.display = '';
+    const body = document.getElementById('ao-prompt-body');
+    const title = document.getElementById('ao-prompt-title');
+    body.textContent = 'Loading…';
+
+    try {
+        const res = await fetch(`/api/agents/${agentKey}/prompt`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        title.textContent = `${data.name} — System Prompt`;
+
+        // Render prompt as formatted text with line breaks
+        body.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.className = 'ao-prompt-content';
+        pre.textContent = data.prompt;
+        body.appendChild(pre);
+
+        // Token/size info
+        const info = document.createElement('div');
+        info.className = 'ao-prompt-info';
+        info.textContent = `${data.prompt_length.toLocaleString()} chars · ~${data.prompt_tokens_est.toLocaleString()} tokens`;
+        body.appendChild(info);
+
+        // Wire up copy button
+        const copyBtn = document.getElementById('ao-prompt-copy');
+        copyBtn.onclick = () => {
+            navigator.clipboard.writeText(data.prompt).then(() => {
+                copyBtn.textContent = '✓ Copied!';
+                setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
+            });
+        };
+    } catch (err) {
+        body.textContent = `Failed to load prompt: ${err.message}`;
+    }
+}
+
+function closeAgentPrompt() {
+    const overlay = document.getElementById('ao-prompt-overlay');
+    if (overlay) {
+        overlay.classList.add('hidden');
+        overlay.style.display = 'none';
+    }
 }
 
 function hideAgentDetail() {

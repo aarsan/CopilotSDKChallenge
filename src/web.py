@@ -1526,18 +1526,33 @@ async def get_agents_activity():
         "Governance Review": ["ciso_reviewer", "cto_reviewer"],
     }
 
+    # Build model routing reasons lookup
+    from src.model_router import TASK_MODEL_MAP
+    task_reasons = {}
+    for t, assignment in TASK_MODEL_MAP.items():
+        task_reasons[t.value if hasattr(t, "value") else str(t)] = assignment.reason
+
     registry = []
     for category, keys in AGENT_CATEGORIES.items():
         for key in keys:
             spec = AGENTS.get(key)
             if spec:
+                prompt_text = spec.system_prompt or ""
+                prompt_len = len(prompt_text)
+                # Rough token estimate (chars / 4)
+                prompt_tokens_est = prompt_len // 4
+                task_val = spec.task.value if hasattr(spec.task, "value") else str(spec.task)
                 registry.append({
                     "key": key,
                     "name": spec.name,
                     "description": spec.description,
-                    "task": spec.task.value if hasattr(spec.task, "value") else str(spec.task),
+                    "task": task_val,
                     "timeout": spec.timeout,
                     "category": category,
+                    "prompt_length": prompt_len,
+                    "prompt_tokens_est": prompt_tokens_est,
+                    "prompt_preview": prompt_text[:300] + ("…" if prompt_len > 300 else ""),
+                    "model_reason": task_reasons.get(task_val, ""),
                 })
 
     counters = get_agent_counters()
@@ -1548,6 +1563,24 @@ async def get_agents_activity():
         "routing_table": get_routing_table(),
         "counters": counters,
         "activity": activity,
+    })
+
+
+@app.get("/api/agents/{agent_key}/prompt")
+async def get_agent_prompt(agent_key: str):
+    """Return the full system prompt for a specific agent."""
+    from src.agents import AGENTS
+    spec = AGENTS.get(agent_key)
+    if not spec:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+
+    prompt_text = spec.system_prompt or ""
+    return JSONResponse({
+        "key": agent_key,
+        "name": spec.name,
+        "prompt": prompt_text,
+        "prompt_length": len(prompt_text),
+        "prompt_tokens_est": len(prompt_text) // 4,
     })
 
 
