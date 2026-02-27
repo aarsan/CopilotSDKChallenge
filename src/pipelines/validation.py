@@ -279,7 +279,6 @@ async def stream_validation(
 
                 pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
                 try:
-                    from src.pipeline_helpers import copilot_heal_template, extract_param_values
                     _heal_params = extract_param_values(
                         current_tpl if isinstance(current_tpl, dict) else json.loads(pre_fix)
                     )
@@ -289,7 +288,6 @@ async def stream_validation(
                         previous_attempts=heal_history,
                         parameters=_heal_params,
                     )
-                    from src.pipeline_helpers import summarize_fix, build_final_params
                     fix_summary = summarize_fix(pre_fix, fixed_json)
                     heal_history.append({
                         "step": len(heal_history) + 1,
