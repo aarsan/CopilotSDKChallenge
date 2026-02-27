@@ -3750,6 +3750,19 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'healing_failed') {
         const healKey = logEl._flow._lastFailedKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, healKey, '⚠️', escapeHtml(detail), 'uf-text-error');
+
+    // ── Template Regeneration (re-plan + re-generate) ──────────
+    } else if (phase === 'replanning') {
+        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture');
+        if (detail) _flowDetail(logEl, 'regen', '🧠', escapeHtml(detail));
+    } else if (phase === 'regenerating') {
+        if (detail) _flowDetail(logEl, 'regen', '⚙️', escapeHtml(detail));
+    } else if (type === 'regen_planned') {
+        if (detail) _flowDetail(logEl, 'regen', '✓', escapeHtml(detail), 'uf-text-success');
+    } else if (type === 'regen_complete') {
+        if (detail) _flowDetail(logEl, 'regen', '✅', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'regen', 'done');
+
     } else if (phase === 'analyzing_failure') {
         _flowCard(logEl, 'analysis', '🧠', 'Analyzing Failure');
         if (detail) _flowDetail(logEl, 'analysis', '▸', escapeHtml(detail));
@@ -3809,6 +3822,11 @@ function _handleUpdateEvent(event) {
             const targetKey = phase === 'planning' ? 'planning' : 'setup';
             if (logEl._flow?.cards[targetKey]) {
                 _flowDetailOnCard(logEl, targetKey, '🧠', escapeHtml(detail), 'uf-text-reasoning');
+            }
+        } else if (phase === 'replanning') {
+            // Regen planning reasoning goes into the regen card
+            if (logEl._flow?.cards['regen']) {
+                _flowDetailOnCard(logEl, 'regen', '🧠', escapeHtml(detail), 'uf-text-reasoning');
             }
         } else if (phase === 'analyzing_deploy_failure' || phase === 'analyzing_whatif_failure') {
             // Root cause analysis goes into the failed card
@@ -4146,6 +4164,19 @@ function _handleValidationEvent(event) {
     } else if (type === 'healing_done') {
         const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
+
+    // ── Template Regeneration (re-plan + re-generate) ──────────
+    } else if (phase === 'replanning') {
+        _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture');
+        if (detail) _flowDetail(logEl, 'regen', '🧠', escapeHtml(detail));
+    } else if (phase === 'regenerating') {
+        if (detail) _flowDetail(logEl, 'regen', '⚙️', escapeHtml(detail));
+    } else if (type === 'regen_planned') {
+        if (detail) _flowDetail(logEl, 'regen', '✓', escapeHtml(detail), 'uf-text-success');
+    } else if (type === 'regen_complete') {
+        if (detail) _flowDetail(logEl, 'regen', '✅', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'regen', 'done');
+
     } else if (type === 'llm_reasoning') {
         // Route init_model phase reasoning to setup card
         if (phase === 'init_model') {
@@ -12875,6 +12906,10 @@ function _renderActivityCard(job) {
             else if (e.phase === 'cleanup_complete') icon = '✓';
             else if (e.phase === 'promoting') icon = '🏆';
             else if (e.phase === 'infra_retry') icon = '⏳';
+            else if (e.type === 'regen_start') icon = '🔄';
+            else if (e.type === 'regen_planned') icon = '🧠';
+            else if (e.type === 'regen_generating') icon = '⚙️';
+            else if (e.type === 'regen_complete') icon = '✅';
             const timeStr = e.time ? `<span class="activity-event-time">${_timeShort(e.time)}</span>` : '';
             return `<div class="activity-event-line">${timeStr}${icon} ${escapeHtml(e.detail)}</div>`;
         }).join('');

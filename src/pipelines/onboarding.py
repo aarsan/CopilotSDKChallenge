@@ -185,6 +185,146 @@ async def _heal_policy(
 
 
 # ══════════════════════════════════════════════════════════════
+# TEMPLATE REGENERATION HELPER
+# ══════════════════════════════════════════════════════════════
+
+async def _regenerate_template(
+    ctx: PipelineContext,
+    regen_count: int,
+    standards_ctx: str,
+    error: str,
+    phase: str,
+):
+    """Re-plan architecture and regenerate ARM template from scratch.
+
+    Called when the healing loop exhausts all attempts without fixing
+    structural template issues.  Instead of failing, we go back to the
+    PLAN phase with full error context and ask the LLM to take a
+    fundamentally different approach.
+
+    This is an async generator — yields NDJSON event lines for the UI.
+    On return, ``ctx.template`` and ``ctx.heal_history`` are updated.
+    """
+    from src.tools.arm_generator import generate_arm_template_with_copilot
+    from src.web import ensure_copilot_client
+    from src.database import update_service_version_template
+
+    # Clean up any deployed resources from the failed attempt
+    if ctx.deployed_rg:
+        await cleanup_rg(ctx.rg_name)
+        ctx.deployed_rg = None
+
+    total_attempts = len(ctx.heal_history)
+    yield emit(
+        "regen_start", "replanning",
+        f"🔄 Healing exhausted after {total_attempts} attempt(s) — "
+        f"re-planning architecture (regen cycle {regen_count})…",
+        ctx.progress(0.50),
+    )
+
+    # Build error context from heal history
+    error_lines = []
+    for h in ctx.heal_history:
+        error_lines.append(
+            f"  Attempt {h['step']} [{h['phase']}]: "
+            f"{h.get('error', '')[:200]}\n"
+            f"    Strategy tried: {h.get('strategy', 'N/A')[:200]}"
+        )
+    error_context = "\n".join(error_lines) or "  (no healing attempts recorded)"
+
+    planning_prompt = (
+        f"You are RE-PLANNING an ARM template for the Azure resource type "
+        f"'{ctx.service_id}'.\n\n"
+        f"The PREVIOUS template failed validation after {total_attempts} "
+        f"incremental healing attempts.  The patches could not fix the "
+        f"underlying structural issues.\n\n"
+        f"## Failure History\n{error_context}\n\n"
+        f"## Final Error\n{error}\n\n"
+        f"## Critical Instruction\n"
+        f"Take a FUNDAMENTALLY DIFFERENT approach to the template design.\n"
+        f"Do NOT repeat the same patterns that caused failures.  Consider:\n"
+        f"- Using template parameters instead of variables where the previous "
+        f"template used variables\n"
+        f"- Simplifying resource dependency chains\n"
+        f"- Different API versions if the previous ones had property issues\n"
+        f"- Inline values instead of complex expressions\n"
+        f"- Removing unnecessary nested or child resources\n\n"
+        f"Produce a structured architecture plan with Resources, Security, "
+        f"Parameters, Properties, Standards Compliance, and Validation Criteria."
+    )
+
+    if standards_ctx:
+        planning_prompt += (
+            f"\n\n--- ORGANIZATION STANDARDS (MANDATORY) ---\n"
+            f"{standards_ctx}\n--- END STANDARDS ---\n"
+        )
+
+    new_plan = await _llm_reason(planning_prompt, task=Task.PLANNING)
+    ctx.artifacts["planning_response"] = new_plan
+
+    yield emit(
+        "regen_planned", "replanning",
+        f"✓ New architecture plan generated ({len(new_plan)} chars)",
+        ctx.progress(0.55),
+    )
+
+    for line in new_plan.split("\n"):
+        stripped = line.strip()
+        if stripped:
+            yield emit("llm_reasoning", "replanning", stripped, ctx.progress(0.55))
+
+    # ── Generate new ARM template ──────────────────────────
+    _gen_model_id = get_model_for_task(Task.CODE_GENERATION)
+    _gen_model = get_model_display(Task.CODE_GENERATION)
+    yield emit(
+        "regen_generating", "regenerating",
+        f"⚙️ {_gen_model} generating new ARM template from revised plan…",
+        ctx.progress(0.60),
+    )
+
+    _client = await ensure_copilot_client()
+    if _client is None:
+        raise StepFailure(
+            "Copilot SDK not available for regeneration",
+            healable=False, phase="regen",
+        )
+
+    new_template = await generate_arm_template_with_copilot(
+        ctx.service_id, ctx.extra["svc"]["name"], _client, _gen_model_id,
+        standards_context=standards_ctx,
+        planning_context=new_plan,
+        region=ctx.region,
+    )
+
+    # Post-process the regenerated template
+    new_template = sanitize_template(new_template)
+    new_template = await inject_standard_tags(new_template, ctx.service_id)
+    new_template = stamp_template_metadata(
+        new_template, service_id=ctx.service_id,
+        version_int=ctx.version_num,
+        gen_source=f"copilot-regen-{regen_count}",
+        region=ctx.region,
+    )
+
+    ctx.template = new_template
+    ctx.gen_source = f"Copilot SDK (regen #{regen_count})"
+    ctx.heal_history = []  # Reset for new generation
+
+    await update_service_version_template(
+        ctx.service_id, ctx.version_num, ctx.template,
+        f"copilot-regen-{regen_count}",
+    )
+
+    tmpl_meta = extract_meta(ctx.template)
+    yield emit(
+        "regen_complete", "regenerated",
+        f"✓ New template generated — {tmpl_meta['resource_count']} resource(s), "
+        f"{tmpl_meta['size_kb']} KB — restarting validation",
+        ctx.progress(0.65),
+    )
+
+
+# ══════════════════════════════════════════════════════════════
 # STEP HANDLERS
 # ══════════════════════════════════════════════════════════════
 
@@ -792,7 +932,12 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
     standards_ctx = ctx.artifacts.get("standards_ctx", "")
     planning_response = ctx.artifacts.get("planning_response", "")
 
-    for attempt in range(1, MAX_HEAL + 1):
+    MAX_REGEN = step.config.get("max_regen_cycles", 2)
+    _regen_count = 0
+
+    attempt = 0
+    while attempt < MAX_HEAL:
+        attempt += 1
         is_last = attempt == MAX_HEAL
         att_base = (attempt - 1) / MAX_HEAL
 
@@ -809,6 +954,13 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
         except json.JSONDecodeError as e:
             error_msg = f"ARM template is not valid JSON — line {e.lineno}, col {e.colno}: {e.msg}"
             if is_last:
+                if _regen_count < MAX_REGEN - 1:
+                    _regen_count += 1
+                    async for line in _regenerate_template(ctx, _regen_count, standards_ctx, error_msg, "parsing"):
+                        yield line
+                    tmpl_meta = extract_meta(ctx.template)
+                    attempt = 0
+                    continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": error_msg})
                 await fail_service_validation(ctx.service_id, error_msg)
                 raise StepFailure(error_msg, healable=False, phase="parsing")
@@ -843,6 +995,13 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             yield emit("progress", "static_policy_failed", fail_msg, ctx.progress(att_base + 0.06), step=attempt)
 
             if is_last:
+                if _regen_count < MAX_REGEN - 1:
+                    _regen_count += 1
+                    async for line in _regenerate_template(ctx, _regen_count, standards_ctx, fail_msg, "static_policy"):
+                        yield line
+                    tmpl_meta = extract_meta(ctx.template)
+                    attempt = 0
+                    continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", policy_check=report.to_dict())
                 await fail_service_validation(ctx.service_id, fail_msg)
                 raise StepFailure(fail_msg, healable=False, phase="static_policy")
@@ -888,6 +1047,13 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 continue
 
             if is_last:
+                if _regen_count < MAX_REGEN - 1:
+                    _regen_count += 1
+                    async for line in _regenerate_template(ctx, _regen_count, standards_ctx, errors, "what_if"):
+                        yield line
+                    tmpl_meta = extract_meta(ctx.template)
+                    attempt = 0
+                    continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": errors, "phase": "what_if"})
                 await fail_service_validation(ctx.service_id, f"What-If failed: {brief}")
                 raise StepFailure(brief, healable=False, phase="what_if")
@@ -989,6 +1155,13 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 continue
 
             if is_last:
+                if _regen_count < MAX_REGEN - 1:
+                    _regen_count += 1
+                    async for line in _regenerate_template(ctx, _regen_count, standards_ctx, deploy_error, "deploy"):
+                        yield line
+                    tmpl_meta = extract_meta(ctx.template)
+                    attempt = 0
+                    continue
                 await cleanup_rg(ctx.rg_name)
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": deploy_error, "phase": "deploy"})
                 await fail_service_validation(ctx.service_id, f"Deploy failed: {brief}")
