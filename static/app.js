@@ -4868,7 +4868,15 @@ async function pinServiceVersion(templateId, serviceId, version) {
             return;
         }
 
-        showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version} — template recomposed`, 'success', 5000);
+        // Show test results from auto-test that ran during recompose
+        const tr = data.test_results;
+        if (tr && tr.all_passed) {
+            showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version} — recomposed & all ${tr.total} structural tests passed`, 'success', 5000);
+        } else if (tr) {
+            showToast(`📌 ${shortName} pinned to v${data.pinned_semver || version} — recomposed but ${tr.failed}/${tr.total} tests need attention`, 'info', 6000);
+        } else {
+            showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version} — template recomposed`, 'success', 5000);
+        }
 
         // Refresh the full detail view (versions list changed too)
         await loadAllData();
@@ -7045,7 +7053,15 @@ async function recomposeBlueprint(templateId) {
             }
         }
 
-        showToast(detail, 'success', 8000);
+        // Append test results from auto-test
+        const tr = data.test_results;
+        if (tr && tr.all_passed) {
+            detail += `\n✅ All ${tr.total} structural tests passed`;
+        } else if (tr) {
+            detail += `\n⚠️ ${tr.failed}/${tr.total} structural tests need attention`;
+        }
+
+        showToast(detail, (tr && tr.all_passed) ? 'success' : 'info', 8000);
 
         // Refresh the detail view
         await loadAllData();

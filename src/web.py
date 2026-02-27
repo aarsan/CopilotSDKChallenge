@@ -2279,9 +2279,7 @@ async def test_template(template_id: str, request: Request):
     """
     from src.database import (
         get_template_by_id, get_template_versions, get_template_version,
-        update_template_version_status, promote_template_version,
     )
-    import json as _json
 
     tmpl = await get_template_by_id(template_id)
     if not tmpl:
@@ -2309,187 +2307,9 @@ async def test_template(template_id: str, request: Request):
     arm_content = ver.get("arm_template", "")
     version_num = ver["version"]
 
-    # ── Run test suite ────────────────────────────────────────
-    tests: list[dict] = []
-    all_passed = True
-
-    # Test 1: JSON parse
-    tpl = None
-    try:
-        tpl = _json.loads(arm_content)
-        tests.append({"name": "JSON Structure", "passed": True, "message": "Valid JSON"})
-    except Exception as e:
-        tests.append({"name": "JSON Structure", "passed": False, "message": f"Invalid JSON: {e}"})
-        all_passed = False
-
-    if tpl:
-        # Test 2: Schema compliance
-        schema_ok = True
-        schema_msgs = []
-        if "$schema" not in tpl:
-            schema_msgs.append("Missing $schema")
-            schema_ok = False
-        if "contentVersion" not in tpl:
-            schema_msgs.append("Missing contentVersion")
-            schema_ok = False
-        if "resources" not in tpl:
-            schema_msgs.append("Missing resources array")
-            schema_ok = False
-        if not isinstance(tpl.get("resources"), list):
-            schema_msgs.append("resources must be an array")
-            schema_ok = False
-        tests.append({
-            "name": "ARM Schema",
-            "passed": schema_ok,
-            "message": "Valid ARM structure" if schema_ok else "; ".join(schema_msgs),
-        })
-        if not schema_ok:
-            all_passed = False
-
-        # Test 3: Parameter validation
-        params = tpl.get("parameters", {})
-        param_ok = True
-        param_msgs = []
-        if not isinstance(params, dict):
-            param_msgs.append("parameters must be an object")
-            param_ok = False
-        else:
-            for pname, pdef in params.items():
-                if not pname.strip():
-                    param_msgs.append("Empty parameter name found")
-                    param_ok = False
-                if not isinstance(pdef, dict):
-                    param_msgs.append(f"Parameter '{pname}' must be an object")
-                    param_ok = False
-                elif "type" not in pdef:
-                    param_msgs.append(f"Parameter '{pname}' missing type")
-                    param_ok = False
-        tests.append({
-            "name": "Parameters",
-            "passed": param_ok,
-            "message": f"{len(params)} parameters valid" if param_ok else "; ".join(param_msgs),
-        })
-        if not param_ok:
-            all_passed = False
-
-        # Test 4: Resource validation
-        resources = tpl.get("resources", [])
-        res_ok = True
-        res_msgs = []
-        if not resources:
-            res_msgs.append("No resources defined")
-            res_ok = False
-        for i, res in enumerate(resources):
-            if not isinstance(res, dict):
-                res_msgs.append(f"Resource [{i}] is not an object")
-                res_ok = False
-                continue
-            if "type" not in res:
-                res_msgs.append(f"Resource [{i}] missing 'type'")
-                res_ok = False
-            if "apiVersion" not in res:
-                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'apiVersion'")
-                res_ok = False
-            if "name" not in res:
-                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'name'")
-                res_ok = False
-        tests.append({
-            "name": "Resources",
-            "passed": res_ok,
-            "message": f"{len(resources)} resources valid" if res_ok else "; ".join(res_msgs[:5]),
-        })
-        if not res_ok:
-            all_passed = False
-
-        # Test 5: Output validation
-        outputs = tpl.get("outputs", {})
-        out_ok = True
-        out_msgs = []
-        if isinstance(outputs, dict):
-            for oname, odef in outputs.items():
-                if not isinstance(odef, dict):
-                    out_msgs.append(f"Output '{oname}' must be an object")
-                    out_ok = False
-                elif "type" not in odef or "value" not in odef:
-                    out_msgs.append(f"Output '{oname}' missing type or value")
-                    out_ok = False
-        tests.append({
-            "name": "Outputs",
-            "passed": out_ok,
-            "message": f"{len(outputs)} outputs valid" if out_ok else "; ".join(out_msgs),
-        })
-        if not out_ok:
-            all_passed = False
-
-        # Test 6: Tag compliance — check resources include standard tags
-        TAG_REQUIRED = {"environment", "project", "owner"}
-        tag_ok = True
-        tag_msgs = []
-        for i, res in enumerate(resources):
-            if not isinstance(res, dict):
-                continue
-            res_tags = res.get("tags", {})
-            if not isinstance(res_tags, dict) and not isinstance(res_tags, str):
-                tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) has invalid tags")
-                tag_ok = False
-            elif isinstance(res_tags, dict):
-                # Check if tags reference variables/parameters (ARM expressions are OK)
-                tag_values = set()
-                for tk in res_tags:
-                    # Normalize key to lowercase for comparison
-                    tag_values.add(tk.lower())
-                missing = TAG_REQUIRED - tag_values
-                if missing and not any(isinstance(v, str) and "variables('standardTags')" in v for v in res_tags.values()):
-                    tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing tags: {', '.join(missing)}")
-                    tag_ok = False
-        tests.append({
-            "name": "Tag Compliance",
-            "passed": tag_ok,
-            "message": "All resources properly tagged" if tag_ok else "; ".join(tag_msgs[:3]),
-        })
-        if not tag_ok:
-            all_passed = False
-
-        # Test 7: Naming convention — resource names use parameters
-        naming_ok = True
-        naming_msgs = []
-        for i, res in enumerate(resources):
-            if not isinstance(res, dict):
-                continue
-            rname = res.get("name", "")
-            if isinstance(rname, str) and rname and not rname.startswith("["):
-                naming_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) uses hardcoded name '{rname}'")
-                naming_ok = False
-        tests.append({
-            "name": "Naming Convention",
-            "passed": naming_ok,
-            "message": "All resource names use parameters/expressions" if naming_ok else "; ".join(naming_msgs[:3]),
-        })
-        if not naming_ok:
-            all_passed = False
-
-    # ── Update version status based on results ────────────────
-    passed_count = sum(1 for t in tests if t["passed"])
-    total_count = len(tests)
-    new_status = "passed" if all_passed else "failed"
-
-    test_results = {
-        "tests": tests,
-        "passed": passed_count,
-        "failed": total_count - passed_count,
-        "total": total_count,
-        "all_passed": all_passed,
-    }
-
-    await update_template_version_status(template_id, version_num, new_status, test_results)
-
-    # Sync parent template status so the UI lifecycle CTAs work correctly
-    from src.database import get_backend as _get_tmpl_backend
-    _tb = await _get_tmpl_backend()
-    await _tb.execute_write(
-        "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
-        (new_status, datetime.now(timezone.utc).isoformat(), template_id),
-    )
+    # ── Run shared structural test suite ──────────────────────
+    test_results = _run_structural_tests(arm_content)
+    new_status = await _update_test_status(template_id, version_num, test_results)
 
     # Note: No auto-promote. User must validate (ARM What-If) then explicitly publish.
 
@@ -2498,7 +2318,7 @@ async def test_template(template_id: str, request: Request):
         "version": version_num,
         "status": new_status,
         "results": test_results,
-        "needs_validation": all_passed,  # signal: ready for ARM validation
+        "needs_validation": test_results["all_passed"],  # signal: ready for ARM validation
     })
 
 
@@ -4900,6 +4720,170 @@ async def auto_heal_template(template_id: str):
     })
 
 
+# ── Structural Test Suite (shared by test_template, recompose, pin) ────
+
+
+def _run_structural_tests(arm_content: str) -> dict:
+    """Run the 7 structural tests on ARM JSON content.
+
+    Returns {tests, passed, failed, total, all_passed}.
+    Pure function — no DB calls.
+    """
+    import json as _json
+
+    tests: list[dict] = []
+    all_passed = True
+
+    # Test 1: JSON parse
+    tpl = None
+    try:
+        tpl = _json.loads(arm_content)
+        tests.append({"name": "JSON Structure", "passed": True, "message": "Valid JSON"})
+    except Exception as e:
+        tests.append({"name": "JSON Structure", "passed": False, "message": f"Invalid JSON: {e}"})
+        all_passed = False
+
+    if tpl:
+        # Test 2: Schema compliance
+        schema_ok = True
+        schema_msgs = []
+        if "$schema" not in tpl:
+            schema_msgs.append("Missing $schema"); schema_ok = False
+        if "contentVersion" not in tpl:
+            schema_msgs.append("Missing contentVersion"); schema_ok = False
+        if "resources" not in tpl:
+            schema_msgs.append("Missing resources array"); schema_ok = False
+        if not isinstance(tpl.get("resources"), list):
+            schema_msgs.append("resources must be an array"); schema_ok = False
+        tests.append({
+            "name": "ARM Schema", "passed": schema_ok,
+            "message": "Valid ARM structure" if schema_ok else "; ".join(schema_msgs),
+        })
+        if not schema_ok:
+            all_passed = False
+
+        # Test 3: Parameter validation
+        params = tpl.get("parameters", {})
+        param_ok = True
+        param_msgs = []
+        if not isinstance(params, dict):
+            param_msgs.append("parameters must be an object"); param_ok = False
+        else:
+            for pname, pdef in params.items():
+                if not pname.strip():
+                    param_msgs.append("Empty parameter name found"); param_ok = False
+                if not isinstance(pdef, dict):
+                    param_msgs.append(f"Parameter '{pname}' must be an object"); param_ok = False
+                elif "type" not in pdef:
+                    param_msgs.append(f"Parameter '{pname}' missing type"); param_ok = False
+        tests.append({
+            "name": "Parameters", "passed": param_ok,
+            "message": f"{len(params)} parameters valid" if param_ok else "; ".join(param_msgs),
+        })
+        if not param_ok:
+            all_passed = False
+
+        # Test 4: Resource validation
+        resources = tpl.get("resources", [])
+        res_ok = True
+        res_msgs = []
+        if not resources:
+            res_msgs.append("No resources defined"); res_ok = False
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                res_msgs.append(f"Resource [{i}] is not an object"); res_ok = False; continue
+            if "type" not in res:
+                res_msgs.append(f"Resource [{i}] missing 'type'"); res_ok = False
+            if "apiVersion" not in res:
+                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'apiVersion'"); res_ok = False
+            if "name" not in res:
+                res_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing 'name'"); res_ok = False
+        tests.append({
+            "name": "Resources", "passed": res_ok,
+            "message": f"{len(resources)} resources valid" if res_ok else "; ".join(res_msgs[:5]),
+        })
+        if not res_ok:
+            all_passed = False
+
+        # Test 5: Output validation
+        outputs = tpl.get("outputs", {})
+        out_ok = True
+        out_msgs = []
+        if isinstance(outputs, dict):
+            for oname, odef in outputs.items():
+                if not isinstance(odef, dict):
+                    out_msgs.append(f"Output '{oname}' must be an object"); out_ok = False
+                elif "type" not in odef or "value" not in odef:
+                    out_msgs.append(f"Output '{oname}' missing type or value"); out_ok = False
+        tests.append({
+            "name": "Outputs", "passed": out_ok,
+            "message": f"{len(outputs)} outputs valid" if out_ok else "; ".join(out_msgs),
+        })
+        if not out_ok:
+            all_passed = False
+
+        # Test 6: Tag compliance
+        TAG_REQUIRED = {"environment", "project", "owner"}
+        tag_ok = True
+        tag_msgs = []
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                continue
+            res_tags = res.get("tags", {})
+            if not isinstance(res_tags, dict) and not isinstance(res_tags, str):
+                tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) has invalid tags"); tag_ok = False
+            elif isinstance(res_tags, dict):
+                tag_values = set(tk.lower() for tk in res_tags)
+                missing = TAG_REQUIRED - tag_values
+                if missing and not any(isinstance(v, str) and "variables('standardTags')" in v for v in res_tags.values()):
+                    tag_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) missing tags: {', '.join(missing)}"); tag_ok = False
+        tests.append({
+            "name": "Tag Compliance", "passed": tag_ok,
+            "message": "All resources properly tagged" if tag_ok else "; ".join(tag_msgs[:3]),
+        })
+        if not tag_ok:
+            all_passed = False
+
+        # Test 7: Naming convention
+        naming_ok = True
+        naming_msgs = []
+        for i, res in enumerate(resources):
+            if not isinstance(res, dict):
+                continue
+            rname = res.get("name", "")
+            if isinstance(rname, str) and rname and not rname.startswith("["):
+                naming_msgs.append(f"Resource [{i}] ({res.get('type', '?')}) uses hardcoded name '{rname}'"); naming_ok = False
+        tests.append({
+            "name": "Naming Convention", "passed": naming_ok,
+            "message": "All resource names use parameters/expressions" if naming_ok else "; ".join(naming_msgs[:3]),
+        })
+        if not naming_ok:
+            all_passed = False
+
+    passed_count = sum(1 for t in tests if t["passed"])
+    total_count = len(tests)
+    return {
+        "tests": tests,
+        "passed": passed_count,
+        "failed": total_count - passed_count,
+        "total": total_count,
+        "all_passed": all_passed,
+    }
+
+
+async def _update_test_status(template_id: str, version_num: int, test_results: dict):
+    """Persist structural test results to the version row and sync parent status."""
+    from src.database import update_template_version_status, get_backend as _get_tmpl_backend
+    new_status = "passed" if test_results["all_passed"] else "failed"
+    await update_template_version_status(template_id, version_num, new_status, test_results)
+    _tb = await _get_tmpl_backend()
+    await _tb.execute_write(
+        "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+        (new_status, datetime.now(timezone.utc).isoformat(), template_id),
+    )
+    return new_status
+
+
 # ── Recompose Blueprint ──────────────────────────────────────
 
 
@@ -5195,6 +5179,17 @@ async def _recompose_with_pinned(
         logger.error(f"Failed to save recomposed template: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+    # ── Auto-run structural tests on the new version ──────────
+    new_version_num = ver.get("version") if isinstance(ver, dict) else None
+    test_results = _run_structural_tests(content_str)
+    test_status = None
+    if new_version_num is not None:
+        test_status = await _update_test_status(template_id, new_version_num, test_results)
+        logger.info(
+            f"Auto-tested recomposed version {new_version_num}: "
+            f"{test_results['passed']}/{test_results['total']} passed → {test_status}"
+        )
+
     logger.info(
         f"Recomposed blueprint '{template_id}' from {len(svc_ids)} services "
         f"→ {len(combined_resources)} resources, {len(combined_params)} params"
@@ -5209,6 +5204,8 @@ async def _recompose_with_pinned(
         "service_versions": service_version_details,
         "version": ver,
         "pinned_versions": pinned_versions,
+        "test_results": test_results,
+        "test_status": test_status,
     }
 
 
