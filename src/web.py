@@ -11126,6 +11126,176 @@ async def onboard_service_endpoint(service_id: str, request: Request):
     )
 
 
+# ── Governance Resolution API ─────────────────────────────────
+
+@app.post("/api/services/{service_id:path}/governance-resolve")
+async def governance_resolve_endpoint(service_id: str, request: Request):
+    """Resolve a governance-blocked onboarding by healing the template or granting an exception.
+
+    Actions:
+    - ``heal``:  Use Copilot to fix the template based on CISO findings, then re-run onboarding.
+    - ``exception``: Record that the user acknowledged findings, skip governance on re-run.
+
+    Streams NDJSON events (same format as /onboard) for real-time progress.
+    """
+    from src.database import get_service, get_latest_service_version, update_service_version_template
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    action = body.get("action")
+    if action not in ("heal", "exception"):
+        raise HTTPException(status_code=400, detail="action must be 'heal' or 'exception'")
+
+    findings = body.get("findings", [])
+    region = body.get("region", "eastus2")
+    model_id = body.get("model", get_active_model())
+
+    import uuid as _uuid
+    _run_id = _uuid.uuid4().hex[:8]
+    rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
+
+    async def stream_resolve():
+        from src.pipelines.onboarding import runner
+        from src.pipeline import PipelineContext, emit
+        from src.pipeline_helpers import copilot_fix_two_phase
+
+        # Get the latest version to heal
+        ver = await get_latest_service_version(service_id)
+        template_str = ver.get("arm_template", "") if ver else ""
+        version_num = ver.get("version") if ver else None
+
+        extra_kwargs = {}
+
+        if action == "heal" and template_str:
+            # ── Build healing prompt from CISO findings ──
+            findings_text = "\n".join(
+                f"- [{f.get('severity', 'medium').upper()}] {f.get('category', 'general')}: "
+                f"{f.get('finding', '')} → Recommendation: {f.get('recommendation', 'N/A')}"
+                for f in findings
+            )
+            heal_prompt = (
+                f"The CISO governance review BLOCKED this template. "
+                f"Fix ALL of the following security findings:\n\n{findings_text}\n\n"
+                f"Ensure the template complies with security best practices. "
+                f"Do NOT use hardcoded secrets — use parameters with @secure() decorator or Key Vault references."
+            )
+
+            yield emit("progress", "governance_heal_start",
+                        f"🔧 Auto-healing template based on {len(findings)} CISO finding(s)…",
+                        progress=0.05)
+
+            try:
+                fixed_template, strategy = await copilot_fix_two_phase(
+                    template_str, heal_prompt,
+                    standards_ctx="",
+                    planning_context="Fix governance review findings to pass CISO approval.",
+                    previous_attempts=None,
+                )
+
+                yield emit("progress", "governance_heal_strategy",
+                            f"📋 Fix strategy: {strategy[:300]}",
+                            progress=0.15)
+
+                # Save healed template
+                if version_num is not None:
+                    await update_service_version_template(
+                        service_id, version_num, fixed_template, "governance-healed"
+                    )
+
+                yield emit("progress", "governance_heal_complete",
+                            f"✅ Template healed — {len(findings)} finding(s) addressed. Re-running pipeline…",
+                            progress=0.20)
+
+                extra_kwargs["use_version"] = version_num
+
+            except Exception as heal_err:
+                logger.error("Governance heal failed: %s", heal_err)
+                yield emit("error", "governance_heal_failed",
+                            f"Auto-heal failed: {str(heal_err)[:300]}. Try manual fixes or request an exception.")
+                return
+
+        elif action == "exception":
+            yield emit("progress", "governance_exception",
+                        "⚡ Governance exception granted — bypassing CISO review for this run.",
+                        progress=0.05)
+            extra_kwargs["governance_exception"] = True
+            extra_kwargs["governance_exception_by"] = body.get("acknowledged_by", "user")
+            if version_num is not None:
+                extra_kwargs["use_version"] = version_num
+
+        # ── Re-run onboarding pipeline ──
+        ctx = PipelineContext(
+            "service_onboarding",
+            run_id=_run_id,
+            service_id=service_id,
+            region=region,
+            rg_name=rg_name,
+            svc=svc,
+            model_id=model_id,
+            **extra_kwargs,
+        )
+
+        async for line in runner.execute(ctx):
+            yield line
+
+    def _track_resolve(event_json: str):
+        try:
+            evt = json.loads(event_json)
+        except Exception:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        tracker = _active_validations.get(service_id)
+        if not tracker:
+            tracker = {
+                "status": "running",
+                "service_name": svc.get("name", service_id),
+                "started_at": now,
+                "updated_at": now,
+                "phase": "",
+                "step": 0,
+                "progress": 0,
+                "rg_name": rg_name,
+                "events": [],
+                "error": "",
+            }
+            _active_validations[service_id] = tracker
+        tracker["updated_at"] = now
+        if evt.get("phase"):
+            tracker["phase"] = evt["phase"]
+        if evt.get("progress"):
+            tracker["progress"] = evt["progress"]
+        if evt.get("detail"):
+            tracker["detail"] = evt["detail"]
+        if evt.get("type") == "done":
+            tracker["status"] = "succeeded"
+        elif evt.get("type") == "error":
+            tracker["status"] = "failed"
+            tracker["error"] = evt.get("detail", "")
+
+    async def _tracked_resolve_stream():
+        try:
+            async for line in stream_resolve():
+                _track_resolve(line)
+                yield line
+        finally:
+            async def _cleanup():
+                await asyncio.sleep(300)
+                _active_validations.pop(service_id, None)
+            asyncio.create_task(_cleanup())
+
+    return StreamingResponse(
+        _tracked_resolve_stream(),
+        media_type="application/x-ndjson",
+    )
+
+
 # ── Deployment API ────────────────────────────────────────────
 
 @app.get("/api/deployments")

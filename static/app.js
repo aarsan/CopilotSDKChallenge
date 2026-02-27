@@ -3159,6 +3159,167 @@ function _flowInit(logEl) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// GOVERNANCE RESOLUTION (human-in-the-loop)
+// ══════════════════════════════════════════════════════════════
+
+/** Render governance resolution UI (findings + buttons) inside the governance card */
+function _renderGovernanceResolution(logEl, event) {
+    const findings = event.findings || [];
+    const critFindings = event.critical_findings || findings.filter(f => f.severity === 'critical' || f.severity === 'high');
+
+    // Show findings details
+    if (findings.length > 0) {
+        const findingsHtml = findings.map(f => {
+            const sevClass = (f.severity === 'critical' || f.severity === 'high') ? 'uf-text-error' : 'uf-text-warning';
+            return `<div class="gov-finding-item">
+                <span class="gov-finding-sev ${sevClass}">${escapeHtml((f.severity || 'medium').toUpperCase())}</span>
+                <span class="gov-finding-cat">${escapeHtml(f.category || 'general')}</span>
+                <span class="gov-finding-text">${escapeHtml(f.finding || '')}</span>
+                ${f.recommendation ? `<div class="gov-finding-rec">→ ${escapeHtml(f.recommendation)}</div>` : ''}
+            </div>`;
+        }).join('');
+        _flowDetail(logEl, 'governance', '📋',
+            `<details class="gov-findings-details"><summary>${findings.length} finding(s), ${critFindings.length} critical/high</summary>` +
+            `<div class="gov-findings-list">${findingsHtml}</div></details>`);
+    }
+
+    // Store for resolution
+    logEl._governanceFindings = findings;
+    logEl._governanceServiceId = event.service_id || '';
+    logEl._governanceVersion = event.version;
+
+    // Resolution buttons
+    const resolveEl = document.createElement('div');
+    resolveEl.className = 'gov-resolve-actions';
+    const sid = escapeHtml(event.service_id || '');
+    resolveEl.innerHTML = `
+        <div class="gov-resolve-header">
+            <span class="gov-resolve-icon">🔀</span>
+            <span class="gov-resolve-title">Resolution Options</span>
+        </div>
+        <p class="gov-resolve-desc">The CISO blocked this template due to security findings. Choose how to proceed:</p>
+        <div class="gov-resolve-buttons">
+            <button class="btn gov-resolve-btn gov-resolve-heal" onclick="resolveGovernanceBlock('${sid}', 'heal')">
+                <span class="gov-resolve-btn-icon">🤖</span>
+                <span class="gov-resolve-btn-label">Auto-Heal Template</span>
+                <span class="gov-resolve-btn-desc">AI fixes the template to comply with CISO findings</span>
+            </button>
+            <button class="btn gov-resolve-btn gov-resolve-exception" onclick="resolveGovernanceBlock('${sid}', 'exception')">
+                <span class="gov-resolve-btn-icon">⚡</span>
+                <span class="gov-resolve-btn-label">Request Exception</span>
+                <span class="gov-resolve-btn-desc">Acknowledge findings and bypass governance for this run</span>
+            </button>
+            <button class="btn gov-resolve-btn gov-resolve-abort" onclick="closePipelineOverlay()">
+                <span class="gov-resolve-btn-icon">✋</span>
+                <span class="gov-resolve-btn-label">Abort</span>
+                <span class="gov-resolve-btn-desc">Stop and fix the template manually</span>
+            </button>
+        </div>
+    `;
+
+    const govCard = logEl._flow?.cards?.['governance'];
+    if (govCard) {
+        const body = govCard.querySelector('.uf-action-body');
+        if (body) {
+            body.appendChild(resolveEl);
+            body.classList.add('uf-body-open');
+        }
+    }
+}
+
+/** Handle governance block resolution: heal the template or request an exception */
+async function resolveGovernanceBlock(serviceId, action) {
+    const logEl = document.getElementById('pipeline-overlay-log') || document.getElementById('validation-log');
+    if (!logEl) return;
+
+    // Disable resolution buttons
+    const btns = logEl.querySelectorAll('.gov-resolve-btn');
+    btns.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+
+    // Get stored findings
+    const findings = logEl._governanceFindings || [];
+
+    // Confirmation for exception
+    if (action === 'exception') {
+        const confirmed = confirm(
+            `⚠️ Governance Exception Request\n\n` +
+            `You are bypassing CISO security review for this template.\n` +
+            `${findings.length} finding(s) will not be addressed.\n\n` +
+            `This action will be logged for audit purposes.\n\n` +
+            `Are you sure you want to proceed?`
+        );
+        if (!confirmed) {
+            btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+            return;
+        }
+    }
+
+    // Update overlay header
+    const metaEl = document.getElementById('pipeline-overlay-meta');
+    if (metaEl) metaEl.textContent = action === 'heal' ? 'Auto-healing template…' : 'Requesting governance exception…';
+
+    // Clear existing flow to start fresh — remove all flow cards and reset state
+    if (logEl._flow) {
+        delete logEl._flow;
+        const children = Array.from(logEl.children);
+        children.forEach(c => {
+            if (!c.classList.contains('validation-log-header') && !c.classList.contains('uf-expand-btn')) c.remove();
+        });
+        logEl.classList.remove('uf-flow');
+    }
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/governance-resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action,
+                findings,
+                acknowledged_by: 'user',
+            }),
+        });
+
+        if (!res.ok) {
+            let errMsg = 'Resolution request failed';
+            try { const err = await res.json(); errMsg = err.detail || errMsg; } catch (_) {}
+            throw new Error(errMsg);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    _handleValidationEvent(event);
+                } catch (e) {}
+            }
+        }
+
+        if (buffer.trim()) {
+            try { _handleValidationEvent(JSON.parse(buffer)); } catch (e) {}
+        }
+
+        await loadAllData();
+        await showServiceDetail(serviceId);
+
+    } catch (err) {
+        showToast(`Governance resolution failed: ${err.message}`, 'error');
+        _flowResult(logEl, 'failed', `Resolution failed: ${err.message}`);
+    }
+}
+
 /** Create a ⊕ connector between cards */
 function _createConnector(status) {
     const conn = document.createElement('div');
@@ -3500,6 +3661,7 @@ function _handleUpdateEvent(event) {
         _flowDetail(logEl, 'governance', '🏗️', `<strong>CTO:</strong> ${escapeHtml(detail)}`, verdictClass);
     } else if (phase === 'governance_blocked') {
         _flowDetail(logEl, 'governance', '🚫', escapeHtml(detail), 'uf-text-error');
+        _renderGovernanceResolution(logEl, event);
         _flowFinalize(logEl, 'governance', 'failed', 'Blocked');
     } else if (phase === 'governance_complete') {
         const gateClass = event.gate_decision === 'approved' ? 'uf-text-success' : event.gate_decision === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
@@ -3509,6 +3671,28 @@ function _handleUpdateEvent(event) {
         _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
         if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'governance', 'done', 'Skipped');
+
+    // ── Governance resolution events ─────────────────────────
+    } else if (phase === 'governance_heal_start' || phase === 'governance_heal_strategy' || phase === 'governance_heal_complete') {
+        if (!logEl._flow?.cards?.['gov-resolve']) {
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+        }
+        const icon = phase === 'governance_heal_complete' ? '✅' : phase === 'governance_heal_strategy' ? '📋' : '🤖';
+        const cls = phase === 'governance_heal_complete' ? 'uf-text-success' : '';
+        _flowDetail(logEl, 'gov-resolve', icon, escapeHtml(detail), cls);
+        if (phase === 'governance_heal_complete') {
+            _flowFinalize(logEl, 'gov-resolve', 'done', 'Healed');
+        }
+    } else if (phase === 'governance_exception') {
+        _flowCard(logEl, 'gov-resolve', '⚡', 'Governance Exception');
+        _flowDetail(logEl, 'gov-resolve', '⚡', escapeHtml(detail), 'uf-text-warning');
+        _flowFinalize(logEl, 'gov-resolve', 'done', 'Exception');
+    } else if (phase === 'governance_heal_failed') {
+        if (!logEl._flow?.cards?.['gov-resolve']) {
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+        }
+        _flowDetail(logEl, 'gov-resolve', '❌', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'gov-resolve', 'failed', 'Failed');
 
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'policy', '📋', 'Static Policy Checks');
@@ -3816,6 +4000,7 @@ function _handleValidationEvent(event) {
         _flowDetail(logEl, 'governance', '🏗️', `<strong>CTO:</strong> ${escapeHtml(detail)}`, verdictClass);
     } else if (phase === 'governance_blocked') {
         _flowDetail(logEl, 'governance', '🚫', escapeHtml(detail), 'uf-text-error');
+        _renderGovernanceResolution(logEl, event);
         _flowFinalize(logEl, 'governance', 'failed', 'Blocked');
     } else if (phase === 'governance_complete') {
         const gateClass = event.gate_decision === 'approved' ? 'uf-text-success' : event.gate_decision === 'blocked' ? 'uf-text-error' : 'uf-text-warning';
@@ -3825,6 +4010,28 @@ function _handleValidationEvent(event) {
         _flowCard(logEl, 'governance', '🏛️', 'Governance Review');
         if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'governance', 'done', 'Skipped');
+
+    // ── Governance resolution events (update handler) ────────
+    } else if (phase === 'governance_heal_start' || phase === 'governance_heal_strategy' || phase === 'governance_heal_complete') {
+        if (!logEl._flow?.cards?.['gov-resolve']) {
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+        }
+        const icon = phase === 'governance_heal_complete' ? '✅' : phase === 'governance_heal_strategy' ? '📋' : '🤖';
+        const cls = phase === 'governance_heal_complete' ? 'uf-text-success' : '';
+        _flowDetail(logEl, 'gov-resolve', icon, escapeHtml(detail), cls);
+        if (phase === 'governance_heal_complete') {
+            _flowFinalize(logEl, 'gov-resolve', 'done', 'Healed');
+        }
+    } else if (phase === 'governance_exception') {
+        _flowCard(logEl, 'gov-resolve', '⚡', 'Governance Exception');
+        _flowDetail(logEl, 'gov-resolve', '⚡', escapeHtml(detail), 'uf-text-warning');
+        _flowFinalize(logEl, 'gov-resolve', 'done', 'Exception');
+    } else if (phase === 'governance_heal_failed') {
+        if (!logEl._flow?.cards?.['gov-resolve']) {
+            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution');
+        }
+        _flowDetail(logEl, 'gov-resolve', '❌', escapeHtml(detail), 'uf-text-error');
+        _flowFinalize(logEl, 'gov-resolve', 'failed', 'Failed');
 
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'staticPolicy', '📋', 'Static Policy Checks');

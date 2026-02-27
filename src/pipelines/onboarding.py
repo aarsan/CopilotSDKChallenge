@@ -652,6 +652,20 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                "🏛️ Running governance review — CISO (security) + CTO (architecture)…",
                ctx.progress(0.05))
 
+    # ── Governance exception: skip if user requested exception ──
+    if ctx.extra.get("governance_exception"):
+        exception_by = ctx.extra.get("governance_exception_by", "user")
+        yield emit("progress", "governance_skipped",
+                    f"⚡ Governance review bypassed — exception granted by {exception_by}",
+                    ctx.progress(1.0),
+                    gate_decision="exception", gate_reason=f"Exception granted by {exception_by}")
+        ctx.artifacts["governance_result"] = {
+            "gate_decision": "exception",
+            "gate_reason": f"Exception granted by {exception_by}",
+            "reviewed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        }
+        return
+
     _client = await ensure_copilot_client()
     if _client is None:
         yield emit("progress", "governance_skipped",
@@ -707,10 +721,20 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
         gate_reason = result["gate_reason"]
 
         if gate == "blocked":
+            # Build findings payload for frontend resolution UI
+            ciso_findings = ciso.get("findings", [])
+            critical_findings = [f for f in ciso_findings if f.get("severity") in ("critical", "high")]
+
             yield emit("progress", "governance_blocked",
                         f"🚫 Governance gate: BLOCKED — {gate_reason}",
                         ctx.progress(0.9),
-                        gate_decision=gate, gate_reason=gate_reason)
+                        gate_decision=gate, gate_reason=gate_reason,
+                        findings=ciso_findings,
+                        critical_findings=critical_findings,
+                        ciso_summary=ciso.get("summary", ""),
+                        service_id=ctx.service_id,
+                        version=ctx.version_num,
+                        semver=ctx.semver)
             yield emit("progress", "governance_complete",
                         f"🚫 Deployment blocked by CISO. Resolve critical findings before proceeding.",
                         ctx.progress(1.0),

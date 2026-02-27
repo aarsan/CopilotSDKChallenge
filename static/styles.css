@@ -5898,6 +5898,178 @@ body {
 .uf-expand-btn:hover { text-decoration: underline; }
 
 
+/* ── Governance Resolution UI ────────────────────────────── */
+.gov-resolve-actions {
+    margin: 0.75rem 0 0.25rem;
+    padding: 0.75rem;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent-blue);
+}
+
+.gov-resolve-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.gov-resolve-icon {
+    font-size: 1rem;
+}
+
+.gov-resolve-title {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gov-resolve-desc {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.6rem;
+    line-height: 1.4;
+}
+
+.gov-resolve-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.gov-resolve-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: var(--surface-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex: 1;
+    min-width: 140px;
+    text-align: left;
+}
+
+.gov-resolve-btn:hover:not(:disabled) {
+    border-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.06);
+    transform: translateY(-1px);
+}
+
+.gov-resolve-btn:disabled {
+    cursor: not-allowed;
+}
+
+.gov-resolve-btn-icon {
+    font-size: 1.1rem;
+    margin-bottom: 0.1rem;
+}
+
+.gov-resolve-btn-label {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.gov-resolve-btn-desc {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.gov-resolve-heal:hover:not(:disabled) {
+    border-color: var(--accent-green);
+    background: rgba(63, 185, 80, 0.06);
+}
+
+.gov-resolve-exception:hover:not(:disabled) {
+    border-color: var(--accent-yellow, #d29922);
+    background: rgba(210, 153, 34, 0.06);
+}
+
+.gov-resolve-abort:hover:not(:disabled) {
+    border-color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.06);
+}
+
+/* ── Governance Findings ─────────────────────────────────── */
+.gov-findings-details {
+    margin: 0.25rem 0;
+}
+
+.gov-findings-details summary {
+    cursor: pointer;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    padding: 0.2rem 0;
+}
+
+.gov-findings-details summary:hover {
+    color: var(--text-primary);
+}
+
+.gov-findings-list {
+    padding: 0.4rem 0;
+}
+
+.gov-finding-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 0.7rem;
+    line-height: 1.4;
+}
+
+.gov-finding-item:last-child {
+    border-bottom: none;
+}
+
+.gov-finding-sev {
+    display: inline-block;
+    font-size: 0.58rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    background: rgba(248, 81, 73, 0.12);
+    flex-shrink: 0;
+}
+
+.gov-finding-sev.uf-text-warning {
+    background: rgba(210, 153, 34, 0.12);
+}
+
+.gov-finding-cat {
+    font-size: 0.64rem;
+    color: var(--text-muted);
+    font-style: italic;
+    flex-shrink: 0;
+}
+
+.gov-finding-text {
+    color: var(--text-primary);
+    flex: 1;
+    min-width: 150px;
+}
+
+.gov-finding-rec {
+    width: 100%;
+    font-size: 0.66rem;
+    color: var(--accent-blue);
+    padding-left: 0.5rem;
+    margin-top: 0.1rem;
+}
+
+
 /* Status badge additions */
 .status-badge.validating {
     background: rgba(210, 153, 34, 0.15);
