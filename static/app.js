@@ -5199,7 +5199,7 @@ async function _loadTemplateComposition(templateId) {
             html += '<div class="comp-hero-layer">';
             for (const c of layer) {
                 const shortName = c.name || c.service_id.split('/').pop();
-                const verDisplay = c.current_semver || '—';
+                const verDisplay = c.version_known === false ? '?' : (c.current_semver || '—');
                 const statusCls = c.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
                 const upgradeCls = c.upgrade_available ? 'hero-node-upgradable' : '';
                 const catLabel = c.category ? c.category.charAt(0).toUpperCase() + c.category.slice(1) : '';
@@ -5239,9 +5239,11 @@ async function _loadTemplateComposition(templateId) {
                             ${catLabel ? `<div class="hero-node-cat">${escapeHtml(catLabel)}</div>` : ''}
                             <div class="hero-node-ver-row">
                                 <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">v${verDisplay}</span>
-                                ${c.upgrade_available
-                                    ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
-                                    : '<span class="hero-node-latest">✓ latest</span>'}
+                                ${c.version_known === false
+                                    ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
+                                    : c.upgrade_available
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
+                                        : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${depIconsHtml}
                         </div>
@@ -5473,12 +5475,19 @@ async function checkForUpdates(templateId) {
             depsOf[e.from].push({ to: e.to, reason: e.reason, required: e.required });
         }
 
-        const updatable = components.filter(c => c.upgrade_available);
-        const upToDate = components.filter(c => !c.upgrade_available);
+        const updatable = components.filter(c => c.upgrade_available && c.version_known !== false);
+        const untracked = components.filter(c => c.version_known === false);
+        const upToDate = components.filter(c => !c.upgrade_available && c.version_known !== false);
 
         // Summary banner
         let html = '';
-        if (updatable.length) {
+        if (untracked.length) {
+            html += `
+                <div class="upd-summary upd-summary-has-updates">
+                    <span class="upd-summary-icon">⚠️</span>
+                    <span><strong>${untracked.length}</strong> of ${components.length} dependencies have untracked versions — recompose to lock them</span>
+                </div>`;
+        } else if (updatable.length) {
             html += `
                 <div class="upd-summary upd-summary-has-updates">
                     <span class="upd-summary-icon">⚠️</span>
