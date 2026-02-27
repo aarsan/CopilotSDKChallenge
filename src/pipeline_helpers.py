@@ -428,10 +428,19 @@ def resolve_variables_for_composition(
             }
             resolved_variables[vname] = vval
         elif isinstance(vval, str) and vval.startswith("["):
-            # ARM expression (e.g. [concat(...)]) — keep as a variable in the
-            # resolved set; we'll add it to the composed variables dict.
-            # But we need to remap any parameter references within it.
-            resolved_variables[vname] = vval
+            # ARM expression (e.g. [concat(...)]) — normally keep as a variable
+            # in the resolved set; we'll add it to the composed variables dict.
+            # EXCEPTION: utcNow() is only valid in parameter defaultValue
+            # expressions, NOT in variables.  Promote it to a parameter.
+            if "utcNow" in vval:
+                extra_params[suffixed_param] = {
+                    "type": "string",
+                    "defaultValue": vval,
+                    "metadata": {"description": f"Variable '{vname}' (promoted — utcNow only allowed in parameter defaults)"},
+                }
+                resolved_variables[vname] = vval
+            else:
+                resolved_variables[vname] = vval
         else:
             # Complex object/array — serialize as parameter default
             extra_params[suffixed_param] = {
@@ -471,9 +480,12 @@ def resolve_variables_for_composition(
         # Remap variable references:
         # - Simple literals: replace variables('x') with parameters('x_suffix')
         # - ARM expressions: replace variables('x') with variables('x_suffix')
+        # - utcNow expressions: promoted to parameters, so use parameters('x_suffix')
         for vname, suffixed_param in vars_as_params.items():
             vval = src_vars.get(vname)
-            if isinstance(vval, str) and vval.startswith("["):
+            _is_expression = isinstance(vval, str) and vval.startswith("[")
+            _is_utcnow = _is_expression and "utcNow" in vval
+            if _is_expression and not _is_utcnow:
                 # Expression variable — keep as variable but suffix the name
                 suffixed_var = f"{vname}{suffix}"
                 res_str = res_str.replace(
@@ -571,6 +583,10 @@ def build_composed_variables(
     for suffix, var_map in all_resolved.items():
         for vname, vval in var_map.items():
             if isinstance(vval, str) and vval.startswith("["):
+                # utcNow() expressions are promoted to parameters (ARM only
+                # allows utcNow in parameter defaults, not variables).
+                if "utcNow" in vval:
+                    continue
                 suffixed_var = f"{vname}{suffix}"
                 # Remap parameter references within the expression
                 expr = vval
