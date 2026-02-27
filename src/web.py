@@ -5856,23 +5856,102 @@ async def validate_template(template_id: str, request: Request):
         svc_ids = list(svc_ids_raw) if svc_ids_raw else []
 
     from src.pipelines.validation import stream_validation
+    from src.database import create_pipeline_run, complete_pipeline_run
+    import uuid as _run_uuid
+
+    _run_id = _run_uuid.uuid4().hex[:8]
+
+    # Find semver for the target version
+    _target_semver = ""
+    for v in versions:
+        if v["version"] == version_num:
+            _target_semver = v.get("semver", "")
+            break
+
+    async def _tracked_stream():
+        """Wrap the validation generator to record pipeline run + events."""
+        collected_events = []
+        final_status = "failed"
+        heal_count = 0
+        error_detail = None
+
+        # Record pipeline run at the start
+        await create_pipeline_run(
+            _run_id, _tmpl_id, "template_validation",
+            version_num=_ver_num,
+            semver=_target_semver,
+            created_by="copilot-sdk",
+        )
+
+        try:
+            async for line in stream_validation(
+                template_id=_tmpl_id,
+                template_name=_tmpl_name,
+                version_num=_ver_num,
+                tpl=tpl,
+                final_params=final_params,
+                user_params=user_params,
+                rg_name=rg_name,
+                deployment_name=deployment_name,
+                region=region,
+                is_blueprint=is_blueprint,
+                svc_ids=svc_ids,
+            ):
+                # Capture event for storage
+                try:
+                    evt = json.loads(line.strip())
+                    collected_events.append(evt)
+                    phase = evt.get("phase", "")
+                    if phase == "complete":
+                        s = evt.get("status", "failed")
+                        final_status = "completed" if s in ("succeeded", "tested_with_issues") else "failed"
+                        heal_count = evt.get("issues_resolved", 0)
+                        if s == "failed":
+                            error_detail = evt.get("error") or evt.get("detail")
+                    elif phase == "healed":
+                        heal_count += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                yield line
+        except Exception as exc:
+            final_status = "failed"
+            error_detail = str(exc)[:4000]
+            yield json.dumps({"phase": "complete", "status": "failed", "error": str(exc)}) + "\n"
+        finally:
+            # Record completion with stored events
+            events_str = json.dumps(collected_events, default=str)
+            await complete_pipeline_run(
+                _run_id,
+                status=final_status,
+                version_num=_ver_num,
+                semver=_target_semver,
+                summary={"template_name": _tmpl_name, "region": region},
+                error_detail=error_detail,
+                heal_count=heal_count,
+                events_json=events_str,
+            )
 
     return StreamingResponse(
-        stream_validation(
-            template_id=_tmpl_id,
-            template_name=_tmpl_name,
-            version_num=_ver_num,
-            tpl=tpl,
-            final_params=final_params,
-            user_params=user_params,
-            rg_name=rg_name,
-            deployment_name=deployment_name,
-            region=region,
-            is_blueprint=is_blueprint,
-            svc_ids=svc_ids,
-        ),
+        _tracked_stream(),
         media_type="application/x-ndjson",
     )
+
+
+# ── Template Pipeline Runs ───────────────────────────────────
+
+@app.get("/api/catalog/templates/{template_id}/pipeline-runs")
+async def get_template_pipeline_runs(template_id: str):
+    """Get recent pipeline runs for a template (newest first).
+
+    Returns run metadata plus stored NDJSON events for replay.
+    """
+    from src.database import get_pipeline_runs
+    runs = await get_pipeline_runs(template_id, limit=20)
+    # Strip the raw JSON columns to keep the response clean
+    for r in runs:
+        r.pop("summary_json", None)
+        r.pop("pipeline_events_json", None)
+    return JSONResponse(runs)
 
 
 # ── Template Publishing ──────────────────────────────────────
