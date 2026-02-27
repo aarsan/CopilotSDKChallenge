@@ -4695,19 +4695,17 @@ function showTemplateDetail(templateId) {
             </button>
         </div>`;
     } else if (status === 'failed') {
+        const isBlueprint = tmpl.is_blueprint || (tmpl.service_ids && tmpl.service_ids.length > 1);
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ I found some issues during validation. I can use the Copilot SDK to analyze and fix them automatically, or you can describe what needs to change below.
+                ❌ I found some issues during validation. I'll ${isBlueprint ? 'rebuild this from the latest service templates and ' : ''}fix any structural issues, then re-deploy to Azure to verify.
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
-                <button class="btn btn-primary btn-sm" onclick="autoHealTemplate('${escapeHtml(tmpl.id)}')">
-                    🔧 Auto-Heal
+                <button class="btn btn-primary btn-sm" onclick="fixAndValidateTemplate('${escapeHtml(tmpl.id)}')">
+                    🔧 Fix &amp; Validate
                 </button>
                 ${_copilotBadge()}
-                <button class="btn btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
-                    🧪 Re-validate
-                </button>
             </div>
         </div>`;
     } else if (status === 'approved') {
@@ -8406,6 +8404,43 @@ function _renderDeployProgress(container, event, ctx) {
     // PHASE HANDLERS
     // ══════════════════════════════════════════════════
 
+    // ── Fix & Validate pre-phases (recompose, structural check) ──
+    if (phase === 'recomposing' || phase === 'structural_check') {
+        _setActiveStage('deploy');
+        const icon = phase === 'recomposing' ? '🔄' : '🔍';
+        const title = phase === 'recomposing' ? 'Rebuilding from Services' : 'Checking Structure';
+        _createNode(icon, title);
+        _addActivity(icon, escapeHtml(detail), 'vf-activity-deploy');
+        return;
+    }
+
+    if (phase === 'recomposed' || phase === 'structural_ok' || phase === 'structural_fixed' || phase === 'structural_fix') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        _addActivity('✅', escapeHtml(detail), 'vf-activity-fix');
+        if (curNode && phase !== 'structural_fix') _finalizeNode(curNode, 'success');
+        return;
+    }
+
+    if (phase === 'recompose_error' || phase === 'structural_error') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        _addActivity('⚠️', escapeHtml(detail), 'vf-activity-issue');
+        if (curNode) _finalizeNode(curNode, 'done');
+        return;
+    }
+
+    if (phase === 'arm_validation_start') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (curNode) _finalizeNode(curNode, 'success');
+        _addActivity('🚀', escapeHtml(detail), 'vf-activity-deploy');
+        return;
+    }
+
+    if (phase === 'pre_validation_fix') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        _addActivity('🔧', escapeHtml(detail), 'vf-activity-fix');
+        return;
+    }
+
     // Starting — show header info
     if (phase === 'starting') {
         _setActiveStage('deploy');
@@ -8918,6 +8953,114 @@ function _renderDeployProgress(container, event, ctx) {
             `).join('')}
         </div>` : ''}
     `;
+}
+
+/** Fix & Validate — single unified flow for failed templates.
+ *  Blueprints: recompose → structural check → ARM validate.
+ *  Standalone: structural heal → ARM validate.
+ *  Streams NDJSON progress inline.
+ */
+async function fixAndValidateTemplate(templateId) {
+    showToast('🔧 Fixing and validating — this may take a few minutes…', 'info');
+
+    // Open the detail view and create a live progress area
+    await loadAllData();
+    showTemplateDetail(templateId);
+    await new Promise(r => setTimeout(r, 200));
+
+    // Find or create a results container
+    let resultsDiv = document.getElementById('tmpl-validate-results');
+    if (!resultsDiv) {
+        const formSection = document.getElementById('tmpl-validate-form');
+        if (formSection) {
+            formSection.style.display = 'block';
+            resultsDiv = document.createElement('div');
+            resultsDiv.id = 'tmpl-validate-results';
+            resultsDiv.className = 'tmpl-validate-results';
+            formSection.appendChild(resultsDiv);
+        } else {
+            // Create inline
+            const body = document.getElementById('detail-template-body');
+            if (body) {
+                resultsDiv = document.createElement('div');
+                resultsDiv.id = 'tmpl-validate-results';
+                resultsDiv.className = 'tmpl-validate-results';
+                body.prepend(resultsDiv);
+            }
+        }
+    }
+    if (resultsDiv) {
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<div class="compose-loading">🔧 Working on it… Rebuilding, fixing, and validating against Azure.</div>';
+    }
+
+    const tracker = { running: true, events: [], finalEvent: null, abortController: new AbortController() };
+    _activeTemplateValidations[templateId] = tracker;
+
+    try {
+        const regionSelect = document.getElementById('tmpl-validate-region');
+        const region = regionSelect ? regionSelect.value : 'eastus2';
+
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/fix-and-validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parameters: {}, region }),
+            signal: tracker.abortController.signal,
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Fix & Validate failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    tracker.events.push(event);
+                    tracker.finalEvent = event;
+                    if (resultsDiv) _renderDeployProgress(resultsDiv, event, 'validate');
+                } catch (e) { /* skip */ }
+            }
+        }
+
+        if (buffer.trim()) {
+            try {
+                const event = JSON.parse(buffer);
+                tracker.events.push(event);
+                tracker.finalEvent = event;
+                if (resultsDiv) _renderDeployProgress(resultsDiv, event, 'validate');
+            } catch (e) { /* skip */ }
+        }
+
+        // Refresh data
+        await loadAllData();
+        const final = tracker.finalEvent;
+        if (final && final.phase === 'complete' && (final.status === 'succeeded' || final.status === 'tested_with_issues')) {
+            showToast('✅ Template fixed and validated — ready to publish!', 'success');
+        } else {
+            showToast('⚠️ Validation finished — check the results for details.', 'warning');
+        }
+    } catch (err) {
+        if (err.name === 'AbortError') return;
+        showToast(`Fix & Validate error: ${err.message}`, 'error');
+        if (resultsDiv) resultsDiv.innerHTML += `<div class="deploy-error">❌ ${escapeHtml(err.message)}</div>`;
+    } finally {
+        tracker.running = false;
+        delete _activeTemplateValidations[templateId];
+    }
 }
 
 /** Auto-heal a failed template — system fixes it, not the user */

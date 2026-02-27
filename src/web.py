@@ -5050,6 +5050,233 @@ async def _recompose_with_pinned(
     }
 
 
+@app.post("/api/catalog/templates/{template_id}/fix-and-validate")
+async def fix_and_validate_template(template_id: str, request: Request):
+    """Unified endpoint: fix a failed template and validate it in one step.
+
+    For **blueprints**: Recomposes from source services first (fresh
+    composition fixes reference bugs), then runs structural tests, then
+    ARM validation with the self-healing loop.
+
+    For **standalone templates**: Runs auto-heal (structural), then ARM
+    validation with the self-healing loop.
+
+    Streams NDJSON progress throughout. This replaces the confusing
+    "Auto-Heal" + "Re-validate" two-button flow with a single operation.
+    """
+    from src.database import (
+        get_template_by_id, get_template_versions,
+    )
+    import json as _json
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    region = body.get("region", "eastus2")
+
+    is_blueprint = bool(tmpl.get("is_blueprint"))
+    svc_ids_raw = tmpl.get("service_ids") or tmpl.get("service_ids_json") or []
+    if isinstance(svc_ids_raw, str):
+        try:
+            svc_ids = _json.loads(svc_ids_raw)
+        except Exception:
+            svc_ids = []
+    else:
+        svc_ids = list(svc_ids_raw) if svc_ids_raw else []
+
+    async def _stream():
+        import uuid as _uuid
+
+        # ── Phase 1: Blueprint recompose OR standalone heal ──
+        if is_blueprint and svc_ids:
+            yield _json.dumps({
+                "phase": "recomposing",
+                "detail": "This is a blueprint — let me rebuild it from the latest service templates first…",
+            }) + "\n"
+
+            try:
+                result = await _recompose_with_pinned(
+                    template_id,
+                    version_overrides=None,
+                    ignore_existing_pins=True,
+                    changelog="Fix & Validate: recomposed from current services",
+                    change_type="major",
+                    created_by="fix-and-validate",
+                )
+                test_results = result.get("test_results", {})
+                yield _json.dumps({
+                    "phase": "recomposed",
+                    "detail": f"Rebuilt from {len(result.get('services_recomposed', []))} services — {test_results.get('passed', 0)}/{test_results.get('total', 0)} structural tests pass.",
+                    "version": result.get("version", {}).get("semver", ""),
+                    "resource_count": result.get("resource_count", 0),
+                    "param_count": result.get("parameter_count", 0),
+                }) + "\n"
+
+                if not test_results.get("all_passed"):
+                    yield _json.dumps({
+                        "phase": "structural_fix",
+                        "detail": "Some structural issues remain — running auto-heal…",
+                    }) + "\n"
+                    # Auto-heal the recomposed version
+                    from starlette.requests import Request as _Req
+                    heal_resp = await auto_heal_template(template_id)
+                    heal_data = _json.loads(heal_resp.body.decode())
+                    yield _json.dumps({
+                        "phase": "structural_fixed",
+                        "detail": f"Structural fix: {heal_data.get('message', 'done')}",
+                        "all_passed": heal_data.get("all_passed", False),
+                    }) + "\n"
+            except Exception as e:
+                yield _json.dumps({
+                    "phase": "recompose_error",
+                    "detail": f"Recompose failed: {e}. Falling back to current template.",
+                }) + "\n"
+        else:
+            # Standalone: run structural auto-heal first
+            yield _json.dumps({
+                "phase": "structural_check",
+                "detail": "Checking the template structure and fixing any issues…",
+            }) + "\n"
+
+            try:
+                heal_resp = await auto_heal_template(template_id)
+                heal_data = _json.loads(heal_resp.body.decode())
+                if heal_data.get("all_passed") or heal_data.get("status") == "already_healthy":
+                    yield _json.dumps({
+                        "phase": "structural_ok",
+                        "detail": "Structure looks good — moving to ARM validation.",
+                    }) + "\n"
+                else:
+                    yield _json.dumps({
+                        "phase": "structural_fixed",
+                        "detail": f"Structural fix: {heal_data.get('message', 'done')}",
+                        "all_passed": heal_data.get("all_passed", False),
+                    }) + "\n"
+            except Exception as e:
+                yield _json.dumps({
+                    "phase": "structural_error",
+                    "detail": f"Structural check error: {e}. Proceeding with ARM validation anyway.",
+                }) + "\n"
+
+        # ── Phase 2: ARM validation with self-healing ──
+        yield _json.dumps({
+            "phase": "arm_validation_start",
+            "detail": "Structure verified — now deploying to Azure to test the real thing…",
+        }) + "\n"
+
+        # Get the latest version (may have been updated by recompose/heal)
+        _tmpl = await get_template_by_id(template_id)
+        _versions = await get_template_versions(template_id)
+        if not _versions:
+            yield _json.dumps({
+                "phase": "complete",
+                "status": "failed",
+                "error": "No template versions found after fix phase.",
+            }) + "\n"
+            return
+
+        _latest = _versions[0]
+        _arm_content = _latest.get("arm_template", _tmpl.get("content", ""))
+        try:
+            _tpl = _json.loads(_arm_content) if isinstance(_arm_content, str) else _arm_content
+        except Exception:
+            yield _json.dumps({
+                "phase": "complete",
+                "status": "failed",
+                "error": "Template content is not valid JSON after fix phase.",
+            }) + "\n"
+            return
+
+        _version_num = _latest["version"]
+
+        # Build parameter values (with ARM expression skip)
+        _tpl_params = _tpl.get("parameters", {})
+        _final_params = {}
+        for pname, pdef in _tpl_params.items():
+            if "defaultValue" in pdef:
+                dv = pdef["defaultValue"]
+                if isinstance(dv, str) and dv.startswith("["):
+                    continue
+                _final_params[pname] = dv
+            else:
+                ptype = pdef.get("type", "string").lower()
+                if ptype == "string":
+                    _final_params[pname] = f"if-val-{pname[:20]}"
+                elif ptype == "int":
+                    _final_params[pname] = 1
+                elif ptype == "bool":
+                    _final_params[pname] = True
+                elif ptype == "array":
+                    _final_params[pname] = []
+                elif ptype == "object":
+                    _final_params[pname] = {}
+
+        _rg_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
+        _deploy_name = f"infraforge-val-{_uuid.uuid4().hex[:8]}"
+        _tmpl_name = _tmpl.get("name", template_id)
+
+        # Find semver
+        _target_semver = _latest.get("semver", "")
+
+        from src.pipelines.validation import stream_validation
+        from src.database import create_pipeline_run, complete_pipeline_run
+
+        _run_id = _uuid.uuid4().hex[:8]
+        await create_pipeline_run(
+            _run_id, template_id, "fix_and_validate",
+            version_num=_version_num,
+            semver=_target_semver,
+            created_by="fix-and-validate",
+        )
+
+        final_status = "failed"
+        heal_count = 0
+        try:
+            async for line in stream_validation(
+                template_id=template_id,
+                template_name=_tmpl_name,
+                version_num=_version_num,
+                tpl=_tpl,
+                final_params=_final_params,
+                user_params=body.get("parameters", {}),
+                rg_name=_rg_name,
+                deployment_name=_deploy_name,
+                region=region,
+                is_blueprint=is_blueprint,
+                svc_ids=svc_ids,
+            ):
+                yield line
+                try:
+                    evt = _json.loads(line.strip())
+                    if evt.get("phase") == "complete":
+                        s = evt.get("status", "failed")
+                        final_status = "completed" if s in ("succeeded", "tested_with_issues") else "failed"
+                        heal_count = evt.get("issues_resolved", 0)
+                except Exception:
+                    pass
+        except Exception as val_err:
+            yield _json.dumps({
+                "phase": "complete",
+                "status": "failed",
+                "error": str(val_err),
+            }) + "\n"
+
+        try:
+            await complete_pipeline_run(
+                _run_id, final_status,
+                result_summary=f"Fix & Validate: {final_status}, heals={heal_count}",
+            )
+        except Exception:
+            pass
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
 @app.post("/api/catalog/templates/{template_id}/recompose")
 async def recompose_blueprint(template_id: str):
     """Re-compose a blueprint from its source service templates.
