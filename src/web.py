@@ -4902,17 +4902,27 @@ async def auto_heal_template(template_id: str):
 
 # ── Recompose Blueprint ──────────────────────────────────────
 
-@app.post("/api/catalog/templates/{template_id}/recompose")
-async def recompose_blueprint(template_id: str):
-    """Re-compose a blueprint from its source service templates.
 
-    Fetches the current active ARM templates for each service_id stored
-    on the blueprint, runs the same compose logic (with the fixed
-    parameter remapping), and saves the result as a new version.
+async def _recompose_with_pinned(
+    template_id: str,
+    version_overrides: dict | None = None,
+    ignore_existing_pins: bool = False,
+    changelog: str = "Recomposed",
+    change_type: str = "major",
+    created_by: str = "recomposer",
+) -> dict:
+    """Core recompose logic that respects pinned versions.
+
+    For each service in the template:
+    - If version_overrides specifies a version for this service, use that
+    - If ignore_existing_pins is False and the template has a pinned version, use that
+    - Otherwise fall back to the active (latest promoted) version
+
+    Returns a dict with recompose results including the new version.
     """
     from src.database import (
         get_template_by_id, get_service, get_active_service_version,
-        upsert_template, create_template_version,
+        get_service_version, upsert_template, create_template_version,
     )
     from src.tools.arm_generator import (
         _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
@@ -4941,15 +4951,21 @@ async def recompose_blueprint(template_id: str):
             detail="This template has no service_ids — it can't be recomposed",
         )
 
+    # Merge existing pinned versions with any overrides
+    existing_pinned = {} if ignore_existing_pins else (tmpl.get("pinned_versions") or {})
+    if version_overrides:
+        existing_pinned = dict(existing_pinned)
+        existing_pinned.update(version_overrides)
+
     STANDARD_PARAMS = {
         "resourceName", "location", "environment",
         "projectName", "ownerEmail", "costCenter",
     }
 
-    # ── Gather current ARM templates for each service ─────────
+    # ── Gather ARM templates for each service (respecting pins) ─
     service_templates: list[dict] = []
-    service_version_details: list[dict] = []  # Track versions for verbosity
-    pinned_versions: dict = {}  # service_id → {version, semver}
+    service_version_details: list[dict] = []
+    pinned_versions: dict = {}
     for sid in svc_ids:
         svc = await get_service(sid)
         if not svc:
@@ -4957,19 +4973,39 @@ async def recompose_blueprint(template_id: str):
 
         tpl_dict = None
         version_info = {"service_id": sid, "name": svc.get("name", sid), "source": "builtin"}
-        active = await get_active_service_version(sid)
-        if active and active.get("arm_template"):
-            try:
-                tpl_dict = _json.loads(active["arm_template"])
-                version_info["source"] = "catalog"
-                version_info["version"] = active.get("version")
-                version_info["semver"] = active.get("semver")
-                pinned_versions[sid] = {
-                    "version": active.get("version"),
-                    "semver": active.get("semver"),
-                }
-            except Exception:
-                pass
+
+        # Check if there's a pinned version to use
+        pin = existing_pinned.get(sid)
+        if pin and pin.get("version") is not None:
+            ver = await get_service_version(sid, int(pin["version"]))
+            if ver and ver.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(ver["arm_template"])
+                    version_info["source"] = "catalog"
+                    version_info["version"] = ver.get("version")
+                    version_info["semver"] = ver.get("semver")
+                    pinned_versions[sid] = {
+                        "version": ver.get("version"),
+                        "semver": ver.get("semver"),
+                    }
+                except Exception:
+                    pass
+
+        # Fall back to active version if no pin or pin failed
+        if not tpl_dict:
+            active = await get_active_service_version(sid)
+            if active and active.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(active["arm_template"])
+                    version_info["source"] = "catalog"
+                    version_info["version"] = active.get("version")
+                    version_info["semver"] = active.get("semver")
+                    pinned_versions[sid] = {
+                        "version": active.get("version"),
+                        "semver": active.get("semver"),
+                    }
+                except Exception:
+                    pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             version_info["source"] = "builtin"
@@ -5046,7 +5082,6 @@ async def recompose_blueprint(template_id: str):
             "metadata": {"description": f"Name for {svc.get('name', sid)}"},
         }
 
-        # Add ALL non-standard params from the service template
         all_non_standard = [
             pname for pname in src_params
             if pname not in STANDARD_PARAMS and pname != "resourceName"
@@ -5058,7 +5093,6 @@ async def recompose_blueprint(template_id: str):
             suffixed = f"{pname}{suffix}"
             combined_params[suffixed] = dict(pdef)
 
-        # Clone resources, replacing ALL parameter references
         for res in src_resources:
             res_str = _json.dumps(res)
             res_str = res_str.replace(
@@ -5081,7 +5115,6 @@ async def recompose_blueprint(template_id: str):
                 )
             combined_resources.append(_json.loads(res_str))
 
-        # Clone outputs with suffixed names and remapped param refs
         for oname, odef in src_outputs.items():
             out_name = f"{oname}{suffix}"
             out_val = _json.dumps(odef)
@@ -5114,12 +5147,10 @@ async def recompose_blueprint(template_id: str):
 
     content_str = _json.dumps(composed, indent=2)
 
-    # Apply standard sanitizers
     content_str = _ensure_parameter_defaults(content_str)
     content_str = _sanitize_placeholder_guids(content_str)
     content_str = _sanitize_dns_zone_names(content_str)
 
-    # Update parameter list for catalog storage
     composed = _json.loads(content_str)
     combined_params = composed.get("parameters", {})
     param_list = [
@@ -5156,9 +5187,9 @@ async def recompose_blueprint(template_id: str):
         await upsert_template(catalog_entry)
         ver = await create_template_version(
             template_id, content_str,
-            changelog="Recomposed from current service templates",
-            change_type="major",
-            created_by="recomposer",
+            changelog=changelog,
+            change_type=change_type,
+            created_by=created_by,
         )
     except Exception as e:
         logger.error(f"Failed to save recomposed template: {e}")
@@ -5169,7 +5200,7 @@ async def recompose_blueprint(template_id: str):
         f"→ {len(combined_resources)} resources, {len(combined_params)} params"
     )
 
-    return JSONResponse({
+    return {
         "status": "ok",
         "template_id": template_id,
         "resource_count": len(combined_resources),
@@ -5177,8 +5208,33 @@ async def recompose_blueprint(template_id: str):
         "services_recomposed": svc_ids,
         "service_versions": service_version_details,
         "version": ver,
-        "message": f"Blueprint recomposed from {len(svc_ids)} services with latest templates",
-    })
+        "pinned_versions": pinned_versions,
+    }
+
+
+@app.post("/api/catalog/templates/{template_id}/recompose")
+async def recompose_blueprint(template_id: str):
+    """Re-compose a blueprint from its source service templates.
+
+    Fetches the active ARM templates for each service_id stored on the
+    blueprint and recomposes. Clears all pinned version locks so each
+    service moves to its current active version.
+    """
+    result = await _recompose_with_pinned(
+        template_id,
+        version_overrides=None,
+        ignore_existing_pins=True,  # upgrade all → use active for every service
+        changelog="Recomposed from current service templates",
+        change_type="major",
+        created_by="recomposer",
+    )
+    # Clear all pins so recompose always grabs active versions
+    # (The helper already recorded the active versions as the new pins)
+    result["message"] = (
+        f"Blueprint recomposed from {len(result['services_recomposed'])} services "
+        f"with latest templates"
+    )
+    return JSONResponse(result)
 
 
 # ── Template Composition Info ─────────────────────────────────
@@ -5310,20 +5366,20 @@ async def get_template_composition(template_id: str):
 
 @app.patch("/api/catalog/templates/{template_id}/pin-version")
 async def pin_service_version(template_id: str, request: Request):
-    """Pin a specific service version in a composed template.
+    """Pin a specific service version in a composed template and recompose.
 
     Body: {
         "service_id": "Microsoft.Network/publicIPAddresses",
         "version": 1           // integer version number to pin to
     }
 
-    Updates the pinned_versions_json on the template so the composition
-    view reflects the chosen version. Does NOT recompose the ARM template —
-    the actual ARM content stays the same until the user explicitly recomposes.
+    Updates the pinned version for the specified service, then recomposes
+    the entire template using each service's pinned version. This creates
+    a new template version whose ARM content actually reflects the chosen
+    service version — so deploying uses the pinned version's resources.
     """
     from src.database import (
-        get_template_by_id, get_service_version, get_service_versions,
-        update_template_pinned_versions,
+        get_template_by_id, get_service_version,
     )
 
     tmpl = await get_template_by_id(template_id)
@@ -5364,18 +5420,23 @@ async def pin_service_version(template_id: str, request: Request):
             detail=f"Version {version} of '{service_id}' not found",
         )
 
-    # Update pinned versions
-    pinned = tmpl.get("pinned_versions") or {}
-    pinned[service_id] = {
-        "version": version,
-        "semver": ver.get("semver"),
-    }
+    short_name = service_id.split("/")[-1]
+    target_semver = ver.get("semver") or f"{version}.0.0"
 
-    await update_template_pinned_versions(template_id, pinned)
+    # Recompose the template with this version override
+    result = await _recompose_with_pinned(
+        template_id,
+        version_overrides={
+            service_id: {"version": version, "semver": target_semver},
+        },
+        changelog=f"Pinned {short_name} to v{target_semver}",
+        change_type="minor",
+        created_by="version-pinner",
+    )
 
     logger.info(
-        f"Pinned {service_id} to v{version} (semver={ver.get('semver')}) "
-        f"in template '{template_id}'"
+        f"Pinned {service_id} to v{version} (semver={target_semver}) "
+        f"in template '{template_id}' and recomposed"
     )
 
     return JSONResponse({
@@ -5383,8 +5444,9 @@ async def pin_service_version(template_id: str, request: Request):
         "template_id": template_id,
         "service_id": service_id,
         "pinned_version": version,
-        "pinned_semver": ver.get("semver"),
-        "message": f"Pinned {service_id} to version {ver.get('semver') or version}",
+        "pinned_semver": target_semver,
+        "version": result.get("version"),
+        "message": f"Pinned {short_name} to v{target_semver} and recomposed template",
     })
 
 

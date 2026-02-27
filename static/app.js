@@ -4853,7 +4853,7 @@ async function pinServiceVersion(templateId, serviceId, version) {
     if (dropdown) dropdown.remove();
 
     const shortName = serviceId.split('/').pop();
-    showToast(`📌 Pinning ${shortName} to version ${version}…`, 'info');
+    showToast(`📌 Pinning ${shortName} to v${version} and recomposing…`, 'info');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pin-version`, {
@@ -4868,10 +4868,11 @@ async function pinServiceVersion(templateId, serviceId, version) {
             return;
         }
 
-        showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version}`, 'success', 4000);
+        showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version} — template recomposed`, 'success', 5000);
 
-        // Refresh the composition view
-        await _loadTemplateComposition(templateId);
+        // Refresh the full detail view (versions list changed too)
+        await loadAllData();
+        showTemplateDetail(templateId);
     } catch (err) {
         showToast(`Pin failed: ${err.message}`, 'error');
     }
