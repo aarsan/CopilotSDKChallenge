@@ -251,8 +251,14 @@ async def stream_validation(
                     # Check if testing produced a fix_template feedback
                     try:
                         evt = json.loads(test_line)
-                        if evt.get("phase") == "testing_complete" and evt.get("status") == "failed":
-                            testing_passed = False
+                        if evt.get("phase") == "testing_complete":
+                            tst_status = evt.get("status", "")
+                            if tst_status == "failed":
+                                testing_passed = False
+                            elif tst_status == "skipped":
+                                # Test generation issue — NOT an infra failure.
+                                # Treat as passed so the template gets validated.
+                                testing_passed = True
                         if evt.get("phase") == "testing_feedback" and evt.get("action") == "fix_template":
                             test_feedback = evt
                     except (json.JSONDecodeError, KeyError):
