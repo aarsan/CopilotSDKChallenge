@@ -4893,6 +4893,8 @@ async function _loadTemplatePipelineRuns(templateId) {
         if (!res.ok) return;
         const runs = await res.json();
         if (!runs || runs.length === 0) return;
+        // Update the shared cache so expandPipelineRun uses fresh data
+        _templatePipelineRunCache[templateId] = runs;
         container.innerHTML = _renderTemplatePipelineRuns(runs, templateId);
         container.style.display = '';
     } catch (_) { /* ignore */ }
@@ -9192,6 +9194,8 @@ async function fixAndValidateTemplate(templateId) {
     } finally {
         tracker.running = false;
         delete _activeTemplateValidations[templateId];
+        // Invalidate pipeline run cache so the next load picks up saved events
+        delete _templatePipelineRunCache[templateId];
     }
 }
 
