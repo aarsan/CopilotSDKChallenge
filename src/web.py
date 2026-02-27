@@ -5665,7 +5665,13 @@ async def validate_template(template_id: str, request: Request):
         if pname in user_params:
             final_params[pname] = user_params[pname]
         elif "defaultValue" in pdef:
-            final_params[pname] = pdef["defaultValue"]
+            dv = pdef["defaultValue"]
+            # Skip ARM expressions — they only work inside the template as
+            # defaultValues, not as explicit parameter values passed to the API.
+            # e.g. [resourceGroup().location] would be treated as a literal string.
+            if isinstance(dv, str) and dv.startswith("["):
+                continue
+            final_params[pname] = dv
         else:
             ptype = pdef.get("type", "string").lower()
             if ptype == "string":
