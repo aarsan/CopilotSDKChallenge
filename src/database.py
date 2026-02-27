@@ -1703,6 +1703,27 @@ async def upsert_template(tmpl: dict) -> None:
     )
 
 
+async def update_template_pinned_versions(
+    template_id: str, pinned_versions: dict
+) -> bool:
+    """Update only the pinned_versions_json column on a catalog template.
+
+    Returns True if the template was found and updated.
+    """
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT id FROM catalog_templates WHERE id = ?", (template_id,)
+    )
+    if not rows:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        "UPDATE catalog_templates SET pinned_versions_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(pinned_versions), now, template_id),
+    )
+    return True
+
+
 async def get_all_templates(
     category: Optional[str] = None,
     fmt: Optional[str] = None,

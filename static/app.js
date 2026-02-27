@@ -4682,7 +4682,7 @@ async function _loadTemplateComposition(templateId) {
                             <div class="hero-node-name">${escapeHtml(shortName)}</div>
                             ${catLabel ? `<div class="hero-node-cat">${escapeHtml(catLabel)}</div>` : ''}
                             <div class="hero-node-ver-row">
-                                <span class="hero-node-ver">v${verDisplay}</span>
+                                <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">v${verDisplay}</span>
                                 ${c.upgrade_available
                                     ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
                                     : '<span class="hero-node-latest">✓ latest</span>'}
@@ -4783,6 +4783,100 @@ async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
     }
 }
 
+/** Show a dropdown to pick which version to pin a service to in a template */
+async function showVersionPicker(templateId, serviceId, anchorEl) {
+    // Close any existing picker
+    const existing = document.querySelector('.version-picker-dropdown');
+    if (existing) existing.remove();
+
+    const shortName = serviceId.split('/').pop();
+
+    // Create dropdown
+    const dropdown = document.createElement('div');
+    dropdown.className = 'version-picker-dropdown';
+    dropdown.innerHTML = '<div class="version-picker-loading">Loading versions…</div>';
+
+    // Position near the anchor element
+    const rect = anchorEl.getBoundingClientRect();
+    dropdown.style.position = 'fixed';
+    dropdown.style.left = `${rect.left}px`;
+    dropdown.style.top = `${rect.bottom + 4}px`;
+    dropdown.style.zIndex = '9999';
+    document.body.appendChild(dropdown);
+
+    // Close on outside click
+    const closeHandler = (e) => {
+        if (!dropdown.contains(e.target) && e.target !== anchorEl) {
+            dropdown.remove();
+            document.removeEventListener('click', closeHandler, true);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler, true), 50);
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/service-versions/${encodeURIComponent(serviceId)}`);
+        if (!res.ok) throw new Error('Failed to load versions');
+        const data = await res.json();
+        const versions = data.versions || [];
+
+        if (!versions.length) {
+            dropdown.innerHTML = '<div class="version-picker-empty">No versions available</div>';
+            return;
+        }
+
+        let html = `<div class="version-picker-header">Pin ${escapeHtml(shortName)} to:</div>`;
+        html += '<div class="version-picker-list">';
+        for (const v of versions) {
+            const semver = v.semver || `${v.version}.0.0`;
+            const pinnedCls = v.is_pinned ? 'version-picker-item-pinned' : '';
+            const statusBadge = v.status === 'active' ? '<span class="version-picker-active">active</span>' : '';
+            html += `
+                <button class="version-picker-item ${pinnedCls}"
+                        onclick="pinServiceVersion('${escapeHtml(templateId)}','${escapeHtml(serviceId)}',${v.version})"
+                        ${v.is_pinned ? 'disabled' : ''}>
+                    <span class="version-picker-ver">v${escapeHtml(semver)}</span>
+                    ${statusBadge}
+                    ${v.is_pinned ? '<span class="version-picker-current">📌 current</span>' : ''}
+                </button>`;
+        }
+        html += '</div>';
+        dropdown.innerHTML = html;
+    } catch (err) {
+        dropdown.innerHTML = `<div class="version-picker-empty">Error: ${err.message}</div>`;
+    }
+}
+
+/** Pin a service to a specific version in a template */
+async function pinServiceVersion(templateId, serviceId, version) {
+    // Close the dropdown
+    const dropdown = document.querySelector('.version-picker-dropdown');
+    if (dropdown) dropdown.remove();
+
+    const shortName = serviceId.split('/').pop();
+    showToast(`📌 Pinning ${shortName} to version ${version}…`, 'info');
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pin-version`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service_id: serviceId, version }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(`Pin failed: ${data.detail || 'Unknown error'}`, 'error');
+            return;
+        }
+
+        showToast(`✅ ${shortName} pinned to v${data.pinned_semver || version}`, 'success', 4000);
+
+        // Refresh the composition view
+        await _loadTemplateComposition(templateId);
+    } catch (err) {
+        showToast(`Pin failed: ${err.message}`, 'error');
+    }
+}
+
 /** Check for dependency updates — renders a full chain report */
 async function checkForUpdates(templateId) {
     const btn = document.getElementById('tmpl-check-updates-btn');
@@ -4850,7 +4944,7 @@ async function checkForUpdates(templateId) {
                         <div class="upd-chain-info">
                             <div class="upd-chain-name">${escapeHtml(shortName)}</div>
                             <div class="upd-chain-versions">
-                                <span class="upd-chain-ver-current">📌 ${c.current_semver || '—'}</span>
+                                <span class="upd-chain-ver-current upd-chain-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">📌 ${c.current_semver || '—'}</span>
                                 ${c.upgrade_available ? `<span class="upd-chain-arrow">→</span><span class="upd-chain-ver-latest">${c.latest_semver}</span>` : '<span class="upd-chain-ver-ok">✓ latest</span>'}
                             </div>
                         </div>

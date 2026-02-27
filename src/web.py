@@ -5306,6 +5306,133 @@ async def get_template_composition(template_id: str):
     })
 
 
+# ── Pin Service Version in Template ──────────────────────────
+
+@app.patch("/api/catalog/templates/{template_id}/pin-version")
+async def pin_service_version(template_id: str, request: Request):
+    """Pin a specific service version in a composed template.
+
+    Body: {
+        "service_id": "Microsoft.Network/publicIPAddresses",
+        "version": 1           // integer version number to pin to
+    }
+
+    Updates the pinned_versions_json on the template so the composition
+    view reflects the chosen version. Does NOT recompose the ARM template —
+    the actual ARM content stays the same until the user explicitly recomposes.
+    """
+    from src.database import (
+        get_template_by_id, get_service_version, get_service_versions,
+        update_template_pinned_versions,
+    )
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    service_id = body.get("service_id", "").strip()
+    version = body.get("version")
+
+    if not service_id:
+        raise HTTPException(status_code=400, detail="service_id is required")
+    if version is None:
+        raise HTTPException(status_code=400, detail="version is required")
+
+    try:
+        version = int(version)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="version must be an integer")
+
+    # Verify the service is part of this template
+    svc_ids = tmpl.get("service_ids", [])
+    if service_id not in svc_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Service '{service_id}' is not part of this template",
+        )
+
+    # Verify the requested version exists
+    ver = await get_service_version(service_id, version)
+    if not ver:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} of '{service_id}' not found",
+        )
+
+    # Update pinned versions
+    pinned = tmpl.get("pinned_versions") or {}
+    pinned[service_id] = {
+        "version": version,
+        "semver": ver.get("semver"),
+    }
+
+    await update_template_pinned_versions(template_id, pinned)
+
+    logger.info(
+        f"Pinned {service_id} to v{version} (semver={ver.get('semver')}) "
+        f"in template '{template_id}'"
+    )
+
+    return JSONResponse({
+        "status": "ok",
+        "template_id": template_id,
+        "service_id": service_id,
+        "pinned_version": version,
+        "pinned_semver": ver.get("semver"),
+        "message": f"Pinned {service_id} to version {ver.get('semver') or version}",
+    })
+
+
+@app.get("/api/catalog/templates/{template_id}/service-versions/{service_id:path}")
+async def get_template_service_versions(template_id: str, service_id: str):
+    """List all available versions of a service used in a template,
+    indicating which version is currently pinned.
+
+    Returns the version list with the pinned version marked.
+    """
+    from src.database import (
+        get_template_by_id, get_service_versions,
+    )
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    svc_ids = tmpl.get("service_ids", [])
+    if service_id not in svc_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Service '{service_id}' is not part of this template",
+        )
+
+    all_versions = await get_service_versions(service_id)
+    pinned = (tmpl.get("pinned_versions") or {}).get(service_id, {})
+    pinned_int = pinned.get("version")
+
+    versions = []
+    for v in all_versions:
+        versions.append({
+            "version": v.get("version"),
+            "semver": v.get("semver"),
+            "status": v.get("status"),
+            "created_at": v.get("created_at"),
+            "is_pinned": v.get("version") == pinned_int,
+        })
+
+    return JSONResponse({
+        "template_id": template_id,
+        "service_id": service_id,
+        "pinned_version": pinned_int,
+        "pinned_semver": pinned.get("semver"),
+        "versions": versions,
+    })
+
+
 # ── Template Version Management ──────────────────────────────
 
 @app.get("/api/catalog/templates/{template_id}/versions")
