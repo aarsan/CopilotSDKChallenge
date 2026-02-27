@@ -134,11 +134,12 @@ async def _heal_policy(
     if _client is None:
         raise RuntimeError("Copilot SDK not available")
 
+    from src.agents import POLICY_FIXER
     strategy_text = await copilot_send(
         _client, model=plan_model,
-        system_prompt="You are an Azure Policy expert. Analyze why a policy rejects valid resources and propose specific fixes.",
-        prompt=analysis_prompt, timeout=60,
-        agent_name="POLICY_FIXER",
+        system_prompt=POLICY_FIXER.system_prompt + " Analyze why a policy rejects valid resources and propose specific fixes.",
+        prompt=analysis_prompt, timeout=POLICY_FIXER.timeout,
+        agent_name=POLICY_FIXER.name,
     )
 
     fix_prompt = (
@@ -153,9 +154,9 @@ async def _heal_policy(
 
     fixed_raw = await copilot_send(
         _client, model=fix_model,
-        system_prompt="You are an Azure Policy expert. Fix the policy JSON so it correctly evaluates the deployed resources. Return ONLY raw JSON.",
-        prompt=fix_prompt, timeout=60,
-        agent_name="POLICY_FIXER",
+        system_prompt=POLICY_FIXER.system_prompt + " Fix the policy JSON so it correctly evaluates the deployed resources.",
+        prompt=fix_prompt, timeout=POLICY_FIXER.timeout,
+        agent_name=POLICY_FIXER.name,
     )
 
     # Parse response
@@ -880,7 +881,10 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                         ctx.progress(1.0),
                         gate_decision=gate, gate_reason=gate_reason,
                         ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
-            raise StepFailure("governance_review", f"CISO blocked deployment: {gate_reason}")
+            raise StepFailure(
+                f"CISO blocked deployment: {gate_reason}",
+                healable=False, phase="governance_review",
+            )
 
         elif gate == "conditional":
             yield emit("progress", "governance_complete",
@@ -1461,6 +1465,17 @@ async def step_infra_testing(ctx: PipelineContext, step: StepDef):
                 "failed": event.get("tests_failed", 0),
                 "total": event.get("tests_total", 0),
             }
+
+            # Optionally block the pipeline on test failures.
+            # Controlled by INFRA_TEST_BLOCKING env var (default: false).
+            _test_blocking = os.environ.get("INFRA_TEST_BLOCKING", "").lower() in ("1", "true", "yes")
+            _failed_count = event.get("tests_failed", 0)
+            if _test_blocking and _failed_count > 0:
+                raise StepFailure(
+                    f"{_failed_count} infrastructure test(s) failed — "
+                    f"set INFRA_TEST_BLOCKING=false to make tests advisory-only",
+                    healable=False, phase="infra_testing",
+                )
         elif phase == "testing_feedback":
             yield emit("progress", phase, detail, prog,
                         action=event.get("action", ""),

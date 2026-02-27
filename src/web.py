@@ -540,7 +540,7 @@ def _sanitize_dns_zone_names(template_json: str) -> str:
     return template_json
 
 
-# ── Module-level LLM template healer ─────────────────────────
+# ── Module-level LLM template healer (DEPRECATED — use pipeline_helpers.copilot_heal_template) ──
 
 async def _copilot_heal_template(
     content: str,
@@ -548,163 +548,16 @@ async def _copilot_heal_template(
     previous_attempts: list[dict] | None = None,
     parameters: dict | None = None,
 ) -> str:
-    """Ask the Copilot SDK to fix an ARM template that failed deployment.
+    """DEPRECATED: Use ``pipeline_helpers.copilot_heal_template`` instead.
 
-    This is a top-level utility so both the validation pipeline and the
-    template deploy endpoint can use the same self-healing logic.
-
-    Args:
-        content: The ARM template JSON string.
-        error: The Azure error message.
-        previous_attempts: History of previous resolution steps (what was
-            tried, what error resulted, what changed).
-        parameters: The actual parameter VALUES sent to ARM. Including
-            these lets the LLM see what values caused the error and fix
-            the corresponding defaultValues in the template.
+    This wrapper delegates to the canonical implementation to avoid
+    duplicated logic.  All new callers should import from pipeline_helpers.
     """
-    steps_taken = len(previous_attempts) if previous_attempts else 0
-
-    prompt = (
-        "The following ARM template failed Azure deployment.\n\n"
-        f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
-        f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
+    from src.pipeline_helpers import copilot_heal_template as _canonical
+    return await _canonical(
+        content=content, error=error,
+        previous_attempts=previous_attempts, parameters=parameters,
     )
-
-    if parameters:
-        prompt += (
-            "--- PARAMETER VALUES SENT TO ARM ---\n"
-            f"{json.dumps(parameters, indent=2, default=str)}\n"
-            "--- END PARAMETER VALUES ---\n\n"
-            "IMPORTANT: These are the actual values that were sent to Azure. "
-            "If the error is caused by one of these values (e.g. an invalid "
-            "name, bad format, wrong length), you MUST fix the corresponding "
-            "parameter's \"defaultValue\" in the template so it produces a "
-            "valid value. The parameter values above are derived from the "
-            "template's defaultValues — fixing the defaultValue fixes the "
-            "deployed value.\n\n"
-        )
-
-    if previous_attempts:
-        prompt += "--- RESOLUTION HISTORY (these approaches did NOT work — do NOT repeat them) ---\n"
-        for i, pa in enumerate(previous_attempts, 1):
-            prompt += (
-                f"Step {i}: Error was: {pa['error'][:300]}\n"
-                f"  Strategy tried: {pa['fix_summary']}\n"
-                f"  Result: STILL FAILED — use a DIFFERENT strategy\n\n"
-            )
-        prompt += "--- END RESOLUTION HISTORY ---\n\n"
-
-    prompt += (
-        "Fix the template so it deploys successfully. Return ONLY the "
-        "corrected raw JSON — no markdown fences, no explanation.\n\n"
-        "CRITICAL RULES (in priority order):\n\n"
-        "1. PARAMETER VALUES — Check parameter defaultValues FIRST:\n"
-        "   - If the error mentions an invalid resource name, the name likely "
-        "     comes from a parameter defaultValue. Find that parameter and fix "
-        "     its defaultValue to comply with Azure naming rules.\n"
-        "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
-        "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
-        "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
-        "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
-        "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
-        "2. LOCATIONS — Keep ALL location parameters as \"[resourceGroup().location]\" "
-        "or \"[parameters('location')]\" — NEVER hardcode a region.\n"
-        "   EXCEPTION: Globally-scoped resources MUST use location \"global\":\n"
-        "   * Microsoft.Network/dnszones → location MUST be \"global\"\n"
-        "   * Microsoft.Network/trafficManagerProfiles → \"global\"\n"
-        "   * Microsoft.Cdn/profiles → \"global\"\n"
-        "   * Microsoft.Network/frontDoors → \"global\"\n\n"
-        "3. API VERSIONS — Use supported API versions:\n"
-        "   - Microsoft.Network/dnszones: use \"2018-05-01\" (NOT 2023-09-01)\n"
-        "   - Prefer stable 2023-xx-xx or 2024-xx-xx versions for other resources\n\n"
-        "4. STRUCTURAL FIXES:\n"
-        "   - Keep the same resource intent and resource names.\n"
-        "   - Fix schema issues, missing required properties.\n"
-        "   - If diagnosticSettings requires an external dependency, REMOVE it.\n"
-        "   - NEVER use '00000000-0000-0000-0000-000000000000' as a subscription ID — "
-        "     use [subscription().subscriptionId] instead.\n"
-        "   - If the error mentions 'LinkedAuthorizationFailed', use "
-        "     [subscription().subscriptionId] in resourceId() expressions.\n"
-        "   - If a resource requires complex external deps (VPN gateways, "
-        "     ExpressRoute), SIMPLIFY by removing those references.\n"
-    )
-
-    if steps_taken >= 3:
-        prompt += (
-            "\n\nESCALATION — multiple strategies have failed. Take DRASTIC measures:\n"
-            "- SIMPLIFY the template: remove optional/nice-to-have resources\n"
-            "- Remove diagnosticSettings, locks, autoscale rules if causing issues\n"
-            "- Use the SIMPLEST valid configuration for each resource\n"
-            "- Strip down to ONLY the primary resource with minimal properties\n"
-            "- Use well-known, stable API versions (prefer 2023-xx-xx or 2024-xx-xx)\n"
-        )
-    elif steps_taken >= 1:
-        prompt += (
-            "\n\nPrevious fix(es) did NOT resolve the issue.\n"
-            "You MUST try a FUNDAMENTALLY DIFFERENT approach:\n"
-            "- Try a different API version for the failing resource\n"
-            "- Restructure resource dependencies\n"
-            "- Remove or replace the problematic sub-resource\n"
-            "- Check if required properties changed in newer API versions\n"
-        )
-
-    from src.copilot_helpers import copilot_send
-
-    _client = await ensure_copilot_client()
-    if _client is None:
-        raise RuntimeError("Copilot SDK not available")
-
-    fixed = await copilot_send(
-        _client,
-        model=get_model_for_task(TEMPLATE_HEALER.task),
-        system_prompt=TEMPLATE_HEALER.system_prompt,
-        prompt=prompt,
-        timeout=90,
-        agent_name="TEMPLATE_HEALER",
-    )
-    if fixed.startswith("```"):
-        lines = fixed.split("\n")[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        fixed = "\n".join(lines).strip()
-
-    # Guard: ensure healer didn't corrupt the location parameter
-    # NOTE: some resource types (DNS zones, Traffic Manager, Front Door, etc.)
-    # legitimately use location "global" — don't override those.
-    _GLOBAL_LOCATION_TYPES = {
-        "microsoft.network/dnszones",
-        "microsoft.network/trafficmanagerprofiles",
-        "microsoft.cdn/profiles",
-        "microsoft.network/frontdoors",
-        "microsoft.network/frontdoorwebapplicationfirewallpolicies",
-    }
-    try:
-        _ft = json.loads(fixed)
-        _params = _ft.get("parameters", {})
-        _loc = _params.get("location", {})
-        _dv = _loc.get("defaultValue", "")
-        if isinstance(_dv, str) and _dv and not _dv.startswith("["):
-            _loc["defaultValue"] = "[resourceGroup().location]"
-            fixed = json.dumps(_ft, indent=2)
-        for _res in _ft.get("resources", []):
-            _rtype = (_res.get("type") or "").lower()
-            _rloc = _res.get("location", "")
-            # Skip resources that should use "global"
-            if _rtype in _GLOBAL_LOCATION_TYPES:
-                if isinstance(_rloc, str) and _rloc.lower() != "global":
-                    _res["location"] = "global"
-                    fixed = json.dumps(_ft, indent=2)
-                continue
-            if isinstance(_rloc, str) and _rloc and not _rloc.startswith("["):
-                _res["location"] = "[parameters('location')]"
-                fixed = json.dumps(_ft, indent=2)
-    except (json.JSONDecodeError, AttributeError):
-        pass
-
-    fixed = _ensure_parameter_defaults(fixed)
-    fixed = _sanitize_placeholder_guids(fixed)
-    fixed = _sanitize_dns_zone_names(fixed)
-    return fixed
 
 
 # ── Deep healing engine for composed/blueprint templates ──────
@@ -838,7 +691,8 @@ async def _deep_heal_composed_template(
         })
 
         try:
-            fixed_json = await _copilot_heal_template(
+            from src.pipeline_helpers import copilot_heal_template as _canonical_heal
+            fixed_json = await _canonical_heal(
                 content=source_json,
                 error=error_msg,
                 previous_attempts=heal_attempts,
@@ -4531,11 +4385,10 @@ async def auto_heal_template(template_id: str):
 
     if client:
         try:
-            fixed_arm = await _copilot_heal_template(
-                arm_json=arm_content,
-                error_message=error_description,
-                resource_type=template_id,
-                copilot_client=client,
+            from src.pipeline_helpers import copilot_heal_template as _canonical_heal
+            fixed_arm = await _canonical_heal(
+                content=arm_content,
+                error=error_description,
                 previous_attempts=[],
             )
         except Exception as e:
@@ -6529,7 +6382,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     async def _stream():
         nonlocal _active_semver, active_ver_num
         from src.copilot_helpers import copilot_send
-        from src.agents import LLM_REASONER, TEMPLATE_HEALER, DEEP_TEMPLATE_HEALER
+        from src.agents import LLM_REASONER, TEMPLATE_HEALER, DEEP_TEMPLATE_HEALER, ARM_MODIFIER
         from src.pipeline_helpers import (
             guard_locations, ensure_parameter_defaults,
             sanitize_placeholder_guids, extract_param_values,
@@ -6928,16 +6781,11 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     if _exec_client:
                         raw = await copilot_send(
                             _exec_client,
-                            model=get_model_for_task(Task.CODE_GENERATION),
-                            system_prompt=(
-                                "You are an expert Azure ARM template engineer. "
-                                "You receive a migration plan and an existing template. "
-                                "You produce the updated template following the plan precisely. "
-                                "Return ONLY valid JSON — no markdown, no explanation."
-                            ),
+                            model=get_model_for_task(ARM_MODIFIER.task),
+                            system_prompt=ARM_MODIFIER.system_prompt,
                             prompt=execute_prompt,
-                            timeout=90,
-                            agent_name="ARM_MODIFIER",
+                            timeout=ARM_MODIFIER.timeout,
+                            agent_name=ARM_MODIFIER.name,
                         )
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
@@ -7145,15 +6993,25 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     _gate_reason = gov_result["gate_reason"]
 
                     if _gate == "blocked":
+                        _ciso_findings = ciso_rev.get("findings", [])
+                        _critical_findings = [f for f in _ciso_findings if f.get("severity") in ("critical", "high")]
                         yield json.dumps({
                             "type": "progress", "phase": "governance_blocked",
                             "detail": f"🚫 Governance gate: BLOCKED — {_gate_reason}",
                             "progress": 0.33,
                             "gate_decision": _gate, "gate_reason": _gate_reason,
+                            "findings": _ciso_findings,
+                            "critical_findings": _critical_findings,
+                            "service_id": service_id,
+                            "version": new_ver,
+                            "semver": new_semver,
                         }) + "\n"
                         yield json.dumps({
                             "type": "error", "phase": "governance_blocked",
                             "detail": f"Deployment blocked by CISO. Resolve critical findings before proceeding.",
+                            "service_id": service_id,
+                            "version": new_ver,
+                            "semver": new_semver,
                         }) + "\n"
                         return
 
@@ -7265,8 +7123,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             }) + "\n"
                             raw = await copilot_send(_client, model=fix_model,
                                 system_prompt=TEMPLATE_HEALER.system_prompt,
-                                prompt=fix_prompt, timeout=90,
-                                agent_name="TEMPLATE_HEALER")
+                                prompt=fix_prompt, timeout=TEMPLATE_HEALER.timeout,
+                                agent_name=TEMPLATE_HEALER.name)
                             cleaned = raw.strip()
                             if cleaned.startswith("```"):
                                 lines = cleaned.split("\n")
@@ -7432,12 +7290,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
                         _wif_strategy = await copilot_send(
                             _client, model=_plan_model,
-                            system_prompt=(
-                                "You are a senior Azure infrastructure engineer debugging ARM template "
-                                "validation failures. Analyze errors deeply and propose concrete fixes."
-                            ),
-                            prompt=_wif_analysis_prompt, timeout=60,
-                            agent_name="DEEP_TEMPLATE_HEALER",
+                            system_prompt=DEEP_TEMPLATE_HEALER.system_prompt,
+                            prompt=_wif_analysis_prompt, timeout=DEEP_TEMPLATE_HEALER.timeout,
+                            agent_name=DEEP_TEMPLATE_HEALER.name,
                         )
                         logger.info(f"[What-If Healer] Strategy (attempt {attempt}): {_wif_strategy[:300]}")
 
@@ -7459,10 +7314,11 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             "\"[parameters('location')]\". Ensure every parameter has defaultValue.\n"
                         )
                         _wif_healer_sys = DEEP_TEMPLATE_HEALER.system_prompt if _use_deep_wif else TEMPLATE_HEALER.system_prompt
+                        _wif_healer_name = DEEP_TEMPLATE_HEALER.name if _use_deep_wif else TEMPLATE_HEALER.name
                         raw = await copilot_send(_client, model=_fix_model,
                             system_prompt=_wif_healer_sys,
-                            prompt=_wif_fix_prompt, timeout=90,
-                            agent_name="DEEP_TEMPLATE_HEALER")
+                            prompt=_wif_fix_prompt, timeout=DEEP_TEMPLATE_HEALER.timeout,
+                            agent_name=_wif_healer_name)
                         cleaned = raw.strip()
                         if cleaned.startswith("```"):
                             lines = cleaned.split("\n")
@@ -7643,15 +7499,9 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
                     _strategy_text = await copilot_send(
                         _client, model=_plan_model,
-                        system_prompt=(
-                            "You are a senior Azure infrastructure engineer debugging ARM template "
-                            "deployment failures. You think like a developer — you analyze errors deeply, "
-                            "identify root causes, and propose concrete, specific fixes. "
-                            "You understand Azure resource provider requirements, API version "
-                            "compatibility, SKU availability, quota limits, and naming rules."
-                        ),
-                        prompt=_analysis_prompt, timeout=60,
-                        agent_name="DEEP_TEMPLATE_HEALER",
+                        system_prompt=DEEP_TEMPLATE_HEALER.system_prompt,
+                        prompt=_analysis_prompt, timeout=DEEP_TEMPLATE_HEALER.timeout,
+                        agent_name=DEEP_TEMPLATE_HEALER.name,
                     )
                     logger.info(f"[Deploy Healer] Phase 1 strategy (attempt {attempt}, sub {_deploy_heals}): {_strategy_text[:300]}")
 
@@ -7695,11 +7545,12 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     )
 
                     _healer_sys = DEEP_TEMPLATE_HEALER.system_prompt if _use_deep else TEMPLATE_HEALER.system_prompt
+                    _healer_name = DEEP_TEMPLATE_HEALER.name if _use_deep else TEMPLATE_HEALER.name
                     raw = await copilot_send(
                         _client, model=_fix_model,
                         system_prompt=_healer_sys,
-                        prompt=_fix_prompt, timeout=90,
-                        agent_name="DEEP_TEMPLATE_HEALER",
+                        prompt=_fix_prompt, timeout=DEEP_TEMPLATE_HEALER.timeout,
+                        agent_name=_healer_name,
                     )
                     cleaned = raw.strip()
                     if cleaned.startswith("```"):
