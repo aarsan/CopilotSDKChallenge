@@ -1024,10 +1024,18 @@ async def copilot_heal_template(
     error: str,
     previous_attempts: list[dict] | None = None,
     parameters: dict | None = None,
+    standards_ctx: str | None = None,
+    planning_ctx: str | None = None,
+    resource_type_hints: str | None = None,
 ) -> str:
     """Single-phase LLM healer for ARM templates.
 
     Used by template validation and deploy pipelines.
+
+    Optional context parameters (``standards_ctx``, ``planning_ctx``,
+    ``resource_type_hints``) enrich the prompt with organizational
+    standards and architecture intent so the healer makes better
+    decisions — matching the context available to the two-phase healer.
     """
     from src.agents import TEMPLATE_HEALER
     from src.copilot_helpers import copilot_send
@@ -1040,6 +1048,25 @@ async def copilot_heal_template(
         f"--- ERROR ---\n{error}\n--- END ERROR ---\n\n"
         f"--- CURRENT TEMPLATE ---\n{content}\n--- END TEMPLATE ---\n\n"
     )
+
+    if standards_ctx:
+        prompt += (
+            "--- ORGANIZATIONAL STANDARDS ---\n"
+            f"{standards_ctx[:3000]}\n"
+            "--- END STANDARDS ---\n\n"
+        )
+    if planning_ctx:
+        prompt += (
+            "--- ARCHITECTURE PLAN ---\n"
+            f"{planning_ctx[:2000]}\n"
+            "--- END PLAN ---\n\n"
+        )
+    if resource_type_hints:
+        prompt += (
+            "--- RESOURCE-TYPE HINTS ---\n"
+            f"{resource_type_hints[:2000]}\n"
+            "--- END HINTS ---\n\n"
+        )
 
     if parameters:
         prompt += (
