@@ -935,6 +935,50 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
     MAX_REGEN = step.config.get("max_regen_cycles", 2)
     _regen_count = 0
 
+    # ── Pre-loop structural validation ──
+    # Catch missing variable/parameter references before starting the
+    # expensive deploy loop.  This is especially important for templates
+    # that were LLM-generated and may have stale references.
+    from src.pipeline_helpers import validate_arm_references
+    try:
+        _pre_tmpl = json.loads(ctx.template) if isinstance(ctx.template, str) else ctx.template
+        ref_errors = validate_arm_references(_pre_tmpl)
+        if ref_errors:
+            logger.warning(f"Pre-validation found {len(ref_errors)} reference errors — auto-fixing")
+            tpl_str = json.dumps(_pre_tmpl)
+            for err in ref_errors:
+                if "Missing variable" in err:
+                    vname = err.split("'")[1]
+                    tpl_str = tpl_str.replace(
+                        f"[variables('{vname}')]", f"[parameters('{vname}')]"
+                    ).replace(
+                        f"variables('{vname}')", f"parameters('{vname}')"
+                    )
+                    _pre_tmpl = json.loads(tpl_str)
+                    _pre_tmpl.setdefault("parameters", {})[vname] = {
+                        "type": "string",
+                        "defaultValue": f"infraforge-{vname[:20]}",
+                        "metadata": {"description": f"Auto-fixed: was undefined variable '{vname}'"},
+                    }
+                    tpl_str = json.dumps(_pre_tmpl)
+                elif "Missing parameter" in err:
+                    pname = err.split("'")[1]
+                    _pre_tmpl.setdefault("parameters", {})[pname] = {
+                        "type": "string",
+                        "defaultValue": f"infraforge-{pname[:20]}",
+                        "metadata": {"description": f"Auto-added: {pname}"},
+                    }
+                    tpl_str = json.dumps(_pre_tmpl)
+            ctx.template = json.dumps(_pre_tmpl, indent=2)
+            tmpl_meta = extract_meta(ctx.template)
+            yield emit(
+                "pre_validation_fix", "validation",
+                f"Found {len(ref_errors)} structural issue(s) — auto-fixed before deployment",
+                ctx.progress(0.01),
+            )
+    except Exception as pv_err:
+        logger.warning(f"Pre-validation check error (non-fatal): {pv_err}")
+
     attempt = 0
     while attempt < MAX_HEAL:
         attempt += 1

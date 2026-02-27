@@ -973,10 +973,13 @@ async def _deep_heal_composed_template(
             if arm:
                 all_arms[sid] = arm
 
-    # Recompose using the same logic as the compose endpoint
+    # Recompose using the shared composition helper
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
+
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources = []
     combined_outputs = {}
+    all_resolved_vars: dict[str, dict] = {}
 
     for sid in service_ids:
         tpl = all_arms.get(sid)
@@ -985,80 +988,35 @@ async def _deep_heal_composed_template(
         short_name = sid.split("/")[-1].lower()
         suffix = f"_{short_name}"
 
-        src_params = tpl.get("parameters", {})
-        src_resources = tpl.get("resources", [])
-        src_outputs = tpl.get("outputs", {})
+        extra_params, proc_resources, proc_outputs, resolved_vars = \
+            resolve_variables_for_composition(tpl, suffix)
 
-        instance_name_param = f"resourceName{suffix}"
-        combined_params[instance_name_param] = {
-            "type": "string",
-            "metadata": {"description": f"Name for {sid}"},
-        }
-
-        # Add ALL non-standard params from the service template
-        all_non_standard = [
-            pname for pname in src_params
-            if pname not in {"resourceName", "location", "environment",
-                             "projectName", "ownerEmail", "costCenter"}
-        ]
-        for pname in all_non_standard:
-            pdef = src_params.get(pname)
-            if not pdef:
-                continue
-            suffixed = f"{pname}{suffix}"
-            combined_params[suffixed] = dict(pdef)
-
-        # Clone resources, replacing ALL parameter references
-        for res in src_resources:
-            res_str = json.dumps(res)
-            res_str = res_str.replace(
-                "[parameters('resourceName')]",
-                f"[parameters('{instance_name_param}')]",
-            )
-            res_str = res_str.replace(
-                "parameters('resourceName')",
-                f"parameters('{instance_name_param}')",
-            )
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                res_str = res_str.replace(
-                    f"[parameters('{pname}')]",
-                    f"[parameters('{suffixed}')]",
-                )
-                res_str = res_str.replace(
-                    f"parameters('{pname}')",
-                    f"parameters('{suffixed}')",
-                )
-            combined_resources.append(json.loads(res_str))
-
-        for oname, odef in src_outputs.items():
-            out_name = f"{oname}{suffix}"
-            out_val = json.dumps(odef)
-            out_val = out_val.replace(
-                "[parameters('resourceName')]",
-                f"[parameters('{instance_name_param}')]",
-            )
-            out_val = out_val.replace(
-                "parameters('resourceName')",
-                f"parameters('{instance_name_param}')",
-            )
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                out_val = out_val.replace(
-                    f"[parameters('{pname}')]",
-                    f"[parameters('{suffixed}')]",
-                )
-                out_val = out_val.replace(
-                    f"parameters('{pname}')",
-                    f"parameters('{suffixed}')",
-                )
-            combined_outputs[out_name] = json.loads(out_val)
+        combined_params.update(extra_params)
+        combined_resources.extend(proc_resources)
+        combined_outputs.update(proc_outputs)
+        all_resolved_vars[suffix] = resolved_vars
 
     composed = dict(_TEMPLATE_WRAPPER)
     composed["parameters"] = combined_params
-    composed["variables"] = {}
+    composed["variables"] = build_composed_variables(all_resolved_vars)
     composed["resources"] = combined_resources
     composed["outputs"] = combined_outputs
+
+    # Pre-deploy structural validation
+    ref_errors = validate_arm_references(composed)
+    if ref_errors:
+        logger.warning(f"Deep-heal recompose reference errors (auto-fixing): {ref_errors}")
+        for err in ref_errors:
+            if "Missing variable" in err:
+                vname = err.split("'")[1]
+                composed.setdefault("variables", {})[vname] = f"[parameters('resourceName')]"
+            elif "Missing parameter" in err:
+                pname = err.split("'")[1]
+                composed.setdefault("parameters", {})[pname] = {
+                    "type": "string",
+                    "defaultValue": f"infraforge-{pname[:20]}",
+                    "metadata": {"description": f"Auto-added: {pname}"},
+                }
 
     # Ensure all params have defaults
     composed_json = _ensure_parameter_defaults(json.dumps(composed, indent=2))
@@ -2164,10 +2122,12 @@ async def compose_template_from_services(request: Request):
 
     # ── Compose the combined ARM template ─────────────────────
     from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, _STANDARD_TAGS
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
 
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources = []
     combined_outputs = {}
+    all_resolved_vars: dict[str, dict] = {}  # suffix → resolved variables
     service_ids = []
     resource_types = []
     tags_list = []
@@ -2184,96 +2144,46 @@ async def compose_template_from_services(request: Request):
         resource_types.append(sid)
         tags_list.append(svc.get("category", ""))
 
-        src_params = tpl.get("parameters", {})
-        src_resources = tpl.get("resources", [])
-        src_outputs = tpl.get("outputs", {})
-
         for idx in range(1, qty + 1):
             suffix = f"_{short_name}" if qty == 1 else f"_{short_name}{idx}"
 
-            # Add a resourceName parameter for this instance
-            instance_name_param = f"resourceName{suffix}"
-            combined_params[instance_name_param] = {
-                "type": "string",
-                "metadata": {
-                    "description": f"Name for {svc.get('name', sid)}"
-                    + (f" (instance {idx})" if qty > 1 else ""),
-                },
-            }
+            extra_params, proc_resources, proc_outputs, resolved_vars = \
+                resolve_variables_for_composition(tpl, suffix)
 
-            # Add ALL non-standard parameters from the service template
-            # (not just user-chosen ones). This ensures every parameter
-            # reference in the resource body has a matching definition.
-            all_non_standard = [
-                pname for pname in src_params
-                if pname not in STANDARD_PARAMS and pname != "resourceName"
-            ]
-            for pname in all_non_standard:
-                pdef = src_params.get(pname)
-                if not pdef:
-                    continue
-                suffixed = f"{pname}{suffix}"
-                combined_params[suffixed] = dict(pdef)
-                meta = combined_params[suffixed].setdefault("metadata", {})
-                if qty > 1:
-                    meta["description"] = meta.get("description", pname) + f" (instance {idx})"
+            # Add quantity metadata to params if needed
+            if qty > 1:
+                for pdef in extra_params.values():
+                    meta = pdef.setdefault("metadata", {})
+                    meta["description"] = meta.get("description", "") + f" (instance {idx})"
 
-            # Clone resources, replacing ALL parameter references
-            for res in src_resources:
-                cloned = _json.loads(_json.dumps(res))
-                res_str = _json.dumps(cloned)
-                # Replace resourceName first (bracketed + bare for compound expressions)
-                res_str = res_str.replace(
-                    "[parameters('resourceName')]",
-                    f"[parameters('{instance_name_param}')]",
-                )
-                res_str = res_str.replace(
-                    "parameters('resourceName')",
-                    f"parameters('{instance_name_param}')",
-                )
-                # Replace ALL non-standard param references (not just chosen)
-                for pname in all_non_standard:
-                    suffixed = f"{pname}{suffix}"
-                    res_str = res_str.replace(
-                        f"[parameters('{pname}')]",
-                        f"[parameters('{suffixed}')]",
-                    )
-                    res_str = res_str.replace(
-                        f"parameters('{pname}')",
-                        f"parameters('{suffixed}')",
-                    )
-                combined_resources.append(_json.loads(res_str))
-
-            # Clone outputs with suffixed names and remapped param refs
-            for oname, odef in src_outputs.items():
-                out_name = f"{oname}{suffix}"
-                out_val = _json.dumps(odef)
-                out_val = out_val.replace(
-                    "[parameters('resourceName')]",
-                    f"[parameters('{instance_name_param}')]",
-                )
-                out_val = out_val.replace(
-                    "parameters('resourceName')",
-                    f"parameters('{instance_name_param}')",
-                )
-                for pname in all_non_standard:
-                    suffixed = f"{pname}{suffix}"
-                    out_val = out_val.replace(
-                        f"[parameters('{pname}')]",
-                        f"[parameters('{suffixed}')]",
-                    )
-                    out_val = out_val.replace(
-                        f"parameters('{pname}')",
-                        f"parameters('{suffixed}')",
-                    )
-                combined_outputs[out_name] = _json.loads(out_val)
+            combined_params.update(extra_params)
+            combined_resources.extend(proc_resources)
+            combined_outputs.update(proc_outputs)
+            all_resolved_vars[suffix] = resolved_vars
 
     # Build the final composed template
     composed = dict(_TEMPLATE_WRAPPER)
     composed["parameters"] = combined_params
-    composed["variables"] = {}
+    composed["variables"] = build_composed_variables(all_resolved_vars)
     composed["resources"] = combined_resources
     composed["outputs"] = combined_outputs
+
+    # Pre-deploy structural validation
+    ref_errors = validate_arm_references(composed)
+    if ref_errors:
+        logger.warning(f"Composition reference errors (auto-fixing): {ref_errors}")
+        # Auto-fix: add missing variable/parameter stubs
+        for err in ref_errors:
+            if "Missing variable" in err:
+                vname = err.split("'")[1]
+                composed.setdefault("variables", {})[vname] = f"[parameters('resourceName')]"
+            elif "Missing parameter" in err:
+                pname = err.split("'")[1]
+                composed.setdefault("parameters", {})[pname] = {
+                    "type": "string",
+                    "defaultValue": f"infraforge-{pname[:20]}",
+                    "metadata": {"description": f"Auto-added: {pname}"},
+                }
 
     content_str = _json.dumps(composed, indent=2)
 
@@ -5122,9 +5032,12 @@ async def _recompose_with_pinned(
             logger.info(f"Recompose auto-added dependency: {dep_sid}")
 
     # ── Compose ───────────────────────────────────────────────
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
+
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources: list[dict] = []
     combined_outputs: dict = {}
+    all_resolved_vars: dict[str, dict] = {}
     resource_types: list[str] = []
     tags_list: list[str] = []
 
@@ -5137,79 +5050,38 @@ async def _recompose_with_pinned(
         resource_types.append(sid)
         tags_list.append(svc.get("category", ""))
 
-        src_params = tpl.get("parameters", {})
-        src_resources = tpl.get("resources", [])
-        src_outputs = tpl.get("outputs", {})
-
         suffix = f"_{short_name}"
-        instance_name_param = f"resourceName{suffix}"
-        combined_params[instance_name_param] = {
-            "type": "string",
-            "metadata": {"description": f"Name for {svc.get('name', sid)}"},
-        }
 
-        all_non_standard = [
-            pname for pname in src_params
-            if pname not in STANDARD_PARAMS and pname != "resourceName"
-        ]
-        for pname in all_non_standard:
-            pdef = src_params.get(pname)
-            if not pdef:
-                continue
-            suffixed = f"{pname}{suffix}"
-            combined_params[suffixed] = dict(pdef)
+        extra_params, proc_resources, proc_outputs, resolved_vars = \
+            resolve_variables_for_composition(tpl, suffix)
 
-        for res in src_resources:
-            res_str = _json.dumps(res)
-            res_str = res_str.replace(
-                "[parameters('resourceName')]",
-                f"[parameters('{instance_name_param}')]",
-            )
-            res_str = res_str.replace(
-                "parameters('resourceName')",
-                f"parameters('{instance_name_param}')",
-            )
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                res_str = res_str.replace(
-                    f"[parameters('{pname}')]",
-                    f"[parameters('{suffixed}')]",
-                )
-                res_str = res_str.replace(
-                    f"parameters('{pname}')",
-                    f"parameters('{suffixed}')",
-                )
-            combined_resources.append(_json.loads(res_str))
-
-        for oname, odef in src_outputs.items():
-            out_name = f"{oname}{suffix}"
-            out_val = _json.dumps(odef)
-            out_val = out_val.replace(
-                "[parameters('resourceName')]",
-                f"[parameters('{instance_name_param}')]",
-            )
-            out_val = out_val.replace(
-                "parameters('resourceName')",
-                f"parameters('{instance_name_param}')",
-            )
-            for pname in all_non_standard:
-                suffixed = f"{pname}{suffix}"
-                out_val = out_val.replace(
-                    f"[parameters('{pname}')]",
-                    f"[parameters('{suffixed}')]",
-                )
-                out_val = out_val.replace(
-                    f"parameters('{pname}')",
-                    f"parameters('{suffixed}')",
-                )
-            combined_outputs[out_name] = _json.loads(out_val)
+        combined_params.update(extra_params)
+        combined_resources.extend(proc_resources)
+        combined_outputs.update(proc_outputs)
+        all_resolved_vars[suffix] = resolved_vars
 
     # ── Build the recomposed template ─────────────────────────
     composed = dict(_TEMPLATE_WRAPPER)
     composed["parameters"] = combined_params
-    composed["variables"] = {}
+    composed["variables"] = build_composed_variables(all_resolved_vars)
     composed["resources"] = combined_resources
     composed["outputs"] = combined_outputs
+
+    # Pre-deploy structural validation
+    ref_errors = validate_arm_references(composed)
+    if ref_errors:
+        logger.warning(f"Recompose reference errors (auto-fixing): {ref_errors}")
+        for err in ref_errors:
+            if "Missing variable" in err:
+                vname = err.split("'")[1]
+                composed.setdefault("variables", {})[vname] = f"[parameters('resourceName')]"
+            elif "Missing parameter" in err:
+                pname = err.split("'")[1]
+                composed.setdefault("parameters", {})[pname] = {
+                    "type": "string",
+                    "defaultValue": f"infraforge-{pname[:20]}",
+                    "metadata": {"description": f"Auto-added: {pname}"},
+                }
 
     content_str = _json.dumps(composed, indent=2)
 

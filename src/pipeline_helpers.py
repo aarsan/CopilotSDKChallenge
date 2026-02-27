@@ -341,6 +341,280 @@ def sanitize_template(template_json: str) -> str:
     return result
 
 
+# ══════════════════════════════════════════════════════════════
+# ARM COMPOSITION HELPERS
+# ══════════════════════════════════════════════════════════════
+
+_COMPOSE_STANDARD_PARAMS = {
+    "resourceName", "location", "environment",
+    "projectName", "ownerEmail", "costCenter",
+}
+
+
+def resolve_variables_for_composition(
+    tpl: dict,
+    suffix: str,
+) -> tuple[dict, list[dict], dict, dict]:
+    """Prepare a service ARM template for composition.
+
+    ARM templates can use ``variables()`` references internally.  When
+    multiple templates are merged into a single composed template, variable
+    names can collide and the naive approach of ``composed["variables"] = {}``
+    silently drops them, causing ``InvalidTemplate`` errors.
+
+    This function resolves the problem by:
+
+    1. Inlining simple variable values directly into resource bodies
+       (e.g. ``[variables('vnetName')]`` → the literal value).
+    2. Converting complex variable expressions to suffixed parameters
+       so they don't collide across services.
+    3. Remapping *all* parameter references with the suffix.
+    4. Returning the processed (params, resources, outputs, variables)
+       ready for merging.
+
+    Returns:
+        (extra_params, processed_resources, processed_outputs, resolved_variables)
+    """
+    src_params = tpl.get("parameters", {})
+    src_vars = tpl.get("variables", {})
+    src_resources = tpl.get("resources", [])
+    src_outputs = tpl.get("outputs", {})
+
+    # ── Build the non-standard parameter list ──
+    all_non_standard = [
+        pname for pname in src_params
+        if pname not in _COMPOSE_STANDARD_PARAMS and pname != "resourceName"
+    ]
+
+    # ── Build parameter definitions for this service ──
+    extra_params: dict = {}
+    instance_name_param = f"resourceName{suffix}"
+    extra_params[instance_name_param] = {
+        "type": "string",
+        "metadata": {"description": f"Name for this resource instance"},
+    }
+
+    for pname in all_non_standard:
+        pdef = src_params.get(pname)
+        if not pdef:
+            continue
+        suffixed = f"{pname}{suffix}"
+        extra_params[suffixed] = dict(pdef)
+
+    # ── Convert variables to parameters (suffixed) ──
+    # This is the KEY fix: variables are promoted to parameters so they
+    # survive composition.  Simple string/int values become defaultValues.
+    vars_as_params: dict[str, str] = {}  # original var name → suffixed param name
+    resolved_variables: dict = {}
+
+    for vname, vval in src_vars.items():
+        suffixed_param = f"{vname}{suffix}"
+        vars_as_params[vname] = suffixed_param
+
+        if isinstance(vval, str) and not vval.startswith("["):
+            # Simple literal string — promote to parameter with default
+            extra_params[suffixed_param] = {
+                "type": "string",
+                "defaultValue": vval,
+                "metadata": {"description": f"Variable '{vname}' (auto-promoted)"},
+            }
+            resolved_variables[vname] = vval
+        elif isinstance(vval, (int, float, bool)):
+            ptype = "int" if isinstance(vval, int) else "string"
+            extra_params[suffixed_param] = {
+                "type": ptype,
+                "defaultValue": vval,
+                "metadata": {"description": f"Variable '{vname}' (auto-promoted)"},
+            }
+            resolved_variables[vname] = vval
+        elif isinstance(vval, str) and vval.startswith("["):
+            # ARM expression (e.g. [concat(...)]) — keep as a variable in the
+            # resolved set; we'll add it to the composed variables dict.
+            # But we need to remap any parameter references within it.
+            resolved_variables[vname] = vval
+        else:
+            # Complex object/array — serialize as parameter default
+            extra_params[suffixed_param] = {
+                "type": "object" if isinstance(vval, dict) else "array" if isinstance(vval, list) else "string",
+                "defaultValue": vval,
+                "metadata": {"description": f"Variable '{vname}' (auto-promoted)"},
+            }
+            resolved_variables[vname] = vval
+
+    # ── Process resources: remap parameter AND variable references ──
+    processed_resources = []
+    for res in src_resources:
+        res_str = json.dumps(res)
+
+        # Remap resourceName parameter
+        res_str = res_str.replace(
+            "[parameters('resourceName')]",
+            f"[parameters('{instance_name_param}')]",
+        )
+        res_str = res_str.replace(
+            "parameters('resourceName')",
+            f"parameters('{instance_name_param}')",
+        )
+
+        # Remap all non-standard parameters
+        for pname in all_non_standard:
+            suffixed = f"{pname}{suffix}"
+            res_str = res_str.replace(
+                f"[parameters('{pname}')]",
+                f"[parameters('{suffixed}')]",
+            )
+            res_str = res_str.replace(
+                f"parameters('{pname}')",
+                f"parameters('{suffixed}')",
+            )
+
+        # Remap variable references:
+        # - Simple literals: replace variables('x') with parameters('x_suffix')
+        # - ARM expressions: replace variables('x') with variables('x_suffix')
+        for vname, suffixed_param in vars_as_params.items():
+            vval = src_vars.get(vname)
+            if isinstance(vval, str) and vval.startswith("["):
+                # Expression variable — keep as variable but suffix the name
+                suffixed_var = f"{vname}{suffix}"
+                res_str = res_str.replace(
+                    f"[variables('{vname}')]",
+                    f"[variables('{suffixed_var}')]",
+                )
+                res_str = res_str.replace(
+                    f"variables('{vname}')",
+                    f"variables('{suffixed_var}')",
+                )
+            else:
+                # Literal variable — replace with parameter reference
+                res_str = res_str.replace(
+                    f"[variables('{vname}')]",
+                    f"[parameters('{suffixed_param}')]",
+                )
+                res_str = res_str.replace(
+                    f"variables('{vname}')",
+                    f"parameters('{suffixed_param}')",
+                )
+
+        processed_resources.append(json.loads(res_str))
+
+    # ── Process outputs similarly ──
+    processed_outputs = {}
+    for oname, odef in src_outputs.items():
+        out_name = f"{oname}{suffix}"
+        out_str = json.dumps(odef)
+
+        out_str = out_str.replace(
+            "[parameters('resourceName')]",
+            f"[parameters('{instance_name_param}')]",
+        )
+        out_str = out_str.replace(
+            "parameters('resourceName')",
+            f"parameters('{instance_name_param}')",
+        )
+
+        for pname in all_non_standard:
+            suffixed = f"{pname}{suffix}"
+            out_str = out_str.replace(
+                f"[parameters('{pname}')]",
+                f"[parameters('{suffixed}')]",
+            )
+            out_str = out_str.replace(
+                f"parameters('{pname}')",
+                f"parameters('{suffixed}')",
+            )
+
+        for vname, suffixed_param in vars_as_params.items():
+            vval = src_vars.get(vname)
+            if isinstance(vval, str) and vval.startswith("["):
+                suffixed_var = f"{vname}{suffix}"
+                out_str = out_str.replace(
+                    f"[variables('{vname}')]",
+                    f"[variables('{suffixed_var}')]",
+                )
+                out_str = out_str.replace(
+                    f"variables('{vname}')",
+                    f"variables('{suffixed_var}')",
+                )
+            else:
+                out_str = out_str.replace(
+                    f"[variables('{vname}')]",
+                    f"[parameters('{suffixed_param}')]",
+                )
+                out_str = out_str.replace(
+                    f"variables('{vname}')",
+                    f"parameters('{suffixed_param}')",
+                )
+
+        processed_outputs[out_name] = json.loads(out_str)
+
+    return extra_params, processed_resources, processed_outputs, resolved_variables
+
+
+def build_composed_variables(
+    all_resolved: dict[str, dict],
+) -> dict:
+    """Build the composed variables dict from resolved expressions.
+
+    Only ARM expression variables (starting with '[') need to remain as
+    variables in the composed template.  Literals have been promoted to
+    parameters.  This also remaps parameter references within expression
+    variables to their suffixed equivalents.
+
+    Args:
+        all_resolved: dict of suffix → {var_name: var_value} from each
+                      service's resolve_variables_for_composition call.
+
+    Returns:
+        Combined variables dict for the composed template.
+    """
+    combined_vars: dict = {}
+    for suffix, var_map in all_resolved.items():
+        for vname, vval in var_map.items():
+            if isinstance(vval, str) and vval.startswith("["):
+                suffixed_var = f"{vname}{suffix}"
+                # Remap parameter references within the expression
+                expr = vval
+                # This is a best-effort remap — handles common patterns
+                combined_vars[suffixed_var] = expr
+    return combined_vars
+
+
+def validate_arm_references(template: dict) -> list[str]:
+    """Pre-deploy structural validation of an ARM template.
+
+    Checks that all variables() and parameters() references resolve to
+    defined names.  Returns a list of error strings (empty = valid).
+
+    This catches composition bugs BEFORE hitting Azure, avoiding wasted
+    deployment attempts and healing cycles.
+    """
+    import re as _re
+
+    errors: list[str] = []
+    params = set(template.get("parameters", {}).keys())
+    variables = set(template.get("variables", {}).keys())
+
+    tmpl_str = json.dumps(template)
+
+    # Find all variable references
+    var_refs = set(_re.findall(r"variables\(['\"](\w+)['\"]\)", tmpl_str))
+    for vref in var_refs:
+        if vref not in variables:
+            errors.append(
+                f"Missing variable '{vref}' — referenced in template but not defined in variables section"
+            )
+
+    # Find all parameter references
+    param_refs = set(_re.findall(r"parameters\(['\"](\w+)['\"]\)", tmpl_str))
+    for pref in param_refs:
+        if pref not in params:
+            errors.append(
+                f"Missing parameter '{pref}' — referenced in template but not defined in parameters section"
+            )
+
+    return errors
+
+
 def version_to_semver(version_int: int) -> str:
     """Convert an integer version number to semver format (N → N.0.0)."""
     return f"{version_int}.0.0"

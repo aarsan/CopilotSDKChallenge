@@ -73,6 +73,56 @@ async def stream_validation(
     final_tpl = None
     final_status = "failed"
 
+    # ── Pre-deploy structural validation ──
+    # Catch missing variable/parameter references BEFORE hitting Azure.
+    # This avoids wasting deployment attempts on templates that are
+    # structurally broken (e.g. from composition bugs).
+    from src.pipeline_helpers import validate_arm_references
+    ref_errors = validate_arm_references(current_tpl)
+    if ref_errors:
+        logger.warning(f"Pre-deploy validation found {len(ref_errors)} reference error(s) — auto-fixing")
+        # Auto-fix: promote missing variables to parameters, add missing params
+        for err in ref_errors:
+            if "Missing variable" in err:
+                vname = err.split("'")[1]
+                # Convert variable references to parameter references
+                tpl_str = json.dumps(current_tpl)
+                tpl_str = tpl_str.replace(
+                    f"[variables('{vname}')]",
+                    f"[parameters('{vname}')]",
+                )
+                tpl_str = tpl_str.replace(
+                    f"variables('{vname}')",
+                    f"parameters('{vname}')",
+                )
+                current_tpl = json.loads(tpl_str)
+                current_tpl.setdefault("parameters", {})[vname] = {
+                    "type": "string",
+                    "defaultValue": f"infraforge-{vname[:20]}",
+                    "metadata": {"description": f"Auto-fixed: was undefined variable '{vname}'"},
+                }
+            elif "Missing parameter" in err:
+                pname = err.split("'")[1]
+                current_tpl.setdefault("parameters", {})[pname] = {
+                    "type": "string",
+                    "defaultValue": f"infraforge-{pname[:20]}",
+                    "metadata": {"description": f"Auto-added: {pname}"},
+                }
+        # Rebuild params after fix
+        tpl_params = current_tpl.get("parameters", {})
+        for pname, pdef in tpl_params.items():
+            if pname not in current_params:
+                if "defaultValue" in pdef:
+                    current_params[pname] = pdef["defaultValue"]
+                else:
+                    current_params[pname] = f"if-val-{pname[:20]}"
+
+        yield json.dumps({
+            "phase": "pre_validation_fix",
+            "detail": f"Found {len(ref_errors)} structural issue(s) in the template (missing references) — auto-fixed before deployment.",
+            "issues": ref_errors[:10],
+        }) + "\n"
+
     yield json.dumps({
         "phase": "starting",
         "detail": f"Alright, let me spin up a temporary environment to test '{template_name}'…",
