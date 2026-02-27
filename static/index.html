@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=184">
+    <link rel="stylesheet" href="/static/styles.css?v=185">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -541,6 +541,7 @@
                     <div class="obs-tabs">
                         <button class="obs-tab active" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations</button>
+                        <button class="obs-tab" id="obs-tab-agents" onclick="switchObsTab('agents')">🤖 Agent Activity</button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                         <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
                     </div>
@@ -553,6 +554,41 @@
                                 <p>No deployments yet. Deploy a template from the Template Catalog.</p>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- Tab: Agent Activity -->
+                    <div class="obs-tab-content hidden" id="obs-content-agents">
+                        <!-- Agent Stats Bar -->
+                        <div class="agent-stats-bar" id="agent-stats-bar">
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="agent-total-count">0</span>
+                                <span class="obs-stat-label">Agents</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-ok" id="agent-total-calls">0</span>
+                                <span class="obs-stat-label">SDK Calls</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-fail" id="agent-total-errors">0</span>
+                                <span class="obs-stat-label">Errors</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="agent-avg-latency">0</span>
+                                <span class="obs-stat-label">Avg Latency (ms)</span>
+                            </div>
+                        </div>
+
+                        <!-- Agent Grid -->
+                        <div class="agent-grid" id="agent-grid">
+                            <div class="activity-empty">
+                                <span class="activity-empty-icon">🤖</span>
+                                <p>Loading agent registry…</p>
+                            </div>
+                        </div>
+
+                        <!-- Recent Activity Feed -->
+                        <h4 class="agent-section-title" id="agent-feed-title" style="display:none">📡 Recent Copilot SDK Invocations</h4>
+                        <div class="agent-activity-feed" id="agent-activity-feed"></div>
                     </div>
 
                     <!-- Tab: Azure Resources -->
@@ -1353,7 +1389,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=184"></script>
+    <script src="/static/app.js?v=185"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

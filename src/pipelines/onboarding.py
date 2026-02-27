@@ -138,6 +138,7 @@ async def _heal_policy(
         _client, model=plan_model,
         system_prompt="You are an Azure Policy expert. Analyze why a policy rejects valid resources and propose specific fixes.",
         prompt=analysis_prompt, timeout=60,
+        agent_name="POLICY_FIXER",
     )
 
     fix_prompt = (
@@ -154,6 +155,7 @@ async def _heal_policy(
         _client, model=fix_model,
         system_prompt="You are an Azure Policy expert. Fix the policy JSON so it correctly evaluates the deployed resources. Return ONLY raw JSON.",
         prompt=fix_prompt, timeout=60,
+        agent_name="POLICY_FIXER",
     )
 
     # Parse response
@@ -1422,6 +1424,7 @@ async def _llm_reason(prompt: str, system_msg: str = "", task: Task = Task.PLANN
         system_prompt=system_msg or LLM_REASONER.system_prompt,
         prompt=prompt,
         timeout=90,
+        agent_name="LLM_REASONER",
     )
 
 

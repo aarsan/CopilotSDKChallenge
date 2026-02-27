@@ -7841,7 +7841,7 @@ async function deployTemplate(templateId) {
             throw new Error(err.detail || 'Deploy failed');
         }
 
-        // Read NDJSON stream — new agent-mediated event protocol
+        // Read NDJSON stream — phase-based events for flowchart rendering
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -7859,8 +7859,8 @@ async function deployTemplate(templateId) {
                 if (!line.trim()) continue;
                 try {
                     const event = JSON.parse(line);
-                    _renderDeployAgentEvent(progressDiv, event);
-                    if (event.type === 'result') finalResult = event;
+                    _renderDeployProgress(progressDiv, event, 'deploy');
+                    if (event.phase === 'complete') finalResult = event;
                 } catch (e) { /* skip malformed */ }
             }
         }
@@ -7869,8 +7869,8 @@ async function deployTemplate(templateId) {
         if (buffer.trim()) {
             try {
                 const event = JSON.parse(buffer);
-                _renderDeployAgentEvent(progressDiv, event);
-                if (event.type === 'result') finalResult = event;
+                _renderDeployProgress(progressDiv, event, 'deploy');
+                if (event.phase === 'complete') finalResult = event;
             } catch (e) { /* skip */ }
         }
 
@@ -7895,194 +7895,6 @@ async function deployTemplate(templateId) {
 
 /**
  * Render agent-mediated deploy events.
- *
- * The deploy endpoint now streams 3 event types:
- *   - status  — real-time progress updates from the deploy engine
- *   - agent   — LLM-interpreted analysis (on failure)
- *   - result  — final outcome (succeeded / needs_work)
- *
- * This replaces the old 20-phase _renderDeployProgress for the deploy flow.
- * The validate flow still uses _renderDeployProgress unchanged.
- */
-function _renderDeployAgentEvent(container, event) {
-    if (!container) return;
-    container.style.display = 'block';
-
-    const type = event.type || '';
-
-    // Clear initial loading message on first real event
-    const loadingMsg = container.querySelector('.compose-loading');
-    if (loadingMsg) loadingMsg.remove();
-
-    // ── Status: real-time progress updates ──
-    if (type === 'status') {
-        let statusDiv = container.querySelector('.deploy-agent-status');
-        if (!statusDiv) {
-            statusDiv = document.createElement('div');
-            statusDiv.className = 'deploy-agent-status';
-            container.appendChild(statusDiv);
-        }
-
-        const message = event.message || '';
-        const progress = event.progress || 0;
-        const progressPct = Math.round(progress * 100);
-
-        // Append to status log (shows history of phases)
-        let logDiv = statusDiv.querySelector('.deploy-agent-log');
-        if (!logDiv) {
-            logDiv = document.createElement('div');
-            logDiv.className = 'deploy-agent-log';
-            statusDiv.appendChild(logDiv);
-        }
-
-        // Update or add the latest status entry
-        let latestEntry = logDiv.querySelector('.deploy-agent-log-latest');
-        if (latestEntry) {
-            // Move previous "latest" to history
-            latestEntry.classList.remove('deploy-agent-log-latest');
-            latestEntry.classList.add('deploy-agent-log-history');
-        }
-
-        const entry = document.createElement('div');
-        entry.className = 'deploy-log-entry deploy-agent-log-latest';
-        const icon = progress >= 0.9 ? '●' : progress > 0 ? '⏳' : '🚀';
-        entry.innerHTML = `<span class="deploy-log-icon">${icon}</span> ${escapeHtml(message)}`;
-        logDiv.appendChild(entry);
-
-        // Update progress bar
-        let barDiv = statusDiv.querySelector('.deploy-agent-bar');
-        if (!barDiv && progress > 0) {
-            barDiv = document.createElement('div');
-            barDiv.className = 'deploy-agent-bar';
-            barDiv.innerHTML = '<div class="deploy-agent-bar-fill"></div>';
-            statusDiv.appendChild(barDiv);
-        }
-        if (barDiv) {
-            const fill = barDiv.querySelector('.deploy-agent-bar-fill');
-            if (fill) fill.style.width = `${progressPct}%`;
-        }
-        return;
-    }
-
-    // ── Agent: deployment agent activity (healing, analysis, retry) ──
-    if (type === 'agent') {
-        const action = event.action || '';
-        const content = event.content || '';
-
-        // Remove the progress bar while agent is working (deploy phase is paused)
-        const statusDiv = container.querySelector('.deploy-agent-status');
-        if (statusDiv && (action === 'analysis' || action === 'analyzing')) {
-            const bar = statusDiv.querySelector('.deploy-agent-bar');
-            if (bar) bar.remove();
-        }
-
-        // For the full analysis card (after all retries exhausted), use rich rendering
-        if (action === 'analysis') {
-            const agentDiv = document.createElement('div');
-            agentDiv.className = 'deploy-agent-analysis';
-            agentDiv.innerHTML = `
-                <div class="deploy-agent-analysis-header">
-                    <span class="deploy-agent-analysis-icon">🧠</span>
-                    <span>Deployment Agent</span>
-                    ${_copilotBadge()}
-                </div>
-                <div class="deploy-agent-analysis-content">
-                    ${renderMarkdown(content)}
-                </div>
-            `;
-            container.appendChild(agentDiv);
-            return;
-        }
-
-        // For activity messages (healing, healed, retry, saved), show as log entries
-        let logDiv = container.querySelector('.deploy-agent-log');
-        if (!logDiv) {
-            // Create log inside status div if it exists, otherwise create fresh
-            const sd = container.querySelector('.deploy-agent-status');
-            logDiv = document.createElement('div');
-            logDiv.className = 'deploy-agent-log';
-            if (sd) {
-                sd.insertBefore(logDiv, sd.firstChild);
-            } else {
-                container.appendChild(logDiv);
-            }
-        }
-
-        const entry = document.createElement('div');
-        const actionClasses = {
-            'healing': 'deploy-agent-healing',
-            'healed': 'deploy-agent-healed',
-            'deep_healed': 'deploy-agent-deep-healed',
-            'heal_failed': 'deploy-agent-heal-failed',
-            'retry': 'deploy-agent-retry',
-            'saved': 'deploy-agent-saved',
-            'analyzing': 'deploy-agent-analyzing',
-        };
-        entry.className = `deploy-log-entry ${actionClasses[action] || ''}`;
-        entry.innerHTML = `<span>${renderMarkdown(content)}</span>`;
-        logDiv.appendChild(entry);
-        return;
-    }
-
-    // ── Result: final outcome card ──
-    if (type === 'result') {
-        // Remove status progress on completion
-        const statusDiv = container.querySelector('.deploy-agent-status');
-        if (statusDiv) {
-            const bar = statusDiv.querySelector('.deploy-agent-bar');
-            if (bar) bar.remove();
-        }
-
-        const resultDiv = document.createElement('div');
-
-        if (event.status === 'succeeded') {
-            const resources = event.provisioned_resources || [];
-            const outputs = event.outputs || {};
-            const healed = event.healed || false;
-            const issuesResolved = event.issues_resolved || 0;
-            const healMsg = issuesResolved > 0 ? ` — resolved ${issuesResolved} issue${issuesResolved !== 1 ? 's' : ''}` : '';
-            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-success';
-            resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">Deployment Complete${healMsg}</div>
-                ${resources.length ? `
-                <div class="tmpl-deploy-resources">
-                    <h5>Provisioned Resources (${resources.length})</h5>
-                    ${resources.map(r => `
-                        <div class="tmpl-deploy-resource">
-                            <span class="tmpl-deploy-res-type">${escapeHtml(r.type)}</span>
-                            <span class="tmpl-deploy-res-name">${escapeHtml(r.name)}</span>
-                        </div>
-                    `).join('')}
-                </div>` : ''}
-                ${Object.keys(outputs).length ? `
-                <div class="tmpl-deploy-outputs">
-                    <h5>Outputs</h5>
-                    ${Object.entries(outputs).map(([k, v]) => `
-                        <div class="tmpl-deploy-output">
-                            <span class="tmpl-deploy-out-key">${escapeHtml(k)}</span>
-                            <code class="tmpl-deploy-out-val">${escapeHtml(String(v))}</code>
-                        </div>
-                    `).join('')}
-                </div>` : ''}
-                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
-            `;
-        } else {
-            // needs_work — agent analysis is shown above, this is just the footer
-            resultDiv.className = 'tmpl-deploy-result tmpl-deploy-needs-work';
-            resultDiv.innerHTML = `
-                <div class="tmpl-deploy-header">Deployment Analysis</div>
-                <div class="tmpl-deploy-diag-msg">
-                    The deployment agent has analyzed the situation — see the analysis above.
-                    Consider revising the template or adjusting parameters.
-                </div>
-                ${event.deployment_id ? `<div class="tmpl-deploy-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
-            `;
-        }
-        container.appendChild(resultDiv);
-        return;
-    }
-}
-
 /** Render deployment progress events — accumulates an iteration log.
  *  @param {HTMLElement} container
  *  @param {Object} event  NDJSON event
@@ -8116,7 +7928,7 @@ function _renderDeployProgress(container, event, ctx) {
         flowchart.className = 'vf-flowchart';
         flowchart.innerHTML = `
             <div class="vf-pipeline-header">
-                <span class="vf-pipeline-label">Validation Pipeline</span>
+                <span class="vf-pipeline-label">${isValidate ? 'Validation Pipeline' : 'Deploy Pipeline'}</span>
                 ${_copilotBadge(true)}
             </div>
             <div class="vf-stage-bar">
@@ -8321,6 +8133,13 @@ function _renderDeployProgress(container, event, ctx) {
 
         const node = _createNode(icon, title);
         _addActivity(icon, escapeHtml(detail || 'Sending the template to Azure…'), 'vf-activity-deploy');
+        return;
+    }
+
+    // Progress — intermediate status updates shown as activity lines
+    if (phase === 'progress') {
+        _addActivity('⏳', escapeHtml(detail || 'Working…'), 'vf-activity-deploy');
+        canvas.scrollTop = canvas.scrollHeight;
         return;
     }
 
@@ -8660,6 +8479,7 @@ function _renderDeployProgress(container, event, ctx) {
         const outputs = event.outputs || {};
         const healHistory = event.heal_history || [];
         const issuesResolved = event.issues_resolved || 0;
+        const isSuccess = event.status === 'succeeded' || event.status === 'tested_with_issues';
 
         liveProgress.innerHTML = '';
 
@@ -8686,7 +8506,6 @@ function _renderDeployProgress(container, event, ctx) {
 
         // Build final result node
         const resultDiv = document.createElement('div');
-        const isSuccess = event.status === 'succeeded' || event.status === 'tested_with_issues';
         const testingNote = event.testing_passed === false
             ? '<div class="vf-result-test-note">⚠️ Some infrastructure tests had issues — the deployment succeeded but you may want to review the test results above.</div>'
             : '';
@@ -8733,7 +8552,7 @@ function _renderDeployProgress(container, event, ctx) {
                 <div class="vf-result-body">
                     ${isValidate
                         ? '<p>The agent worked through several iterations. Take a look at the flow above to see the progress.</p>'
-                        : '<p>The deployment needs some adjustments. You might want to revise the template or check the parameters.</p>'}
+                        : `<p>${event.analysis ? escapeHtml(event.analysis) : 'The deployment needs some adjustments. You might want to revise the template or check the parameters.'}</p>`}
                     ${healHistory.length ? `
                     <details class="vf-heal-summary">
                         <summary>🔄 ${healHistory.length} iteration${healHistory.length !== 1 ? 's' : ''} attempted</summary>
@@ -11757,6 +11576,7 @@ function switchObsTab(tab) {
     if (content) content.classList.remove('hidden');
     if (tab === 'azure-resources') loadAzureResources();
     if (tab === 'data-mgmt') loadBackupsList();
+    if (tab === 'agents') loadAgentActivity();
 }
 
 async function loadDeploymentHistory() {
@@ -13292,4 +13112,189 @@ function _timeShort(isoStr) {
         const d = new Date(isoStr);
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch { return ''; }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// AGENT ACTIVITY — Copilot SDK observability dashboard
+// ══════════════════════════════════════════════════════════════
+
+const AGENT_CATEGORY_ICONS = {
+    'Interactive': '💬',
+    'Orchestrator': '🎯',
+    'Standards': '📋',
+    'ARM Generation': '🏗️',
+    'Deployment Pipeline': '🚀',
+    'Compliance': '🛡️',
+    'Artifact & Healing': '🔧',
+    'Infrastructure Testing': '🧪',
+    'Governance Review': '⚖️',
+};
+
+const AGENT_CATEGORY_COLORS = {
+    'Interactive': '#3b82f6',
+    'Orchestrator': '#8b5cf6',
+    'Standards': '#06b6d4',
+    'ARM Generation': '#f59e0b',
+    'Deployment Pipeline': '#10b981',
+    'Compliance': '#ef4444',
+    'Artifact & Healing': '#ec4899',
+    'Infrastructure Testing': '#14b8a6',
+    'Governance Review': '#6366f1',
+};
+
+async function loadAgentActivity() {
+    const grid = document.getElementById('agent-grid');
+    const feed = document.getElementById('agent-activity-feed');
+    const feedTitle = document.getElementById('agent-feed-title');
+    if (!grid) return;
+
+    try {
+        const res = await fetch('/api/agents/activity');
+        if (!res.ok) throw new Error('Failed to load agent activity');
+        const data = await res.json();
+
+        const agents = data.agents || [];
+        const counters = data.counters || {};
+        const activity = data.activity || [];
+        const routing = data.routing_table || [];
+
+        // Build model lookup from routing table
+        const taskModelMap = {};
+        routing.forEach(r => { taskModelMap[r.task] = r.model; });
+
+        // Compute summary stats
+        let totalCalls = 0, totalErrors = 0, totalMs = 0;
+        Object.values(counters).forEach(c => {
+            totalCalls += c.calls || 0;
+            totalErrors += c.errors || 0;
+            totalMs += c.total_ms || 0;
+        });
+        const avgLatency = totalCalls > 0 ? Math.round(totalMs / totalCalls) : 0;
+
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        el('agent-total-count', agents.length);
+        el('agent-total-calls', totalCalls);
+        el('agent-total-errors', totalErrors);
+        el('agent-avg-latency', avgLatency);
+
+        // Group agents by category
+        const categories = {};
+        agents.forEach(a => {
+            if (!categories[a.category]) categories[a.category] = [];
+            categories[a.category].push(a);
+        });
+
+        // Render agent grid
+        let html = '';
+        for (const [cat, catAgents] of Object.entries(categories)) {
+            const icon = AGENT_CATEGORY_ICONS[cat] || '🤖';
+            const color = AGENT_CATEGORY_COLORS[cat] || '#6b7280';
+            html += `<div class="agent-category">
+                <div class="agent-category-header">
+                    <span class="agent-category-icon">${icon}</span>
+                    <span class="agent-category-name" style="color:${color}">${cat}</span>
+                    <span class="agent-category-count">${catAgents.length} agent${catAgents.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div class="agent-category-cards">`;
+
+            catAgents.forEach(a => {
+                const agentKey = a.name.toUpperCase().replace(/\s+/g, '_');
+                const c = counters[agentKey] || counters[a.key] || {};
+                const calls = c.calls || 0;
+                const errors = c.errors || 0;
+                const avgMs = calls > 0 ? Math.round((c.total_ms || 0) / calls) : 0;
+                const lastCalled = c.last_called ? _timeAgo(c.last_called) : 'never';
+                const model = taskModelMap[a.task] || a.task;
+                const hasActivity = calls > 0;
+
+                html += `<div class="agent-card ${hasActivity ? 'agent-card-active' : ''}">
+                    <div class="agent-card-header">
+                        <span class="agent-card-name">${a.name}</span>
+                        <span class="agent-card-sdk-badge" title="Powered by GitHub Copilot SDK">SDK</span>
+                    </div>
+                    <div class="agent-card-desc">${a.description.length > 120 ? a.description.substring(0, 117) + '…' : a.description}</div>
+                    <div class="agent-card-meta">
+                        <span class="agent-card-model" title="Model: ${model}">🧠 ${_truncateModel(model)}</span>
+                        <span class="agent-card-task">${a.task}</span>
+                    </div>
+                    <div class="agent-card-stats">
+                        <span class="agent-card-stat" title="Total SDK calls">${calls} call${calls !== 1 ? 's' : ''}</span>
+                        ${errors > 0 ? `<span class="agent-card-stat agent-card-stat-err" title="Errors">${errors} err</span>` : ''}
+                        ${avgMs > 0 ? `<span class="agent-card-stat" title="Average latency">${avgMs}ms avg</span>` : ''}
+                        <span class="agent-card-stat agent-card-stat-last" title="Last called">${lastCalled}</span>
+                    </div>
+                </div>`;
+            });
+
+            html += `</div></div>`;
+        }
+        grid.innerHTML = html;
+
+        // Render recent activity feed
+        if (activity.length > 0 && feedTitle) {
+            feedTitle.style.display = '';
+            feed.innerHTML = activity.slice(0, 50).map(e => {
+                const statusIcon = e.status === 'ok' ? '✅' : '❌';
+                const dur = e.duration_ms ? `${Math.round(e.duration_ms)}ms` : '';
+                const ts = _timeShort(e.timestamp);
+                const errorHtml = e.error ? `<span class="agent-feed-error" title="${_escapeHtml(e.error)}">⚠ ${e.error.substring(0, 80)}</span>` : '';
+                return `<div class="agent-feed-row ${e.status === 'error' ? 'agent-feed-row-err' : ''}">
+                    <span class="agent-feed-status">${statusIcon}</span>
+                    <span class="agent-feed-agent">${e.agent}</span>
+                    <span class="agent-feed-model">${_truncateModel(e.model)}</span>
+                    <span class="agent-feed-dur">${dur}</span>
+                    <span class="agent-feed-size">${_formatBytes(e.prompt_len)}→${_formatBytes(e.response_len)}</span>
+                    ${errorHtml}
+                    <span class="agent-feed-time">${ts}</span>
+                </div>`;
+            }).join('');
+        } else if (feedTitle) {
+            feedTitle.style.display = 'none';
+            feed.innerHTML = '';
+        }
+
+    } catch (err) {
+        console.warn('Agent activity load failed:', err);
+        grid.innerHTML = `
+            <div class="activity-empty">
+                <span class="activity-empty-icon">⚠️</span>
+                <p>Failed to load agent activity data.</p>
+            </div>`;
+    }
+}
+
+function _truncateModel(model) {
+    if (!model) return '';
+    // Shorten common model names
+    return model
+        .replace('claude-sonnet-4-20250514', 'Claude Sonnet 4')
+        .replace('gpt-4.1-nano-2025-04-14', 'GPT-4.1 Nano')
+        .replace('gpt-4.1-2025-04-14', 'GPT-4.1')
+        .replace('o3-mini-2025-01-31', 'o3-mini');
+}
+
+function _formatBytes(len) {
+    if (!len || len === 0) return '0';
+    if (len < 1024) return `${len}c`;
+    return `${(len / 1024).toFixed(1)}k`;
+}
+
+function _timeAgo(isoStr) {
+    if (!isoStr) return 'never';
+    try {
+        const now = Date.now();
+        const then = new Date(isoStr).getTime();
+        const diffMs = now - then;
+        if (diffMs < 60000) return 'just now';
+        if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+        if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}h ago`;
+        return `${Math.floor(diffMs / 86400000)}d ago`;
+    } catch { return ''; }
+}
+
+function _escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
