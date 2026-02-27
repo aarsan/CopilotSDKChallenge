@@ -3640,6 +3640,25 @@ async def complete_pipeline_run(
     )
 
 
+async def cleanup_orphaned_pipeline_runs():
+    """Mark any 'running' pipeline runs as 'failed' on startup.
+
+    If the server restarts mid-pipeline, runs stay in 'running' forever.
+    This detects and cleans them up.
+    """
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT run_id FROM pipeline_runs WHERE status = 'running'", ()
+    )
+    if rows:
+        await backend.execute_write(
+            "UPDATE pipeline_runs SET status = 'failed', "
+            "error_detail = 'Server restarted — pipeline interrupted' "
+            "WHERE status = 'running'", ()
+        )
+        logger.info(f"Cleaned up {len(rows)} orphaned pipeline run(s)")
+
+
 async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
     """Get recent pipeline runs for a service, newest first."""
     backend = await get_backend()

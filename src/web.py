@@ -1270,6 +1270,9 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     await cleanup_expired_sessions()
+    # Mark any pipeline runs left as 'running' from a previous crash as failed
+    from src.database import cleanup_orphaned_pipeline_runs
+    await cleanup_orphaned_pipeline_runs()
     logger.info("Initializing organization standards...")
     await init_standards()
     logger.info("Deferring Copilot SDK client start (lazy init on first chat)...")
