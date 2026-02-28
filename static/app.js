@@ -5785,41 +5785,20 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion, te
 }
 
 /** Upgrade a single dependency in a composed template.
- *  Recomposes the full template (all deps get latest) and reports which triggered it. */
+ *  Triggers the full validation pipeline: recompose → AI heal → What-If → deploy-ready. */
 async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
     const shortName = serviceId.split('/').pop();
 
-    // Show loading on the specific button
+    // Disable upgrade buttons while pipeline runs
     const btns = document.querySelectorAll(`.dep-upgrade-btn`);
     btns.forEach(b => { b.disabled = true; });
 
-    showToast(`⬆ Upgrading ${shortName} → ${targetVersion}…`, 'info');
+    showToast(`⬆ Upgrading ${shortName} → ${targetVersion} — running full validation pipeline…`, 'info');
 
-    try {
-        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/recompose`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ triggered_by: serviceId }),
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            showToast(`Upgrade: ${data.detail || 'Could not proceed'}`, 'info');
-            btns.forEach(b => { b.disabled = false; });
-            return;
-        }
-
-        const ver = data.version || {};
-        const semver = ver.semver || '?';
-        showToast(`✅ Template recomposed → v${semver}\n${shortName} upgraded to latest`, 'success', 6000);
-
-        // Refresh the detail view
-        await loadAllData();
-        showTemplateDetail(templateId);
-    } catch (err) {
-        showToast(`Upgrade: ${err.message}`, 'info');
-        btns.forEach(b => { b.disabled = false; });
-    }
+    // Delegate to the full fix-and-validate pipeline which handles:
+    // recompose from source services → structural tests → ARM What-If
+    // validation with self-healing loop → infrastructure testing → cleanup
+    await fixAndValidateTemplate(templateId);
 }
 
 /** Show a dropdown to pick which version to pin a service to in a template */
