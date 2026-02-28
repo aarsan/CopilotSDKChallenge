@@ -6818,6 +6818,8 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
     """Chat with the Upgrade Analyst about a completed compatibility analysis.
 
     Accepts the user message, conversation history, and analysis context.
+    Fetches the actual ARM template and composition dependencies from the DB
+    so the agent has full infrastructure context.
     Streams NDJSON delta events for real-time rendering in the modal chat.
 
     Body:
@@ -6831,12 +6833,16 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
             "current_api_version": "2024-05-01",
             "target_api_version": "2025-07-01",
             "analysis": "<original analysis text>"
-        }
+        },
+        "template_id": "optional-composed-template-id"
     }
     """
     from src.agents import UPGRADE_ANALYST
     from src.model_router import get_model_for_task
-    from src.database import get_service
+    from src.database import (
+        get_service, get_service_versions, get_active_service_version,
+        get_template_by_id, get_services_basic,
+    )
 
     svc = await get_service(service_id)
     if not svc:
@@ -6853,6 +6859,7 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
 
     history = body.get("history", [])
     analysis_ctx = body.get("analysis_context", {})
+    template_id = body.get("template_id")
 
     async def _stream():
         import asyncio as _aio
@@ -6868,7 +6875,69 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
 
             model = get_model_for_task(UPGRADE_ANALYST.task)
 
-            # Build system prompt with analysis context baked in
+            # ── Fetch the actual ARM template from DB ──
+            arm_template_str = ""
+            try:
+                active_ver = await get_active_service_version(service_id)
+                if active_ver and active_ver.get("arm_template"):
+                    arm_template_str = active_ver["arm_template"]
+            except Exception as e:
+                logger.warning(f"upgrade-chat: could not fetch ARM template for {service_id}: {e}")
+
+            # ── Fetch composition context (sibling services) ──
+            composition_context = ""
+            if template_id:
+                try:
+                    tmpl = await get_template_by_id(template_id)
+                    if tmpl:
+                        sibling_ids = [sid for sid in (tmpl.get("service_ids") or []) if sid != service_id]
+                        if sibling_ids:
+                            svc_map = await get_services_basic(sibling_ids)
+                            sibling_summaries = []
+                            for sid in sibling_ids:
+                                sib = svc_map.get(sid)
+                                if not sib:
+                                    sibling_summaries.append(f"- `{sid}` (no data)")
+                                    continue
+                                sib_name = sib.get("name", sid.split("/")[-1])
+                                sib_api = sib.get("template_api_version") or sib.get("latest_api_version") or "unknown"
+                                sibling_summaries.append(
+                                    f"- **{sib_name}** (`{sid}`) — API version: `{sib_api}`"
+                                )
+                                # Also fetch the sibling ARM template for cross-reference
+                                try:
+                                    sib_ver = await get_active_service_version(sid)
+                                    if sib_ver and sib_ver.get("arm_template"):
+                                        sib_arm = sib_ver["arm_template"]
+                                        # Parse to get just resource types and properties keys
+                                        sib_tpl = json.loads(sib_arm)
+                                        sib_resources = sib_tpl.get("resources", [])
+                                        sib_res_summary = []
+                                        for r in sib_resources:
+                                            if isinstance(r, dict):
+                                                sib_res_summary.append({
+                                                    "type": r.get("type", ""),
+                                                    "apiVersion": r.get("apiVersion", ""),
+                                                    "name": r.get("name", ""),
+                                                    "properties_keys": list((r.get("properties") or {}).keys()),
+                                                })
+                                        if sib_res_summary:
+                                            sibling_summaries.append(
+                                                f"  Resources: ```json\n  {json.dumps(sib_res_summary, indent=2)[:2000]}\n  ```"
+                                            )
+                                except Exception:
+                                    pass
+
+                            composition_context = (
+                                f"\n\n## Composed Template: `{tmpl.get('name', template_id)}`\n"
+                                f"This service is part of a composed template with {len(sibling_ids)} other service(s):\n\n"
+                                + "\n".join(sibling_summaries)
+                                + "\n\nConsider cross-service compatibility when answering questions."
+                            )
+                except Exception as e:
+                    logger.warning(f"upgrade-chat: could not fetch composition context: {e}")
+
+            # ── Build system prompt with full context ──
             system_prompt = UPGRADE_ANALYST.system_prompt + "\n\n"
             system_prompt += "## Analysis Context\n"
             system_prompt += f"- **Service**: {svc.get('name', service_id)} (`{service_id}`)\n"
@@ -6876,16 +6945,37 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
                 system_prompt += f"- **Current API Version**: {analysis_ctx['current_api_version']}\n"
             if analysis_ctx.get("target_api_version"):
                 system_prompt += f"- **Target API Version**: {analysis_ctx['target_api_version']}\n"
+
+            # Include the actual ARM template
+            if arm_template_str:
+                # Truncate if very large, but include as much as possible
+                template_excerpt = arm_template_str[:12000]
+                system_prompt += (
+                    f"\n### Current ARM Template for {svc.get('name', service_id)}\n"
+                    f"```json\n{template_excerpt}\n```\n"
+                )
+                if len(arm_template_str) > 12000:
+                    system_prompt += f"*(Template truncated — {len(arm_template_str)} chars total)*\n"
+            else:
+                system_prompt += "\n*No ARM template found in the database for this service.*\n"
+
+            # Include composition context
+            if composition_context:
+                system_prompt += composition_context
+
+            # Include previous analysis
             if analysis_ctx.get("analysis"):
                 system_prompt += (
-                    "\n### Previous Upgrade Analysis\n"
+                    "\n\n### Previous Upgrade Analysis\n"
                     + analysis_ctx["analysis"][:6000]
                     + "\n"
                 )
+
             system_prompt += (
                 "\nYou are continuing a conversation about this upgrade analysis. "
                 "Answer follow-up questions concisely and helpfully. "
-                "Reference specific details from the analysis when relevant."
+                "Reference specific properties and values from the ARM template. "
+                "NEVER ask the user to share their template — you already have it above."
             )
 
             # Build the prompt with conversation history

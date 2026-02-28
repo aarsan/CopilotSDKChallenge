@@ -3128,7 +3128,7 @@ function _handleUpgradeAnalysisEvent(ev, container) {
     }
 }
 
-function _renderUpgradeAnalysisResult(result, container, serviceId) {
+function _renderUpgradeAnalysisResult(result, container, serviceId, templateId) {
     const analysis = result.analysis || 'No analysis available.';
 
     // Parse the markdown to detect the verdict for styling
@@ -3187,6 +3187,7 @@ function _renderUpgradeAnalysisResult(result, container, serviceId) {
             target_api_version: result.target_api_version || '',
             analysis: analysis,
         },
+        templateId: templateId || null,
         sending: false,
     };
 
@@ -3241,6 +3242,7 @@ async function _sendUpgradeChat(chatId, serviceId) {
                 message,
                 history: state.history,
                 analysis_context: state.analysisContext,
+                template_id: state.templateId || undefined,
             }),
         });
 
@@ -5617,7 +5619,7 @@ async function _loadTemplateComposition(templateId) {
                                 ${c.version_known === false
                                     ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
                                     : c.upgrade_available
-                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}')" title="Analyze API version upgrade compatibility">🔬</button>`
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${depIconsHtml}
@@ -5679,7 +5681,7 @@ async function _loadTemplateComposition(templateId) {
 
 /** Analyze upgrade compatibility for a dependency in the template composition view.
  *  Opens a modal overlay with the streaming analysis from the Upgrade Analyst agent. */
-async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion) {
+async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion, templateId) {
     const shortName = serviceId.split('/').pop();
 
     // Create modal overlay
@@ -5765,7 +5767,7 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion) {
         }
 
         if (analysisResult && modalBody) {
-            _renderUpgradeAnalysisResult(analysisResult, modalBody, serviceId);
+            _renderUpgradeAnalysisResult(analysisResult, modalBody, serviceId, templateId);
         }
     } catch (err) {
         const modalBody = document.getElementById('upgrade-analysis-modal-body');
