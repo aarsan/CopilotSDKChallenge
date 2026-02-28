@@ -6811,6 +6811,182 @@ new features, behavioral changes, migration effort, and your recommendation.
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
+# ── Upgrade Analyst Chat ─────────────────────────────────────
+
+@app.post("/api/services/{service_id:path}/upgrade-chat")
+async def upgrade_analyst_chat(service_id: str, request: Request):
+    """Chat with the Upgrade Analyst about a completed compatibility analysis.
+
+    Accepts the user message, conversation history, and analysis context.
+    Streams NDJSON delta events for real-time rendering in the modal chat.
+
+    Body:
+    {
+        "message": "Will the NSG rule changes affect my inbound traffic?",
+        "history": [
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ],
+        "analysis_context": {
+            "current_api_version": "2024-05-01",
+            "target_api_version": "2025-07-01",
+            "analysis": "<original analysis text>"
+        }
+    }
+    """
+    from src.agents import UPGRADE_ANALYST
+    from src.model_router import get_model_for_task
+    from src.database import get_service
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    history = body.get("history", [])
+    analysis_ctx = body.get("analysis_context", {})
+
+    async def _stream():
+        import asyncio as _aio
+
+        try:
+            client = await ensure_copilot_client()
+            if not client:
+                yield json.dumps({
+                    "type": "error",
+                    "detail": "Copilot SDK not available.",
+                }) + "\n"
+                return
+
+            model = get_model_for_task(UPGRADE_ANALYST.task)
+
+            # Build system prompt with analysis context baked in
+            system_prompt = UPGRADE_ANALYST.system_prompt + "\n\n"
+            system_prompt += "## Analysis Context\n"
+            system_prompt += f"- **Service**: {svc.get('name', service_id)} (`{service_id}`)\n"
+            if analysis_ctx.get("current_api_version"):
+                system_prompt += f"- **Current API Version**: {analysis_ctx['current_api_version']}\n"
+            if analysis_ctx.get("target_api_version"):
+                system_prompt += f"- **Target API Version**: {analysis_ctx['target_api_version']}\n"
+            if analysis_ctx.get("analysis"):
+                system_prompt += (
+                    "\n### Previous Upgrade Analysis\n"
+                    + analysis_ctx["analysis"][:6000]
+                    + "\n"
+                )
+            system_prompt += (
+                "\nYou are continuing a conversation about this upgrade analysis. "
+                "Answer follow-up questions concisely and helpfully. "
+                "Reference specific details from the analysis when relevant."
+            )
+
+            # Build the prompt with conversation history
+            conversation = ""
+            for turn in history[-20:]:  # keep last 20 turns max
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if role == "user":
+                    conversation += f"\n\n**User**: {content}"
+                else:
+                    conversation += f"\n\n**Assistant**: {content}"
+            conversation += f"\n\n**User**: {message}"
+
+            prompt = conversation.strip()
+
+            # Create session with streaming and capture deltas
+            session = await client.create_session({
+                "model": model,
+                "streaming": True,
+                "tools": [],
+                "system_message": {"content": system_prompt},
+            })
+
+            response_chunks: list[str] = []
+            done_event = _aio.Event()
+            full_content_holder: list[str] = []
+
+            def on_event(event):
+                try:
+                    evt_type = event.type.value
+                    if evt_type == "assistant.message_delta":
+                        delta = event.data.delta_content or ""
+                        response_chunks.append(delta)
+                    elif evt_type == "assistant.message":
+                        full = event.data.content or ""
+                        if full:
+                            full_content_holder.append(full)
+                    elif evt_type == "session.idle":
+                        done_event.set()
+                except Exception as e:
+                    logger.error(f"Upgrade chat event error: {e}")
+                    done_event.set()
+
+            unsub = session.on(on_event)
+
+            try:
+                await session.send({"prompt": prompt})
+
+                # Yield deltas as they arrive
+                last_idx = 0
+                while not done_event.is_set():
+                    await _aio.sleep(0.05)
+                    if len(response_chunks) > last_idx:
+                        for chunk in response_chunks[last_idx:]:
+                            yield json.dumps({
+                                "type": "delta",
+                                "content": chunk,
+                            }) + "\n"
+                        last_idx = len(response_chunks)
+
+                # Flush remaining deltas
+                if len(response_chunks) > last_idx:
+                    for chunk in response_chunks[last_idx:]:
+                        yield json.dumps({
+                            "type": "delta",
+                            "content": chunk,
+                        }) + "\n"
+
+                # Send done event with full content
+                full_text = (
+                    full_content_holder[0]
+                    if full_content_holder
+                    else "".join(response_chunks)
+                )
+                yield json.dumps({
+                    "type": "done",
+                    "content": full_text,
+                }) + "\n"
+
+            except _aio.TimeoutError:
+                yield json.dumps({
+                    "type": "error",
+                    "detail": "Response timed out.",
+                }) + "\n"
+            finally:
+                unsub()
+                try:
+                    await session.destroy()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Upgrade chat failed for {service_id}: {e}", exc_info=True)
+            yield json.dumps({
+                "type": "error",
+                "detail": f"Chat failed: {str(e)}",
+            }) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
 # ── API Version Update Pipeline ──────────────────────────────
 
 @app.post("/api/services/{service_id:path}/update-api-version")

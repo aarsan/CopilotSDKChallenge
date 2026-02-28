@@ -3142,6 +3142,9 @@ function _renderUpgradeAnalysisResult(result, container, serviceId) {
     // Convert markdown to basic HTML
     const analysisHtml = _markdownToHtml(analysis);
 
+    // Unique ID for this chat instance
+    const chatId = 'ua-chat-' + Date.now();
+
     container.innerHTML = `
         <div class="upgrade-analysis-panel upgrade-analysis-complete ${verdictClass}">
             <div class="upgrade-analysis-header">
@@ -3158,9 +3161,160 @@ function _renderUpgradeAnalysisResult(result, container, serviceId) {
             <div class="upgrade-analysis-actions">
                 <button class="btn btn-sm btn-secondary" onclick="analyzeUpgradeCompatibility('${escapeHtml(serviceId)}', '${escapeHtml(result.target_api_version || '')}')" title="Re-run the analysis">🔄 Re-analyze</button>
             </div>
+            <div class="upgrade-chat-section" id="${chatId}">
+                <div class="upgrade-chat-divider">
+                    <span>💬 Ask the Upgrade Analyst</span>
+                </div>
+                <div class="upgrade-chat-messages" id="${chatId}-messages"></div>
+                <div class="upgrade-chat-input-row">
+                    <input type="text" class="upgrade-chat-input" id="${chatId}-input"
+                           placeholder="Ask a follow-up question about this upgrade…"
+                           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();_sendUpgradeChat('${chatId}','${escapeHtml(serviceId)}')}" />
+                    <button class="btn btn-sm btn-primary upgrade-chat-send" id="${chatId}-send"
+                            onclick="_sendUpgradeChat('${chatId}','${escapeHtml(serviceId)}')">
+                        <span class="upgrade-chat-send-icon">➤</span>
+                    </button>
+                </div>
+            </div>
         </div>`;
 
+    // Store analysis context for this chat instance
+    window._upgradeChatState = window._upgradeChatState || {};
+    window._upgradeChatState[chatId] = {
+        history: [],
+        analysisContext: {
+            current_api_version: result.current_api_version || '',
+            target_api_version: result.target_api_version || '',
+            analysis: analysis,
+        },
+        sending: false,
+    };
+
+    // Focus the input after a tick
+    setTimeout(() => {
+        const inp = document.getElementById(`${chatId}-input`);
+        if (inp) inp.focus();
+    }, 100);
+
     container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/**
+ * Send a message in the upgrade analyst chat.
+ * Streams the response in real-time via NDJSON deltas.
+ */
+async function _sendUpgradeChat(chatId, serviceId) {
+    const state = (window._upgradeChatState || {})[chatId];
+    if (!state || state.sending) return;
+
+    const inputEl = document.getElementById(`${chatId}-input`);
+    const sendBtn = document.getElementById(`${chatId}-send`);
+    const messagesEl = document.getElementById(`${chatId}-messages`);
+    if (!inputEl || !messagesEl) return;
+
+    const message = inputEl.value.trim();
+    if (!message) return;
+
+    state.sending = true;
+    inputEl.value = '';
+    inputEl.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+
+    // Render user message
+    const userBubble = document.createElement('div');
+    userBubble.className = 'upgrade-chat-msg upgrade-chat-msg-user';
+    userBubble.innerHTML = `<div class="upgrade-chat-bubble">${escapeHtml(message)}</div>`;
+    messagesEl.appendChild(userBubble);
+
+    // Render assistant placeholder with typing indicator
+    const assistantBubble = document.createElement('div');
+    assistantBubble.className = 'upgrade-chat-msg upgrade-chat-msg-assistant';
+    assistantBubble.innerHTML = `<div class="upgrade-chat-bubble"><span class="upgrade-chat-typing">●●●</span></div>`;
+    messagesEl.appendChild(assistantBubble);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/upgrade-chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message,
+                history: state.history,
+                analysis_context: state.analysisContext,
+            }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Chat request failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullResponse = '';
+        let streamingContent = '';
+
+        // Replace typing indicator with streaming content
+        const bubbleEl = assistantBubble.querySelector('.upgrade-chat-bubble');
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const ev = JSON.parse(line);
+                    if (ev.type === 'delta') {
+                        streamingContent += ev.content || '';
+                        bubbleEl.innerHTML = _markdownToHtml(streamingContent);
+                        messagesEl.scrollTop = messagesEl.scrollHeight;
+                    } else if (ev.type === 'done') {
+                        fullResponse = ev.content || streamingContent;
+                    } else if (ev.type === 'error') {
+                        throw new Error(ev.detail || 'Chat error');
+                    }
+                } catch (e) {
+                    if (e.message && !e.message.includes('JSON')) throw e;
+                }
+            }
+        }
+
+        // Process remaining buffer
+        if (buffer.trim()) {
+            try {
+                const ev = JSON.parse(buffer);
+                if (ev.type === 'delta') {
+                    streamingContent += ev.content || '';
+                } else if (ev.type === 'done') {
+                    fullResponse = ev.content || streamingContent;
+                }
+            } catch (e) { /* skip */ }
+        }
+
+        // Final render
+        const finalText = fullResponse || streamingContent;
+        bubbleEl.innerHTML = _markdownToHtml(finalText);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        // Save to history
+        state.history.push({ role: 'user', content: message });
+        state.history.push({ role: 'assistant', content: finalText });
+
+    } catch (err) {
+        const bubbleEl = assistantBubble.querySelector('.upgrade-chat-bubble');
+        bubbleEl.innerHTML = `<span class="upgrade-chat-error">❌ ${escapeHtml(err.message)}</span>`;
+    } finally {
+        state.sending = false;
+        inputEl.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        inputEl.focus();
+    }
 }
 
 /** Minimal markdown→HTML converter for upgrade analysis results */

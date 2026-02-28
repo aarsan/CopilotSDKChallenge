@@ -15754,3 +15754,160 @@ details[open] > .tmpl-deploy-group-optional {
 .upgrade-analysis-modal-body .upgrade-analysis-body {
     max-height: 55vh;
 }
+
+/* ── Upgrade Analyst Chat ─────────────────────────────────── */
+.upgrade-chat-section {
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 0;
+}
+.upgrade-chat-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0 0.4rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+.upgrade-chat-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+}
+.upgrade-chat-messages {
+    max-height: 280px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+    scroll-behavior: smooth;
+}
+.upgrade-chat-msg {
+    display: flex;
+    max-width: 88%;
+    animation: chatMsgIn 0.2s ease;
+}
+@keyframes chatMsgIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.upgrade-chat-msg-user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+.upgrade-chat-msg-assistant {
+    align-self: flex-start;
+}
+.upgrade-chat-bubble {
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.upgrade-chat-msg-user .upgrade-chat-bubble {
+    background: var(--accent-primary);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble {
+    background: var(--bg-tertiary, rgba(255,255,255,0.06));
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-bottom-left-radius: 4px;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble p {
+    margin: 0.25rem 0;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble p:first-child {
+    margin-top: 0;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble p:last-child {
+    margin-bottom: 0;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble code {
+    background: rgba(0,0,0,0.2);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.78rem;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble pre {
+    background: rgba(0,0,0,0.25);
+    padding: 0.5rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+    font-size: 0.76rem;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble ul,
+.upgrade-chat-msg-assistant .upgrade-chat-bubble ol {
+    margin: 0.3rem 0;
+    padding-left: 1.2rem;
+}
+.upgrade-chat-msg-assistant .upgrade-chat-bubble li {
+    margin: 0.15rem 0;
+}
+.upgrade-chat-typing {
+    display: inline-block;
+    color: var(--text-muted);
+    letter-spacing: 2px;
+    animation: typingPulse 1.2s ease-in-out infinite;
+}
+@keyframes typingPulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 1; }
+}
+.upgrade-chat-error {
+    color: var(--status-error, #ef4444);
+    font-size: 0.8rem;
+}
+.upgrade-chat-input-row {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    align-items: center;
+}
+.upgrade-chat-input {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-primary, #1a1a2e);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.upgrade-chat-input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+.upgrade-chat-input::placeholder {
+    color: var(--text-muted);
+}
+.upgrade-chat-input:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+.upgrade-chat-send {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    flex-shrink: 0;
+}
+.upgrade-chat-send:disabled {
+    opacity: 0.4;
+    cursor: wait;
+}
+.upgrade-chat-send-icon {
+    font-size: 0.9rem;
+    line-height: 1;
+}
