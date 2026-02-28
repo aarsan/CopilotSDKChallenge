@@ -5788,7 +5788,6 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion, te
  *  Recomposes the full template (all deps get latest) and reports which triggered it. */
 async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
     const shortName = serviceId.split('/').pop();
-    if (!confirm(`Upgrade "${shortName}" to ${targetVersion}?\n\nThis recomposes the template with the latest version of all service dependencies.`)) return;
 
     // Show loading on the specific button
     const btns = document.querySelectorAll(`.dep-upgrade-btn`);
