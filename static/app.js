@@ -1862,11 +1862,18 @@ function _renderChildResources(childResources, parentResource) {
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
     // API Version Update buttons — shown when service is onboarded AND newer version available
     let updateBtn = '';
+    let analyzeBtn = '';
     if (apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status === 'approved' && latestVersion) {
         const hasSeparateRec = apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable
             && apiVersionStatus.default !== apiVersionStatus.template_api_version;
         const recIsDowngrade = hasSeparateRec && apiVersionStatus.default < apiVersionStatus.template_api_version;
         const recActionLabel = recIsDowngrade ? '↓ Downgrade to Recommended' : '↑ Update to Recommended';
+
+        // Analyze Upgrade button — always shown when update is available
+        const analyzeTarget = apiVersionStatus.newer_available ? apiVersionStatus.latest_stable : apiVersionStatus.default;
+        analyzeBtn = `<button class="btn btn-sm btn-analyze-upgrade" onclick="analyzeUpgradeCompatibility('${escapeHtml(svc.id)}', '${escapeHtml(analyzeTarget)}')" title="AI-powered analysis of breaking changes, new features, and migration effort">
+                🔬 Analyze Upgrade Impact
+            </button>`;
 
         // Show latest update button only if newer is available
         const latestBtn = apiVersionStatus.newer_available
@@ -1912,6 +1919,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
             </div>` : ''}
             <div class="validation-actions">
                 ${updateBtn}
+                ${analyzeBtn}
                 <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
                     🔄 Re-validate (New Version)
                 </button>
@@ -1919,6 +1927,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                     📦 Offboard
                 </button>
             </div>
+            <div id="upgrade-analysis-container"></div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
@@ -2975,6 +2984,216 @@ async function triggerOnboarding(serviceId) {
             if (cardEl) cardEl.className = 'validation-card validation-failed';
         }
     }
+}
+
+// ── Upgrade Compatibility Analysis ──────────────────────────
+
+let _upgradeAnalysisRunning = false;
+
+async function analyzeUpgradeCompatibility(serviceId, targetVersion) {
+    if (_upgradeAnalysisRunning) {
+        showToast('An upgrade analysis is already running…', 'warning');
+        return;
+    }
+    _upgradeAnalysisRunning = true;
+
+    const container = document.getElementById('upgrade-analysis-container');
+    if (!container) {
+        _upgradeAnalysisRunning = false;
+        return;
+    }
+
+    const svc = allServices.find(s => s.id === serviceId);
+    const svcName = svc ? svc.name : serviceId;
+
+    // Show loading state
+    container.innerHTML = `
+        <div class="upgrade-analysis-panel upgrade-analysis-loading">
+            <div class="upgrade-analysis-header">
+                <span class="upgrade-analysis-icon spin">🔬</span>
+                <span class="upgrade-analysis-title">Analyzing Upgrade Compatibility…</span>
+            </div>
+            <div class="upgrade-analysis-meta">
+                <span>Upgrade Analyst agent is reviewing <strong>${escapeHtml(svcName)}</strong></span>
+                ${targetVersion ? `<span class="upgrade-analysis-version">→ ${escapeHtml(targetVersion)}</span>` : ''}
+            </div>
+            <div class="upgrade-analysis-progress">
+                <div class="upgrade-analysis-progress-track">
+                    <div class="upgrade-analysis-progress-fill" id="upgrade-analysis-progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="upgrade-analysis-status" id="upgrade-analysis-status">Initializing…</div>
+        </div>`;
+    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    try {
+        const reqBody = {};
+        if (targetVersion) reqBody.target_version = targetVersion;
+
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/analyze-upgrade`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reqBody),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Analysis request failed');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let analysisResult = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const ev = JSON.parse(line);
+                    _handleUpgradeAnalysisEvent(ev, container);
+                    if (ev.type === 'analysis_complete') {
+                        analysisResult = ev;
+                    }
+                } catch (e) {
+                    console.warn('[upgrade-analysis] failed to parse event:', line);
+                }
+            }
+        }
+
+        // Process remaining buffer
+        if (buffer.trim()) {
+            try {
+                const ev = JSON.parse(buffer);
+                _handleUpgradeAnalysisEvent(ev, container);
+                if (ev.type === 'analysis_complete') {
+                    analysisResult = ev;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        if (analysisResult) {
+            _renderUpgradeAnalysisResult(analysisResult, container, serviceId);
+        }
+
+    } catch (err) {
+        container.innerHTML = `
+            <div class="upgrade-analysis-panel upgrade-analysis-error">
+                <div class="upgrade-analysis-header">
+                    <span class="upgrade-analysis-icon">❌</span>
+                    <span class="upgrade-analysis-title">Analysis Failed</span>
+                </div>
+                <div class="upgrade-analysis-body">${escapeHtml(err.message)}</div>
+                <button class="btn btn-sm btn-secondary" onclick="analyzeUpgradeCompatibility('${escapeHtml(serviceId)}', '${escapeHtml(targetVersion || '')}')">🔄 Retry</button>
+            </div>`;
+        showToast(`Upgrade analysis failed: ${err.message}`, 'error');
+    } finally {
+        _upgradeAnalysisRunning = false;
+    }
+}
+
+function _handleUpgradeAnalysisEvent(ev, container) {
+    if (ev.type === 'progress') {
+        const statusEl = document.getElementById('upgrade-analysis-status');
+        const fillEl = document.getElementById('upgrade-analysis-progress-fill');
+        if (statusEl) statusEl.textContent = ev.detail || '';
+        if (fillEl && ev.progress) fillEl.style.width = `${Math.round(ev.progress * 100)}%`;
+
+        // Show agent/model info
+        if (ev.agent) {
+            const metaEl = container.querySelector('.upgrade-analysis-meta');
+            if (metaEl && !metaEl.querySelector('.upgrade-analysis-agent')) {
+                metaEl.innerHTML += `<span class="upgrade-analysis-agent">🤖 ${escapeHtml(ev.agent)}</span>`;
+            }
+            if (metaEl && ev.model && !metaEl.querySelector('.upgrade-analysis-model')) {
+                metaEl.innerHTML += `<span class="upgrade-analysis-model">${escapeHtml(ev.model)}</span>`;
+            }
+        }
+    } else if (ev.type === 'error') {
+        container.innerHTML = `
+            <div class="upgrade-analysis-panel upgrade-analysis-error">
+                <div class="upgrade-analysis-header">
+                    <span class="upgrade-analysis-icon">❌</span>
+                    <span class="upgrade-analysis-title">Analysis Failed</span>
+                </div>
+                <div class="upgrade-analysis-body">${escapeHtml(ev.detail || 'Unknown error')}</div>
+            </div>`;
+    }
+}
+
+function _renderUpgradeAnalysisResult(result, container, serviceId) {
+    const analysis = result.analysis || 'No analysis available.';
+
+    // Parse the markdown to detect the verdict for styling
+    let verdictClass = 'upgrade-verdict-caution';
+    if (analysis.includes('✅') && analysis.includes('Safe to upgrade')) {
+        verdictClass = 'upgrade-verdict-safe';
+    } else if (analysis.includes('🛑') && analysis.includes('Breaking changes')) {
+        verdictClass = 'upgrade-verdict-breaking';
+    }
+
+    // Convert markdown to basic HTML
+    const analysisHtml = _markdownToHtml(analysis);
+
+    container.innerHTML = `
+        <div class="upgrade-analysis-panel upgrade-analysis-complete ${verdictClass}">
+            <div class="upgrade-analysis-header">
+                <span class="upgrade-analysis-icon">🔬</span>
+                <span class="upgrade-analysis-title">Upgrade Compatibility Analysis</span>
+                <button class="upgrade-analysis-close" onclick="this.closest('.upgrade-analysis-panel').remove()" title="Dismiss">✕</button>
+            </div>
+            <div class="upgrade-analysis-meta">
+                <span>${escapeHtml(result.current_api_version)} → ${escapeHtml(result.target_api_version)}</span>
+                <span class="upgrade-analysis-agent">🤖 ${escapeHtml(result.agent || 'Upgrade Analyst')}</span>
+                <span class="upgrade-analysis-model">${escapeHtml(result.model || '')}</span>
+            </div>
+            <div class="upgrade-analysis-body">${analysisHtml}</div>
+            <div class="upgrade-analysis-actions">
+                <button class="btn btn-sm btn-secondary" onclick="analyzeUpgradeCompatibility('${escapeHtml(serviceId)}', '${escapeHtml(result.target_api_version || '')}')" title="Re-run the analysis">🔄 Re-analyze</button>
+            </div>
+        </div>`;
+
+    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** Minimal markdown→HTML converter for upgrade analysis results */
+function _markdownToHtml(md) {
+    let html = md
+        // Code blocks (triple backtick)
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="lang-$1">$2</code></pre>')
+        // Inline code
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        // Headers (### before ## before #)
+        .replace(/^#### (.+)$/gm, '<h5>$1</h5>')
+        .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+        // Bold
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        // Italic
+        .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
+        // Unordered list items
+        .replace(/^- (.+)$/gm, '<li>$1</li>')
+        // Numbered list items
+        .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+        // Horizontal rules
+        .replace(/^---$/gm, '<hr>')
+        // Paragraphs — wrap non-tag lines
+        .replace(/\n\n+/g, '</p><p>')
+        ;
+
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, '$1</ul>');
+    html = html.replace(/(?<!<\/ul>)(<li>)/g, '<ul>$1');
+
+    return `<p>${html}</p>`;
 }
 
 let _apiUpdateRunning = false;
@@ -5244,7 +5463,7 @@ async function _loadTemplateComposition(templateId) {
                                 ${c.version_known === false
                                     ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
                                     : c.upgrade_available
-                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button>`
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}','${escapeHtml(c.current_semver || '')}')" title="Analyze upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${depIconsHtml}
@@ -5301,6 +5520,111 @@ async function _loadTemplateComposition(templateId) {
         }
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed: ${err.message}</div>`;
+    }
+}
+
+/** Analyze upgrade compatibility for a dependency in the template composition view.
+ *  Opens a modal overlay with the streaming analysis from the Upgrade Analyst agent. */
+async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion) {
+    const shortName = serviceId.split('/').pop();
+
+    // Create modal overlay
+    let overlay = document.getElementById('upgrade-analysis-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'upgrade-analysis-overlay';
+        overlay.className = 'upgrade-analysis-overlay';
+        document.body.appendChild(overlay);
+    }
+
+    overlay.innerHTML = `
+        <div class="upgrade-analysis-modal">
+            <div class="upgrade-analysis-modal-header">
+                <span>🔬 Upgrade Analysis: ${escapeHtml(shortName)}</span>
+                <button class="upgrade-analysis-close" onclick="document.getElementById('upgrade-analysis-overlay').remove()">✕</button>
+            </div>
+            <div class="upgrade-analysis-modal-body" id="upgrade-analysis-modal-body">
+                <div class="upgrade-analysis-panel upgrade-analysis-loading">
+                    <div class="upgrade-analysis-header">
+                        <span class="upgrade-analysis-icon spin">🔬</span>
+                        <span class="upgrade-analysis-title">Analyzing Compatibility…</span>
+                    </div>
+                    <div class="upgrade-analysis-meta">
+                        <span>${escapeHtml(currentVersion || '?')} → ${escapeHtml(targetVersion)}</span>
+                    </div>
+                    <div class="upgrade-analysis-progress">
+                        <div class="upgrade-analysis-progress-track">
+                            <div class="upgrade-analysis-progress-fill" id="upgrade-analysis-progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="upgrade-analysis-status" id="upgrade-analysis-status">Initializing…</div>
+                </div>
+            </div>
+        </div>`;
+    overlay.style.display = 'flex';
+
+    // Close on backdrop click
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/analyze-upgrade`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_version: targetVersion }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Analysis failed');
+        }
+
+        const modalBody = document.getElementById('upgrade-analysis-modal-body');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let analysisResult = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const ev = JSON.parse(line);
+                    _handleUpgradeAnalysisEvent(ev, modalBody);
+                    if (ev.type === 'analysis_complete') analysisResult = ev;
+                } catch (e) { /* skip */ }
+            }
+        }
+
+        if (buffer.trim()) {
+            try {
+                const ev = JSON.parse(buffer);
+                _handleUpgradeAnalysisEvent(ev, modalBody);
+                if (ev.type === 'analysis_complete') analysisResult = ev;
+            } catch (e) { /* skip */ }
+        }
+
+        if (analysisResult && modalBody) {
+            _renderUpgradeAnalysisResult(analysisResult, modalBody, serviceId);
+        }
+    } catch (err) {
+        const modalBody = document.getElementById('upgrade-analysis-modal-body');
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div class="upgrade-analysis-panel upgrade-analysis-error">
+                    <div class="upgrade-analysis-header">
+                        <span class="upgrade-analysis-icon">❌</span>
+                        <span class="upgrade-analysis-title">Analysis Failed</span>
+                    </div>
+                    <div class="upgrade-analysis-body">${escapeHtml(err.message)}</div>
+                </div>`;
+        }
     }
 }
 
