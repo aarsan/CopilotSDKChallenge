@@ -5101,7 +5101,7 @@ async def fix_and_validate_template(template_id: str, request: Request):
         if is_blueprint and svc_ids:
             yield _record({
                 "phase": "recomposing",
-                "detail": "This is a blueprint — let me rebuild it from the latest service templates first…",
+                "detail": "This is a composite template — let me rebuild it from the latest service templates first…",
             })
 
             try:
@@ -5304,7 +5304,7 @@ async def recompose_blueprint(template_id: str):
     # Clear all pins so recompose always grabs active versions
     # (The helper already recorded the active versions as the new pins)
     result["message"] = (
-        f"Blueprint recomposed from {len(result['services_recomposed'])} services "
+        f"Template recomposed from {len(result['services_recomposed'])} services "
         f"with latest templates"
     )
     return JSONResponse(result)

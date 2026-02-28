@@ -8046,9 +8046,9 @@ function _renderValidationResults(container, data, passed) {
     `;
 }
 
-/** Recompose a blueprint from its latest service templates */
+/** Recompose a composite template from its latest service templates */
 async function recomposeBlueprint(templateId) {
-    if (!confirm('Recompose this blueprint from the latest service templates?\n\nThis pulls the current version of each underlying service template, re-merges them, and creates a new major version.')) return;
+    if (!confirm('Recompose this template from the latest service templates?\n\nThis pulls the current version of each underlying service template, re-merges them, and creates a new major version.')) return;
 
     showToast('🔄 Pulling latest service template versions…', 'info');
 
@@ -8997,7 +8997,7 @@ function _renderDeployProgress(container, event, ctx) {
             <div class="vf-target-info">
                 ${rg ? `<span class="vf-tag">RG: ${escapeHtml(rg)}</span>` : ''}
                 ${region ? `<span class="vf-tag">Region: ${escapeHtml(region)}</span>` : ''}
-                ${event.is_blueprint ? '<span class="vf-tag vf-tag-blueprint">Blueprint</span>' : ''}
+                ${event.is_blueprint ? '<span class="vf-tag vf-tag-blueprint">Composite</span>' : ''}
             </div>
         `;
         // Insert after stage bar, before canvas
