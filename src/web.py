@@ -5403,6 +5403,8 @@ async def get_template_composition(template_id: str):
             "latest_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
             "upgrade_available": upgrade_available,
             "version_known": pinned_int is not None,
+            "latest_api_version": svc.get("latest_api_version"),
+            "template_api_version": svc.get("template_api_version"),
         })
 
     # Build dependency edges between components

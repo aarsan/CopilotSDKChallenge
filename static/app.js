@@ -5463,7 +5463,7 @@ async function _loadTemplateComposition(templateId) {
                                 ${c.version_known === false
                                     ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
                                     : c.upgrade_available
-                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}','${escapeHtml(c.current_semver || '')}')" title="Analyze upgrade compatibility">🔬</button>`
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${depIconsHtml}
@@ -5540,17 +5540,17 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion) {
     overlay.innerHTML = `
         <div class="upgrade-analysis-modal">
             <div class="upgrade-analysis-modal-header">
-                <span>🔬 Upgrade Analysis: ${escapeHtml(shortName)}</span>
+                <span>🔬 API Version Upgrade Analysis: ${escapeHtml(shortName)}</span>
                 <button class="upgrade-analysis-close" onclick="document.getElementById('upgrade-analysis-overlay').remove()">✕</button>
             </div>
             <div class="upgrade-analysis-modal-body" id="upgrade-analysis-modal-body">
                 <div class="upgrade-analysis-panel upgrade-analysis-loading">
                     <div class="upgrade-analysis-header">
                         <span class="upgrade-analysis-icon spin">🔬</span>
-                        <span class="upgrade-analysis-title">Analyzing Compatibility…</span>
+                        <span class="upgrade-analysis-title">Analyzing API Version Compatibility…</span>
                     </div>
                     <div class="upgrade-analysis-meta">
-                        <span>${escapeHtml(currentVersion || '?')} → ${escapeHtml(targetVersion)}</span>
+                        <span>API Version: ${escapeHtml(currentVersion || '?')} → ${escapeHtml(targetVersion)}</span>
                     </div>
                     <div class="upgrade-analysis-progress">
                         <div class="upgrade-analysis-progress-track">
