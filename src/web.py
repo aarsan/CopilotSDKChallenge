@@ -646,6 +646,10 @@ async def lifespan(app: FastAPI):
     logger.info("Loading agent activity counters from DB...")
     from src.copilot_helpers import load_agent_counters_from_db
     await load_agent_counters_from_db()
+    # Load agent definitions from DB (overlays hardcoded defaults)
+    from src.agents import load_agents_from_db
+    agent_count = await load_agents_from_db()
+    logger.info(f"Loaded {agent_count} agent definitions from database")
     logger.info("Deferring Copilot SDK client start (lazy init on first chat)...")
     _ws.copilot_client = None  # Will be started lazily on first WebSocket connection
     ensure_output_dir(OUTPUT_DIR)
@@ -702,6 +706,106 @@ static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
+@app.put("/api/agents/{agent_key}/prompt")
+async def update_agent_prompt(agent_key: str, request: Request):
+    """Update an agent's system prompt (persisted to DB with version history)."""
+    from src.database import update_agent_definition, get_agent_definition
+    from src.agents import AGENTS, AgentSpec, _HARDCODED_AGENTS, load_agents_from_db
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    system_prompt = body.get("system_prompt") or body.get("prompt")
+    if not system_prompt:
+        raise HTTPException(status_code=400, detail="system_prompt is required")
+
+    # Ensure agent exists in DB (seed if needed)
+    existing = await get_agent_definition(agent_key)
+    if not existing:
+        # Check hardcoded fallback
+        if agent_key not in _HARDCODED_AGENTS:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+        # Seed this agent first
+        from src.database import seed_agent_definitions
+        await seed_agent_definitions()
+
+    result = await update_agent_definition(
+        agent_key,
+        system_prompt=system_prompt,
+        name=body.get("name"),
+        description=body.get("description"),
+        timeout=body.get("timeout"),
+        enabled=body.get("enabled"),
+        changed_by=body.get("changed_by", "user"),
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+
+    # Reload agents from DB to pick up the change
+    await load_agents_from_db()
+
+    return JSONResponse({
+        "status": "updated",
+        "agent_id": agent_key,
+        "version": result.get("version", 1),
+    })
+
+
+@app.post("/api/agents/{agent_key}/reset")
+async def reset_agent_prompt(agent_key: str):
+    """Reset an agent's prompt to the hardcoded default."""
+    from src.database import reset_agent_to_default
+    from src.agents import load_agents_from_db
+
+    result = await reset_agent_to_default(agent_key)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found in defaults")
+
+    await load_agents_from_db()
+    return JSONResponse({"status": "reset", "agent_id": agent_key, "version": result.get("version", 1)})
+
+
+@app.get("/api/agents/{agent_key}/history")
+async def get_agent_history(agent_key: str):
+    """Return prompt version history for an agent."""
+    from src.database import get_agent_prompt_history
+    history = await get_agent_prompt_history(agent_key)
+    return JSONResponse({"agent_id": agent_key, "history": history})
+
+
+@app.patch("/api/agents/{agent_key}")
+async def patch_agent_definition(agent_key: str, request: Request):
+    """Update agent metadata (name, description, timeout, enabled) without changing prompt."""
+    from src.database import update_agent_definition, get_agent_definition
+    from src.agents import load_agents_from_db, _HARDCODED_AGENTS
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    existing = await get_agent_definition(agent_key)
+    if not existing:
+        if agent_key not in _HARDCODED_AGENTS:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+        from src.database import seed_agent_definitions
+        await seed_agent_definitions()
+
+    result = await update_agent_definition(
+        agent_key,
+        name=body.get("name"),
+        description=body.get("description"),
+        timeout=body.get("timeout"),
+        enabled=body.get("enabled"),
+        changed_by=body.get("changed_by", "user"),
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+
+    await load_agents_from_db()
+    return JSONResponse({"status": "updated", "agent": result})
 # ── Service Catalog API ──────────────────────────────────────
 
 @app.get("/api/catalog/services")

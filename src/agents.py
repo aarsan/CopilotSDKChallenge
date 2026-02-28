@@ -1320,9 +1320,10 @@ Be constructive. Focus on actionable improvements, not theoretical perfection.
     timeout=90,
 )
 
-AGENTS: dict[str, AgentSpec] = {
+_HARDCODED_AGENTS: dict[str, AgentSpec] = {
     # Interactive
     "web_chat":               WEB_CHAT_AGENT,
+    "governance_agent":       GOVERNANCE_AGENT,
     "ciso_advisor":           CISO_AGENT,
     "concierge":              CONCIERGE_AGENT,
 
@@ -1363,3 +1364,64 @@ AGENTS: dict[str, AgentSpec] = {
     "ciso_reviewer":          CISO_REVIEWER,
     "cto_reviewer":           CTO_REVIEWER,
 }
+
+# ═══════════════════════════════════════════════════════════════
+#  DB-BACKED AGENT LOADING
+# ═══════════════════════════════════════════════════════════════
+#
+# At import time AGENTS starts as the hardcoded dict. Once the
+# server starts and the DB is available, ``load_agents_from_db()``
+# overlays DB-stored definitions so platform engineers can iterate
+# on prompts without code changes.
+
+# Start with hardcoded defaults — overwritten by DB on startup
+AGENTS: dict[str, AgentSpec] = dict(_HARDCODED_AGENTS)
+
+
+async def load_agents_from_db() -> int:
+    """Load agent definitions from the database and overlay onto AGENTS.
+
+    Called once during server startup after ``init_db()``.  DB definitions
+    take precedence — if an agent has a row in ``agent_definitions``, its
+    system_prompt, timeout, and enabled flag come from the DB.
+
+    Disabled agents (``enabled=0``) are excluded from AGENTS so they
+    won't be invoked by any pipeline step.
+
+    Returns the number of agents loaded from DB.
+    """
+    try:
+        from src.database import get_all_agent_definitions
+        rows = await get_all_agent_definitions()
+    except Exception:
+        # DB not available yet — keep hardcoded defaults
+        return 0
+
+    if not rows:
+        return 0
+
+    count = 0
+    for row in rows:
+        agent_id = row["id"]
+        task_str = row.get("task", "planning")
+        try:
+            task_enum = Task(task_str)
+        except ValueError:
+            task_enum = Task.PLANNING
+
+        if not row.get("enabled", True):
+            # Disabled agent — remove from registry if present
+            AGENTS.pop(agent_id, None)
+            continue
+
+        spec = AgentSpec(
+            name=row.get("name", agent_id),
+            description=row.get("description", ""),
+            system_prompt=row.get("system_prompt", ""),
+            task=task_enum,
+            timeout=row.get("timeout", 60),
+        )
+        AGENTS[agent_id] = spec
+        count += 1
+
+    return count

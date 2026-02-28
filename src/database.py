@@ -943,6 +943,42 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         created_at      NVARCHAR(50) NOT NULL
     )
     """,
+    # ══════════════════════════════════════════════════════════
+    # AGENT DEFINITIONS — externalised agent prompts & config
+    # so platform engineers can iterate on prompts without
+    # code changes or server restarts.
+    # ══════════════════════════════════════════════════════════
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_definitions')
+    CREATE TABLE agent_definitions (
+        id              NVARCHAR(100) PRIMARY KEY,
+        name            NVARCHAR(200) NOT NULL,
+        description     NVARCHAR(MAX) DEFAULT '',
+        system_prompt   NVARCHAR(MAX) NOT NULL,
+        task            NVARCHAR(50) NOT NULL,
+        timeout         INT DEFAULT 60,
+        category        NVARCHAR(50) DEFAULT 'headless',
+        enabled         BIT DEFAULT 1,
+        version         INT DEFAULT 1,
+        created_at      NVARCHAR(50) NOT NULL,
+        updated_at      NVARCHAR(50) NOT NULL
+    )
+    """,
+    # ── Agent prompt version history ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_prompt_history')
+    CREATE TABLE agent_prompt_history (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        agent_id        NVARCHAR(100) NOT NULL,
+        version         INT NOT NULL,
+        system_prompt   NVARCHAR(MAX) NOT NULL,
+        changed_by      NVARCHAR(200) DEFAULT 'system',
+        changed_at      NVARCHAR(50) NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agent_definitions(id)
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_agent_prompt_history')
+    CREATE INDEX idx_agent_prompt_history ON agent_prompt_history(agent_id, version DESC)""",
 ]
 
 
@@ -3405,6 +3441,10 @@ async def seed_governance_data() -> dict:
     proc_count = await seed_orchestration_processes()
     summary["orchestration_processes"] = proc_count
 
+    # ── Seed agent definitions ──
+    agent_count = await seed_agent_definitions()
+    summary["agent_definitions"] = agent_count
+
     logger.info(f"Startup seed complete: {summary}")
     return summary
 
@@ -4876,3 +4916,162 @@ async def refresh_orchestration_processes() -> int:
 
     # Re-seed with current definitions
     return await seed_orchestration_processes()
+
+
+# ══════════════════════════════════════════════════════════════
+# AGENT DEFINITIONS — DB-backed agent specs
+# ══════════════════════════════════════════════════════════════
+
+async def seed_agent_definitions() -> int:
+    """Seed agent definitions from the hardcoded registry in agents.py.
+
+    Uses an upsert strategy: inserts missing agents, updates existing ones
+    only if the hardcoded version has changed (based on prompt hash).
+    Returns the number of agents inserted or updated.
+    """
+    import hashlib
+    from src.agents import _HARDCODED_AGENTS
+
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    count = 0
+
+    # Categorise agents for the category column
+    interactive_ids = {"web_chat", "ciso_advisor", "concierge", "governance_agent"}
+
+    for agent_id, spec in _HARDCODED_AGENTS.items():
+        category = "interactive" if agent_id in interactive_ids else "headless"
+        prompt_hash = hashlib.sha256(spec.system_prompt.encode()).hexdigest()[:16]
+
+        existing = await backend.execute(
+            "SELECT id, version FROM agent_definitions WHERE id = ?",
+            (agent_id,),
+        )
+        if existing:
+            # Already exists — skip (DB version takes precedence)
+            continue
+
+        await backend.execute_write(
+            """INSERT INTO agent_definitions
+               (id, name, description, system_prompt, task, timeout,
+                category, enabled, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)""",
+            (agent_id, spec.name, spec.description, spec.system_prompt,
+             spec.task.value, spec.timeout, category, now, now),
+        )
+        count += 1
+
+    if count:
+        logger.info(f"Seeded {count} agent definitions into database")
+    return count
+
+
+async def get_all_agent_definitions() -> list[dict]:
+    """Return all agent definitions from the database."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM agent_definitions ORDER BY category, name", ()
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_agent_definition(agent_id: str) -> dict | None:
+    """Return a single agent definition by ID."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM agent_definitions WHERE id = ?", (agent_id,)
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def update_agent_definition(
+    agent_id: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    system_prompt: str | None = None,
+    task: str | None = None,
+    timeout: int | None = None,
+    enabled: bool | None = None,
+    changed_by: str = "user",
+) -> dict | None:
+    """Update an agent definition. Creates a prompt history entry on prompt changes."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+
+    current = await get_agent_definition(agent_id)
+    if not current:
+        return None
+
+    # Build SET clauses for fields that changed
+    updates: list[str] = []
+    params: list[object] = []
+
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        params.append(description)
+    if task is not None:
+        updates.append("task = ?")
+        params.append(task)
+    if timeout is not None:
+        updates.append("timeout = ?")
+        params.append(timeout)
+    if enabled is not None:
+        updates.append("enabled = ?")
+        params.append(1 if enabled else 0)
+
+    # Prompt change — bump version and record history
+    if system_prompt is not None and system_prompt != current.get("system_prompt"):
+        new_version = (current.get("version") or 1) + 1
+        updates.append("system_prompt = ?")
+        params.append(system_prompt)
+        updates.append("version = ?")
+        params.append(new_version)
+
+        await backend.execute_write(
+            """INSERT INTO agent_prompt_history
+               (agent_id, version, system_prompt, changed_by, changed_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (agent_id, new_version, system_prompt, changed_by, now),
+        )
+
+    if not updates:
+        return current
+
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(agent_id)
+
+    await backend.execute_write(
+        f"UPDATE agent_definitions SET {', '.join(updates)} WHERE id = ?",
+        tuple(params),
+    )
+    return await get_agent_definition(agent_id)
+
+
+async def get_agent_prompt_history(agent_id: str) -> list[dict]:
+    """Return prompt version history for an agent."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM agent_prompt_history WHERE agent_id = ? ORDER BY version DESC",
+        (agent_id,),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def reset_agent_to_default(agent_id: str) -> dict | None:
+    """Reset an agent's prompt to the hardcoded default."""
+    from src.agents import _HARDCODED_AGENTS
+
+    spec = _HARDCODED_AGENTS.get(agent_id)
+    if not spec:
+        return None
+
+    return await update_agent_definition(
+        agent_id,
+        system_prompt=spec.system_prompt,
+        changed_by="system_reset",
+    )

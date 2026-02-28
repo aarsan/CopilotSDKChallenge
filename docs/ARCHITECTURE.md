@@ -57,11 +57,14 @@ CopilotSDKChallenge/
 │   ├── web.py                 # FastAPI app + remaining endpoints (~9800 lines — see Router Map)
 │   ├── web_shared.py          # Shared singletons (copilot_client, active_sessions, etc.)
 │   ├── database.py            # Azure SQL backend — schema + CRUD (~4600 lines)
+│   ├── agents.py              # Agent registry — DB-backed with hardcoded fallback (see §7b)
+│   ├── copilot_helpers.py     # copilot_send(), agent activity tracking
 │   ├── pipeline.py            # PipelineRunner framework — step execution, healing, finalizers
 │   ├── pipeline_helpers.py    # Shared helpers for pipelines (param defaults, healing, tags, etc.)
 │   ├── orchestrator.py        # LLM orchestration — template analysis, composition, healing
 │   ├── model_router.py        # Task → LLM model routing (see §7)
-│   ├── copilot_helpers.py     # copilot_send(), agent activity tracking
+│   ├── governance.py          # CISO + CTO governance review engine
+│   ├── fabric.py              # Microsoft Fabric / OneLake integration
 │   ├── auth.py                # Entra ID OAuth2 flow (MSAL)
 │   ├── azure_sync.py          # Azure Resource Provider sync engine
 │   ├── sql_firewall.py        # Auto-detect IP & update SQL firewall on startup
@@ -105,6 +108,12 @@ CopilotSDKChallenge/
 │   │   ├── terraform_generator.py # Terraform generation
 │   │   ├── github_actions_generator.py # GitHub Actions YAML
 │   │   └── azure_devops_generator.py   # Azure DevOps YAML
+│   ├── pipelines/             # DB-driven pipeline implementations
+│   │   ├── __init__.py        # Pipeline module registry
+│   │   ├── onboarding.py      # Service onboarding (11-step pipeline)
+│   │   ├── validation.py      # Template validation (deploy → heal → promote)
+│   │   ├── deploy.py          # Template deployment (sanitise → what-if → deploy)
+│   │   └── testing.py         # Infrastructure smoke testing
 │   └── templates/             # Pattern libraries for code generation
 │       ├── bicep_patterns.py
 │       ├── terraform_patterns.py
@@ -186,6 +195,17 @@ Tables are created automatically on startup via `init_db()`.
 | `chat_messages` | Conversation history per session | `session_token`, `role`, `content` |
 | `usage_logs` | Analytics — cost attribution, department tracking | `user_email`, `action`, `department` |
 | `projects` | Infrastructure project proposals | `id`, `name`, `description`, `status` |
+
+### Agent & Orchestration Tables
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `agent_definitions` | DB-backed agent specs (prompts, config) | `id`, `name`, `system_prompt`, `task`, `timeout`, `enabled`, `version` |
+| `agent_prompt_history` | Audit trail for prompt changes | `agent_id`, `version`, `system_prompt`, `changed_by` |
+| `orchestration_processes` | Pipeline workflow definitions | `id`, `name`, `trigger_event`, `enabled` |
+| `process_steps` | Steps within pipeline workflows | `process_id`, `step_order`, `action`, `on_success`, `on_failure` |
+| `pipeline_runs` | Execution history per pipeline run | `run_id`, `service_id`, `pipeline_type`, `status`, `heal_count` |
+| `governance_reviews` | CISO/CTO review decisions | `service_id`, `agent`, `verdict`, `gate_decision` |
 
 ### Governance Tables
 
@@ -446,14 +466,15 @@ from the user's chat model preference.
 
 | Task | Model | Rationale |
 |------|-------|-----------|
-| `PLANNING` | o3-mini | Deep reasoning for architecture decisions |
-| `VALIDATION_ANALYSIS` | o3-mini | Reasoning about errors and fixes |
+| `PLANNING` | claude-sonnet-4 | Architecture planning + root cause analysis |
+| `VALIDATION_ANALYSIS` | claude-sonnet-4 | Analyzing deployment errors and policy violations |
 | `CODE_GENERATION` | claude-sonnet-4 | Precise ARM/Bicep/Terraform generation |
 | `POLICY_GENERATION` | claude-sonnet-4 | Precise policy JSON structure |
-| `CODE_FIXING` | gpt-4.1 | Surgical template healing |
+| `CODE_FIXING` | claude-sonnet-4 | Surgical template healing |
 | `CHAT` | (user-selected) | Interactive conversation |
 | `QUICK_CLASSIFY` | gpt-4.1-nano | Fast classification and routing |
 | `DESIGN_DOCUMENT` | gpt-4.1 | Clear technical prose |
+| `GOVERNANCE_REVIEW` | claude-sonnet-4 | CISO/CTO structured review gate |
 
 ### Task Enum
 
@@ -468,11 +489,95 @@ Task.VALIDATION_ANALYSIS
 Task.CHAT
 Task.QUICK_CLASSIFY
 Task.DESIGN_DOCUMENT
+Task.GOVERNANCE_REVIEW
 ```
 
 ---
 
-## 8. Copilot SDK Patterns
+## 7b. Agent Architecture (DB-backed)
+
+Agent definitions are stored in the `agent_definitions` table and loaded at server
+startup. Hardcoded defaults in `src/agents.py` serve as fallback. Platform engineers
+can iterate on prompts via the API without code changes or server restarts.
+
+### Storage
+
+| Table | Purpose |
+|-------|---------|
+| `agent_definitions` | Agent specs: name, prompt, task, timeout, enabled |
+| `agent_prompt_history` | Version history for every prompt change |
+
+### Agent Registry (24 agents)
+
+| ID | Name | Category | Task | Used By |
+|----|------|----------|------|---------|
+| `web_chat` | InfraForge Chat | Interactive | CHAT | WebSocket chat |
+| `governance_agent` | Governance Advisor | Interactive | CHAT | Governance page chat |
+| `ciso_advisor` | CISO Advisor | Interactive | CHAT | CISO chat mode |
+| `concierge` | InfraForge Concierge | Interactive | CHAT | Concierge chat mode |
+| `gap_analyst` | Gap Analyst | Orchestrator | PLANNING | orchestrator.py |
+| `arm_template_editor` | ARM Template Editor | Orchestrator | CODE_GENERATION | orchestrator.py |
+| `policy_checker` | Governance Policy Checker | Orchestrator | PLANNING | orchestrator.py |
+| `request_parser` | Request Parser | Orchestrator | PLANNING | orchestrator.py |
+| `standards_extractor` | Standards Extractor | Standards | PLANNING | standards_import.py |
+| `arm_modifier` | ARM Template Modifier | ARM Gen | CODE_GENERATION | arm_generator.py |
+| `arm_generator` | ARM Template Generator | ARM Gen | CODE_GENERATION | arm_generator.py |
+| `template_healer` | Template Healer | Pipeline | CODE_FIXING | pipeline_helpers.py |
+| `error_culprit_detector` | Error Culprit Detector | Pipeline | PLANNING | web.py |
+| `deploy_failure_analyst` | Deploy Failure Analyst | Pipeline | VALIDATION_ANALYSIS | deploy.py |
+| `remediation_planner` | Remediation Planner | Compliance | PLANNING | web.py |
+| `remediation_executor` | Remediation Executor | Compliance | PLANNING | web.py |
+| `artifact_generator` | Artifact Generator | Artifact | CODE_GENERATION | web.py |
+| `policy_fixer` | Policy JSON Fixer | Healing | CODE_FIXING | onboarding.py |
+| `deep_template_healer` | Deep Template Healer | Healing | CODE_FIXING | pipeline_helpers.py |
+| `llm_reasoner` | LLM Reasoner | Healing | PLANNING | onboarding.py, web.py |
+| `infra_tester` | Infrastructure Tester | Testing | CODE_GENERATION | testing.py |
+| `infra_test_analyzer` | Test Analyzer | Testing | VALIDATION_ANALYSIS | testing.py |
+| `ciso_reviewer` | CISO Reviewer | Governance | GOVERNANCE_REVIEW | governance.py |
+| `cto_reviewer` | CTO Reviewer | Governance | GOVERNANCE_REVIEW | governance.py |
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/agents/activity` | Full registry, routing table, and activity log |
+| GET | `/api/agents/{id}/prompt` | Get full system prompt |
+| PUT | `/api/agents/{id}/prompt` | Update prompt (versioned, persisted to DB) |
+| POST | `/api/agents/{id}/reset` | Reset prompt to hardcoded default |
+| GET | `/api/agents/{id}/history` | Prompt version history |
+| PATCH | `/api/agents/{id}` | Update metadata (name, timeout, enabled) |
+
+### Loading Order
+
+1. `_HARDCODED_AGENTS` dict in `agents.py` — always available at import time
+2. `seed_agent_definitions()` — inserts missing agents into DB during `init_db()`
+3. `load_agents_from_db()` — overlays DB definitions onto `AGENTS` dict at startup
+4. DB definitions take precedence; disabled agents are removed from `AGENTS`
+
+### Pipeline Agent Flow
+
+```
+User Request
+    │
+    ├─ WebSocket Chat ──▶ WEB_CHAT_AGENT (interactive, with tools)
+    │
+    ├─ Service Onboarding Pipeline:
+    │   ├─ plan_architecture ──▶ LLM_REASONER
+    │   ├─ generate_arm ──▶ ARM_GENERATOR / ARM_MODIFIER
+    │   ├─ generate_policy ──▶ POLICY_FIXER (heal loop)
+    │   ├─ governance_review ──▶ CISO_REVIEWER + CTO_REVIEWER (parallel)
+    │   ├─ validate_arm_deploy ──▶ TEMPLATE_HEALER (heal loop)
+    │   └─ infra_testing ──▶ INFRA_TESTER → INFRA_TEST_ANALYZER
+    │
+    ├─ Template Validation Pipeline:
+    │   ├─ deploy ──▶ TEMPLATE_HEALER (surface heal)
+    │   └─ deep_heal ──▶ DEEP_TEMPLATE_HEALER + ERROR_CULPRIT_DETECTOR
+    │
+    └─ Template Deploy Pipeline:
+        ├─ what_if + deploy ──▶ TEMPLATE_HEALER
+        ├─ deep_heal ──▶ DEEP_TEMPLATE_HEALER
+        └─ failure_summary ──▶ DEPLOY_FAILURE_ANALYST
+```
 
 ### Session API
 
