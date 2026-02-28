@@ -15479,3 +15479,278 @@ details[open] > .tmpl-deploy-group-optional {
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   UPGRADE COMPATIBILITY ANALYSIS
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Analyze Upgrade button (service detail) ─────────────── */
+.btn-analyze-upgrade {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff;
+    border: none;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    transition: all 0.2s ease;
+}
+.btn-analyze-upgrade:hover {
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    box-shadow: 0 2px 12px rgba(99, 102, 241, 0.35);
+    transform: translateY(-1px);
+}
+
+/* ── Small analyze button in composition graph ───────────── */
+.hero-analyze-btn {
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    color: #a5b4fc;
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    margin-left: 3px;
+    transition: all 0.2s ease;
+}
+.hero-analyze-btn:hover {
+    background: rgba(99, 102, 241, 0.3);
+    border-color: #818cf8;
+    color: #c7d2fe;
+}
+
+/* ── Analysis panel (inline, in service detail) ──────────── */
+.upgrade-analysis-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-top: 1rem;
+    animation: fadeSlideIn 0.3s ease;
+}
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.upgrade-analysis-panel.upgrade-analysis-loading {
+    border-left: 3px solid #6366f1;
+}
+.upgrade-analysis-panel.upgrade-analysis-error {
+    border-left: 3px solid var(--accent-red);
+}
+.upgrade-analysis-panel.upgrade-analysis-complete {
+    border-left: 3px solid #6366f1;
+}
+.upgrade-analysis-panel.upgrade-verdict-safe {
+    border-left-color: var(--accent-green);
+}
+.upgrade-analysis-panel.upgrade-verdict-caution {
+    border-left-color: var(--warning);
+}
+.upgrade-analysis-panel.upgrade-verdict-breaking {
+    border-left-color: var(--accent-red);
+}
+
+.upgrade-analysis-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+.upgrade-analysis-icon {
+    font-size: 1.2rem;
+}
+.upgrade-analysis-icon.spin {
+    animation: spin 1.5s linear infinite;
+}
+.upgrade-analysis-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+.upgrade-analysis-close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+}
+.upgrade-analysis-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+.upgrade-analysis-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+.upgrade-analysis-version {
+    color: #a5b4fc;
+    font-weight: 600;
+}
+.upgrade-analysis-agent {
+    color: #a5b4fc;
+    font-weight: 500;
+}
+.upgrade-analysis-model {
+    background: rgba(99, 102, 241, 0.12);
+    color: #a5b4fc;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+/* ── Progress bar ────────────────────────────────────────── */
+.upgrade-analysis-progress {
+    margin: 0.5rem 0;
+}
+.upgrade-analysis-progress-track {
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.upgrade-analysis-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #6366f1, #8b5cf6);
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+.upgrade-analysis-status {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-top: 0.35rem;
+}
+
+/* ── Analysis body (rendered markdown) ───────────────────── */
+.upgrade-analysis-body {
+    color: var(--text-primary);
+    font-size: 0.88rem;
+    line-height: 1.65;
+    max-height: 500px;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+}
+.upgrade-analysis-body h2 {
+    font-size: 1.05rem;
+    margin: 1rem 0 0.4rem;
+    color: var(--accent);
+}
+.upgrade-analysis-body h3 {
+    font-size: 0.95rem;
+    margin: 0.8rem 0 0.3rem;
+    color: var(--text-primary);
+}
+.upgrade-analysis-body h4 {
+    font-size: 0.88rem;
+    margin: 0.6rem 0 0.25rem;
+    color: var(--text-secondary);
+}
+.upgrade-analysis-body h5 {
+    font-size: 0.85rem;
+    margin: 0.5rem 0 0.2rem;
+    color: var(--text-muted);
+}
+.upgrade-analysis-body code {
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: #c4b5fd;
+}
+.upgrade-analysis-body pre {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    overflow-x: auto;
+    margin: 0.5rem 0;
+}
+.upgrade-analysis-body pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.82rem;
+}
+.upgrade-analysis-body ul {
+    padding-left: 1.2rem;
+    margin: 0.3rem 0;
+}
+.upgrade-analysis-body li {
+    margin-bottom: 0.2rem;
+}
+.upgrade-analysis-body hr {
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    margin: 0.8rem 0;
+}
+.upgrade-analysis-body strong {
+    color: var(--text-primary);
+}
+
+.upgrade-analysis-actions {
+    margin-top: 0.6rem;
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* ── Modal overlay (template composition view) ───────────── */
+.upgrade-analysis-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.2s ease;
+}
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+.upgrade-analysis-modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px;
+    width: min(680px, 90vw);
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+    animation: modalSlideUp 0.3s ease;
+}
+@keyframes modalSlideUp {
+    from { opacity: 0; transform: translateY(24px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.upgrade-analysis-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border-subtle);
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+.upgrade-analysis-modal-body {
+    padding: 1rem 1.25rem;
+    overflow-y: auto;
+    flex: 1;
+}
+.upgrade-analysis-modal-body .upgrade-analysis-panel {
+    margin-top: 0;
+    border: none;
+    padding: 0;
+}
+.upgrade-analysis-modal-body .upgrade-analysis-body {
+    max-height: 55vh;
+}

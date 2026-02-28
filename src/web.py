@@ -6589,6 +6589,226 @@ async def check_service_updates():
         })
 
 
+# ── Upgrade Compatibility Analysis ───────────────────────────
+
+@app.post("/api/services/{service_id:path}/analyze-upgrade")
+async def analyze_upgrade_compatibility(service_id: str, request: Request):
+    """Analyze compatibility implications of upgrading a service's API version.
+
+    Uses the Upgrade Analyst agent (via Copilot SDK) to compare the current
+    template API version against the target version and report:
+    - Breaking changes
+    - Deprecated features
+    - New capabilities
+    - Migration effort estimate
+    - Actionable recommendation
+
+    Streams NDJSON events for real-time progress in the UI.
+    """
+    from src.database import get_service, get_service_versions
+    from src.agents import UPGRADE_ANALYST
+    from src.model_router import get_model_for_task, get_model_display
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    active_ver_num = svc.get("active_version")
+    if active_ver_num is None:
+        raise HTTPException(status_code=400, detail="Service has no active version to analyze")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    target_api = body.get("target_version") or svc.get("latest_api_version")
+    if not target_api:
+        raise HTTPException(status_code=400, detail="No target API version specified — run Check for Updates first")
+
+    async def _stream():
+        import asyncio as _aio
+
+        try:
+            # ── Step 1: Read current template ──
+            versions = await get_service_versions(service_id)
+            active_ver = next(
+                (v for v in versions if v.get("version") == active_ver_num), None
+            )
+            if not active_ver or not active_ver.get("arm_template"):
+                yield json.dumps({
+                    "type": "error",
+                    "detail": "No ARM template found for the active version.",
+                }) + "\n"
+                return
+
+            arm_str = active_ver.get("arm_template", "")
+            try:
+                tpl = json.loads(arm_str)
+            except Exception:
+                tpl = {}
+
+            # Extract current apiVersions from template
+            resources = tpl.get("resources", [])
+            current_api_versions = sorted(
+                {r.get("apiVersion", "") for r in resources
+                 if isinstance(r, dict) and r.get("apiVersion")},
+                reverse=True,
+            )
+            current_api = current_api_versions[0] if current_api_versions else "unknown"
+
+            yield json.dumps({
+                "type": "progress", "phase": "checkout",
+                "detail": f"📋 Read active template — current API version: {current_api}",
+                "progress": 0.15,
+            }) + "\n"
+
+            # ── Step 2: Gather Azure API version info ──
+            yield json.dumps({
+                "type": "progress", "phase": "azure_lookup",
+                "detail": f"🔍 Gathering API version information for {svc.get('name', service_id)}…",
+                "progress": 0.25,
+            }) + "\n"
+
+            # Get all available API versions for this resource type from Azure
+            all_api_versions = []
+            try:
+                import os
+                from azure.identity import DefaultAzureCredential
+                from azure.mgmt.resource import ResourceManagementClient
+
+                sub_id = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+                if sub_id:
+                    cred = DefaultAzureCredential(
+                        exclude_workload_identity_credential=True,
+                        exclude_managed_identity_credential=True,
+                    )
+                    rm_client = ResourceManagementClient(cred, sub_id)
+                    namespace = service_id.split("/")[0]
+                    type_name = service_id.split("/", 1)[1] if "/" in service_id else ""
+
+                    loop = _aio.get_event_loop()
+                    provider = await loop.run_in_executor(
+                        None, lambda: rm_client.providers.get(namespace)
+                    )
+                    for rt in (provider.resource_types or []):
+                        if (rt.resource_type or "").lower() == type_name.lower():
+                            all_api_versions = rt.api_versions or []
+                            break
+            except Exception as e:
+                logger.warning(f"Could not fetch API versions from Azure: {e}")
+
+            api_version_context = ""
+            if all_api_versions:
+                # Show versions between current and target (inclusive)
+                relevant_versions = [v for v in all_api_versions
+                                     if v >= current_api and v <= target_api]
+                if not relevant_versions:
+                    relevant_versions = all_api_versions[:10]
+                api_version_context = f"\n\nAvailable API versions for {service_id} (relevant range): {', '.join(relevant_versions)}"
+                api_version_context += f"\nAll available versions: {', '.join(all_api_versions[:20])}"
+
+            yield json.dumps({
+                "type": "progress", "phase": "azure_lookup",
+                "detail": f"✅ Found {len(all_api_versions)} API versions for {service_id}",
+                "progress": 0.35,
+            }) + "\n"
+
+            # ── Step 3: Send to Upgrade Analyst agent ──
+            model = get_model_for_task(UPGRADE_ANALYST.task)
+            model_display = get_model_display(UPGRADE_ANALYST.task)
+
+            yield json.dumps({
+                "type": "progress", "phase": "analysis",
+                "detail": f"🧠 {UPGRADE_ANALYST.name} analyzing compatibility ({model_display})…",
+                "progress": 0.40,
+                "agent": UPGRADE_ANALYST.name,
+                "model": model_display,
+            }) + "\n"
+
+            # Build a concise template summary (don't send the full template — just resources)
+            resource_summary = []
+            for r in resources:
+                if isinstance(r, dict):
+                    resource_summary.append({
+                        "type": r.get("type", ""),
+                        "apiVersion": r.get("apiVersion", ""),
+                        "name": r.get("name", ""),
+                        "properties_keys": list((r.get("properties") or {}).keys()),
+                    })
+
+            prompt = f"""\
+Analyze the compatibility implications of upgrading the Azure API version for this service.
+
+## Service
+- **Resource Type**: {service_id}
+- **Service Name**: {svc.get('name', service_id)}
+- **Current API Version**: {current_api}
+- **Target API Version**: {target_api}
+{api_version_context}
+
+## Current ARM Template Resources
+```json
+{json.dumps(resource_summary, indent=2)}
+```
+
+## Full ARM Template (for property-level analysis)
+```json
+{arm_str[:8000]}
+```
+
+Please provide a thorough compatibility analysis covering breaking changes, deprecations, \
+new features, behavioral changes, migration effort, and your recommendation.
+"""
+
+            client = await ensure_copilot_client()
+            if not client:
+                yield json.dumps({
+                    "type": "error",
+                    "detail": "Copilot SDK not available — cannot run analysis.",
+                }) + "\n"
+                return
+
+            from src.copilot_helpers import copilot_send
+
+            analysis = await copilot_send(
+                client,
+                model=model,
+                system_prompt=UPGRADE_ANALYST.system_prompt,
+                prompt=prompt,
+                timeout=UPGRADE_ANALYST.timeout,
+                agent_name=UPGRADE_ANALYST.name,
+            )
+
+            yield json.dumps({
+                "type": "progress", "phase": "analysis",
+                "detail": "✅ Analysis complete",
+                "progress": 0.90,
+            }) + "\n"
+
+            # ── Step 4: Return the analysis ──
+            yield json.dumps({
+                "type": "analysis_complete",
+                "service_id": service_id,
+                "service_name": svc.get("name", service_id),
+                "current_api_version": current_api,
+                "target_api_version": target_api,
+                "analysis": analysis,
+                "agent": UPGRADE_ANALYST.name,
+                "model": model_display,
+                "progress": 1.0,
+            }) + "\n"
+
+        except Exception as e:
+            logger.error(f"Upgrade analysis failed for {service_id}: {e}", exc_info=True)
+            yield json.dumps({
+                "type": "error",
+                "detail": f"Analysis failed: {str(e)}",
+            }) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
 # ── API Version Update Pipeline ──────────────────────────────
 
 @app.post("/api/services/{service_id:path}/update-api-version")
