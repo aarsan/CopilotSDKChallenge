@@ -5282,6 +5282,28 @@ async def fix_and_validate_template(template_id: str, request: Request):
         except Exception:
             pass
 
+        # ── Fallback: ensure template status is never stuck at 'passed' ──
+        # stream_validation() updates the DB on clean exit, but if it
+        # threw an exception the template stays at whatever _recompose
+        # set it to (usually 'passed'). Correct that here.
+        try:
+            from src.database import get_backend as _get_fb
+            _fb = await _get_fb()
+            _current = await get_template_by_id(template_id)
+            _cur_status = (_current or {}).get("status", "")
+            if final_status == "completed" and _cur_status != "validated":
+                await _fb.execute_write(
+                    "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+                    ("validated", datetime.now(timezone.utc).isoformat(), template_id),
+                )
+            elif final_status == "failed" and _cur_status not in ("failed", "validated"):
+                await _fb.execute_write(
+                    "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
+                    ("failed", datetime.now(timezone.utc).isoformat(), template_id),
+                )
+        except Exception:
+            pass
+
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
