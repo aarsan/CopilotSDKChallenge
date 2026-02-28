@@ -1737,7 +1737,7 @@ async def get_service(service_id: str) -> Optional[dict]:
 
 
 async def get_services_basic(service_ids: list[str]) -> dict[str, dict]:
-    """Get lightweight service info (id, name, category, status) for a list of IDs.
+    """Get lightweight service info for a list of IDs.
 
     Single SQL query, no hydration — much faster than get_all_services()
     when you only need basic metadata.  Returns a dict keyed by service ID.
@@ -1747,7 +1747,7 @@ async def get_services_basic(service_ids: list[str]) -> dict[str, dict]:
     backend = await get_backend()
     placeholders = ", ".join("?" for _ in service_ids)
     rows = await backend.execute(
-        f"SELECT id, name, category, status FROM services WHERE id IN ({placeholders})",
+        f"SELECT id, name, category, status, latest_api_version, template_api_version FROM services WHERE id IN ({placeholders})",
         tuple(service_ids),
     )
     return {r["id"]: dict(r) for r in rows}
