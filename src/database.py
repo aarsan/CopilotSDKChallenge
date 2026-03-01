@@ -2020,6 +2020,15 @@ async def create_template_version(
         current_semver = await get_latest_semver(template_id)
         semver = compute_next_semver(current_semver, change_type)
 
+    # Sync the ARM template's contentVersion with our semver
+    try:
+        _tpl = json.loads(arm_template)
+        if isinstance(_tpl, dict) and _tpl.get("contentVersion") != semver:
+            _tpl["contentVersion"] = semver
+            arm_template = json.dumps(_tpl, indent=2)
+    except (json.JSONDecodeError, TypeError):
+        pass  # not valid JSON — leave as-is
+
     await backend.execute_write(
         """
         INSERT INTO template_versions

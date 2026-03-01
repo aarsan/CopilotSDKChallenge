@@ -5651,6 +5651,18 @@ async def get_catalog_template_version(template_id: str, version: int):
     if not ver:
         raise HTTPException(status_code=404, detail=f"Version {version} not found")
 
+    # Ensure contentVersion in ARM JSON matches the stored semver
+    arm_raw = ver.get("arm_template") or ""
+    ver_semver = ver.get("semver") or ""
+    if arm_raw and ver_semver:
+        try:
+            _arm = json.loads(arm_raw)
+            if isinstance(_arm, dict) and _arm.get("contentVersion") != ver_semver:
+                _arm["contentVersion"] = ver_semver
+                ver["arm_template"] = json.dumps(_arm, indent=2)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return JSONResponse({
         **ver,
         "template_id": template_id,
