@@ -1279,26 +1279,37 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                         ctx.progress(att_base + 0.26), step=attempt)
 
         # ── Runtime policy compliance ──
+        # Uses its OWN retry loop (up to 3 rounds) so policy healing
+        # doesn't consume the outer template-healing budget or cause
+        # a full redeploy cycle.
+        MAX_POLICY_HEAL = 3
         policy_results = []
         all_policy_compliant = True
 
         if ctx.generated_policy and resource_details:
-            _policy_rule = ctx.generated_policy.get("properties", ctx.generated_policy).get("policyRule", {})
-            _policy_effect = _policy_rule.get("then", {}).get("effect", "deny")
-            yield emit("progress", "policy_testing",
-                        f"🛡️ Evaluating {len(resource_details)} resource(s) against Azure Policy (effect: {_policy_effect})…",
-                        ctx.progress(att_base + 0.27), step=attempt)
+            for _pol_attempt in range(1, MAX_POLICY_HEAL + 1):
+                _policy_rule = ctx.generated_policy.get("properties", ctx.generated_policy).get("policyRule", {})
+                _policy_effect = _policy_rule.get("then", {}).get("effect", "deny")
+                yield emit("progress", "policy_testing",
+                            f"🛡️ Evaluating {len(resource_details)} resource(s) against Azure Policy (effect: {_policy_effect})…",
+                            ctx.progress(att_base + 0.27), step=attempt)
 
-            policy_results = test_policy_compliance(ctx.generated_policy, resource_details)
-            all_policy_compliant = all(r["compliant"] for r in policy_results)
+                policy_results = test_policy_compliance(ctx.generated_policy, resource_details)
+                all_policy_compliant = all(r["compliant"] for r in policy_results)
 
-            for pr in policy_results:
-                icon = "✅" if pr["compliant"] else "❌"
-                yield emit("policy_result", "policy_testing",
-                            f"{icon} {pr['resource_type']}/{pr['resource_name']} — {pr['reason']}",
-                            ctx.progress(att_base + 0.28), compliant=pr["compliant"], resource=pr, step=attempt)
+                for pr in policy_results:
+                    icon = "✅" if pr["compliant"] else "❌"
+                    yield emit("policy_result", "policy_testing",
+                                f"{icon} {pr['resource_type']}/{pr['resource_name']} — {pr['reason']}",
+                                ctx.progress(att_base + 0.28), compliant=pr["compliant"], resource=pr, step=attempt)
 
-            if not all_policy_compliant:
+                if all_policy_compliant:
+                    yield emit("progress", "policy_testing_complete",
+                                f"✓ All {len(policy_results)} resource(s) passed runtime policy compliance",
+                                ctx.progress(att_base + 0.30), step=attempt)
+                    break  # ✅ policy passed
+
+                # ── Policy failed ──
                 violations = [pr for pr in policy_results if not pr["compliant"]]
                 violation_desc = "; ".join(f"{v['resource_name']}: {v['reason']}" for v in violations)
                 compliant_count = sum(1 for r in policy_results if r["compliant"])
@@ -1306,12 +1317,11 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
                 yield emit("progress", "policy_failed", fail_msg, ctx.progress(att_base + 0.29), step=attempt)
 
-                if is_last:
-                    # ── Policy-blocked terminal state ──
+                if _pol_attempt == MAX_POLICY_HEAL:
+                    # Exhausted policy-heal budget — terminal state.
                     # The deployment SUCCEEDED — resources are live.  The
                     # violation is in the *generated policy*, which may be
-                    # overly strict.  Instead of a hard "failed" we give the
-                    # user actionable guidance.
+                    # overly strict.
                     await cleanup_rg(ctx.rg_name)
                     ctx.deployed_rg = None
 
@@ -1334,8 +1344,6 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                         validation_result={"error": fail_msg, "phase": "policy_compliance",
                                            "violations": violation_details, "guidance": guidance},
                     )
-                    # Don't demote the service — the template works, just
-                    # policy needs adjustment.  Record the issue in notes.
                     await fail_service_validation(ctx.service_id, f"Policy review needed: {fail_msg}")
 
                     yield emit("policy_blocked", "policy_blocked", guidance,
@@ -1351,10 +1359,9 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
                 # ── Heal the POLICY, not the template ──
                 # The template deployed successfully — don't break it.
-                # The generated policy may be too strict, so we ask the
-                # LLM to relax the policy to match the real resources.
+                # Re-evaluate in this local loop without redeploying.
                 yield emit("healing", "fixing_policy",
-                            f"{len(violations)} resource(s) failed policy — adjusting governance policy…",
+                            f"✏️ {len(violations)} resource(s) failed policy — adjusting governance policy (attempt {_pol_attempt}/{MAX_POLICY_HEAL})…",
                             ctx.progress(att_base + 0.30), step=attempt)
 
                 fixed_policy, _strategy = await _heal_policy(
@@ -1372,11 +1379,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 yield emit("healing_done", "policy_fixed",
                             f"Policy adjusted: {_strategy[:200]} — re-evaluating…",
                             ctx.progress(att_base + 0.31), step=attempt)
-                continue
-            else:
-                yield emit("progress", "policy_testing_complete",
-                            f"✓ All {len(policy_results)} resource(s) passed runtime policy compliance",
-                            ctx.progress(att_base + 0.30), step=attempt)
+                # loop continues → re-evaluate with healed policy
         elif not ctx.generated_policy:
             yield emit("progress", "policy_skip", "No Azure Policy generated — skipping", ctx.progress(att_base + 0.30), step=attempt)
         else:
