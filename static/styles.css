@@ -5164,6 +5164,69 @@ body {
     background: rgba(52, 211, 153, 0.06);
     border-left: 3px solid var(--accent-green);
 }
+
+/* Auto-added hard dependency styling */
+.compose-svc-autodep {
+    border-color: var(--accent-blue);
+    background: rgba(96, 165, 250, 0.06);
+    border-left: 3px solid var(--accent-blue);
+}
+.compose-svc-autodep .compose-svc-check {
+    color: var(--accent-blue);
+    font-size: 0.9rem;
+}
+.compose-dep-badge {
+    font-size: 0.58rem;
+    color: var(--accent-blue);
+    background: rgba(96, 165, 250, 0.12);
+    padding: 0.12rem 0.45rem;
+    border-radius: 6px;
+    white-space: nowrap;
+    font-weight: 600;
+}
+.compose-dep-hint {
+    font-size: 0.58rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    padding: 0.12rem 0.45rem;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+
+/* Selection card auto-dep banner */
+.compose-selection-autodep {
+    border-color: var(--accent-blue);
+    border-left: 3px solid var(--accent-blue);
+}
+.compose-autodep-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    margin-bottom: 0.4rem;
+    background: rgba(96, 165, 250, 0.08);
+    border-radius: 6px;
+    font-size: 0.7rem;
+    color: var(--accent-blue);
+    line-height: 1.35;
+}
+.compose-autodep-icon {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    margin-top: 0.05rem;
+}
+.compose-autodep-text {
+    flex: 1;
+}
+.compose-autodep-text strong {
+    color: var(--text-primary);
+}
+.compose-autodep-rec {
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+    opacity: 0.85;
+}
 .compose-svc-card-main {
     display: flex;
     align-items: center;

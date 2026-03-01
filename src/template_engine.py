@@ -240,6 +240,135 @@ CHILD_RESOURCES: dict[str, list[dict]] = {
 }
 
 
+# ══════════════════════════════════════════════════════════════
+# HARD DEPENDENCIES — Services that CANNOT exist without each other
+# ══════════════════════════════════════════════════════════════
+
+# When a user selects one of these services, all hard dependencies MUST
+# be co-selected automatically.  The frontend enforces this by auto-adding
+# the dependency and informing the user.
+#
+# Format: service_id → list of { "service_id", "reason", "recommended_version" }
+#   - service_id:          the hard-dependent service
+#   - reason:              user-facing explanation shown in the toast/banner
+#   - recommended_version: Microsoft-recommended configuration note
+#
+# These are DIRECTIONAL: if A requires B, B does NOT necessarily require A.
+# Bidirectional relationships are expressed by listing both directions.
+
+HARD_DEPENDENCIES: dict[str, list[dict]] = {
+    # ── Networking: VNet ↔ Subnets ──
+    "Microsoft.Network/virtualNetworks": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "A Virtual Network is unusable without at least one subnet — subnets are the fundamental addressing unit",
+            "recommended_version": "Always define at least a 'default' subnet with a /24 CIDR block",
+        },
+    ],
+    "Microsoft.Network/virtualNetworks/subnets": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "Subnets are child resources of a Virtual Network — they cannot exist independently",
+            "recommended_version": "Use a hub-spoke VNet topology with non-overlapping address spaces",
+        },
+    ],
+
+    # ── Compute: VMs require VNet + Subnet + NIC ──
+    "Microsoft.Compute/virtualMachines": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "Virtual Machines must be connected to a VNet for networking",
+            "recommended_version": "Use a dedicated workload VNet or existing hub-spoke topology",
+        },
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "VM network interfaces must be placed in a subnet",
+            "recommended_version": "Use a /24 or /25 subnet for compute workloads",
+        },
+    ],
+
+    # ── AKS requires VNet + Subnet ──
+    "Microsoft.ContainerService/managedClusters": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "AKS clusters require a VNet for Azure CNI networking",
+            "recommended_version": "Use a /16 VNet with dedicated AKS subnet of at least /22",
+        },
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "AKS node pools need a subnet with sufficient IP space",
+            "recommended_version": "Minimum /22 subnet for production AKS (1,024 IPs)",
+        },
+    ],
+
+    # ── App Gateway requires VNet + Subnet ──
+    "Microsoft.Network/applicationGateways": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "Application Gateway requires a dedicated subnet in a VNet",
+            "recommended_version": "Use a /24 dedicated subnet named 'AppGatewaySubnet'",
+        },
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "Application Gateway needs its own subnet — cannot share with other resources",
+            "recommended_version": "Dedicated /24 subnet for App Gateway",
+        },
+    ],
+
+    # ── Azure Firewall requires VNet + Subnet ──
+    "Microsoft.Network/azureFirewalls": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "Azure Firewall must be deployed into a VNet with a dedicated 'AzureFirewallSubnet'",
+            "recommended_version": "Use a hub VNet with /26 minimum for AzureFirewallSubnet",
+        },
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "Azure Firewall requires a subnet named exactly 'AzureFirewallSubnet'",
+            "recommended_version": "Minimum /26 subnet named 'AzureFirewallSubnet'",
+        },
+    ],
+
+    # ── Bastion requires VNet + Subnet ──
+    "Microsoft.Network/bastionHosts": [
+        {
+            "service_id": "Microsoft.Network/virtualNetworks",
+            "reason": "Azure Bastion must be deployed into a VNet with a dedicated 'AzureBastionSubnet'",
+            "recommended_version": "Use a /26 or larger subnet named 'AzureBastionSubnet'",
+        },
+        {
+            "service_id": "Microsoft.Network/virtualNetworks/subnets",
+            "reason": "Azure Bastion requires a subnet named exactly 'AzureBastionSubnet'",
+            "recommended_version": "Minimum /26 subnet named 'AzureBastionSubnet'",
+        },
+    ],
+
+    # ── SQL Database requires SQL Server ──
+    "Microsoft.Sql/servers/databases": [
+        {
+            "service_id": "Microsoft.Sql/servers",
+            "reason": "A SQL Database is a child resource of a SQL Server — it cannot be deployed independently",
+            "recommended_version": "Use a Gen5 SQL Server with Azure AD authentication enabled",
+        },
+    ],
+}
+
+
+def get_hard_dependencies(service_id: str) -> list[dict]:
+    """Return the hard dependencies for a service.
+
+    These are services that MUST be co-selected when a user picks
+    the given service.  Returns a list of dicts with service_id,
+    reason, and recommended_version.
+    """
+    return HARD_DEPENDENCIES.get(service_id, [])
+
+
+def get_all_hard_dependencies() -> dict[str, list[dict]]:
+    """Return the full hard-dependency map for the frontend to cache."""
+    return HARD_DEPENDENCIES
+
+
 def get_parent_resource_type(resource_type: str) -> str | None:
     """Return the parent resource type, or None if this is a top-level resource.
 

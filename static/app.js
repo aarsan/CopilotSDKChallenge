@@ -9906,10 +9906,13 @@ function openGovernanceEditor(serviceId) {
 
 let _approvedServicesForCompose = [];
 let _composeSelections = new Map(); // service_id -> { quantity, parameters: Set, version: number|null }
+let _hardDependencyMap = {};         // service_id -> [{ service_id, reason, recommended_version }]
+let _autoAddedDeps = new Set();      // service_ids that were auto-added via hard deps
 
 async function openTemplateOnboarding() {
     document.getElementById('modal-template-onboard').classList.remove('hidden');
     _composeSelections.clear();
+    _autoAddedDeps.clear();
     _updateComposeSubmitButton();
 
     // Reset prompt tab state
@@ -9935,6 +9938,13 @@ async function openTemplateOnboarding() {
         }
         const data = await res.json();
         _approvedServicesForCompose = data.services || [];
+
+        // Load hard dependency map (cached for the session)
+        try {
+            const depRes = await fetch('/api/templates/hard-dependencies');
+            if (depRes.ok) _hardDependencyMap = await depRes.json();
+        } catch (_) { /* non-critical — compose still works without hard-dep enforcement */ }
+
         _renderComposeServiceList(_approvedServicesForCompose);
     } catch (err) {
         list.innerHTML = `<div class="compose-empty">Failed to load: ${err.message}</div>`;
@@ -9964,15 +9974,23 @@ function _renderComposeServiceList(services) {
         const chosenVer = sel ? sel.version : svc.active_version;
         const versions = svc.versions || [];
         const extraParams = svc.parameters.filter(p => !p.is_standard);
+        const isAutoAdded = _autoAddedDeps.has(svc.id);
+        const hardDeps = _hardDependencyMap[svc.id] || [];
+        const hasHardDeps = hardDeps.length > 0;
+        const depTip = hasHardDeps
+            ? `Hard dependencies: ${hardDeps.map(d => d.service_id.split('/').pop()).join(', ')}`
+            : '';
         return `
-        <div class="compose-svc-card ${selected ? 'compose-svc-selected' : ''}"
+        <div class="compose-svc-card ${selected ? 'compose-svc-selected' : ''} ${isAutoAdded ? 'compose-svc-autodep' : ''}"
              data-service-id="${escapeHtml(svc.id)}">
             <div class="compose-svc-card-main" onclick="toggleComposeService('${escapeHtml(svc.id)}')">
-                <div class="compose-svc-check">${selected ? '☑' : '☐'}</div>
+                <div class="compose-svc-check">${isAutoAdded ? '🔒' : (selected ? '☑' : '☐')}</div>
                 <div class="compose-svc-info">
                     <div class="compose-svc-name">${escapeHtml(svc.name)}</div>
                     <div class="compose-svc-id">${escapeHtml(svc.id)}</div>
                 </div>
+                ${isAutoAdded ? '<span class="compose-dep-badge" title="Auto-added as a hard dependency">🔗 dependency</span>' : ''}
+                ${!isAutoAdded && hasHardDeps && !selected ? `<span class="compose-dep-hint" title="${escapeHtml(depTip)}">🔗 +deps</span>` : ''}
                 <span class="category-badge">${escapeHtml(svc.category)}</span>
                 ${extraParams.length ? `<span class="compose-param-count">${extraParams.length} param${extraParams.length !== 1 ? 's' : ''}</span>` : ''}
             </div>
@@ -9996,14 +10014,111 @@ function _renderComposeServiceList(services) {
     }).join('');
 }
 
-function toggleComposeService(serviceId) {
+function toggleComposeService(serviceId, _skipDepCheck) {
     if (_composeSelections.has(serviceId)) {
+        // ── Deselecting ──
+        // Check if any OTHER selected service hard-depends on this one
+        if (!_skipDepCheck) {
+            const dependents = _getServicesRequiringThis(serviceId);
+            if (dependents.length) {
+                const names = dependents.map(d => d.split('/').pop()).join(', ');
+                showToast(`Cannot remove — required by: ${names}. Remove the dependent service first.`, 'error', 4000);
+                return;
+            }
+        }
         _composeSelections.delete(serviceId);
+        _autoAddedDeps.delete(serviceId);
+
+        // Cascade-remove auto-added deps that are no longer needed by any remaining service
+        if (!_skipDepCheck) {
+            const removed = _cascadeRemoveOrphanedDeps();
+            if (removed.length) {
+                const names = removed.map(r => r.split('/').pop()).join(', ');
+                showToast(`🔓 Removed dependencies no longer needed: ${names}`, 'info', 3000);
+            }
+        }
     } else {
+        // ── Selecting ──
         const svc = _approvedServicesForCompose.find(s => s.id === serviceId);
         const initVersion = svc ? svc.active_version : null;
         _composeSelections.set(serviceId, { quantity: 1, parameters: new Set(), version: initVersion });
+
+        // ── Hard dependency auto-add ──
+        if (!_skipDepCheck) {
+            const autoAdded = _resolveHardDependencies(serviceId);
+            if (autoAdded.length) {
+                const summary = autoAdded
+                    .map(a => `  • ${a.name} — ${a.reason}`)
+                    .join('\n');
+                showToast(`🔗 Auto-added required dependencies:\n${summary}`, 'info', 5000);
+            }
+        }
     }
+    _refreshComposeUI();
+}
+
+/** Find all currently-selected services that hard-depend on the given service */
+function _getServicesRequiringThis(serviceId) {
+    const dependents = [];
+    for (const [selectedId] of _composeSelections) {
+        if (selectedId === serviceId) continue;
+        const deps = _hardDependencyMap[selectedId] || [];
+        if (deps.some(d => d.service_id === serviceId)) {
+            dependents.push(selectedId);
+        }
+    }
+    return dependents;
+}
+
+/** Resolve hard dependencies for a newly selected service, auto-adding missing ones.
+ *  Returns an array of { service_id, name, reason } for services that were added. */
+function _resolveHardDependencies(serviceId) {
+    const deps = _hardDependencyMap[serviceId] || [];
+    const added = [];
+    for (const dep of deps) {
+        if (_composeSelections.has(dep.service_id)) continue; // already selected
+        const svc = _approvedServicesForCompose.find(s => s.id === dep.service_id);
+        if (!svc) continue; // not available for composition (not onboarded)
+        const initVersion = svc.active_version || null;
+        _composeSelections.set(dep.service_id, { quantity: 1, parameters: new Set(), version: initVersion });
+        _autoAddedDeps.add(dep.service_id);
+        added.push({ service_id: dep.service_id, name: svc.name, reason: dep.reason });
+
+        // Recurse — the dependency may itself have hard deps (e.g., subnet → vnet)
+        const transitive = _resolveHardDependencies(dep.service_id);
+        added.push(...transitive);
+    }
+    return added;
+}
+
+/** Remove auto-added deps that no longer have any selected service requiring them.
+ *  Returns an array of service IDs that were removed. */
+function _cascadeRemoveOrphanedDeps() {
+    const removed = [];
+    let changed = true;
+    // Iterate until stable — removing one dep may orphan another
+    while (changed) {
+        changed = false;
+        for (const depId of [..._autoAddedDeps]) {
+            // Check if ANY remaining (non-auto-added) service still needs this dep
+            const stillNeeded = _getServicesRequiringThis(depId)
+                .some(reqBy => !_autoAddedDeps.has(reqBy) || !removed.includes(reqBy));
+
+            // Also check: was this dep manually selected before being auto-added?
+            // (It wasn't — if it's in _autoAddedDeps it was only auto-added)
+            if (!stillNeeded) {
+                _composeSelections.delete(depId);
+                _autoAddedDeps.delete(depId);
+                removed.push(depId);
+                changed = true;
+            }
+        }
+    }
+    return removed;
+}
+
+/** Common post-toggle UI refresh */
+function _refreshComposeUI() {
     _renderComposeServiceList(
         _approvedServicesForCompose.filter(s => {
             const q = (document.getElementById('compose-service-search')?.value || '').toLowerCase();
@@ -10057,14 +10172,42 @@ function _renderComposeSelections() {
         const verParams = verObj ? verObj.parameters : svc.parameters;
         const extraParams = verParams.filter(p => !p.is_standard);
         const verLabel = chosenVer != null ? `v${chosenVer}` : 'latest';
+        const isAutoAdded = _autoAddedDeps.has(sid);
+
+        // Find which service caused this auto-add
+        let depReason = '';
+        let depRecommendation = '';
+        if (isAutoAdded) {
+            for (const [otherId] of _composeSelections) {
+                if (otherId === sid) continue;
+                const deps = _hardDependencyMap[otherId] || [];
+                const match = deps.find(d => d.service_id === sid);
+                if (match) {
+                    depReason = match.reason;
+                    depRecommendation = match.recommended_version || '';
+                    break;
+                }
+            }
+        }
 
         return `
-        <div class="compose-selection-card">
+        <div class="compose-selection-card ${isAutoAdded ? 'compose-selection-autodep' : ''}">
+            ${isAutoAdded ? `
+            <div class="compose-autodep-banner">
+                <span class="compose-autodep-icon">🔒</span>
+                <span class="compose-autodep-text">
+                    <strong>Required dependency</strong> — ${escapeHtml(depReason)}
+                    ${depRecommendation ? `<br><em class="compose-autodep-rec">💡 ${escapeHtml(depRecommendation)}</em>` : ''}
+                </span>
+            </div>` : ''}
             <div class="compose-selection-header">
                 <div class="compose-selection-title">
                     <span class="compose-svc-name">${escapeHtml(svc.name)}</span>
                     <span class="version-badge ${verObj && verObj.status === 'draft' ? 'version-draft' : 'version-active'}">${verLabel}</span>
-                    <button type="button" class="btn btn-xs btn-ghost" onclick="toggleComposeService('${escapeHtml(sid)}')" title="Remove">✕</button>
+                    ${isAutoAdded
+                        ? '<span class="compose-dep-badge" title="Remove the service that depends on this first">🔗 locked</span>'
+                        : `<button type="button" class="btn btn-xs btn-ghost" onclick="toggleComposeService('${escapeHtml(sid)}')" title="Remove">✕</button>`
+                    }
                 </div>
                 <div class="compose-selection-controls">
                     ${versions.length > 1 ? `

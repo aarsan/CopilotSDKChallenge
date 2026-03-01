@@ -9872,6 +9872,17 @@ async def list_known_dependencies():
     return JSONResponse({k: v for k, v in RESOURCE_DEPENDENCIES.items() if v})
 
 
+@app.get("/api/templates/hard-dependencies")
+async def list_hard_dependencies():
+    """Return the full hard-dependency map.
+
+    Hard dependencies are services that MUST be co-selected together.
+    The frontend caches this on load and enforces it in the compose chooser.
+    """
+    from src.template_engine import get_all_hard_dependencies
+    return JSONResponse(get_all_hard_dependencies())
+
+
 @app.post("/api/templates/analyze-dependencies")
 async def analyze_template_dependencies(request: Request):
     """Analyze dependencies for a set of service IDs.
