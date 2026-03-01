@@ -364,9 +364,10 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
         )
 
     # Pipeline overview — tell the user what steps are coming
+    svc = ctx.extra.get("svc") or {}
     yield emit(
         "progress", "pipeline_overview",
-        f"Pipeline: Onboard {ctx.service.get('name', ctx.service_id)} with full ARM template generation & validation",
+        f"Pipeline: Onboard {svc.get('name', ctx.service_id)} with full ARM template generation & validation",
         ctx.progress(0.4),
         steps=[
             "Analyze organization standards & governance policies",
