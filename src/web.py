@@ -8840,6 +8840,101 @@ async def get_pipeline_info():
 
 
 # ══════════════════════════════════════════════════════════════
+# ARM TEMPLATE Q&A — ASK QUESTIONS ABOUT THE ARM TEMPLATE
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/catalog/templates/{template_id}/arm-qa")
+async def arm_template_qa(template_id: str, request: Request):
+    """Answer a user question about an ARM template's contents.
+
+    Body: { "question": "What does the networkSecurityGroup resource do?" }
+    Returns: { "answer": "..." }
+    """
+    from src.database import get_template_by_id, get_active_service_version
+    from src.copilot_helpers import copilot_send
+    from src.model_router import get_model_for_task, Task
+
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    question = body.get("question", "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
+
+    # ── Load the ARM template content ─────────────────────────
+    arm_content = ""
+    active_ver = tmpl.get("active_version") or 1
+    try:
+        from src.database import get_db_connection
+        conn = await get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT TOP 1 arm_template FROM template_versions "
+            "WHERE template_id = ? AND version = ?",
+            template_id, active_ver,
+        )
+        row = cursor.fetchone()
+        if row and row.arm_template:
+            arm_content = row.arm_template
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"[arm-qa] Failed to load ARM content: {exc}")
+
+    if not arm_content:
+        # Fall back to template.content if no versioned ARM template
+        arm_content = tmpl.get("content") or ""
+
+    if not arm_content:
+        return JSONResponse({"answer": "No ARM template content is available for this template."})
+
+    # ── Truncate very large templates to avoid token limits ───
+    max_chars = 60_000
+    truncated = arm_content[:max_chars]
+    if len(arm_content) > max_chars:
+        truncated += "\n... (truncated)"
+
+    # ── Build the prompt and call the LLM ─────────────────────
+    client = await ensure_copilot_client()
+    model = get_model_for_task(Task.CHAT)
+
+    system_prompt = (
+        "You are an Azure infrastructure expert. The user is viewing an ARM "
+        "(Azure Resource Manager) JSON template and has a question about it. "
+        "Answer clearly and concisely, referencing specific resources, parameters, "
+        "or sections from the template when relevant. Use Markdown formatting. "
+        "If the question is unrelated to the template, politely redirect."
+    )
+
+    user_prompt = (
+        f"--- ARM TEMPLATE ---\n{truncated}\n--- END TEMPLATE ---\n\n"
+        f"Question: {question}"
+    )
+
+    try:
+        answer = await copilot_send(
+            client,
+            model=model,
+            system_prompt=system_prompt,
+            prompt=user_prompt,
+            timeout=45.0,
+            agent_name="arm-qa",
+        )
+        return JSONResponse({"answer": answer or "I couldn't generate a response. Please try rephrasing your question."})
+    except Exception as exc:
+        logger.error(f"[arm-qa] LLM error: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={"answer": f"Error generating response: {str(exc)[:200]}"},
+        )
+
+
+# ══════════════════════════════════════════════════════════════
 # TEMPLATE FEEDBACK — CHAT WITH YOUR TEMPLATE
 # ══════════════════════════════════════════════════════════════
 

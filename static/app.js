@@ -5121,12 +5121,39 @@ function showTemplateDetail(templateId) {
                 <span class="tmpl-arm-hint">Click to view generated template</span>
             </div>
             <div id="tmpl-arm-content" class="tmpl-arm-content" style="display:none;">
-                <div class="tmpl-arm-toolbar">
-                    <button class="btn btn-xs btn-ghost" onclick="copyArmTemplate()" title="Copy to clipboard">📋 Copy</button>
-                    <button class="btn btn-xs btn-ghost" onclick="downloadArmTemplate('${escapeHtml(tmpl.id)}')" title="Download as JSON">💾 Download</button>
-                    <span class="tmpl-arm-size" id="tmpl-arm-size"></span>
+                <div class="tmpl-arm-body-split">
+                    <!-- Left: code viewer -->
+                    <div class="tmpl-arm-code-pane">
+                        <div class="tmpl-arm-toolbar">
+                            <button class="btn btn-xs btn-ghost" onclick="copyArmTemplate()" title="Copy to clipboard">📋 Copy</button>
+                            <button class="btn btn-xs btn-ghost" onclick="downloadArmTemplate('${escapeHtml(tmpl.id)}')" title="Download as JSON">💾 Download</button>
+                            <span class="tmpl-arm-size" id="tmpl-arm-size"></span>
+                        </div>
+                        <pre class="tmpl-arm-pre"><code id="tmpl-arm-code" class="language-json">Loading…</code></pre>
+                    </div>
+                    <!-- Right: Q&A chat -->
+                    <div class="tmpl-arm-chat-pane">
+                        <div class="arm-chat-header">
+                            <h4>💬 Ask about this template ${_copilotBadge()}</h4>
+                        </div>
+                        <div class="arm-chat-messages" id="arm-chat-messages">
+                            <div class="arm-chat-welcome">
+                                <span class="arm-chat-welcome-icon">🤖</span>
+                                <p>Ask me anything about this ARM template — resources, parameters, dependencies, security, or architecture.</p>
+                            </div>
+                        </div>
+                        <div class="arm-chat-input-group">
+                            <textarea id="arm-chat-input" class="form-control arm-chat-textarea"
+                                rows="2"
+                                placeholder="e.g. What parameters does this template accept?"
+                                onkeydown="if(event.key==='Enter' && !event.shiftKey) { event.preventDefault(); askArmQuestion('${escapeHtml(tmpl.id)}'); }"></textarea>
+                            <button class="btn btn-primary btn-sm arm-chat-send" id="arm-chat-send-btn"
+                                onclick="askArmQuestion('${escapeHtml(tmpl.id)}')">
+                                Ask
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <pre class="tmpl-arm-pre"><code id="tmpl-arm-code" class="language-json">Loading…</code></pre>
             </div>
         </div>
 
@@ -8627,6 +8654,77 @@ function downloadArmTemplate(templateId) {
     a.click();
     URL.revokeObjectURL(url);
     showToast('💾 ARM template downloaded', 'success');
+}
+
+/* ── ARM Template Q&A Chat ──────────────────────────────── */
+
+let _armChatBusy = false;
+
+async function askArmQuestion(templateId) {
+    const input = document.getElementById('arm-chat-input');
+    const messagesDiv = document.getElementById('arm-chat-messages');
+    const sendBtn = document.getElementById('arm-chat-send-btn');
+    if (!input || !messagesDiv) return;
+
+    const question = input.value.trim();
+    if (!question || _armChatBusy) return;
+
+    // Remove welcome message on first question
+    const welcome = messagesDiv.querySelector('.arm-chat-welcome');
+    if (welcome) welcome.remove();
+
+    // Add user message bubble
+    const userBubble = document.createElement('div');
+    userBubble.className = 'arm-chat-msg arm-chat-user';
+    userBubble.innerHTML = `<div class="arm-chat-bubble">${escapeHtml(question)}</div>`;
+    messagesDiv.appendChild(userBubble);
+
+    // Clear input
+    input.value = '';
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    // Add thinking indicator
+    const thinkingEl = document.createElement('div');
+    thinkingEl.className = 'arm-chat-msg arm-chat-assistant';
+    thinkingEl.innerHTML = `<div class="arm-chat-bubble arm-chat-thinking"><span class="arm-chat-dots"><span>.</span><span>.</span><span>.</span></span> Thinking</div>`;
+    messagesDiv.appendChild(thinkingEl);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+    // Disable input
+    _armChatBusy = true;
+    if (sendBtn) sendBtn.disabled = true;
+    input.disabled = true;
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/arm-qa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question }),
+        });
+        const data = await res.json();
+        const answer = data.answer || 'No response received.';
+
+        // Remove thinking indicator
+        thinkingEl.remove();
+
+        // Add assistant message bubble
+        const assistantBubble = document.createElement('div');
+        assistantBubble.className = 'arm-chat-msg arm-chat-assistant';
+        assistantBubble.innerHTML = `<div class="arm-chat-bubble">${renderMarkdown(answer)}</div>`;
+        messagesDiv.appendChild(assistantBubble);
+    } catch (err) {
+        thinkingEl.remove();
+        const errorBubble = document.createElement('div');
+        errorBubble.className = 'arm-chat-msg arm-chat-assistant';
+        errorBubble.innerHTML = `<div class="arm-chat-bubble arm-chat-error">Error: ${escapeHtml(err.message)}</div>`;
+        messagesDiv.appendChild(errorBubble);
+    } finally {
+        _armChatBusy = false;
+        if (sendBtn) sendBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
 }
 
 /** Parse rich parameter metadata from ARM template content */
