@@ -8596,7 +8596,10 @@ async function toggleArmViewer(templateId) {
         try { formatted = JSON.stringify(JSON.parse(raw), null, 2); } catch { formatted = raw; }
 
         _armViewerContent = formatted;
-        codeEl.innerHTML = _highlightJSON(formatted);
+        const highlightedLines = _highlightJSON(formatted).split('\n');
+        codeEl.innerHTML = highlightedLines.map((line, i) =>
+            `<span class="arm-line"><span class="arm-ln">${i + 1}</span>${line}</span>`
+        ).join('\n');
 
         const sizeKB = (formatted.length / 1024).toFixed(1);
         const lines = formatted.split('\n').length;
