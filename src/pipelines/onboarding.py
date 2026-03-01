@@ -645,6 +645,11 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
     ctx.template = sanitize_template(ctx.template)
     ctx.template = await inject_standard_tags(ctx.template, ctx.service_id)
 
+    # Strip foreign resources — only keep the service's own resource type.
+    # Dependencies are added by the composition layer and test wrapper.
+    from src.tools.arm_generator import strip_foreign_resources
+    ctx.template = strip_foreign_resources(ctx.template, ctx.service_id)
+
     # Peek next version number
     _db = await get_backend()
     _vrows = await _db.execute(

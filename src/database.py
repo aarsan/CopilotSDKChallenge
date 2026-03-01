@@ -2584,8 +2584,16 @@ async def create_service_version(
 
     If version is None, automatically increments from the latest version.
     If semver is None, auto-computed as ``{version}.0.0``.
+
+    Automatically strips foreign resources — only the service's own resource
+    type is kept. Dependencies are handled by the composition layer.
+
     Returns the created version record.
     """
+    # Strip foreign resources before storing
+    from src.tools.arm_generator import strip_foreign_resources
+    arm_template = strip_foreign_resources(arm_template, service_id)
+
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -2716,7 +2724,14 @@ async def update_service_version_template(
     arm_template: str,
     created_by: str = "copilot-healed",
 ) -> bool:
-    """Update the ARM template content for a version (used by auto-healing)."""
+    """Update the ARM template content for a version (used by auto-healing).
+
+    Automatically strips foreign resources — only the service's own resource
+    type is kept. Dependencies are handled by the composition layer.
+    """
+    from src.tools.arm_generator import strip_foreign_resources
+    arm_template = strip_foreign_resources(arm_template, service_id)
+
     backend = await get_backend()
     count = await backend.execute_write(
         "UPDATE service_versions SET arm_template = ?, created_by = ? "

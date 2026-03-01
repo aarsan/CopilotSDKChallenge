@@ -401,26 +401,6 @@ def _aks():
 def _vm():
     return _make_template(
         resources=[
-            # ── NIC (references subnet via parameter) ──
-            {
-                "type": "Microsoft.Network/networkInterfaces",
-                "apiVersion": "2023-09-01",
-                "name": "[concat(parameters('resourceName'), '-nic')]",
-                "location": "[parameters('location')]",
-                "tags": _STANDARD_TAGS,
-                "properties": {
-                    "ipConfigurations": [{
-                        "name": "ipconfig1",
-                        "properties": {
-                            "privateIPAllocationMethod": "Dynamic",
-                            "subnet": {
-                                "id": "[parameters('subnetId')]",
-                            },
-                        },
-                    }],
-                },
-            },
-            # ── VM ──
             {
                 "type": "Microsoft.Compute/virtualMachines",
                 "apiVersion": "2024-03-01",
@@ -428,9 +408,6 @@ def _vm():
                 "location": "[parameters('location')]",
                 "tags": _STANDARD_TAGS,
                 "identity": {"type": "SystemAssigned"},
-                "dependsOn": [
-                    "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
-                ],
                 "properties": {
                     "hardwareProfile": {"vmSize": "[parameters('vmSize')]"},
                     "osProfile": {
@@ -456,7 +433,7 @@ def _vm():
                     },
                     "networkProfile": {
                         "networkInterfaces": [{
-                            "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
+                            "id": "[parameters('nicId')]",
                         }],
                     },
                 },
@@ -473,10 +450,10 @@ def _vm():
                 "defaultValue": "InfraForge-Val1!",
                 "metadata": {"description": "VM admin password (validation only — VM is deleted after test)"},
             },
-            "subnetId": {
+            "nicId": {
                 "type": "string",
-                "defaultValue": "[resourceId('Microsoft.Network/virtualNetworks/subnets', concat(parameters('resourceName'), '-vnet'), 'default')]",
-                "metadata": {"description": "Resource ID of the subnet for the VM NIC"},
+                "defaultValue": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
+                "metadata": {"description": "Resource ID of the network interface for the VM"},
             },
         },
     )
@@ -890,6 +867,74 @@ def generate_arm_template_json(resource_type: str) -> Optional[str]:
     return json.dumps(template, indent=2)
 
 
+def strip_foreign_resources(template_json: str, service_id: str) -> str:
+    """Remove resources that don't match the service's own resource type.
+
+    Service ARM templates should contain ONLY the service's own resource(s).
+    Dependencies (VNets, NICs, Public IPs, etc.) are added by the composition
+    layer at compose time and by a test wrapper at validation time — they
+    should never be stored in the service template itself.
+
+    This function preserves:
+    - Resources whose type matches ``service_id`` (case-insensitive)
+    - Resources whose type is a child of ``service_id``
+      (e.g. ``Microsoft.Sql/servers/databases`` is kept for ``Microsoft.Sql/servers``)
+
+    It removes any foreign resources and cleans up orphaned dependsOn
+    references that pointed to the removed resources.
+    """
+    try:
+        tpl = json.loads(template_json)
+    except (json.JSONDecodeError, TypeError):
+        return template_json
+
+    resources = tpl.get("resources", [])
+    if not resources:
+        return template_json
+
+    own_type = service_id.lower()
+    kept = []
+    removed_ids: set[str] = set()
+
+    for res in resources:
+        rtype = (res.get("type") or "").lower()
+        # Keep if it matches or is a child type
+        if rtype == own_type or rtype.startswith(own_type + "/"):
+            kept.append(res)
+        else:
+            removed_ids.add(rtype)
+            # Also track the resourceId patterns for dependsOn cleanup
+            rname = res.get("name", "")
+            if rname:
+                removed_ids.add(rname.lower())
+
+    if len(kept) == len(resources):
+        return template_json  # Nothing removed
+
+    removed_types = [r.get("type", "?") for r in resources if r not in kept]
+    logger.info(
+        f"[strip_foreign] {service_id}: removed {len(removed_types)} foreign "
+        f"resource(s): {removed_types}"
+    )
+
+    # Clean up dependsOn references to removed resources
+    for res in kept:
+        depends = res.get("dependsOn", [])
+        if depends:
+            cleaned = [
+                d for d in depends
+                if not any(rid in d.lower() for rid in removed_ids)
+            ]
+            if len(cleaned) != len(depends):
+                if cleaned:
+                    res["dependsOn"] = cleaned
+                else:
+                    del res["dependsOn"]
+
+    tpl["resources"] = kept
+    return json.dumps(tpl, indent=2)
+
+
 async def modify_arm_template_with_copilot(
     existing_template: str,
     modification_prompt: str,
@@ -1051,7 +1096,14 @@ async def generate_arm_template_with_copilot(
             "- Do NOT include diagnostic settings or Log Analytics dependencies\n"
         )
 
-    prompt += "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
+    prompt += (
+        "- CRITICAL: The template MUST contain ONLY resources of type "
+        f"'{resource_type}' (or its child types). Do NOT include dependency "
+        "resources like VNets, NICs, Public IPs, Managed Identities, etc. "
+        "Dependencies are handled separately by the composition layer. "
+        "Use parameters to reference external dependency resource IDs.\n"
+        "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
+    )
 
     if standards_context:
         prompt += (
