@@ -790,10 +790,16 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
 
     Runs both reviews in parallel. CISO can block; CTO is advisory.
     Results are persisted to the governance_reviews table.
+
+    If CISO blocks, the template is healed using the CISO findings
+    and the review is re-run (up to MAX_GOV_HEAL rounds) before
+    giving up.
     """
     from src.governance import run_governance_review, format_review_summary
-    from src.database import save_governance_review
+    from src.database import save_governance_review, update_service_version_template
     from src.web import ensure_copilot_client
+
+    MAX_GOV_HEAL = step.config.get("max_governance_heals", 2)
 
     yield emit("progress", "governance_review",
                "🏛️ Running governance review — CISO (security) + CTO (architecture)…",
@@ -822,100 +828,143 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
 
     # Get standards context if available
     standards_ctx = ctx.artifacts.get("standards_ctx", "")
+    planning_response = ctx.artifacts.get("planning_response", "")
     version_str = ctx.semver or str(ctx.version_num or "")
 
-    try:
-        result = await run_governance_review(
-            _client,
-            ctx.template,
-            service_id=ctx.service_id,
-            version=version_str,
-            standards_ctx=standards_ctx,
-        )
-
-        # Emit individual reviews
-        ciso = result["ciso"]
-        cto = result["cto"]
-
-        yield emit("progress", "ciso_review",
-                    format_review_summary(ciso),
-                    ctx.progress(0.4),
-                    review=ciso)
-
-        yield emit("progress", "cto_review",
-                    format_review_summary(cto),
-                    ctx.progress(0.6),
-                    review=cto)
-
-        # Persist both reviews
-        _save_kwargs = dict(
-            semver=ctx.semver,
-            pipeline_type="onboarding",
-            run_id=ctx.run_id,
-            gate_decision=result["gate_decision"],
-            gate_reason=result["gate_reason"],
-            created_by="pipeline",
-        )
+    for _gov_attempt in range(1, MAX_GOV_HEAL + 2):  # +2 so last attempt is review-only
         try:
-            if ctx.version_num is not None:
-                await save_governance_review(ctx.service_id, ctx.version_num, ciso, **_save_kwargs)
-                await save_governance_review(ctx.service_id, ctx.version_num, cto, **_save_kwargs)
-        except Exception as save_err:
-            logger.warning("Failed to persist governance reviews: %s", save_err)
-
-        # Gate decision
-        gate = result["gate_decision"]
-        gate_reason = result["gate_reason"]
-
-        if gate == "blocked":
-            # Build findings payload for frontend resolution UI
-            ciso_findings = ciso.get("findings", [])
-            critical_findings = [f for f in ciso_findings if f.get("severity") in ("critical", "high")]
-
-            yield emit("progress", "governance_blocked",
-                        f"🚫 Governance gate: BLOCKED — {gate_reason}",
-                        ctx.progress(0.9),
-                        gate_decision=gate, gate_reason=gate_reason,
-                        findings=ciso_findings,
-                        critical_findings=critical_findings,
-                        ciso_summary=ciso.get("summary", ""),
-                        service_id=ctx.service_id,
-                        version=ctx.version_num,
-                        semver=ctx.semver)
-            yield emit("progress", "governance_complete",
-                        f"🚫 Deployment blocked by CISO. Resolve critical findings before proceeding.",
-                        ctx.progress(1.0),
-                        gate_decision=gate, gate_reason=gate_reason,
-                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
-            raise StepFailure(
-                f"CISO blocked deployment: {gate_reason}",
-                healable=False, phase="governance_review",
+            result = await run_governance_review(
+                _client,
+                ctx.template,
+                service_id=ctx.service_id,
+                version=version_str,
+                standards_ctx=standards_ctx,
             )
 
-        elif gate == "conditional":
-            yield emit("progress", "governance_complete",
-                        f"⚠️ Governance gate: CONDITIONAL — {gate_reason}. Proceeding with noted concerns.",
-                        ctx.progress(1.0),
-                        gate_decision=gate, gate_reason=gate_reason,
-                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
-        else:
-            yield emit("progress", "governance_complete",
-                        f"✅ Governance gate: APPROVED — {gate_reason}",
-                        ctx.progress(1.0),
-                        gate_decision=gate, gate_reason=gate_reason,
-                        ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+            # Emit individual reviews
+            ciso = result["ciso"]
+            cto = result["cto"]
 
-        # Store result for later steps
-        ctx.artifacts["governance_result"] = result
+            yield emit("progress", "ciso_review",
+                        format_review_summary(ciso),
+                        ctx.progress(0.4),
+                        review=ciso)
 
-    except StepFailure:
-        raise
-    except Exception as exc:
-        logger.error("Governance review failed: %s", exc, exc_info=True)
-        yield emit("progress", "governance_complete",
-                    f"⚠️ Governance review error: {exc} — proceeding without gate",
-                    ctx.progress(1.0),
-                    gate_decision="conditional", gate_reason=f"Review error: {exc}")
+            yield emit("progress", "cto_review",
+                        format_review_summary(cto),
+                        ctx.progress(0.6),
+                        review=cto)
+
+            # Persist both reviews
+            _save_kwargs = dict(
+                semver=ctx.semver,
+                pipeline_type="onboarding",
+                run_id=ctx.run_id,
+                gate_decision=result["gate_decision"],
+                gate_reason=result["gate_reason"],
+                created_by="pipeline",
+            )
+            try:
+                if ctx.version_num is not None:
+                    await save_governance_review(ctx.service_id, ctx.version_num, ciso, **_save_kwargs)
+                    await save_governance_review(ctx.service_id, ctx.version_num, cto, **_save_kwargs)
+            except Exception as save_err:
+                logger.warning("Failed to persist governance reviews: %s", save_err)
+
+            # Gate decision
+            gate = result["gate_decision"]
+            gate_reason = result["gate_reason"]
+
+            if gate == "blocked":
+                ciso_findings = ciso.get("findings", [])
+                critical_findings = [f for f in ciso_findings if f.get("severity") in ("critical", "high")]
+
+                if _gov_attempt <= MAX_GOV_HEAL:
+                    # ── Heal the template to address CISO findings ──
+                    finding_descs = []
+                    for f in ciso_findings:
+                        sev = f.get("severity", "medium")
+                        desc = f.get("description", f.get("finding", str(f)))
+                        finding_descs.append(f"[{sev}] {desc}")
+                    error_for_healer = (
+                        f"CISO governance review BLOCKED this template. Findings:\n"
+                        + "\n".join(finding_descs)
+                        + f"\n\nCISO summary: {ciso.get('summary', '')}"
+                    )
+
+                    yield emit("healing", "fixing_template",
+                                f"🛡️ CISO blocked — healing template to address {len(ciso_findings)} finding(s) "
+                                f"(attempt {_gov_attempt}/{MAX_GOV_HEAL})…",
+                                ctx.progress(0.7), step=_gov_attempt)
+
+                    _pre_fix = ctx.template
+                    ctx.template, _strategy = await copilot_fix_two_phase(
+                        ctx.template, error_for_healer,
+                        standards_ctx, planning_response, ctx.heal_history,
+                    )
+                    ctx.heal_history.append({
+                        "step": len(ctx.heal_history) + 1,
+                        "phase": "governance_review",
+                        "error": error_for_healer[:500],
+                        "fix_summary": summarize_fix(_pre_fix, ctx.template),
+                        "strategy": _strategy,
+                    })
+                    await update_service_version_template(
+                        ctx.service_id, ctx.version_num, ctx.template, "copilot-healed",
+                    )
+                    yield emit("healing_done", "template_fixed",
+                                f"Fix applied: {_strategy[:200]} — re-running governance review…",
+                                ctx.progress(0.75), step=_gov_attempt)
+                    continue  # re-run governance review with healed template
+
+                # Exhausted heal budget — hard block
+                yield emit("progress", "governance_blocked",
+                            f"🚫 Governance gate: BLOCKED — {gate_reason}",
+                            ctx.progress(0.9),
+                            gate_decision=gate, gate_reason=gate_reason,
+                            findings=ciso_findings,
+                            critical_findings=critical_findings,
+                            ciso_summary=ciso.get("summary", ""),
+                            service_id=ctx.service_id,
+                            version=ctx.version_num,
+                            semver=ctx.semver)
+                yield emit("progress", "governance_complete",
+                            f"🚫 Deployment blocked by CISO after {MAX_GOV_HEAL} heal attempt(s). "
+                            f"Resolve critical findings before proceeding.",
+                            ctx.progress(1.0),
+                            gate_decision=gate, gate_reason=gate_reason,
+                            ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+                raise StepFailure(
+                    f"CISO blocked deployment: {gate_reason}",
+                    healable=False, phase="governance_review",
+                )
+
+            elif gate == "conditional":
+                yield emit("progress", "governance_complete",
+                            f"⚠️ Governance gate: CONDITIONAL — {gate_reason}. Proceeding with noted concerns.",
+                            ctx.progress(1.0),
+                            gate_decision=gate, gate_reason=gate_reason,
+                            ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+            else:
+                yield emit("progress", "governance_complete",
+                            f"✅ Governance gate: APPROVED — {gate_reason}",
+                            ctx.progress(1.0),
+                            gate_decision=gate, gate_reason=gate_reason,
+                            ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
+
+            # Store result for later steps
+            ctx.artifacts["governance_result"] = result
+            return  # ✅ governance passed (approved or conditional)
+
+        except StepFailure:
+            raise
+        except Exception as exc:
+            logger.error("Governance review failed: %s", exc, exc_info=True)
+            yield emit("progress", "governance_complete",
+                        f"⚠️ Governance review error: {exc} — proceeding without gate",
+                        ctx.progress(1.0),
+                        gate_decision="conditional", gate_reason=f"Review error: {exc}")
+            return
 
 
 @runner.step("validate_arm_deploy")
