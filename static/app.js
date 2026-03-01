@@ -5065,7 +5065,7 @@ function showTemplateDetail(templateId) {
             <div class="tmpl-test-banner tmpl-test-ready">
                 ✅ <strong>Verified</strong> — I've tested this template against Azure and it's good to go. Ready to publish!
             </div>
-            <button class="btn btn-primary btn-sm" onclick="publishTemplate('${escapeHtml(tmpl.id)}')">
+            <button class="btn btn-primary btn-sm publish-btn" id="btn-publish-${escapeHtml(tmpl.id)}" onclick="publishTemplate('${escapeHtml(tmpl.id)}', this)">
                 🚀 Publish to Catalog
             </button>
         </div>`;
@@ -8483,11 +8483,28 @@ async function _runPostRevisionValidation(templateId, container) {
     }
 }
 
-/** Publish a validated template */
-async function publishTemplate(templateId) {
-    if (!confirm('Publish this template to the catalog? It will be available for all users.')) return;
+/** Publish a validated template — two-click inline confirmation */
+async function publishTemplate(templateId, btn) {
+    if (!btn) btn = document.getElementById(`btn-publish-${templateId}`);
+    if (!btn) return;
 
-    showToast('🚀 Publishing template…', 'info');
+    // ── First click: swap to confirmation state ──
+    if (!btn.dataset.confirming) {
+        btn.dataset.confirming = '1';
+        btn._origHtml = btn.innerHTML;
+        btn.innerHTML = '⚠️ Confirm publish?';
+        btn.classList.add('publish-btn-confirm');
+        // Auto-revert after 4 seconds if not clicked again
+        btn._revertTimer = setTimeout(() => _resetPublishBtn(btn), 4000);
+        return;
+    }
+
+    // ── Second click: publish ──
+    clearTimeout(btn._revertTimer);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="publish-spinner"></span> Publishing…';
+    btn.classList.remove('publish-btn-confirm');
+    btn.classList.add('publish-btn-busy');
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/publish`, {
@@ -8502,13 +8519,25 @@ async function publishTemplate(templateId) {
         }
 
         const data = await res.json();
+        btn.innerHTML = '✅ Published!';
+        btn.classList.remove('publish-btn-busy');
+        btn.classList.add('publish-btn-done');
         showToast(`🎉 Template published! v${data.published_semver || data.published_version + '.0.0'} is now active in the catalog.`, 'success');
 
         await loadAllData();
         showTemplateDetail(templateId);
     } catch (err) {
         showToast(err.message, 'error');
+        _resetPublishBtn(btn);
     }
+}
+
+function _resetPublishBtn(btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.innerHTML = btn._origHtml || '🚀 Publish to Catalog';
+    btn.classList.remove('publish-btn-confirm', 'publish-btn-busy', 'publish-btn-done');
+    delete btn.dataset.confirming;
 }
 
 /** Parse rich parameter metadata from ARM template content */
