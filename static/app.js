@@ -5114,6 +5114,22 @@ function showTemplateDetail(templateId) {
 
         ${ctaHtml}
 
+        <!-- View ARM Template — collapsible -->
+        <div class="detail-section tmpl-arm-viewer-section">
+            <div class="tmpl-arm-header" onclick="toggleArmViewer('${escapeHtml(tmpl.id)}')">
+                <h4><span class="tmpl-arm-arrow" id="tmpl-arm-arrow">▸</span> 📄 ARM Template</h4>
+                <span class="tmpl-arm-hint">Click to view generated template</span>
+            </div>
+            <div id="tmpl-arm-content" class="tmpl-arm-content" style="display:none;">
+                <div class="tmpl-arm-toolbar">
+                    <button class="btn btn-xs btn-ghost" onclick="copyArmTemplate()" title="Copy to clipboard">📋 Copy</button>
+                    <button class="btn btn-xs btn-ghost" onclick="downloadArmTemplate('${escapeHtml(tmpl.id)}')" title="Download as JSON">💾 Download</button>
+                    <span class="tmpl-arm-size" id="tmpl-arm-size"></span>
+                </div>
+                <pre class="tmpl-arm-pre"><code id="tmpl-arm-code" class="language-json">Loading…</code></pre>
+            </div>
+        </div>
+
         <!-- Validation form (hidden by default) -->
         <div id="tmpl-validate-form" class="detail-section tmpl-validate-section" style="display:none;">
             <h4>🧪 Validation ${_copilotBadge()}</h4>
@@ -8538,6 +8554,76 @@ function _resetPublishBtn(btn) {
     btn.innerHTML = btn._origHtml || '🚀 Publish to Catalog';
     btn.classList.remove('publish-btn-confirm', 'publish-btn-busy', 'publish-btn-done');
     delete btn.dataset.confirming;
+}
+
+/* ──── Inline ARM Template Viewer ──────────────────────────── */
+let _armViewerContent = '';  // cached for copy/download
+
+async function toggleArmViewer(templateId) {
+    const content = document.getElementById('tmpl-arm-content');
+    const arrow = document.getElementById('tmpl-arm-arrow');
+    if (!content || !arrow) return;
+
+    const isOpen = content.style.display !== 'none';
+    if (isOpen) {
+        content.style.display = 'none';
+        arrow.textContent = '▸';
+        return;
+    }
+
+    // Open and load
+    content.style.display = 'block';
+    arrow.textContent = '▾';
+
+    const codeEl = document.getElementById('tmpl-arm-code');
+    const sizeEl = document.getElementById('tmpl-arm-size');
+    if (!codeEl) return;
+
+    // Find the template's active version
+    const tmpl = allTemplates.find(t => t.id === templateId);
+    const version = tmpl?.active_version || 1;
+
+    codeEl.textContent = 'Loading ARM template…';
+    _armViewerContent = '';
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/versions/${version}`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        const raw = data.arm_template || '';
+
+        let formatted;
+        try { formatted = JSON.stringify(JSON.parse(raw), null, 2); } catch { formatted = raw; }
+
+        _armViewerContent = formatted;
+        codeEl.innerHTML = _highlightJSON(formatted);
+
+        const sizeKB = (formatted.length / 1024).toFixed(1);
+        const lines = formatted.split('\n').length;
+        if (sizeEl) sizeEl.textContent = `${sizeKB} KB · ${lines} lines`;
+    } catch (err) {
+        codeEl.textContent = `Error loading template: ${err.message}`;
+    }
+}
+
+function copyArmTemplate() {
+    if (!_armViewerContent) { showToast('No template loaded', 'error'); return; }
+    navigator.clipboard.writeText(_armViewerContent).then(
+        () => showToast('📋 ARM template copied to clipboard', 'success'),
+        () => showToast('Copy failed', 'error')
+    );
+}
+
+function downloadArmTemplate(templateId) {
+    if (!_armViewerContent) { showToast('No template loaded', 'error'); return; }
+    const blob = new Blob([_armViewerContent], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${templateId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('💾 ARM template downloaded', 'success');
 }
 
 /** Parse rich parameter metadata from ARM template content */

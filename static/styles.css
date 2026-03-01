@@ -2592,6 +2592,74 @@ body {
     margin-left: auto;
 }
 
+/* Inline ARM Template Viewer */
+.tmpl-arm-viewer-section {
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+.tmpl-arm-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.9rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+.tmpl-arm-header:hover {
+    background: var(--bg-secondary);
+}
+.tmpl-arm-header h4 {
+    margin: 0;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.tmpl-arm-arrow {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+}
+.tmpl-arm-hint {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+.tmpl-arm-content {
+    border-top: 1px solid var(--border-color);
+}
+.tmpl-arm-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.9rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+}
+.tmpl-arm-size {
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    margin-left: auto;
+    font-family: var(--font-mono);
+}
+.tmpl-arm-pre {
+    margin: 0;
+    padding: 0.8rem;
+    max-height: 500px;
+    overflow: auto;
+    background: var(--bg-primary);
+    font-size: 0.68rem;
+    line-height: 1.45;
+}
+.tmpl-arm-pre code {
+    font-family: var(--font-mono);
+    white-space: pre;
+}
+
 /* Version Log — collapsible */
 .comp-verlog-section .comp-verlog-body {
     display: none;
