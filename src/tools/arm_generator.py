@@ -401,38 +401,20 @@ def _aks():
 def _vm():
     return _make_template(
         resources=[
-            # ── VNet ──
-            {
-                "type": "Microsoft.Network/virtualNetworks",
-                "apiVersion": "2023-09-01",
-                "name": "[concat(parameters('resourceName'), '-vnet')]",
-                "location": "[parameters('location')]",
-                "tags": _STANDARD_TAGS,
-                "properties": {
-                    "addressSpace": {"addressPrefixes": ["10.0.0.0/16"]},
-                    "subnets": [{
-                        "name": "default",
-                        "properties": {"addressPrefix": "10.0.1.0/24"},
-                    }],
-                },
-            },
-            # ── NIC (no public IP) ──
+            # ── NIC (references subnet via parameter) ──
             {
                 "type": "Microsoft.Network/networkInterfaces",
                 "apiVersion": "2023-09-01",
                 "name": "[concat(parameters('resourceName'), '-nic')]",
                 "location": "[parameters('location')]",
                 "tags": _STANDARD_TAGS,
-                "dependsOn": [
-                    "[resourceId('Microsoft.Network/virtualNetworks', concat(parameters('resourceName'), '-vnet'))]",
-                ],
                 "properties": {
                     "ipConfigurations": [{
                         "name": "ipconfig1",
                         "properties": {
                             "privateIPAllocationMethod": "Dynamic",
                             "subnet": {
-                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', concat(parameters('resourceName'), '-vnet'), 'default')]",
+                                "id": "[parameters('subnetId')]",
                             },
                         },
                     }],
@@ -490,6 +472,11 @@ def _vm():
                 "type": "secureString",
                 "defaultValue": "InfraForge-Val1!",
                 "metadata": {"description": "VM admin password (validation only — VM is deleted after test)"},
+            },
+            "subnetId": {
+                "type": "string",
+                "defaultValue": "[resourceId('Microsoft.Network/virtualNetworks/subnets', concat(parameters('resourceName'), '-vnet'), 'default')]",
+                "metadata": {"description": "Resource ID of the subnet for the VM NIC"},
             },
         },
     )
