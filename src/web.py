@@ -845,6 +845,12 @@ async def _deep_heal_composed_template(
         extra_params, proc_resources, proc_outputs, resolved_vars = \
             resolve_variables_for_composition(tpl, suffix)
 
+        if not proc_resources:
+            logger.warning(
+                f"Compose: service '{sid}' contributed 0 resources — "
+                f"its ARM template may have an empty resources array."
+            )
+
         combined_params.update(extra_params)
         combined_resources.extend(proc_resources)
         combined_outputs.update(proc_outputs)
@@ -1562,11 +1568,11 @@ async def get_template_catalog(
             category=category, fmt=fmt, template_type=template_type,
         )
 
-        # Enrich with latest semver from template_versions (single query)
+        # Enrich with latest semver + latest version number from template_versions
         if templates:
             backend = await get_backend()
             semver_rows = await backend.execute(
-                """SELECT tv.template_id, tv.semver
+                """SELECT tv.template_id, tv.semver, tv.version AS max_ver
                    FROM template_versions tv
                    INNER JOIN (
                        SELECT template_id, MAX(version) AS max_ver
@@ -1578,8 +1584,10 @@ async def get_template_catalog(
                 (),
             )
             semver_map = {r["template_id"]: r["semver"] for r in semver_rows if r.get("semver")}
+            latest_ver_map = {r["template_id"]: r["max_ver"] for r in semver_rows if r.get("max_ver")}
             for t in templates:
                 t["latest_semver"] = semver_map.get(t["id"])
+                t["latest_version"] = latest_ver_map.get(t["id"])
 
         return JSONResponse({
             "templates": templates,
@@ -2004,6 +2012,12 @@ async def compose_template_from_services(request: Request):
             extra_params, proc_resources, proc_outputs, resolved_vars = \
                 resolve_variables_for_composition(tpl, suffix)
 
+            if not proc_resources:
+                logger.warning(
+                    f"Compose: service '{sid}' contributed 0 resources — "
+                    f"its ARM template may have an empty resources array."
+                )
+
             # Add quantity metadata to params if needed
             if qty > 1:
                 for pdef in extra_params.values():
@@ -2151,7 +2165,15 @@ async def test_template(template_id: str, request: Request):
     version_num = ver["version"]
 
     # ── Run shared structural test suite ──────────────────────
-    test_results = _run_structural_tests(arm_content)
+    # For composite templates, also check composition completeness
+    svc_ids = tmpl.get("service_ids", []) if isinstance(tmpl.get("service_ids"), list) else []
+    if not svc_ids:
+        try:
+            svc_ids = json.loads(tmpl.get("service_ids_json", "[]") or "[]")
+        except Exception:
+            svc_ids = []
+    expected = svc_ids if tmpl.get("template_type") == "composite" and svc_ids else None
+    test_results = _run_structural_tests(arm_content, expected_service_ids=expected)
     new_status = await _update_test_status(template_id, version_num, test_results)
 
     # Note: No auto-promote. User must validate (ARM What-If) then explicitly publish.
@@ -4602,8 +4624,18 @@ async def auto_heal_template(template_id: str):
 # ── Structural Test Suite (shared by test_template, recompose, pin) ────
 
 
-def _run_structural_tests(arm_content: str) -> dict:
-    """Run the 7 structural tests on ARM JSON content.
+def _run_structural_tests(
+    arm_content: str,
+    *,
+    expected_service_ids: list[str] | None = None,
+) -> dict:
+    """Run structural tests on ARM JSON content.
+
+    Args:
+        arm_content: Raw ARM JSON string.
+        expected_service_ids: For composite templates, the list of service IDs
+            that should each contribute at least one resource.  When provided,
+            an extra test validates that every expected type is present.
 
     Returns {tests, passed, failed, total, all_passed}.
     Pure function — no DB calls.
@@ -4738,6 +4770,35 @@ def _run_structural_tests(arm_content: str) -> dict:
         })
         if not naming_ok:
             all_passed = False
+
+        # Test 8: Composition completeness (composite templates only)
+        if expected_service_ids:
+            # Check that every expected service type has at least one resource
+            resource_type_set = {
+                (r.get("type") or "").lower() for r in resources if isinstance(r, dict)
+            }
+            missing_types = []
+            for sid in expected_service_ids:
+                sid_lower = sid.lower()
+                # Match exact type or child types
+                found = any(
+                    rt == sid_lower or rt.startswith(sid_lower + "/")
+                    for rt in resource_type_set
+                )
+                if not found:
+                    missing_types.append(sid)
+            comp_ok = not missing_types
+            tests.append({
+                "name": "Composition Completeness",
+                "passed": comp_ok,
+                "message": (
+                    f"All {len(expected_service_ids)} service types present"
+                    if comp_ok
+                    else f"Missing {len(missing_types)} service type(s): {', '.join(missing_types[:5])}"
+                ),
+            })
+            if not comp_ok:
+                all_passed = False
 
     passed_count = sum(1 for t in tests if t["passed"])
     total_count = len(tests)
@@ -4942,6 +5003,12 @@ async def _recompose_with_pinned(
         extra_params, proc_resources, proc_outputs, resolved_vars = \
             resolve_variables_for_composition(tpl, suffix)
 
+        if not proc_resources:
+            logger.warning(
+                f"Recompose: service '{sid}' contributed 0 resources — "
+                f"its ARM template may have an empty resources array."
+            )
+
         combined_params.update(extra_params)
         combined_resources.extend(proc_resources)
         combined_outputs.update(proc_outputs)
@@ -5022,7 +5089,10 @@ async def _recompose_with_pinned(
 
     # ── Auto-run structural tests on the new version ──────────
     new_version_num = ver.get("version") if isinstance(ver, dict) else None
-    test_results = _run_structural_tests(content_str)
+    test_results = _run_structural_tests(
+        content_str,
+        expected_service_ids=svc_ids if svc_ids else None,
+    )
     test_status = None
     if new_version_num is not None:
         test_status = await _update_test_status(template_id, new_version_num, test_results)
@@ -5639,17 +5709,38 @@ async def list_template_versions(template_id: str):
 
 
 @app.get("/api/catalog/templates/{template_id}/versions/{version}")
-async def get_catalog_template_version(template_id: str, version: int):
-    """Get a single version of a catalog template including full ARM content."""
-    from src.database import get_template_by_id, get_template_version
+async def get_catalog_template_version(template_id: str, version: str):
+    """Get a single version of a catalog template including full ARM content.
+
+    ``version`` may be an integer or the literal ``"latest"`` to return the
+    most recent version (useful when ``active_version`` is NULL).
+    """
+    from src.database import get_template_by_id, get_template_version, get_backend
 
     tmpl = await get_template_by_id(template_id)
     if not tmpl:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    ver = await get_template_version(template_id, version)
+    # Resolve "latest" to the actual max version number
+    if version == "latest":
+        _b = await get_backend()
+        _rows = await _b.execute(
+            "SELECT MAX(version) AS max_ver FROM template_versions WHERE template_id = ?",
+            (template_id,),
+        )
+        max_ver = _rows[0]["max_ver"] if _rows and _rows[0].get("max_ver") else None
+        if max_ver is None:
+            raise HTTPException(status_code=404, detail="No versions found")
+        version_int = int(max_ver)
+    else:
+        try:
+            version_int = int(version)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Version must be an integer or 'latest'")
+
+    ver = await get_template_version(template_id, version_int)
     if not ver:
-        raise HTTPException(status_code=404, detail=f"Version {version} not found")
+        raise HTTPException(status_code=404, detail=f"Version {version_int} not found")
 
     # Ensure contentVersion in ARM JSON matches the stored semver
     arm_raw = ver.get("arm_template") or ""

@@ -8606,9 +8606,9 @@ async function toggleArmViewer(templateId) {
     const sizeEl = document.getElementById('tmpl-arm-size');
     if (!codeEl) return;
 
-    // Find the template's active version
+    // Find the template's active version; fall back to the latest version, not v1
     const tmpl = allTemplates.find(t => t.id === templateId);
-    const version = tmpl?.active_version || 1;
+    const version = tmpl?.active_version || tmpl?.latest_version || 'latest';
 
     codeEl.textContent = 'Loading ARM template…';
     _armViewerContent = '';

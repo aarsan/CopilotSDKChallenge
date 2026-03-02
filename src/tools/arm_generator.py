@@ -147,6 +147,152 @@ def _vnet():
     )
 
 
+@_register("Microsoft.Network/networkSecurityGroups")
+def _nsg():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2023-09-01",
+            "name": "[parameters('resourceName')]",
+            "location": "[parameters('location')]",
+            "tags": _STANDARD_TAGS,
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "DenyAllInbound",
+                        "properties": {
+                            "priority": 4096,
+                            "direction": "Inbound",
+                            "access": "Deny",
+                            "protocol": "*",
+                            "sourceAddressPrefix": "*",
+                            "sourcePortRange": "*",
+                            "destinationAddressPrefix": "*",
+                            "destinationPortRange": "*"
+                        }
+                    }
+                ]
+            }
+        }],
+        outputs={
+            "nsgId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('resourceName'))]"
+            }
+        }
+    )
+
+
+@_register("Microsoft.Network/publicIPAddresses")
+def _public_ip():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/publicIPAddresses",
+            "apiVersion": "2023-09-01",
+            "name": "[parameters('resourceName')]",
+            "location": "[parameters('location')]",
+            "tags": _STANDARD_TAGS,
+            "sku": {
+                "name": "Standard",
+                "tier": "Regional"
+            },
+            "properties": {
+                "publicIPAllocationMethod": "Static",
+                "publicIPAddressVersion": "IPv4"
+            }
+        }],
+        outputs={
+            "publicIpId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/publicIPAddresses', parameters('resourceName'))]"
+            },
+            "ipAddress": {
+                "type": "string",
+                "value": "[reference(parameters('resourceName')).ipAddress]"
+            }
+        }
+    )
+
+
+@_register("Microsoft.Network/azureFirewalls")
+def _azure_firewall():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/azureFirewalls",
+            "apiVersion": "2023-09-01",
+            "name": "[parameters('resourceName')]",
+            "location": "[parameters('location')]",
+            "tags": _STANDARD_TAGS,
+            "properties": {
+                "sku": {
+                    "name": "AZFW_VNet",
+                    "tier": "Standard"
+                },
+                "threatIntelMode": "Alert"
+            }
+        }],
+        outputs={
+            "firewallId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/azureFirewalls', parameters('resourceName'))]"
+            }
+        }
+    )
+
+
+@_register("Microsoft.Network/firewallPolicies")
+def _firewall_policy():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/firewallPolicies",
+            "apiVersion": "2023-09-01",
+            "name": "[parameters('resourceName')]",
+            "location": "[parameters('location')]",
+            "tags": _STANDARD_TAGS,
+            "properties": {
+                "sku": {
+                    "name": "Standard"
+                },
+                "threatIntelMode": "Alert"
+            }
+        }],
+        outputs={
+            "policyId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/firewallPolicies', parameters('resourceName'))]"
+            }
+        }
+    )
+
+
+@_register("Microsoft.Network/virtualNetworks/subnets")
+def _subnet():
+    return _make_template(
+        resources=[{
+            "type": "Microsoft.Network/virtualNetworks/subnets",
+            "apiVersion": "2023-09-01",
+            "name": "[parameters('resourceName')]",
+            "tags": _STANDARD_TAGS,
+            "properties": {
+                "addressPrefix": "10.0.1.0/24"
+            }
+        }],
+        extra_params={
+            "subnetAddressPrefix": {
+                "type": "string",
+                "defaultValue": "10.0.1.0/24",
+                "metadata": {"description": "Address prefix for the subnet"},
+            }
+        },
+        outputs={
+            "subnetId": {
+                "type": "string",
+                "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('resourceName'))]"
+            }
+        }
+    )
+
+
 @_register("Microsoft.Network/applicationGateways")
 def _appgw():
     return _make_template(
@@ -912,6 +1058,18 @@ def strip_foreign_resources(template_json: str, service_id: str) -> str:
         return template_json  # Nothing removed
 
     removed_types = [r.get("type", "?") for r in resources if r not in kept]
+
+    # Guard: if ALL resources would be removed, the template likely has a
+    # type mismatch (e.g. LLM used wrong resource type).  Return the
+    # original unchanged rather than silently producing an empty template.
+    if not kept:
+        logger.error(
+            f"[strip_foreign] {service_id}: would remove ALL {len(resources)} "
+            f"resource(s) — none matched '{service_id}'.  Types present: "
+            f"{removed_types}.  Returning original template unchanged."
+        )
+        return template_json
+
     logger.info(
         f"[strip_foreign] {service_id}: removed {len(removed_types)} foreign "
         f"resource(s): {removed_types}"
