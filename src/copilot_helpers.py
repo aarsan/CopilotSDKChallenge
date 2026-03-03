@@ -7,6 +7,7 @@ Re-exports ``get_model_for_task`` and ``Task`` for convenience so callers
 can import everything SDK-related from one place.
 """
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -19,6 +20,8 @@ from copilot import CopilotClient
 from src.model_router import Task, get_model_for_task  # re-export
 
 logger = logging.getLogger(__name__)
+
+_db_loaded = False  # True once we've loaded counters from DB
 
 
 # ══════════════════════════════════════════════════════════════
@@ -67,6 +70,110 @@ def _record_activity(
         c["last_model"] = model
         if status == "error":
             c["errors"] += 1
+
+    # Fire-and-forget DB persistence
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_persist_activity(agent_name, entry))
+    except RuntimeError:
+        pass  # no event loop — CLI mode, skip DB persistence
+
+
+async def _persist_activity(agent_name: str, entry: dict) -> None:
+    """Persist agent counter + activity log row to the database."""
+    try:
+        from src.database import get_backend
+        b = await get_backend()
+        ts = entry["timestamp"]
+        model = entry["model"]
+        status = entry["status"]
+        dur = entry["duration_ms"]
+        err_flag = 1 if status == "error" else 0
+
+        # Upsert counter row
+        await b.execute_write(
+            """MERGE agent_counters AS tgt
+            USING (SELECT ? AS agent_name) AS src ON tgt.agent_name = src.agent_name
+            WHEN MATCHED THEN UPDATE SET
+                calls = tgt.calls + 1,
+                errors = tgt.errors + ?,
+                total_ms = tgt.total_ms + ?,
+                last_called = ?,
+                last_model = ?
+            WHEN NOT MATCHED THEN INSERT
+                (agent_name, calls, errors, total_ms, last_called, last_model)
+                VALUES (?, 1, ?, ?, ?, ?);""",
+            (agent_name, err_flag, dur, ts, model,
+             agent_name, err_flag, dur, ts, model),
+        )
+
+        # Insert activity log row (keep last 500 in DB)
+        await b.execute_write(
+            """INSERT INTO agent_activity_log
+                (agent_name, model, status, duration_ms, prompt_len, response_len, error_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (agent_name, model, status, dur,
+             entry["prompt_len"], entry["response_len"],
+             entry.get("error"), ts),
+        )
+
+        # Trim old rows (keep last 500)
+        await b.execute_write(
+            """DELETE FROM agent_activity_log WHERE id NOT IN
+            (SELECT TOP 500 id FROM agent_activity_log ORDER BY id DESC)""",
+            (),
+        )
+    except Exception as exc:
+        logger.debug(f"Failed to persist agent activity: {exc}")
+
+
+async def load_agent_counters_from_db() -> None:
+    """Load persisted agent counters from the database on startup.
+
+    Merges DB-stored counters into the in-memory ring buffer so that
+    agent usage survives server restarts.
+    """
+    global _db_loaded
+    if _db_loaded:
+        return
+    try:
+        from src.database import get_backend
+        b = await get_backend()
+
+        # Load counters
+        rows = await b.execute("SELECT * FROM agent_counters", ())
+        with _activity_lock:
+            for row in rows:
+                name = row["agent_name"]
+                _activity_counters[name] = {
+                    "calls": row.get("calls", 0),
+                    "errors": row.get("errors", 0),
+                    "total_ms": row.get("total_ms", 0.0),
+                    "last_called": row.get("last_called"),
+                    "last_model": row.get("last_model"),
+                }
+
+        # Load recent activity log
+        log_rows = await b.execute(
+            "SELECT TOP 200 * FROM agent_activity_log ORDER BY id DESC", ()
+        )
+        with _activity_lock:
+            for row in reversed(log_rows):  # oldest first into deque
+                _activity_log.append({
+                    "agent": row["agent_name"],
+                    "model": row.get("model", ""),
+                    "status": row.get("status", "ok"),
+                    "duration_ms": row.get("duration_ms", 0),
+                    "prompt_len": row.get("prompt_len", 0),
+                    "response_len": row.get("response_len", 0),
+                    "error": row.get("error_text"),
+                    "timestamp": row.get("created_at", ""),
+                })
+
+        _db_loaded = True
+        logger.info(f"Loaded {len(rows)} agent counter(s) and {len(log_rows)} activity log entries from DB")
+    except Exception as exc:
+        logger.warning(f"Could not load agent counters from DB: {exc}")
 
 
 def get_agent_activity(limit: int = 100) -> list[dict]:

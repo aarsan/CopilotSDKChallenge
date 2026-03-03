@@ -1095,6 +1095,9 @@ async def lifespan(app: FastAPI):
     await cleanup_orphaned_pipeline_runs()
     logger.info("Initializing organization standards...")
     await init_standards()
+    logger.info("Loading agent activity counters from DB...")
+    from src.copilot_helpers import load_agent_counters_from_db
+    await load_agent_counters_from_db()
     logger.info("Deferring Copilot SDK client start (lazy init on first chat)...")
     copilot_client = None  # Will be started lazily on first WebSocket connection
     ensure_output_dir(OUTPUT_DIR)
@@ -12919,6 +12922,7 @@ async def websocket_governance_chat(websocket: WebSocket):
 
                 unsubscribe = copilot_session.on(on_event)
 
+                _ws_msg_start = time.time()
                 try:
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
@@ -12933,6 +12937,17 @@ async def websocket_governance_chat(websocket: WebSocket):
                 full_response = "".join(response_chunks)
                 await save_chat_message(session_token, "user", f"[governance] {user_message}")
                 await save_chat_message(session_token, "assistant", f"[governance] {full_response}")
+
+                # Track agent activity
+                from src.copilot_helpers import _record_activity
+                _record_activity(
+                    agent_name="CISO_ADVISOR",
+                    model=get_active_model(),
+                    status="ok",
+                    duration_ms=(time.time() - _ws_msg_start) * 1000,
+                    prompt_len=len(user_message),
+                    response_len=len(full_response),
+                )
 
             elif data.get("type") == "ping":
                 _enqueue({"type": "pong"})
@@ -13111,6 +13126,7 @@ async def websocket_concierge_chat(websocket: WebSocket):
 
                 unsubscribe = copilot_session.on(on_event)
 
+                _ws_msg_start = time.time()
                 try:
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
@@ -13130,6 +13146,17 @@ async def websocket_concierge_chat(websocket: WebSocket):
                 full_response = "".join(response_chunks)
                 await save_chat_message(session_token, "user", f"[concierge] {user_message}")
                 await save_chat_message(session_token, "assistant", f"[concierge] {full_response}")
+
+                # Track agent activity
+                from src.copilot_helpers import _record_activity
+                _record_activity(
+                    agent_name="CONCIERGE",
+                    model=get_active_model(),
+                    status="ok",
+                    duration_ms=(time.time() - _ws_msg_start) * 1000,
+                    prompt_len=len(user_message),
+                    response_len=len(full_response),
+                )
 
             elif data.get("type") == "ping":
                 _enqueue({"type": "pong"})
@@ -13311,6 +13338,7 @@ async def websocket_chat(websocket: WebSocket):
 
                 unsubscribe = copilot_session.on(on_event)
 
+                _ws_msg_start = time.time()
                 try:
                     await copilot_session.send({"prompt": user_message})
                     await asyncio.wait_for(done_event.wait(), timeout=120)
@@ -13326,6 +13354,17 @@ async def websocket_chat(websocket: WebSocket):
                 await save_chat_message(session_token, "user", user_message)
                 await save_chat_message(session_token, "assistant", full_response)
                 await log_usage(request_record)
+
+                # Track agent activity
+                from src.copilot_helpers import _record_activity
+                _record_activity(
+                    agent_name="WEB_CHAT",
+                    model=get_active_model(),
+                    status="ok",
+                    duration_ms=(time.time() - _ws_msg_start) * 1000,
+                    prompt_len=len(user_message),
+                    response_len=len(full_response),
+                )
 
             elif data.get("type") == "ping":
                 _enqueue({"type": "pong"})

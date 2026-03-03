@@ -14630,7 +14630,7 @@ async function loadAgentActivity() {
 
             catAgents.forEach(a => {
                 const agentKey = a.name.toUpperCase().replace(/\s+/g, '_');
-                const c = counters[agentKey] || counters[a.key] || {};
+                const c = counters[agentKey] || counters[a.key.toUpperCase()] || counters[a.key] || {};
                 const calls = c.calls || 0;
                 const errors = c.errors || 0;
                 const model = taskModelMap[a.task] || a.task;
@@ -14687,7 +14687,7 @@ function showAgentDetail(agentKey) {
     routing.forEach(r => { taskModelMap[r.task] = r.model_name || r.model_id || r.task; });
 
     const agentNameKey = agent.name.toUpperCase().replace(/\s+/g, '_');
-    const c = counters[agentNameKey] || counters[agentKey] || {};
+    const c = counters[agentNameKey] || counters[agentKey.toUpperCase()] || counters[agentKey] || {};
     const calls = c.calls || 0;
     const errors = c.errors || 0;
     const avgMs = calls > 0 ? Math.round((c.total_ms || 0) / calls) : 0;
@@ -14698,10 +14698,10 @@ function showAgentDetail(agentKey) {
     const agentIcon = AO_AGENT_ICONS[agentKey] || meta.icon;
 
     // Filter activity for this agent
-    const agentActivity = activity.filter(e =>
-        (e.agent || '').toUpperCase().replace(/\s+/g, '_') === agentNameKey ||
-        (e.agent_key || '') === agentKey
-    ).slice(0, 20);
+    const agentActivity = activity.filter(e => {
+        const ea = (e.agent || '').toUpperCase().replace(/\s+/g, '_');
+        return ea === agentNameKey || ea === agentKey.toUpperCase() || (e.agent_key || '') === agentKey;
+    }).slice(0, 20);
 
     panel.innerHTML = `
         <button class="ao-detail-close" onclick="hideAgentDetail()" title="Close">✕</button>

@@ -904,6 +904,32 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_gov_reviews_service')
     CREATE INDEX idx_gov_reviews_service ON governance_reviews(service_id, version DESC)""",
+    # ── Agent Activity Tracking ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_counters')
+    CREATE TABLE agent_counters (
+        agent_name      NVARCHAR(200) PRIMARY KEY,
+        calls           INT DEFAULT 0,
+        errors          INT DEFAULT 0,
+        total_ms        FLOAT DEFAULT 0,
+        last_called     NVARCHAR(50) DEFAULT NULL,
+        last_model      NVARCHAR(100) DEFAULT NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_activity_log')
+    CREATE TABLE agent_activity_log (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        agent_name      NVARCHAR(200) NOT NULL,
+        model           NVARCHAR(100) DEFAULT '',
+        status          NVARCHAR(20) DEFAULT 'ok',
+        duration_ms     FLOAT DEFAULT 0,
+        prompt_len      INT DEFAULT 0,
+        response_len    INT DEFAULT 0,
+        error_text      NVARCHAR(MAX) DEFAULT NULL,
+        created_at      NVARCHAR(50) NOT NULL
+    )
+    """,
 ]
 
 
