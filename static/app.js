@@ -1183,7 +1183,7 @@ function renderServiceTable(services) {
     }
 
     if (!services.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="catalog-loading">No services match your filters</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="catalog-loading">No services match your filters</td></tr>';
         return;
     }
 
@@ -1269,6 +1269,7 @@ function renderServiceTable(services) {
             <td>${versionHtml}</td>
             <td>${azureApiHtml}</td>
             <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
+            <td>${svc.active_version ? `<button class="btn btn-xs btn-outline svc-view-tpl-btn" onclick="event.stopPropagation(); viewServiceTemplate('${escapeHtml(svc.id)}')" title="View ARM template">👁 View</button>` : ''}</td>
         </tr>`;
     }).join('');
 }
@@ -2194,6 +2195,86 @@ let _currentTemplateFilename = '';
 let _currentTemplateServiceId = '';
 let _currentTemplateVersion = null;
 
+/**
+ * View the latest published ARM template for a service (from the catalog table).
+ * Fetches /api/services/{id}/versions/latest and opens the template viewer modal.
+ */
+async function viewServiceTemplate(serviceId) {
+    const modal = document.getElementById('modal-template-viewer');
+    const title = document.getElementById('template-viewer-title');
+    const meta = document.getElementById('template-viewer-meta');
+    const code = document.getElementById('template-viewer-code');
+
+    title.textContent = `ARM Template — ${serviceId.split('/').pop()}`;
+    meta.innerHTML = `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span><span class="template-meta-loading">Loading…</span>`;
+    code.querySelector('code').textContent = 'Loading template…';
+    _currentTemplateContent = '';
+    _currentTemplateFilename = `${serviceId.replace(/\//g, '_')}_latest.json`;
+    _currentTemplateServiceId = serviceId;
+    _currentTemplateVersion = null;
+
+    // Reset modification UI
+    const modifyPrompt = document.getElementById('template-modify-prompt');
+    const modifyProgress = document.getElementById('template-modify-progress');
+    const modifyBtn = document.getElementById('template-modify-btn');
+    if (modifyPrompt) modifyPrompt.value = '';
+    if (modifyProgress) { modifyProgress.classList.add('hidden'); modifyProgress.innerHTML = ''; }
+    if (modifyBtn) { modifyBtn.disabled = false; modifyBtn.textContent = '🚀 Apply'; }
+
+    modal.classList.remove('hidden');
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/latest`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = await res.json();
+        const version = data.version || 0;
+        const template = data.arm_template || '';
+
+        _currentTemplateVersion = version;
+        _currentTemplateFilename = `${serviceId.replace(/\//g, '_')}_v${version}.json`;
+
+        // Pretty-print the JSON
+        let formatted;
+        try {
+            formatted = JSON.stringify(JSON.parse(template), null, 2);
+        } catch {
+            formatted = template;
+        }
+
+        _currentTemplateContent = formatted;
+        code.querySelector('code').innerHTML = _highlightJSON(formatted);
+
+        // Build meta badges
+        const sizeKB = (formatted.length / 1024).toFixed(1);
+        const validatedAt = data.validated_at ? data.validated_at.substring(0, 10) : '—';
+        const semver = data.semver || `${version}.0.0`;
+
+        // Check contentVersion alignment
+        let contentVersionNote = '';
+        try {
+            const parsed = JSON.parse(template);
+            const cv = parsed.contentVersion;
+            if (cv && cv !== semver) {
+                contentVersionNote = `<span class="template-meta-badge template-meta-warn" title="contentVersion (${cv}) does not match semver (${semver})">⚠ contentVersion mismatch</span>`;
+            }
+        } catch {}
+
+        const metaBadges = [
+            `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span>`,
+            `<span class="template-meta-badge">v${semver}</span>`,
+            `<span class="template-meta-badge">${sizeKB} KB</span>`,
+            `<span class="template-meta-badge">Validated: ${validatedAt}</span>`,
+            contentVersionNote,
+        ].filter(Boolean);
+
+        title.textContent = `ARM Template — v${semver}`;
+        meta.innerHTML = metaBadges.join('\n');
+    } catch (err) {
+        code.querySelector('code').textContent = `Error loading template: ${err.message}`;
+        meta.innerHTML = `<span class="template-meta-badge template-meta-err">⚠ ${escapeHtml(err.message)}</span>`;
+    }
+}
+
 async function viewTemplate(serviceId, version) {
     const modal = document.getElementById('modal-template-viewer');
     const title = document.getElementById('template-viewer-title');
@@ -2249,12 +2330,23 @@ async function viewTemplate(serviceId, version) {
             tmplMeta = parsed.metadata?.infrapiForge || null;
         } catch {}
 
+        // Check contentVersion alignment
+        let contentVersionNote = '';
+        try {
+            const parsed2 = JSON.parse(template);
+            const cv = parsed2.contentVersion;
+            if (cv && cv !== semver) {
+                contentVersionNote = `<span class="template-meta-badge template-meta-warn" title="contentVersion (${cv}) does not match semver (${semver})">⚠ contentVersion mismatch</span>`;
+            }
+        } catch {}
+
         const metaBadges = [
             `<span class="template-meta-badge">📦 ${escapeHtml(serviceId)}</span>`,
             `<span class="template-meta-badge">v${semver}</span>`,
             `<span class="template-meta-badge">${sizeKB} KB</span>`,
             `<span class="template-meta-badge">Validated: ${validatedAt}</span>`,
         ];
+        if (contentVersionNote) metaBadges.push(contentVersionNote);
 
         if (tmplMeta) {
             if (tmplMeta.generatedBy) metaBadges.push(`<span class="template-meta-badge">🔧 ${escapeHtml(tmplMeta.generatedBy)}</span>`);

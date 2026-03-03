@@ -177,6 +177,24 @@ body {
     border-radius: 6px;
 }
 
+.btn-outline {
+    background: transparent;
+    color: var(--accent-blue, #58a6ff);
+    border: 1px solid var(--accent-blue, #58a6ff);
+}
+.btn-outline:hover {
+    background: rgba(88, 166, 255, 0.12);
+}
+
+.svc-view-tpl-btn {
+    opacity: 0.6;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+}
+tr:hover .svc-view-tpl-btn {
+    opacity: 1;
+}
+
 .btn-accent {
     background: var(--accent-green, #2ea043);
     color: #fff;
@@ -4853,6 +4871,16 @@ body {
     padding: 0.15rem 0.5rem;
     border-radius: 6px;
     white-space: nowrap;
+}
+.template-meta-badge.template-meta-warn {
+    background: rgba(227, 179, 65, 0.15);
+    color: #e3b341;
+    border: 1px solid rgba(227, 179, 65, 0.3);
+}
+.template-meta-badge.template-meta-err {
+    background: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    border: 1px solid rgba(248, 81, 73, 0.3);
 }
 .template-meta-loading {
     color: var(--accent-blue);

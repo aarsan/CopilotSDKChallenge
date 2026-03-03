@@ -1701,6 +1701,13 @@ async def get_all_services(
     )
     semver_map: dict[str, str] = {r["service_id"]: r["semver"] for r in all_semvers}
 
+    # 2c. Batch-fetch latest (max) version int per service
+    all_max_ver = await backend.execute(
+        "SELECT service_id, MAX(version) AS max_ver FROM service_versions GROUP BY service_id",
+        (),
+    )
+    max_ver_map: dict[str, int] = {r["service_id"]: r["max_ver"] for r in all_max_ver}
+
     # Group by service_id for O(1) lookup
     from collections import defaultdict
     skus_map: dict[str, list[str]] = defaultdict(list)
@@ -1746,6 +1753,7 @@ async def get_all_services(
 
         # Semver for active version
         svc["latest_semver"] = semver_map.get(svc_id)
+        svc["latest_version_int"] = max_ver_map.get(svc_id)
 
         result.append(svc)
 
@@ -2633,6 +2641,15 @@ async def create_service_version(
 
     if semver is None:
         semver = f"{version}.0.0"
+
+    # Sync the ARM template's contentVersion with our semver
+    try:
+        _tpl = json.loads(arm_template)
+        if isinstance(_tpl, dict) and _tpl.get("contentVersion") != semver:
+            _tpl["contentVersion"] = semver
+            arm_template = json.dumps(_tpl, indent=2)
+    except (json.JSONDecodeError, TypeError):
+        pass  # not valid JSON — leave as-is
 
     await backend.execute_write(
         """INSERT INTO service_versions

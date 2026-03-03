@@ -11469,6 +11469,34 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/services/{service_id:path}/versions/latest")
+async def get_service_latest_version(service_id: str):
+    """Get the latest approved (or highest) version's ARM template for a service."""
+    from src.database import get_service, get_service_versions
+
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+
+    versions = await get_service_versions(service_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"No versions exist for '{service_id}'")
+
+    # Prefer: active version → latest approved → highest version number
+    active = svc.get("active_version")
+    match = None
+    if active:
+        match = next((v for v in versions if v.get("version") == active), None)
+    if not match:
+        approved = [v for v in versions if v.get("status") == "approved"]
+        if approved:
+            match = max(approved, key=lambda v: v.get("version", 0))
+    if not match:
+        match = max(versions, key=lambda v: v.get("version", 0))
+
+    return JSONResponse(match)
+
+
 @app.get("/api/services/{service_id:path}/versions/{version:int}")
 async def get_service_version_detail(service_id: str, version: int):
     """Get a single version including the full ARM template content."""
