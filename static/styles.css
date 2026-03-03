@@ -6259,6 +6259,210 @@ tr:hover .svc-view-tpl-btn {
     border-color: rgba(248, 81, 73, 0.25);
 }
 
+/* ── Service Status Card (simplified detail pane) ─────────── */
+
+.svc-status-card {
+    margin: 1rem 0;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.15rem;
+    background: var(--card-bg);
+    transition: border-color 0.3s ease;
+}
+
+.svc-status-onboarded  { border-left-color: #3fb950; background: rgba(63, 185, 80, 0.04); }
+.svc-status-ready      { border-left-color: #388bfd; background: rgba(56, 139, 253, 0.04); }
+.svc-status-running    { border-left-color: #d29922; background: rgba(210, 153, 34, 0.04); }
+.svc-status-failed     { border-left-color: #f85149; background: rgba(248, 81, 73, 0.04); }
+.svc-status-offboarded { border-left-color: #8b949e; background: rgba(139, 148, 158, 0.04); }
+
+.svc-status-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.svc-status-icon {
+    font-size: 1.6rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.svc-status-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    flex: 1;
+    min-width: 0;
+}
+
+.svc-status-title {
+    font-weight: 600;
+    font-size: 0.92rem;
+    color: var(--text-primary);
+}
+
+.svc-status-sub {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.svc-status-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.75rem;
+}
+
+/* Spinner for validating state */
+.svc-status-spin {
+    display: inline-block;
+    animation: svc-spin 1.2s linear infinite;
+}
+
+@keyframes svc-spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Error detail collapse inside status card */
+.svc-status-error {
+    margin-top: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    background: rgba(248, 81, 73, 0.06);
+    border: 1px solid rgba(248, 81, 73, 0.15);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+/* ── Advanced toggle (collapsed extras) ───────────────────── */
+
+.svc-detail-extras {
+    margin-top: 1rem;
+}
+
+.svc-detail-toggle {
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.svc-detail-toggle summary {
+    cursor: pointer;
+    padding: 0.6rem 0.85rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.02);
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.svc-detail-toggle summary::before {
+    content: '▸';
+    transition: transform 0.2s ease;
+    font-size: 0.7rem;
+}
+
+.svc-detail-toggle[open] summary::before {
+    transform: rotate(90deg);
+}
+
+.svc-detail-toggle summary:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+}
+
+.svc-detail-advanced {
+    padding: 0.85rem;
+    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+/* ── Ghost & danger-text button variants ──────────────────── */
+
+.btn-ghost {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--border);
+    color: var(--text-primary);
+}
+
+.btn-danger-text {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #f85149;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    opacity: 0.8;
+}
+
+.btn-danger-text:hover {
+    background: rgba(248, 81, 73, 0.08);
+    border-color: rgba(248, 81, 73, 0.25);
+    opacity: 1;
+}
+
+/* ── Version history drafts toggle ────────────────────────── */
+
+.version-history-drafts-toggle {
+    margin-top: 0.75rem;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+}
+
+.version-history-drafts-toggle summary {
+    cursor: pointer;
+    padding: 0.55rem 0.85rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    user-select: none;
+}
+
+.version-history-drafts-toggle summary::before {
+    content: '▸';
+    transition: transform 0.2s ease;
+    font-size: 0.7rem;
+}
+
+.version-history-drafts-toggle[open] summary::before {
+    transform: rotate(90deg);
+}
+
+.version-history-drafts-toggle summary:hover {
+    color: var(--text-primary);
+}
+
+.version-history-drafts-toggle > .version-list {
+    border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    padding: 0.5rem;
+}
+
 /* ══════════════════════════════════════════════════════════════
    FULL-SCREEN PIPELINE OVERLAY (Logic Apps–style)
    ══════════════════════════════════════════════════════════════ */

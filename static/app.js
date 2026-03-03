@@ -1725,35 +1725,6 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
     const hasVersions = versions.length > 0;
     const latestVersion = versions.length > 0 ? versions[0] : null;
 
-    // Pipeline description
-    const pipelineSteps = [
-        { icon: '📋', label: 'Standards', desc: 'Analyze organization standards for this resource type' },
-        { icon: '🧠', label: 'Plan', desc: 'AI plans the architecture based on standards and best practices' },
-        { icon: '⚡', label: 'Generate', desc: 'ARM template & Azure Policy generated with standards' },
-        { icon: '📋', label: 'Static Check', desc: 'Static validation against org governance policies' },
-        { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
-        { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
-        { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
-        { icon: '📜', label: 'Policy Deploy', desc: 'Deploy Azure Policy definition + assignment to enforce governance' },
-        { icon: '✅', label: 'Approve', desc: 'Version approved, service active' },
-    ];
-
-    // Update pipeline steps (shown when API version update available)
-    const updatePipelineSteps = [
-        { icon: '📥', label: 'Checkout', desc: 'Read current active ARM template' },
-        { icon: '🧠', label: 'Plan', desc: 'Reasoning model analyzes breaking changes between API versions' },
-        { icon: '⚡', label: 'Execute', desc: 'Code gen model rewrites template guided by migration plan' },
-        { icon: '📋', label: 'Static Check', desc: 'Static validation against org governance policies' },
-        { icon: '🔍', label: 'What-If', desc: 'ARM What-If preview of deployment changes' },
-        { icon: '🚀', label: 'Deploy', desc: 'Test deployment to validation resource group' },
-        { icon: '🛡️', label: 'Policy Test', desc: 'Runtime policy compliance test on deployed resources' },
-        { icon: '📜', label: 'Policy Deploy', desc: 'Deploy Azure Policy to enforce governance in Azure' },
-        { icon: '🧹', label: 'Cleanup', desc: 'Delete validation resource group + policy' },
-        { icon: '✅', label: 'Publish', desc: 'New version promoted to active' },
-    ];
-
-    const showUpdatePipeline = apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status !== 'offboarded';
-
     // Distinguish governance approval from full onboarding
     const displayStatus = (status === 'approved' && !activeVersion)
         ? 'approved_not_onboarded' : status;
@@ -1766,30 +1737,11 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <span class="status-badge ${displayStatus}">${displayLabel}</span>
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
-            ${activeVersion ? `<span class="version-badge version-active">Active: ${svc.template_api_version || ('v' + activeVersion)}</span>` : ''}
-        </div>
-
-        ${_renderApiVersionAdvisory(apiVersionStatus)}
-
-        ${showUpdatePipeline ? _wfPipeline(updatePipelineSteps, {
-            title: '⬆ API Version Update Pipeline',
-            titleAccent: 'amber',
-            copilotBadge: true,
-            desc: `Updates template API version with auto-healing. Current: <code>${escapeHtml(apiVersionStatus.template_api_version)}</code> → Latest: <code>${escapeHtml(apiVersionStatus.latest_stable)}</code>${apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable ? ` · Recommended: <code>${escapeHtml(apiVersionStatus.default)}</code> <span class="azure-api-rec">★</span>` : ''}`,
-        }) : ''}
-
-        ${_wfPipeline(pipelineSteps, {
-            title: 'Onboarding Pipeline',
-            copilotBadge: true,
-            desc: 'All steps run automatically with Copilot SDK-powered auto-healing. Validated against organization governance standards &amp; policies.',
-        })}
-
-        <div class="model-routing-display" id="model-routing-container">
-            <span class="model-routing-label">🤖 Model Routing <span class="mr-sdk-tag">COPILOT SDK</span></span>
-            <div class="model-routing-chips" id="model-routing-chips">Loading…</div>
         </div>
 
         ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersion)}
+
+        ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
 
         ${_renderChildResources(childResources, parentResource)}
 
@@ -1797,7 +1749,18 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
 
         <div id="governance-reviews-container" class="governance-reviews-section" style="display:none;"></div>
 
-        ${hasVersions ? _renderVersionHistory(versions, activeVersion) : ''}
+        <div class="svc-detail-extras">
+            <details class="svc-detail-toggle">
+                <summary>Advanced</summary>
+                <div class="svc-detail-advanced">
+                    ${_renderApiVersionAdvisory(apiVersionStatus)}
+                    <div class="model-routing-display" id="model-routing-container">
+                        <span class="model-routing-label">🤖 Model Routing <span class="mr-sdk-tag">COPILOT SDK</span></span>
+                        <div class="model-routing-chips" id="model-routing-chips">Loading…</div>
+                    </div>
+                </div>
+            </details>
+        </div>
     `;
 }
 
@@ -1861,186 +1824,143 @@ function _renderChildResources(childResources, parentResource) {
 }
 
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
-    // API Version Update buttons — shown when service is onboarded AND newer version available
+    // API Version Update button — shown when a newer API version is available
     let updateBtn = '';
     let analyzeBtn = '';
     if (apiVersionStatus && (apiVersionStatus.newer_available || apiVersionStatus.recommended_differs) && status === 'approved' && latestVersion) {
-        const hasSeparateRec = apiVersionStatus.default && apiVersionStatus.default !== apiVersionStatus.latest_stable
-            && apiVersionStatus.default !== apiVersionStatus.template_api_version;
-        const recIsDowngrade = hasSeparateRec && apiVersionStatus.default < apiVersionStatus.template_api_version;
-        const recActionLabel = recIsDowngrade ? '↓ Downgrade to Recommended' : '↑ Update to Recommended';
-
-        // Analyze Upgrade button — always shown when update is available
         const analyzeTarget = apiVersionStatus.newer_available ? apiVersionStatus.latest_stable : apiVersionStatus.default;
-        analyzeBtn = `<button class="btn btn-sm btn-analyze-upgrade" onclick="analyzeUpgradeCompatibility('${escapeHtml(svc.id)}', '${escapeHtml(analyzeTarget)}')" title="AI-powered analysis of breaking changes, new features, and migration effort">
-                🔬 Analyze Upgrade Impact
-            </button>`;
+        analyzeBtn = `<button class="btn btn-sm btn-ghost" onclick="analyzeUpgradeCompatibility('${escapeHtml(svc.id)}', '${escapeHtml(analyzeTarget)}')" title="AI analysis of breaking changes and migration effort">🔬 Analyze Impact</button>`;
 
-        // Show latest update button only if newer is available
-        const latestBtn = apiVersionStatus.newer_available
-            ? `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.latest_stable)}')">
-                    ⬆ Update to Latest (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
-                </button>` : '';
-
-        if (hasSeparateRec) {
-            updateBtn = latestBtn + `
-                <button class="btn btn-sm btn-accent btn-rec" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}', '${escapeHtml(apiVersionStatus.default)}')">
-                    ${recActionLabel} (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.default)})
-                </button>`;
-        } else if (apiVersionStatus.newer_available) {
+        if (apiVersionStatus.newer_available) {
             updateBtn = `<button class="btn btn-sm btn-accent" onclick="triggerApiVersionUpdate('${escapeHtml(svc.id)}')">
-                   ⬆ Update API Version (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
+                   ⬆ Update API (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
         }
     }
 
-    // Governance-approved AND has a validated version → fully onboarded
+    // ── Onboarded ──
     if (status === 'approved' && latestVersion) {
-        // Use the active version for display, not the latest (which may be a failed re-onboarding attempt)
         const activeVer = activeVersionNum
             ? (versions || []).find(v => v.version === activeVersionNum)
             : null;
         const displayVer = activeVer || latestVersion;
-        const hasFailedLatest = latestVersion.status === 'failed' && activeVer && latestVersion.version !== activeVer.version;
 
         return `
-        <div class="validation-card validation-succeeded" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon">✅</span>
-                <span class="validation-title">Service Onboarded — v${displayVer.semver || displayVer.version + '.0.0'}</span>
+        <div class="svc-status-card svc-status-onboarded" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">✅</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Onboarded — v${displayVer.semver || displayVer.version + '.0.0'}</div>
+                    <div class="svc-status-sub">Validated ARM template approved for deployment.${displayVer.validated_at ? ` Last validated ${displayVer.validated_at.substring(0, 10)}.` : ''}</div>
+                </div>
             </div>
-            <div class="validation-detail">
-                This service has a validated ARM template and is approved for deployment.
-                ${displayVer.validated_at ? `Validated: ${displayVer.validated_at.substring(0, 10)}` : ''}
-            </div>
-            ${hasFailedLatest ? `
-            <div class="validation-detail" style="color: var(--warning); margin-top: 0.4rem;">
-                ⚠️ A newer version (v${latestVersion.semver || latestVersion.version + '.0.0'}) failed validation.
-                The active version is still v${displayVer.semver || displayVer.version + '.0.0'}.
-            </div>` : ''}
-            <div class="validation-actions">
+            <div class="svc-status-actions">
                 ${updateBtn}
                 ${analyzeBtn}
-                <button class="btn btn-sm btn-secondary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                    🔄 Re-validate (New Version)
-                </button>
-                <button class="btn btn-sm btn-danger btn-offboard" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service and deprecate all versions">
-                    📦 Offboard
-                </button>
+                <button class="btn btn-sm btn-ghost" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🔄 Re-validate</button>
+                <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
             <div id="upgrade-analysis-container"></div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
-    // Governance-approved but no ARM template version yet → needs onboarding
+    // ── Approved but no ARM template ──
     if (status === 'approved' && !latestVersion) {
         return `
-        <div class="validation-card validation-ready" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon">🚀</span>
-                <span class="validation-title">One-Click Onboarding</span>
+        <div class="svc-status-card svc-status-ready" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">🚀</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Ready to Onboard</div>
+                    <div class="svc-status-sub">Approved but needs an ARM template. Copilot SDK will auto-generate one.</div>
+                </div>
             </div>
-            <div class="validation-detail">
-                <strong>${escapeHtml(svc.name)}</strong> is approved for use in the organization but doesn't
-                have an ARM template yet. The Copilot SDK will auto-generate a validated, policy-compliant template.
-            </div>
-            <div class="validation-actions">
-                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                    🚀 Onboard Service
-                </button>
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Onboard Service</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
+    // ── Validating ──
     if (status === 'validating') {
         return `
-        <div class="validation-card validation-ready" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon">🔄</span>
-                <span class="validation-title">Validation In Progress</span>
+        <div class="svc-status-card svc-status-running" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon svc-status-spin">⟳</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Validation In Progress</div>
+                    <div class="svc-status-sub">Service is being validated…</div>
+                </div>
             </div>
-            <div class="validation-detail">Service is being validated…</div>
-            <div class="validation-actions">
-                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                    🚀 Restart Onboarding
-                </button>
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Restart</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
+    // ── Validation failed ──
     if (status === 'validation_failed') {
-        // Parse real error from review_notes or latest version's validation_result
         let errorDetail = '';
         const reviewNotes = svc.review_notes || '';
         if (reviewNotes) {
             const parsed = _parseValidationError(reviewNotes);
-            errorDetail = _renderStructuredError(parsed, { compact: false, showRaw: true });
+            errorDetail = _renderStructuredError(parsed, { compact: true, showRaw: false });
         }
         if (!errorDetail && latestVersion && latestVersion.validation_result) {
             const parsed = _parseValidationError(latestVersion.validation_result);
-            errorDetail = _renderStructuredError(parsed, { compact: false, showRaw: true });
-        }
-        if (!errorDetail) {
-            errorDetail = '<div class="validation-detail">The previous onboarding run failed. No error details available.</div>';
+            errorDetail = _renderStructuredError(parsed, { compact: true, showRaw: false });
         }
 
         return `
-        <div class="validation-card validation-failed" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon">⛔</span>
-                <span class="validation-title">Validation Failed</span>
+        <div class="svc-status-card svc-status-failed" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">⛔</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Validation Failed</div>
+                    <div class="svc-status-sub">The previous onboarding run failed.</div>
+                </div>
             </div>
-            ${errorDetail}
-            <div class="validation-actions">
-                <button class="btn btn-sm btn-primary" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                    🤖 Retry Onboarding
-                </button>
+            ${errorDetail ? `<div class="svc-status-error">${errorDetail}</div>` : ''}
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🤖 Retry Onboarding</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
-    // offboarded — show deactivated state with re-onboard option
+    // ── Offboarded ──
     if (status === 'offboarded') {
         return `
-        <div class="validation-card validation-offboarded" id="validation-card">
-            <div class="validation-header">
-                <span class="validation-icon">📦</span>
-                <span class="validation-title">Service Offboarded</span>
+        <div class="svc-status-card svc-status-offboarded" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">📦</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Service Offboarded</div>
+                    <div class="svc-status-sub">All versions deprecated. Version history preserved for audit.</div>
+                </div>
             </div>
-            <div class="validation-detail">
-                <strong>${escapeHtml(svc.name)}</strong> has been offboarded. All previously approved template versions
-                are now deprecated and no longer active for deployment.
-                Version history is preserved below for audit purposes.
-            </div>
-            <div class="validation-actions">
-                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                    🚀 Re-onboard Service
-                </button>
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Re-onboard</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
     }
 
-    // not_approved — show the main onboarding button
+    // ── Not approved — default ──
     return `
-    <div class="validation-card validation-ready" id="validation-card">
-        <div class="validation-header">
-            <span class="validation-icon">🚀</span>
-            <span class="validation-title">One-Click Onboarding</span>
+    <div class="svc-status-card svc-status-ready" id="validation-card">
+        <div class="svc-status-row">
+            <span class="svc-status-icon">🚀</span>
+            <div class="svc-status-info">
+                <div class="svc-status-title">One-Click Onboarding</div>
+                <div class="svc-status-sub">Copilot SDK auto-generates an ARM template, validates against governance policies, deploys to test, and promotes.</div>
+            </div>
         </div>
-        <div class="validation-detail">
-            Uses the Copilot SDK to auto-generate an ARM template for <strong>${escapeHtml(svc.name)}</strong>, validate it against
-            organization governance policies, deploy to a test resource group, then promote to approved.
-            No manual configuration needed.
-        </div>
-        <div class="validation-actions">
-            <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">
-                🚀 Onboard Service
-            </button>
+        <div class="svc-status-actions">
+            <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Onboard Service</button>
         </div>
         <div class="validation-log" id="validation-log"></div>
     </div>`;
@@ -2049,88 +1969,20 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
 function _renderVersionHistory(versions, activeVersion) {
     const approvedVersions = versions.filter(v => v.status === 'approved' || v.status === 'deprecated');
     const draftVersions = versions.filter(v => v.status === 'draft' || v.status === 'failed');
-    const totalCount = versions.length;
     const approvedCount = approvedVersions.length;
     const draftCount = draftVersions.length;
 
     let html = '';
 
-    // ── Draft / failed versions ──
-    if (draftCount > 0) {
+    // ── Published versions (the main focus) ──
+    if (approvedCount > 0) {
         html += `
-        <div class="version-history version-history-drafts">
-            <div class="version-history-header version-history-header-draft">
-                <span>📝 Draft Versions (Pending Validation)</span>
-                <span class="version-count">${draftCount} draft${draftCount === 1 ? '' : 's'}${draftCount > 1 ? ` <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteAllDraftVersions('${escapeHtml(draftVersions[0].service_id)}')">🗑 Clear All</button>` : ''}</span>
+        <div class="version-history">
+            <div class="version-history-header">
+                <span>📦 Published Versions</span>
+                <span class="version-count">${approvedCount} version${approvedCount === 1 ? '' : 's'}</span>
             </div>
             <div class="version-list">
-                ${draftVersions.map(v => {
-                    const sizeKB = v.template_size_bytes
-                        ? (v.template_size_bytes / 1024).toFixed(1)
-                        : v.arm_template
-                            ? (v.arm_template.length / 1024).toFixed(1)
-                            : '?';
-                    const displayVer = v.semver || `${v.version}.0.0`;
-                    const isFailed = v.status === 'failed';
-                    const statusIcon = isFailed ? '❌' : '📝';
-                    const statusLabel = isFailed ? 'failed' : 'draft';
-                    const statusClass = isFailed ? 'version-status-failed' : 'version-status-draft';
-                    const itemClass = isFailed ? 'version-item-failed' : 'version-item-draft';
-
-                    return `
-                    <div class="version-item ${itemClass}" onclick="toggleVersionDetail(this)">
-                        <div class="version-item-header">
-                            <span class="version-item-badge version-badge-draft">v${displayVer}</span>
-                            <span class="version-item-status ${statusClass}">${statusIcon} ${statusLabel}</span>
-                            ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
-                            <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
-                            <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
-                        </div>
-                        <div class="version-item-detail hidden">
-                            <div class="version-detail-row">
-                                <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Modified template')}
-                            </div>
-                            <div class="version-detail-row">
-                                <strong>Template:</strong> ${sizeKB} KB
-                            </div>
-                            <div class="version-detail-actions">
-                                ${isFailed ? '' : `<button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); triggerDraftValidation('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
-                                    🚀 Validate & Promote
-                                </button>`}
-                                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
-                                    👁 View Template
-                                </button>
-                                <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
-                                    ⬇ Download
-                                </button>
-                                <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteDraftVersion('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">
-                                    🗑 Delete
-                                </button>
-                            </div>
-                        </div>
-                    </div>`;
-                }).join('')}
-            </div>
-        </div>`;
-    }
-
-    // ── Approved versions ──
-    if (approvedCount === 0 && draftCount === 0) {
-        html += `
-        <div class="version-history">
-            <div class="version-history-header">
-                <span>📦 Published Versions</span>
-                <span class="version-count">No versions yet (${totalCount} total run${totalCount === 1 ? '' : 's'})</span>
-            </div>
-        </div>`;
-    } else {
-        html += `
-        <div class="version-history">
-            <div class="version-history-header">
-                <span>📦 Published Versions</span>
-                <span class="version-count">${approvedCount} approved version${approvedCount === 1 ? '' : 's'}</span>
-            </div>
-            ${approvedCount === 0 ? '' : `<div class="version-list">
                 ${approvedVersions.map(v => {
                     const isActive = v.version === activeVersion;
                     const sizeKB = v.template_size_bytes
@@ -2144,36 +1996,29 @@ function _renderVersionHistory(versions, activeVersion) {
                     <div class="version-item ${isActive ? 'version-item-active' : ''} ${v.status === 'deprecated' ? 'version-item-deprecated' : ''}" onclick="toggleVersionDetail(this)">
                         <div class="version-item-header">
                             <span class="version-item-badge">v${displayVer}</span>
-                            <span class="version-item-status">${v.status === 'deprecated' ? '📦 deprecated' : '✅ approved'}</span>
-                            ${isActive ? '<span class="version-item-active-label">ACTIVE</span>' : (v.status === 'deprecated' ? '<span class="version-item-deprecated-label">DEPRECATED</span>' : '<span class="version-item-deprecated-label">SUPERSEDED</span>')}
+                            ${isActive ? '<span class="version-item-active-label">ACTIVE</span>'
+                                : (v.status === 'deprecated' ? '<span class="version-item-deprecated-label">DEPRECATED</span>'
+                                : '<span class="version-item-deprecated-label">SUPERSEDED</span>')}
                             ${v.api_version ? `<span class="version-item-api">API ${escapeHtml(v.api_version)}</span>` : ''}
                             <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
                             <span class="version-item-by">${escapeHtml(v.created_by || '')}</span>
+                            <button class="btn btn-xs btn-outline svc-view-tpl-btn" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})" title="View ARM template">👁 View Template</button>
                         </div>
                         <div class="version-item-detail hidden">
                             <div class="version-detail-row">
                                 <strong>Changelog:</strong> ${escapeHtml(v.changelog || 'Initial onboarding')}
                             </div>
-                            ${v.policy_check && v.policy_check.total_checks ? `
-                            <div class="version-detail-row">
-                                <strong>Policy:</strong> ${v.policy_check.passed_checks}/${v.policy_check.total_checks} passed,
-                                ${v.policy_check.blockers || 0} blocker(s)
-                            </div>` : ''}
                             <div class="version-detail-row">
                                 <strong>Template:</strong> ${sizeKB} KB
                             </div>
                             ${v.run_id ? `
                             <div class="version-detail-row version-tracking-info">
                                 <strong>🔗 Deployment Tracking:</strong>
-                                <span class="tracking-field" title="Validation run ID">Run: <code>${escapeHtml(v.run_id)}</code></span>
-                                <span class="tracking-field" title="Azure Resource Group">RG: <code>${escapeHtml(v.resource_group || '')}</code></span>
-                                <span class="tracking-field" title="ARM Deployment Name">Deploy: <code>${escapeHtml(v.deployment_name || '')}</code></span>
-                                ${v.subscription_id ? `<span class="tracking-field" title="Azure Subscription">Sub: <code>${escapeHtml(v.subscription_id.substring(0, 12))}…</code></span>` : ''}
+                                <span class="tracking-field">Run: <code>${escapeHtml(v.run_id)}</code></span>
+                                <span class="tracking-field">RG: <code>${escapeHtml(v.resource_group || '')}</code></span>
+                                <span class="tracking-field">Deploy: <code>${escapeHtml(v.deployment_name || '')}</code></span>
                             </div>` : ''}
                             <div class="version-detail-actions">
-                                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">
-                                    👁 View Template
-                                </button>
                                 <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); downloadTemplateVersion('${escapeHtml(v.service_id)}', ${v.version})">
                                     ⬇ Download
                                 </button>
@@ -2181,8 +2026,46 @@ function _renderVersionHistory(versions, activeVersion) {
                         </div>
                     </div>`;
                 }).join('')}
-            </div>`}
+            </div>
         </div>`;
+    } else {
+        html += `
+        <div class="version-history">
+            <div class="version-history-header">
+                <span>📦 Published Versions</span>
+                <span class="version-count">No published versions yet</span>
+            </div>
+        </div>`;
+    }
+
+    // ── Draft / failed versions (collapsed by default) ──
+    if (draftCount > 0) {
+        html += `
+        <details class="svc-detail-toggle version-history-drafts-toggle">
+            <summary>📝 ${draftCount} Draft${draftCount === 1 ? '' : 's'} / Failed${draftCount > 1 ? ` <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); event.preventDefault(); deleteAllDraftVersions('${escapeHtml(draftVersions[0].service_id)}')">🗑 Clear All</button>` : ''}</summary>
+            <div class="version-list">
+                ${draftVersions.map(v => {
+                    const displayVer = v.semver || `${v.version}.0.0`;
+                    const isFailed = v.status === 'failed';
+
+                    return `
+                    <div class="version-item ${isFailed ? 'version-item-failed' : 'version-item-draft'}" onclick="toggleVersionDetail(this)">
+                        <div class="version-item-header">
+                            <span class="version-item-badge version-badge-draft">v${displayVer}</span>
+                            <span class="version-item-status ${isFailed ? 'version-status-failed' : 'version-status-draft'}">${isFailed ? '❌ failed' : '📝 draft'}</span>
+                            <span class="version-item-date">${(v.created_at || '').substring(0, 10)}</span>
+                        </div>
+                        <div class="version-item-detail hidden">
+                            <div class="version-detail-actions">
+                                ${!isFailed ? `<button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); triggerDraftValidation('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">🚀 Validate</button>` : ''}
+                                <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); viewTemplate('${escapeHtml(v.service_id)}', ${v.version})">👁 View</button>
+                                <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteDraftVersion('${escapeHtml(v.service_id)}', ${v.version}, '${displayVer}')">🗑 Delete</button>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('')}
+            </div>
+        </details>`;
     }
 
     return html;
