@@ -824,14 +824,14 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         SELECT 1 FROM sys.columns
         WHERE object_id = OBJECT_ID('services') AND name = 'latest_api_version'
     )
-    ALTER TABLE services ADD latest_api_version NVARCHAR(20) DEFAULT NULL
+    ALTER TABLE services ADD latest_api_version NVARCHAR(50) DEFAULT NULL
     """,
     """
     IF NOT EXISTS (
         SELECT 1 FROM sys.columns
         WHERE object_id = OBJECT_ID('services') AND name = 'default_api_version'
     )
-    ALTER TABLE services ADD default_api_version NVARCHAR(20) DEFAULT NULL
+    ALTER TABLE services ADD default_api_version NVARCHAR(50) DEFAULT NULL
     """,
     # ── Template API version (apiVersion from the active ARM template) ──
     """
@@ -839,7 +839,20 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         SELECT 1 FROM sys.columns
         WHERE object_id = OBJECT_ID('services') AND name = 'template_api_version'
     )
-    ALTER TABLE services ADD template_api_version NVARCHAR(20) DEFAULT NULL
+    ALTER TABLE services ADD template_api_version NVARCHAR(50) DEFAULT NULL
+    """,
+    # ── Widen API version columns (values like '2022-03-08-privatepreview' exceed 20 chars) ──
+    """
+    IF COL_LENGTH('services', 'latest_api_version') < 100
+        ALTER TABLE services ALTER COLUMN latest_api_version NVARCHAR(50)
+    """,
+    """
+    IF COL_LENGTH('services', 'default_api_version') < 100
+        ALTER TABLE services ALTER COLUMN default_api_version NVARCHAR(50)
+    """,
+    """
+    IF COL_LENGTH('services', 'template_api_version') < 100
+        ALTER TABLE services ALTER COLUMN template_api_version NVARCHAR(50)
     """,
     # ══════════════════════════════════════════════════════════
     # PIPELINE RUNS — Persistent log of every pipeline execution
