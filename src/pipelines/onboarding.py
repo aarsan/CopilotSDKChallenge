@@ -399,7 +399,7 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
 @runner.step("analyze_standards")
 async def step_analyze_standards(ctx: PipelineContext, step: StepDef):
     """Phase 1: fetch and emit organization standards."""
-    from src.standards import get_standards_for_service, build_arm_generation_context, build_policy_generation_context
+    from src.standards import get_standards_for_service, build_arm_generation_context, build_policy_generation_context, build_governance_generation_context
 
     # If use_version is set, load the existing draft instead of generating
     use_version = ctx.extra.get("use_version")
@@ -441,6 +441,7 @@ async def step_analyze_standards(ctx: PipelineContext, step: StepDef):
     ctx.artifacts["standards_ctx"] = await build_arm_generation_context(ctx.service_id)
     ctx.artifacts["policy_standards_ctx"] = await build_policy_generation_context(ctx.service_id)
     ctx.artifacts["applicable_standards"] = applicable_standards
+    ctx.artifacts["governance_ctx"] = await build_governance_generation_context()
 
     if applicable_standards:
         for std in applicable_standards:
@@ -486,6 +487,7 @@ async def step_plan_architecture(ctx: PipelineContext, step: StepDef):
 
     svc = ctx.extra["svc"]
     standards_ctx = ctx.artifacts.get("standards_ctx", "")
+    governance_ctx = ctx.artifacts.get("governance_ctx", "")
 
     _planning_model = get_model_display(Task.PLANNING)
     yield emit(
@@ -507,6 +509,9 @@ async def step_plan_architecture(ctx: PipelineContext, step: StepDef):
 
     if standards_ctx:
         planning_prompt += f"The organization has these mandatory standards:\n{standards_ctx}\n\n"
+
+    if governance_ctx:
+        planning_prompt += f"The organization has these security & governance requirements:\n{governance_ctx}\n\n"
 
     planning_prompt += (
         "Produce a structured architecture plan. This plan will be handed to a "
@@ -568,6 +573,7 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
     svc = ctx.extra["svc"]
     standards_ctx = ctx.artifacts.get("standards_ctx", "")
     planning_response = ctx.artifacts.get("planning_response", "")
+    governance_ctx = ctx.artifacts.get("governance_ctx", "")
     _sub_id = os.environ.get("AZURE_SUBSCRIPTION_ID", "unknown")[:12] + "…"
 
     _gen_model = get_model_display(Task.CODE_GENERATION)
@@ -597,6 +603,7 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
                 standards_context=standards_ctx,
                 planning_context=planning_response,
                 region=ctx.region,
+                governance_context=governance_ctx,
             )
         except Exception as gen_err:
             from src.database import fail_service_validation

@@ -481,11 +481,16 @@ ARM_GENERATOR = AgentSpec(
     description=(
         "Generates new production-ready ARM templates from scratch for "
         "a specific Azure resource type. Follows Well-Architected "
-        "Framework practices."
+        "Framework practices and organizational security policies."
     ),
     system_prompt=(
-        "You are an Azure infrastructure expert. "
-        "Generate production-ready ARM templates. "
+        "You are an Azure infrastructure security expert. "
+        "Generate production-ready, security-hardened ARM templates that will "
+        "pass enterprise CISO review on the first attempt. "
+        "NEVER include hardcoded passwords or secrets — use secureString with no defaultValue. "
+        "ALWAYS use SSH keys over passwords for Linux VMs, enable disk encryption, "
+        "associate NSGs with all subnets/NICs, use managed identities, enforce TLS 1.2+, "
+        "and disable public access unless explicitly required. "
         "Return ONLY raw JSON — no markdown, no code fences, no explanation."
     ),
     task=Task.CODE_GENERATION,

@@ -1187,6 +1187,7 @@ async def generate_arm_template_with_copilot(
     standards_context: str = "",
     planning_context: str = "",
     region: str = "",
+    governance_context: str = "",
 ) -> str:
     """Use the Copilot SDK to generate an ARM template for an unknown resource type.
 
@@ -1201,6 +1202,8 @@ async def generate_arm_template_with_copilot(
         model: LLM model ID to use for generation
         standards_context: Optional organization standards context to inject
         planning_context: Architecture plan from the reasoning model (PLAN phase)
+        region: Target Azure region
+        governance_context: Security & governance requirements from CISO policies
     """
     prompt = (
         f"Generate a minimal ARM template (JSON) for deploying the Azure resource type "
@@ -1268,6 +1271,13 @@ async def generate_arm_template_with_copilot(
             f"\n--- ORGANIZATION STANDARDS (MANDATORY — the template MUST satisfy ALL of these) ---\n"
             f"{standards_context}\n"
             f"--- END STANDARDS ---\n"
+        )
+
+    if governance_context:
+        prompt += (
+            f"\n--- SECURITY & GOVERNANCE REQUIREMENTS (MANDATORY — CISO will block non-compliant templates) ---\n"
+            f"{governance_context}\n"
+            f"--- END SECURITY REQUIREMENTS ---\n"
         )
 
     from src.copilot_helpers import copilot_send
