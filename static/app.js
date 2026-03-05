@@ -5058,7 +5058,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-failed">
-                ❌ I found some issues during validation. I'll ${isBlueprint ? 'rebuild this from the latest service templates and ' : ''}fix any structural issues, then re-deploy to Azure to verify.
+                ❌ I found some issues during validation. I'll ${isBlueprint ? 'rebuild this from the pinned service template versions and ' : ''}fix any structural issues, then re-deploy to Azure to verify.
             </div>
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
                 <button class="btn btn-primary btn-sm" onclick="fixAndValidateTemplate('${escapeHtml(tmpl.id)}')">
@@ -5646,7 +5646,7 @@ async function _loadTemplateComposition(templateId) {
                                 ${c.version_known === false
                                     ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
                                     : c.upgrade_available
-                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${depIconsHtml}
@@ -5812,19 +5812,36 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion, te
 }
 
 /** Upgrade a single dependency in a composed template.
- *  Triggers the full validation pipeline: recompose → AI heal → What-If → deploy-ready. */
-async function upgradeTemplateDep(templateId, serviceId, targetVersion) {
+ *  Pins the specific version first, then triggers the full validation pipeline. */
+async function upgradeTemplateDep(templateId, serviceId, targetVersion, targetVersionInt) {
     const shortName = serviceId.split('/').pop();
 
     // Disable upgrade buttons while pipeline runs
     const btns = document.querySelectorAll(`.dep-upgrade-btn`);
     btns.forEach(b => { b.disabled = true; });
 
-    showToast(`⬆ Upgrading ${shortName} → ${targetVersion} — running full validation pipeline…`, 'info');
+    showToast(`⬆ Upgrading ${shortName} → ${targetVersion} — pinning version and running validation…`, 'info');
 
-    // Delegate to the full fix-and-validate pipeline which handles:
-    // recompose from source services → structural tests → ARM What-If
-    // validation with self-healing loop → infrastructure testing → cleanup
+    // Step 1: Pin the specific version via the pin-version endpoint
+    try {
+        const pinRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pin-version`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service_id: serviceId, version: targetVersionInt }),
+        });
+        if (!pinRes.ok) {
+            const err = await pinRes.json().catch(() => ({}));
+            showToast(`Pin failed: ${err.detail || 'Unknown error'}`, 'error');
+            btns.forEach(b => { b.disabled = false; });
+            return;
+        }
+    } catch (err) {
+        showToast(`Pin failed: ${err.message}`, 'error');
+        btns.forEach(b => { b.disabled = false; });
+        return;
+    }
+
+    // Step 2: Run fix-and-validate which will now respect the pinned version
     await fixAndValidateTemplate(templateId);
 }
 
@@ -6011,7 +6028,7 @@ async function checkForUpdates(templateId) {
                         </div>
                         <div class="upd-chain-actions">
                             ${c.upgrade_available
-                                ? `<button class="dep-upgrade-btn" onclick="upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}')">⬆ Upgrade</button>`
+                                ? `<button class="dep-upgrade-btn" onclick="upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})">⬆ Upgrade</button>`
                                 : '<span class="upd-chain-badge-ok">Current</span>'}
                         </div>
                     </div>
