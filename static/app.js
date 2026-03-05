@@ -5191,13 +5191,6 @@ function showTemplateDetail(templateId) {
         <div class="detail-section comp-hero-section">
             <div class="comp-hero-header">
                 <h3>🧩 Composed From</h3>
-                <div class="comp-hero-meta">
-                    <span class="comp-ver-label">v</span><span class="comp-ver-num">${activeVer || 'Draft'}</span>
-                    <span class="comp-ver-status comp-ver-status-${status}">${statusBadgeMap[status] || status}</span>
-                    <span class="category-badge">${escapeHtml(tmpl.format || 'arm')}</span>
-                    <span class="category-badge">${escapeHtml(tmpl.category || '')}</span>
-                    ${(tmpl.tags && tmpl.tags.length) ? tmpl.tags.map(t => `<span class="region-tag">${escapeHtml(t)}</span>`).join('') : ''}
-                </div>
             </div>
             <div id="tmpl-composition" class="comp-hero-graph">
                 <div class="compose-loading">Loading composition…</div>
@@ -5696,8 +5689,6 @@ async function _loadTemplateComposition(templateId) {
         // Update the template version display with semver from the API
         const semver = data.template_semver;
         if (semver) {
-            const verNumEl = document.querySelector('.comp-ver-num');
-            if (verNumEl) verNumEl.textContent = semver;
             const headerBadge = document.querySelector('.tmpl-ver-badge');
             if (headerBadge) headerBadge.textContent = semver;
         }

@@ -22,6 +22,9 @@
     --border-default: #30363d;
     --border-muted: #21262d;
     --border-subtle: #21262d;
+    --border-color: #30363d;
+
+    --accent-primary: #58a6ff;
 
     --surface-primary: #0d1117;
     --surface-secondary: #161b22;
@@ -2008,6 +2011,10 @@ tr:hover .svc-view-tpl-btn {
 /* ─── Hero Composition (front-and-center) ──────────────────── */
 .comp-hero-section {
     margin-top: 0.5rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 1rem;
 }
 .comp-hero-header {
     display: flex;
@@ -2015,7 +2022,7 @@ tr:hover .svc-view-tpl-btn {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 0.5rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.5rem;
 }
 .comp-hero-header h3 {
     margin: 0;
@@ -2613,9 +2620,9 @@ tr:hover .svc-view-tpl-btn {
 /* Inline ARM Template Viewer */
 .tmpl-arm-viewer-section {
     background: var(--bg-tertiary);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 0;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
     overflow: hidden;
 }
 .tmpl-arm-header {
@@ -2859,6 +2866,12 @@ tr:hover .svc-view-tpl-btn {
 }
 
 /* Version Log — collapsible */
+.comp-verlog-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 0.75rem 1rem;
+}
 .comp-verlog-section .comp-verlog-body {
     display: none;
     max-height: 300px;
@@ -2885,7 +2898,7 @@ tr:hover .svc-view-tpl-btn {
     padding: 0.3rem 0.5rem;
     border-radius: 4px;
     margin-bottom: 0.2rem;
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
 }
 .comp-verlog-item.comp-verlog-active {
     border-left: 3px solid #16a34a;
@@ -4682,6 +4695,26 @@ tr:hover .svc-view-tpl-btn {
 
 /* ── Version History ──────────────────────────────────────── */
 
+/* Pipeline Runs card container */
+#tmpl-pipeline-runs-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+}
+#tmpl-pipeline-runs-container .version-history {
+    margin-top: 0;
+}
+
+/* Compliance Scan results card */
+#tmpl-scan-results:not(:empty) {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    margin-bottom: 1.25rem;
+}
+
 .version-history {
     margin-top: 1.25rem;
 }
@@ -4959,9 +4992,9 @@ tr:hover .svc-view-tpl-btn {
     margin-top: 0.25rem;
 }
 .run-item {
-    background: var(--bg-secondary);
+    background: var(--bg-tertiary);
     border: 1px solid var(--border-subtle);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 0.6rem 1rem;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
@@ -12688,9 +12721,9 @@ tr:hover .svc-view-tpl-btn {
 /* Template validation form */
 .tmpl-validate-section {
     background: var(--bg-tertiary);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 1rem;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-default);
 }
 .tmpl-validate-desc {
     font-size: 0.8rem;
@@ -12873,7 +12906,7 @@ tr:hover .svc-view-tpl-btn {
 .tmpl-deploy-section {
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     padding: 1rem;
     margin-top: 0.75rem;
 }
@@ -13852,7 +13885,7 @@ details[open] > .tmpl-deploy-group-optional {
 /* ── Revision Form (template detail) ───────────────── */
 .tmpl-revision-section {
     border: 1px solid var(--accent-primary);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     padding: 1rem;
     background: var(--bg-secondary);
 }
