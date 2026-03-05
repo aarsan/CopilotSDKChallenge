@@ -907,6 +907,66 @@ async def build_arm_generation_context(service_id: str) -> str:
     return "\n".join(lines)
 
 
+async def build_governance_generation_context() -> str:
+    """Build a security & governance requirements block for ARM template generation.
+
+    Fetches security standards and governance policies from the database and
+    formats them as explicit, actionable requirements that the ARM generator
+    MUST follow. This ensures the generator is aware of CISO-level security
+    expectations BEFORE building the template — not after.
+    """
+    from src.database import get_security_standards, get_governance_policies
+
+    standards = await get_security_standards(enabled_only=True)
+    policies = await get_governance_policies(enabled_only=True)
+
+    if not standards and not policies:
+        return ""
+
+    lines = [
+        "MANDATORY SECURITY & GOVERNANCE REQUIREMENTS — the generated ARM template MUST comply with ALL of these.",
+        "These are enforced by the CISO reviewer and violations WILL block deployment.",
+        "",
+    ]
+
+    if standards:
+        lines.append("## Security Standards")
+        for std in standards:
+            sev = std.get("severity", "medium").upper()
+            lines.append(f"  - [{sev}] {std.get('name', std['id'])}: {std.get('description', '')}")
+            remediation = std.get("remediation", "")
+            if remediation:
+                lines.append(f"    Remediation: {remediation}")
+        lines.append("")
+
+    if policies:
+        lines.append("## Governance Policies")
+        for pol in policies:
+            enf = pol.get("enforcement", "warn").upper()
+            lines.append(f"  - [{enf}] {pol.get('name', pol['id'])}: {pol.get('description', '')}")
+        lines.append("")
+
+    # Add explicit CISO review criteria so the generator knows what will be checked
+    lines.extend([
+        "## CISO Review Criteria (the template WILL be reviewed against all of these)",
+        "  - NEVER include hardcoded passwords, secrets, API keys, or connection strings in parameters or variables",
+        "  - Password parameters MUST use secureString type with NO defaultValue",
+        "  - Use SSH public keys instead of password authentication for Linux VMs",
+        "  - Enable disk encryption (Azure Disk Encryption or EncryptionAtHost) on all VMs and disks",
+        "  - Associate Network Security Groups (NSGs) with all subnets and NICs",
+        "  - Use managed identities (SystemAssigned or UserAssigned) instead of stored credentials",
+        "  - Enable encryption at rest for all storage and database resources",
+        "  - Enforce TLS 1.2+ and HTTPS-only on all applicable resources",
+        "  - Disable public network access unless explicitly required",
+        "  - Enable diagnostic settings and monitoring where supported",
+        "  - Include proper resource tagging (environment, owner, costCenter, project)",
+        "  - Use private endpoints for PaaS services where applicable",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════════
 # UTILITIES
 # ══════════════════════════════════════════════════════════════
