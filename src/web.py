@@ -6952,6 +6952,8 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             }) + "\n"
 
             # ── Governance review gate ─────────────────────────────────
+            heal_history: list[dict] = []  # track previous attempts (used by both governance heal and validation heal)
+
             try:
                 from src.governance import run_governance_review, format_review_summary
                 from src.database import save_governance_review
@@ -7147,7 +7149,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             # ── Validation loop: validate→what-if→deploy→policy→cleanup→promote ─
             # Copilot SDK auto-healing with migration plan context and heal history
             _client = None  # lazy-init only when healing needed
-            heal_history: list[dict] = []  # track previous attempts to avoid repeating the same fix
             _last_error = ""  # track last error for failure analysis
 
             arm_template = updated_template
