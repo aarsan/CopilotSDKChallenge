@@ -6601,7 +6601,10 @@ tr:hover .svc-view-tpl-btn {
     padding: 0.6rem;
     gap: 0;
     max-height: 520px;
+    overflow-y: auto;
     background: rgba(0,0,0,0.18);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
 }
 
 /* ── Action Card ─────────────────────────────────────────── */
