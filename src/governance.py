@@ -231,8 +231,21 @@ async def run_governance_review(
     cto_verdict = cto_review.get("verdict", "advisory")
 
     if ciso_verdict == "blocked":
-        gate = "blocked"
-        reason = f"CISO blocked deployment: {ciso_review.get('summary', 'Critical security issues found')}"
+        # Only truly block if there are critical/high findings.
+        # LOW/medium-only findings should downgrade to conditional.
+        ciso_findings = ciso_review.get("findings", [])
+        has_critical_or_high = any(
+            f.get("severity") in ("critical", "high")
+            for f in ciso_findings
+            if isinstance(f, dict)
+        )
+        if has_critical_or_high:
+            gate = "blocked"
+            reason = f"CISO blocked deployment: {ciso_review.get('summary', 'Critical security issues found')}"
+        else:
+            gate = "conditional"
+            reason = f"CISO flagged low/medium findings (no critical/high): {ciso_review.get('summary', 'Minor concerns noted')}"
+            logger.info("Downgraded CISO 'blocked' to 'conditional' — no critical/high findings")
     elif ciso_verdict == "conditional" or cto_verdict == "needs_revision":
         gate = "conditional"
         parts = []
