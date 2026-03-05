@@ -6331,7 +6331,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
         validate_template, validate_template_against_standards,
         build_remediation_prompt,
     )
-    from src.standards import get_standards_for_service
+    from src.standards import get_standards_for_service, build_governance_generation_context, build_arm_generation_context
 
     MAX_HEAL_ATTEMPTS = 5
     DEEP_HEAL_THRESHOLD = 3        # escalate to two-phase after this many deploy heals
@@ -6438,6 +6438,10 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "detail": f"🧹 Cleaned up {_cleaned} stale draft/failed version(s) from previous runs",
                     "progress": 0.015,
                 }) + "\n"
+
+            # ── Fetch governance & security context for migration ──
+            _governance_ctx = await build_governance_generation_context()
+            _standards_ctx = await build_arm_generation_context(service_id)
 
             # ── Step 1: Checkout ──────────────────────────────────
             yield json.dumps({
@@ -6682,6 +6686,16 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 "Azure ARM template patterns and common API evolution.\n"
             )
 
+            if _governance_ctx:
+                planning_prompt += (
+                    f"\n--- SECURITY & GOVERNANCE REQUIREMENTS (MANDATORY) ---\n"
+                    f"{_governance_ctx}\n"
+                    f"--- END SECURITY REQUIREMENTS ---\n\n"
+                    "IMPORTANT: In addition to the API version migration, also identify and plan "
+                    "fixes for any security issues in the template that violate these requirements. "
+                    "Include a **Security Fixes** section in your migration plan.\n"
+                )
+
             migration_plan = ""
             try:
                 _plan_client = await ensure_copilot_client()
@@ -6760,9 +6774,19 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     "Apply ALL changes from the migration plan:\n"
                     "1. Update all apiVersion fields to the target version\n"
                     "2. Apply any property renames, additions, or removals identified in the plan\n"
-                    "3. Keep all parameter defaultValues intact\n"
+                    "3. Fix ALL security issues identified in the plan (hardcoded passwords, missing encryption, etc.)\n"
                     "4. Preserve the template's intent and resource structure\n"
                     "5. Ensure the result is valid ARM template JSON\n\n"
+                )
+
+                if _governance_ctx:
+                    execute_prompt += (
+                        f"--- SECURITY & GOVERNANCE REQUIREMENTS (MANDATORY — CISO will block non-compliant templates) ---\n"
+                        f"{_governance_ctx}\n"
+                        f"--- END SECURITY REQUIREMENTS ---\n\n"
+                    )
+
+                execute_prompt += (
                     "Return ONLY the complete, corrected ARM template JSON — no markdown "
                     "fences, no explanation, no commentary."
                 )
@@ -6945,6 +6969,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         updated_template,
                         service_id=service_id,
                         version=new_semver,
+                        standards_ctx=_standards_ctx,
                     )
 
                     # Emit individual reviews

@@ -3649,6 +3649,10 @@ function _renderGovernanceResolution(logEl, event) {
         if (body) {
             body.appendChild(resolveEl);
             body.classList.add('uf-body-open');
+            // Scroll the resolution options into view
+            requestAnimationFrame(() => {
+                resolveEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
         }
     }
 }
@@ -4269,8 +4273,13 @@ function _handleUpdateEvent(event) {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
     } else if (type === 'error') {
-        _flowFinalizeActive(logEl, 'failed');
-        _flowResult(logEl, 'failed', detail || 'Update failed');
+        // Don't render a separate error result if governance already blocks — the card handles it
+        if (phase === 'governance_blocked' && logEl._flow?.cards?.['governance']) {
+            // Already rendered by the governance_blocked progress handler
+        } else {
+            _flowFinalizeActive(logEl, 'failed');
+            _flowResult(logEl, 'failed', detail || 'Update failed');
+        }
     } else if (detail) {
         const activeKey = logEl._flow?.activeKey;
         if (activeKey) _flowDetail(logEl, activeKey, '▸', escapeHtml(detail));
