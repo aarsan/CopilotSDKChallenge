@@ -57,6 +57,7 @@ def _build_param_defaults() -> dict[str, object]:
         "sharedKey": "InfraForgeVal1dation!",
         "adminPassword": "InfraForge#Val1d!",
         "adminUsername": "azureadmin",
+        "sshPublicKey": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7 validation-only@infraforge",
     }
 
 PARAM_DEFAULTS: dict[str, object] = _build_param_defaults()
@@ -85,6 +86,9 @@ def _constrained_fallback(pname: str, pdef: dict) -> object:
     if ptype == "object":
         return {}
     if ptype == "securestring":
+        plow = pname.lower()
+        if "ssh" in plow or "publickey" in plow:
+            return "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7 validation-only@infraforge"
         return "InfraForge#Val1d!"
 
     # --- string: respect maxLength / minLength ---------------------------

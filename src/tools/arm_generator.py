@@ -559,9 +559,14 @@ def _vm():
                     "osProfile": {
                         "computerName": "[parameters('resourceName')]",
                         "adminUsername": "azureuser",
-                        "adminPassword": "[parameters('adminPassword')]",
                         "linuxConfiguration": {
-                            "disablePasswordAuthentication": False,
+                            "disablePasswordAuthentication": True,
+                            "ssh": {
+                                "publicKeys": [{
+                                    "path": "/home/azureuser/.ssh/authorized_keys",
+                                    "keyData": "[parameters('sshPublicKey')]",
+                                }],
+                            },
                             "patchSettings": {"patchMode": "AutomaticByPlatform"},
                         },
                     },
@@ -574,13 +579,23 @@ def _vm():
                         },
                         "osDisk": {
                             "createOption": "FromImage",
-                            "managedDisk": {"storageAccountType": "Premium_LRS"},
+                            "managedDisk": {
+                                "storageAccountType": "Premium_LRS",
+                            },
                         },
                     },
                     "networkProfile": {
                         "networkInterfaces": [{
                             "id": "[parameters('nicId')]",
                         }],
+                    },
+                    "securityProfile": {
+                        "encryptionAtHost": True,
+                    },
+                    "diagnosticsProfile": {
+                        "bootDiagnostics": {
+                            "enabled": True,
+                        },
                     },
                 },
             },
@@ -591,10 +606,9 @@ def _vm():
                 "defaultValue": "Standard_DS2_v2",
                 "metadata": {"description": "VM size"},
             },
-            "adminPassword": {
+            "sshPublicKey": {
                 "type": "secureString",
-                "defaultValue": "InfraForge-Val1!",
-                "metadata": {"description": "VM admin password (validation only — VM is deleted after test)"},
+                "metadata": {"description": "SSH public key for admin user authentication"},
             },
             "nicId": {
                 "type": "string",
