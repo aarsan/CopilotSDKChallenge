@@ -51,36 +51,55 @@ CopilotSDKChallenge/
 ├── src/
 │   ├── __init__.py
 │   ├── config.py              # All env vars, app settings, SYSTEM_MESSAGE
-│   ├── web.py                 # FastAPI app — ALL REST/WebSocket endpoints (~8800 lines)
-│   ├── database.py            # Azure SQL backend — schema + CRUD (~3500 lines)
+│   ├── web.py                 # FastAPI app + remaining endpoints (~9800 lines — see Router Map)
+│   ├── web_shared.py          # Shared singletons (copilot_client, active_sessions, etc.)
+│   ├── database.py            # Azure SQL backend — schema + CRUD (~4600 lines)
+│   ├── pipeline.py            # PipelineRunner framework — step execution, healing, finalizers
+│   ├── pipeline_helpers.py    # Shared helpers for pipelines (param defaults, healing, tags, etc.)
 │   ├── orchestrator.py        # LLM orchestration — template analysis, composition, healing
 │   ├── model_router.py        # Task → LLM model routing (see §7)
-│   ├── auth.py                # Entra ID OAuth2 flow
+│   ├── copilot_helpers.py     # copilot_send(), agent activity tracking
+│   ├── auth.py                # Entra ID OAuth2 flow (MSAL)
 │   ├── azure_sync.py          # Azure Resource Provider sync engine
+│   ├── sql_firewall.py        # Auto-detect IP & update SQL firewall on startup
 │   ├── template_engine.py     # ARM template composition and dependency wiring
+│   ├── agents.py              # Agent definitions (WEB_CHAT_AGENT, TEMPLATE_HEALER, etc.)
+│   ├── governance.py          # Governance policy helpers
+│   ├── fabric.py              # Microsoft Fabric analytics sync
 │   ├── standards.py           # Organization standards engine (SQL-backed)
 │   ├── standards_api.py       # REST API router for standards CRUD
 │   ├── standards_import.py    # Bulk standards import utility
-│   ├── utils.py               # Helpers: save_to_file, extract_code_blocks, detect_extension
-│   ├── main.py                # CLI entry point (Rich terminal UI)
+│   ├── utils.py               # Helpers: save_to_file, extract_code_blocks
+│   ├── routers/               # FastAPI routers extracted from web.py
+│   │   ├── auth.py            # Auth, model settings, analytics, activity (17 routes)
+│   │   ├── admin.py           # Backup/restore, approvals, governance, fabric (21 routes)
+│   │   ├── deployment.py      # Deployments, Azure resources, orchestration (12 routes)
+│   │   └── ws.py              # WebSocket endpoints: chat, governance, concierge (3 routes)
+│   ├── pipelines/             # Pipeline step handlers
+│   │   ├── onboarding.py      # Service onboarding pipeline (9 steps)
+│   │   ├── deploy.py          # Deployment-specific pipeline steps
+│   │   ├── validation.py      # Template validation pipeline
+│   │   └── testing.py         # Infrastructure test pipeline
 │   ├── tools/                 # Copilot SDK tool definitions (see §6)
 │   │   ├── __init__.py        # Tool registry — all imports
 │   │   ├── arm_generator.py   # ARM skeleton registry (~21 resource types)
 │   │   ├── catalog_search.py  # Search template catalog (DB-backed)
 │   │   ├── catalog_compose.py # Compose templates from services (DB-backed)
 │   │   ├── catalog_register.py# Register new templates (DB-backed)
-│   │   ├── cost_estimator.py  # Cost estimation (hard-coded pricing — see §10)
+│   │   ├── cost_estimator.py  # Cost estimation
 │   │   ├── deploy_engine.py   # ARM SDK deployment (azure-mgmt-resource)
 │   │   ├── design_document.py # Markdown design document generator
 │   │   ├── diagram_generator.py # Mermaid architecture diagrams
-│   │   ├── governance_tools.py# Security standards, compliance, policies (DB-backed)
+│   │   ├── governance_tools.py# Security standards, compliance, policies
 │   │   ├── github_publisher.py# GitHub repo creation and PR publishing
-│   │   ├── policy_checker.py  # Policy compliance validation (DB-backed)
-│   │   ├── save_output.py     # File saver utility
-│   │   ├── service_catalog.py # Service approval tools (DB-backed)
+│   │   ├── policy_checker.py  # Policy compliance validation
+│   │   ├── policy_deployer.py # Azure Policy deployment
 │   │   ├── static_policy_validator.py # Static ARM template validator
+│   │   ├── ciso_tools.py      # CISO advisory tools
+│   │   ├── save_output.py     # File saver utility
+│   │   ├── service_catalog.py # Service approval tools
 │   │   ├── bicep_generator.py # Bicep generation (delegates to Copilot SDK)
-│   │   ├── terraform_generator.py # Terraform generation (delegates to Copilot SDK)
+│   │   ├── terraform_generator.py # Terraform generation
 │   │   ├── github_actions_generator.py # GitHub Actions YAML
 │   │   └── azure_devops_generator.py   # Azure DevOps YAML
 │   └── templates/             # Pattern libraries for code generation
@@ -88,9 +107,9 @@ CopilotSDKChallenge/
 │       ├── terraform_patterns.py
 │       └── pipeline_patterns.py
 ├── static/
-│   ├── index.html             # SPA shell (~940 lines)
-│   ├── app.js                 # Frontend logic (~6200 lines)
-│   ├── styles.css             # All styling (~7200 lines)
+│   ├── index.html             # SPA shell (~1500 lines)
+│   ├── app.js                 # Frontend logic (~14800 lines)
+│   ├── styles.css             # All styling (~16400 lines)
 │   └── onboarding-docs.html   # Service onboarding documentation page
 ├── catalog/
 │   └── bicep/                 # Source Bicep files (seeded into DB)
@@ -108,10 +127,32 @@ CopilotSDKChallenge/
 └── .gitignore
 ```
 
+### Router Map
+
+Routes are split across `web.py` and `src/routers/`:
+
+| Router file | Prefix / Area | Routes | Key endpoints |
+|---|---|---|---|
+| `routers/auth.py` | Auth, Settings, Analytics | 17 | `/`, `/api/auth/*`, `/api/settings/*`, `/api/agents/*`, `/api/analytics/usage`, `/api/activity` |
+| `routers/admin.py` | Admin, Approvals, Governance, Fabric | 21 | `/api/admin/*`, `/api/approvals/*`, `/api/governance/*`, `/api/analytics/dashboard`, `/api/fabric/*` |
+| `routers/deployment.py` | Deployments, Azure, Orchestration | 12 | `/api/deployments/*`, `/api/azure/*`, `/api/orchestration/*` |
+| `routers/ws.py` | WebSocket chat | 3 | `/ws/chat`, `/ws/governance-chat`, `/ws/concierge-chat` |
+| `web.py` (remaining) | Service catalog, templates, compliance, onboarding | ~60 | `/api/catalog/*`, `/api/services/*`, `/api/templates/*` |
+
+### Shared State (`web_shared.py`)
+
+All mutable singletons are in `src/web_shared.py` so both `web.py` and routers share
+the same objects:
+
+- `copilot_client` — Singleton `CopilotClient` instance (lazy-init)
+- `ensure_copilot_client()` — Initializer with lock
+- `active_sessions` — `dict[session_token, {copilot_session, user_context}]`
+- `_active_validations` — `dict[service_id, tracker_dict]`
+- `_user_context_to_dict()` — UserContext → dict converter
+
 ### What's NOT in the repo (intentionally)
 
-- No `debug_*.py`, `test_*.py`, `fix_*.py`, `check_*.py` scripts — those were ad-hoc
-  one-offs that have been cleaned up.
+- No `debug_*.py`, `test_*.py`, `fix_*.py`, `check_*.py` scripts.
 - No `*_old.*` backup files.
 - No local JSON mock data files.
 - The `output/` directory is gitignored.

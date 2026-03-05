@@ -3936,11 +3936,11 @@ async def cleanup_orphaned_pipeline_runs():
     """Mark any 'running' pipeline runs as 'failed' on startup.
 
     If the server restarts mid-pipeline, runs stay in 'running' forever.
-    This detects and cleans them up.
+    This detects and cleans them up.  Also fixes services stuck at 'validating'.
     """
     backend = await get_backend()
     rows = await backend.execute(
-        "SELECT run_id FROM pipeline_runs WHERE status = 'running'", ()
+        "SELECT run_id, service_id FROM pipeline_runs WHERE status = 'running'", ()
     )
     if rows:
         await backend.execute_write(
@@ -3949,6 +3949,23 @@ async def cleanup_orphaned_pipeline_runs():
             "WHERE status = 'running'", ()
         )
         logger.info(f"Cleaned up {len(rows)} orphaned pipeline run(s)")
+
+        # Also fix services stuck at 'validating' from these orphaned runs
+        orphaned_svc_ids = list({r["service_id"] for r in rows if r.get("service_id")})
+        for svc_id in orphaned_svc_ids:
+            try:
+                svc_rows = await backend.execute(
+                    "SELECT status FROM services WHERE id = ?", (svc_id,)
+                )
+                if svc_rows and svc_rows[0].get("status") == "validating":
+                    await backend.execute_write(
+                        "UPDATE services SET status = 'validation_failed', "
+                        "review_notes = ? WHERE id = ? AND status = 'validating'",
+                        (json.dumps({"validation_passed": False, "error": "Server restarted during validation"}), svc_id),
+                    )
+                    logger.info(f"Fixed stuck service '{svc_id}' — validating → validation_failed")
+            except Exception as e:
+                logger.debug(f"Failed to fix stuck service '{svc_id}': {e}")
 
 
 async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:

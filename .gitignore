@@ -42,3 +42,4 @@ server.log
 server_err.log
 server_stdout.log
 server_stderr.log
+_check_run.py

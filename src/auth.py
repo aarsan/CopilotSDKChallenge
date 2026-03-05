@@ -146,14 +146,21 @@ def complete_auth(flow_id: str, auth_response: dict) -> Optional[str]:
         The session is persisted to the database asynchronously —
         call persist_session() after this returns.
     """
+    import logging
+    log = logging.getLogger("infraforge.auth")
+
     flow = _auth_flows.pop(flow_id, None)
     if not flow:
+        log.error("AUTH FAIL: flow not found for state=%s  (known flows: %s)",
+                  flow_id[:12] + "…", list(_auth_flows.keys())[:5])
         return None
 
     app = _get_msal_app()
     result = app.acquire_token_by_auth_code_flow(flow, auth_response)
 
     if "access_token" not in result:
+        log.error("AUTH FAIL: token exchange failed — %s: %s",
+                  result.get("error", "unknown"), result.get("error_description", "no description"))
         return None
 
     # Extract user info from the ID token claims
