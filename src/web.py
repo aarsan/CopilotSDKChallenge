@@ -4266,15 +4266,15 @@ async def fix_and_validate_template(template_id: str, request: Request):
         if is_blueprint and svc_ids:
             yield _record({
                 "phase": "recomposing",
-                "detail": "This is a composite template — let me rebuild it from the latest service templates first…",
+                "detail": "This is a composite template — let me rebuild it from the pinned service template versions…",
             })
 
             try:
                 result = await _recompose_with_pinned(
                     template_id,
                     version_overrides=None,
-                    ignore_existing_pins=True,
-                    changelog="Fix & Validate: recomposed from current services",
+                    ignore_existing_pins=False,
+                    changelog="Fix & Validate: recomposed from pinned services",
                     change_type="major",
                     created_by="fix-and-validate",
                 )
