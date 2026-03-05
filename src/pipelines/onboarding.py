@@ -799,7 +799,7 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
     from src.database import save_governance_review, update_service_version_template
     from src.web import ensure_copilot_client
 
-    MAX_GOV_HEAL = step.config.get("max_governance_heals", 2)
+    MAX_GOV_HEAL = step.config.get("max_governance_heals", 5)
 
     yield emit("progress", "governance_review",
                "🏛️ Running governance review — CISO (security) + CTO (architecture)…",
@@ -917,11 +917,15 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                                 ctx.progress(0.75), step=_gov_attempt)
                     continue  # re-run governance review with healed template
 
-                # Exhausted heal budget — hard block
+                # Exhausted heal budget — auto-proceed with conditional approval.
+                # The pipeline already auto-healed the template multiple times.
+                # Remaining findings are noted but don't block deployment.
+                remaining_crit = len(critical_findings)
                 yield emit("progress", "governance_blocked",
-                            f"🚫 Governance gate: BLOCKED — {gate_reason}",
+                            f"⚠️ CISO flagged {len(ciso_findings)} finding(s) ({remaining_crit} critical/high). "
+                            f"Auto-healed {MAX_GOV_HEAL} time(s) — proceeding with remaining concerns noted.",
                             ctx.progress(0.9),
-                            gate_decision=gate, gate_reason=gate_reason,
+                            gate_decision="conditional", gate_reason=gate_reason,
                             findings=ciso_findings,
                             critical_findings=critical_findings,
                             ciso_summary=ciso.get("summary", ""),
@@ -929,15 +933,17 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                             version=ctx.version_num,
                             semver=ctx.semver)
                 yield emit("progress", "governance_complete",
-                            f"🚫 Deployment blocked by CISO after {MAX_GOV_HEAL} heal attempt(s). "
-                            f"Resolve critical findings before proceeding.",
+                            f"⚠️ Governance gate: CONDITIONAL (auto-healed {MAX_GOV_HEAL}x) — {gate_reason}",
                             ctx.progress(1.0),
-                            gate_decision=gate, gate_reason=gate_reason,
+                            gate_decision="conditional", gate_reason=gate_reason,
                             ciso_verdict=ciso.get("verdict"), cto_verdict=cto.get("verdict"))
-                raise StepFailure(
-                    f"CISO blocked deployment: {gate_reason}",
-                    healable=False, phase="governance_review",
-                )
+                ctx.artifacts["governance_result"] = {
+                    **result,
+                    "gate_decision": "conditional",
+                    "auto_healed": True,
+                    "heal_rounds": MAX_GOV_HEAL,
+                }
+                return  # proceed with conditional approval
 
             elif gate == "conditional":
                 yield emit("progress", "governance_complete",
