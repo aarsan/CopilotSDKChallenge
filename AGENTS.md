@@ -8,6 +8,8 @@ Before exploring source code, **always consult the architecture reference**:
   API surface, Copilot SDK patterns, model router, frontend architecture, and development
   conventions. This covers everything you need to understand the codebase.
 - **`docs/TECHNICAL.md`** — Detailed data model, organization standards system, and schema.
+- **`docs/UI_STYLE_GUIDE.md`** — Design tokens, component patterns, layout conventions,
+  and section inventory. **Consult before and after any frontend/UI change.**
 - **`docs/README.md`** — Project overview, setup instructions, and usage examples.
 
 These documents exist so the LLM **does not have to rediscover** the codebase structure,
@@ -23,6 +25,8 @@ SQL syntax rules, SDK API patterns, or enum values on every session. Reference t
 - **Semver** — Display versions use the `semver` column (string like `"1.2.0"`), not
   the integer `version` column.
 - **Cache version** — Bump `?v=N` in `index.html` after every JS/CSS change.
+- **UI patterns** — Section cards use `--bg-secondary` + `--border-default` + `--radius-md`.
+  Nested items use `--bg-tertiary`. Consult `docs/UI_STYLE_GUIDE.md` before any frontend change.
 
 ## Identity
 
