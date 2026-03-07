@@ -6,6 +6,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from copilot import PermissionHandler
 
 from src.auth import UserContext, get_user_context
 from src.config import get_active_model
@@ -104,6 +105,7 @@ async def websocket_governance_chat(websocket: WebSocket):
                 "streaming": True,
                 "tools": tools,
                 "system_message": {"content": personalized_system_message},
+                "on_permission_request": PermissionHandler.approve_all,
             })
         except Exception as e:
             logger.error(f"Failed to create Governance session: {e}")
@@ -306,6 +308,7 @@ async def websocket_concierge_chat(websocket: WebSocket):
                 "streaming": True,
                 "tools": tools,
                 "system_message": {"content": personalized_system_message},
+                "on_permission_request": PermissionHandler.approve_all,
             })
         except Exception as e:
             logger.error(f"Failed to create Concierge session: {e}")
@@ -508,6 +511,7 @@ async def websocket_chat(websocket: WebSocket):
                 "streaming": True,
                 "tools": tools,
                 "system_message": {"content": personalized_system_message},
+                "on_permission_request": PermissionHandler.approve_all,
             })
         except Exception as e:
             logger.error(f"Failed to create Copilot session: {e}")

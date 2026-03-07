@@ -193,6 +193,10 @@ async def get_current_user(request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Session expired")
 
+    # Reject stale demo sessions when real Entra ID auth is configured
+    if is_auth_configured() and user.user_id == "demo-user-001":
+        raise HTTPException(status_code=401, detail="Demo session expired — please sign in with Microsoft")
+
     return JSONResponse({
         "displayName": user.display_name,
         "email": user.email,

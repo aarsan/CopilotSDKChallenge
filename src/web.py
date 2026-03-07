@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from copilot import CopilotClient
+from copilot import CopilotClient, PermissionHandler
 
 from src.config import (
     APP_NAME,
@@ -6103,6 +6103,7 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
                 "streaming": True,
                 "tools": [],
                 "system_message": {"content": system_prompt},
+                "on_permission_request": PermissionHandler.approve_all,
             })
 
             response_chunks: list[str] = []
@@ -7054,15 +7055,18 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 try:
                     governance_policies = await get_governance_policies_as_dict()
                     arm_dict = json.loads(arm_template) if isinstance(arm_template, str) else arm_template
-                    static_result = validate_template(arm_dict, governance_policies)
+                    static_report = validate_template(arm_dict, governance_policies)
                     svc_standards = await get_standards_for_service(service_id)
-                    std_results = validate_template_against_standards(arm_dict, svc_standards)
-                    # Merge standard violations into static result
-                    if std_results.get("violations"):
-                        static_result.setdefault("violations", []).extend(std_results["violations"])
-                        static_result["compliant"] = False
+                    std_report = validate_template_against_standards(arm_dict, svc_standards)
+                    # Merge standard failures into the main report
+                    failed_from_std = [r for r in std_report.results if not r.passed]
+                    static_report.results.extend(failed_from_std)
+                    if failed_from_std:
+                        static_report.passed = False
+                        static_report.blockers += std_report.blockers
+                        static_report.failed_checks += std_report.failed_checks
 
-                    if static_result.get("compliant"):
+                    if static_report.passed:
                         yield json.dumps({
                             "type": "progress", "phase": "static_policy_complete",
                             "step": attempt,
@@ -7070,7 +7074,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             "progress": 0.32 + (attempt - 1) * 0.15,
                         }) + "\n"
                     else:
-                        violations = static_result.get("violations", [])
+                        violations = [r for r in static_report.results if not r.passed and r.enforcement == "block"]
                         yield json.dumps({
                             "type": "progress", "phase": "static_policy_failed",
                             "step": attempt,
@@ -7124,7 +7128,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                             arm_template = guard_locations(arm_template)
                             arm_template = ensure_parameter_defaults(arm_template)
                             arm_template = sanitize_placeholder_guids(arm_template)
-                            _last_error = "; ".join(str(v) for v in violations[:3])
+                            _last_error = "; ".join(f"[{v.rule_id}] {v.message}" for v in violations[:3])
                             heal_history.append({"step": len(heal_history) + 1, "phase": "static_policy", "error": _last_error, "fix_summary": f"Fixed {len(violations)} policy violation(s)"})
                             await update_service_version_template(service_id, new_ver, arm_template)
                             yield json.dumps({

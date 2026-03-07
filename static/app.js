@@ -3941,7 +3941,8 @@ function _handleUpdateEvent(event) {
     } else if (phase === 'static_policy_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'policy', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        // Don't finalize as failed — the heal loop may recover.
+        // Finalize as failed so _flowCard reopen path resets badge on retry.
+        _flowFinalize(logEl, 'policy', 'failed');
         logEl._flow._lastFailedKey = 'policy';
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');

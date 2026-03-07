@@ -1100,11 +1100,27 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
         else:
             report = validate_template(template_json, gov_policies)
 
+        # Group results by rule_id to avoid repeating the same check per resource
+        from collections import OrderedDict
+        _grouped: OrderedDict[str, list] = OrderedDict()
         for check in report.results:
-            icon = "✅" if check.passed else ("⚠️" if check.enforcement == "warn" else "❌")
+            _grouped.setdefault(check.rule_id, []).append(check)
+
+        for rule_id, checks in _grouped.items():
+            all_passed = all(c.passed for c in checks)
+            any_block = any(c.enforcement == "block" for c in checks)
+            first = checks[0]
+            icon = "✅" if all_passed else ("⚠️" if not any_block else "❌")
+            if all_passed:
+                msg = f"{icon} [{rule_id}] {first.rule_name}: {first.message}"
+            else:
+                failed = [c for c in checks if not c.passed]
+                msg = f"{icon} [{rule_id}] {first.rule_name}: {failed[0].message}"
+            if len(checks) > 1:
+                msg += f" ({len(checks)} resources checked)"
             yield emit("policy_result", "static_policy_check",
-                        f"{icon} [{check.rule_id}] {check.rule_name}: {check.message}",
-                        ctx.progress(att_base + 0.05), passed=check.passed, severity=check.severity, step=attempt)
+                        msg, ctx.progress(att_base + 0.05),
+                        passed=all_passed, severity=first.severity, step=attempt)
 
         if not report.passed:
             fail_msg = f"Static policy check: {report.passed_checks}/{report.total_checks} passed, {report.blockers} blocker(s)"

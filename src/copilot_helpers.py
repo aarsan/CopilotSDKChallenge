@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Callable, Optional
 
-from copilot import CopilotClient
+from copilot import CopilotClient, PermissionHandler
 
 from src.model_router import Task, get_model_for_task  # re-export
 
@@ -230,6 +230,7 @@ async def copilot_send(
         "streaming": True,
         "tools": [],
         "system_message": {"content": system_prompt},
+        "on_permission_request": PermissionHandler.approve_all,
     })
     unsub = None
     try:
