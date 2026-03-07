@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InfraForge — Presentation Deck</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3; }
+  .slide { width: 960px; min-height: 540px; margin: 40px auto; padding: 48px 56px; background: linear-gradient(135deg, #161b22 0%, #0d1117 100%); border: 1px solid #30363d; border-radius: 12px; page-break-after: always; position: relative; overflow: hidden; }
+  .slide::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px; background: linear-gradient(90deg, #58a6ff, #3fb950, #d29922); }
+  h1 { font-size: 28px; font-weight: 700; color: #ffffff; margin-bottom: 4px; }
+  .subtitle { font-size: 16px; color: #8b949e; margin-bottom: 32px; font-weight: 400; }
+  h2 { font-size: 20px; font-weight: 600; color: #58a6ff; margin-bottom: 16px; margin-top: 24px; }
+  .columns { display: flex; gap: 40px; }
+  .col { flex: 1; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  th { text-align: left; padding: 8px 12px; background: #21262d; color: #f0883e; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 8px 12px; border-bottom: 1px solid #21262d; font-size: 14px; color: #c9d1d9; }
+  td:first-child { color: #f85149; }
+  td:last-child { color: #3fb950; }
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; margin: 2px 4px 2px 0; }
+  .tag-blue { background: #1f3a5f; color: #58a6ff; }
+  .tag-green { background: #1a3a2a; color: #3fb950; }
+  .tag-orange { background: #3d2a1a; color: #d29922; }
+  .tag-purple { background: #2d1f4e; color: #bc8cff; }
+  ul { list-style: none; padding: 0; }
+  ul li { padding: 6px 0; font-size: 14px; color: #c9d1d9; }
+  ul li::before { content: '•'; color: #58a6ff; font-weight: bold; margin-right: 8px; }
+  .footer { position: absolute; bottom: 16px; left: 56px; right: 56px; display: flex; justify-content: space-between; font-size: 12px; color: #484f58; }
+  .footer a { color: #58a6ff; text-decoration: none; }
+  .tech-stack { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; line-height: 1.7; color: #c9d1d9; white-space: pre; overflow-x: auto; }
+  .diagram-label { color: #58a6ff; }
+  .diagram-highlight { color: #3fb950; }
+  .diagram-accent { color: #d29922; }
+  .slide-number { position: absolute; bottom: 16px; right: 56px; font-size: 12px; color: #484f58; }
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1: Business Value Proposition -->
+<div class="slide">
+  <h1>InfraForge</h1>
+  <div class="subtitle">Self-Service Infrastructure, Governed by Design</div>
+
+  <h2>The Problem → The Solution</h2>
+  <table>
+    <tr><th>Before (Manual)</th><th>After (InfraForge)</th></tr>
+    <tr><td>App team files Jira ticket, waits days</td><td>Describe infrastructure in plain English</td></tr>
+    <tr><td>Platform team writes Bicep (4-8 hours)</td><td>Catalog match in 30 seconds</td></tr>
+    <tr><td>Templates written once, then lost</td><td>Catalog-first: search → compose → reuse</td></tr>
+    <tr><td>Cost surprise after deployment</td><td>Cost estimate before provisioning</td></tr>
+    <tr><td>Manual policy reviews</td><td>Automated governance &amp; compliance</td></tr>
+  </table>
+
+  <h2>Key Differentiators</h2>
+  <div class="columns">
+    <div class="col">
+      <ul>
+        <li><strong>Catalog-First</strong> — Searches pre-approved templates before generating</li>
+        <li><strong>Policy Engine</strong> — Tags, naming, security, regions enforced automatically</li>
+        <li><strong>Cost Transparency</strong> — Estimates before deploy, not after the bill</li>
+      </ul>
+    </div>
+    <div class="col">
+      <ul>
+        <li><strong>Full Lifecycle</strong> — Generate → Validate → Deploy → Register for reuse</li>
+        <li><strong>ARM SDK Native</strong> — Direct Azure deployment with What-If preview</li>
+        <li><strong>Enterprise Auth</strong> — Entra ID SSO with identity-aware tagging</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="tech-stack">
+    <span class="tag tag-blue">GitHub Copilot SDK</span>
+    <span class="tag tag-green">Python + FastAPI</span>
+    <span class="tag tag-orange">Azure SQL</span>
+    <span class="tag tag-purple">Microsoft Entra ID</span>
+  </div>
+
+  <div class="footer">
+    <span>Built with the GitHub Copilot SDK</span>
+    <a href="https://github.com/aharsan/CopilotSDKChallenge">github.com/aharsan/CopilotSDKChallenge</a>
+  </div>
+  <div class="slide-number">1 / 2</div>
+</div>
+
+<!-- SLIDE 2: Architecture Diagram -->
+<div class="slide">
+  <h1>Architecture</h1>
+  <div class="subtitle">Copilot SDK + Catalog-First Pipeline</div>
+
+  <pre><span class="diagram-label">┌─────────────────────────────────────────────────────────┐</span>
+<span class="diagram-label">│</span>                    <span class="diagram-highlight">User (Web UI / CLI)</span>                   <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>         "I need a web app with SQL and Key Vault"       <span class="diagram-label">│</span>
+<span class="diagram-label">└──────────────────────────┬──────────────────────────────┘</span>
+                           │
+                           ▼
+<span class="diagram-label">┌─────────────────────────────────────────────────────────┐</span>
+<span class="diagram-label">│</span>                   <span class="diagram-highlight">InfraForge Agent</span>                       <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>            GitHub Copilot SDK (Python)                   <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>         CopilotClient → Session → Tool Calls            <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>                                                         <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">①</span> Governance ──→ Check service approval status        <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">②</span> Search ──────→ Query template catalog (Azure SQL)   <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">③</span> Compose ─────→ Assemble from approved modules       <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">④</span> Generate ────→ Bicep / Terraform / Pipelines        <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">⑤</span> Validate ────→ Policy check + Cost estimate         <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">⑥</span> Deploy ──────→ ARM SDK What-If → Deploy             <span class="diagram-label">│</span>
+<span class="diagram-label">│</span>   <span class="diagram-accent">⑦</span> Register ────→ Save back to catalog for reuse       <span class="diagram-label">│</span>
+<span class="diagram-label">└──────────────────────────┬──────────────────────────────┘</span>
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+     <span class="diagram-accent">┌──────────────┐</span> <span class="diagram-accent">┌────────┐</span> <span class="diagram-accent">┌──────────┐</span>
+     <span class="diagram-accent">│</span>  Azure SQL   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> Azure  <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  GitHub  <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  (Catalog,   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  ARM   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  (Repos, <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  Governance) <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  SDK   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>   PRs)   <span class="diagram-accent">│</span>
+     <span class="diagram-accent">└──────────────┘</span> <span class="diagram-accent">└────────┘</span> <span class="diagram-accent">└──────────┘</span></pre>
+
+  <h2>Tech Stack</h2>
+  <div class="columns">
+    <div class="col">
+      <ul>
+        <li><strong>Runtime:</strong> Python 3.9+ / FastAPI</li>
+        <li><strong>AI:</strong> GitHub Copilot SDK (GPT-4.1, Claude Sonnet)</li>
+        <li><strong>Data:</strong> Azure SQL (catalog, governance, standards)</li>
+      </ul>
+    </div>
+    <div class="col">
+      <ul>
+        <li><strong>Auth:</strong> Microsoft Entra ID (SSO + identity tagging)</li>
+        <li><strong>Deploy:</strong> ARM SDK (no az/terraform/bicep CLI needed)</li>
+        <li><strong>Frontend:</strong> Vanilla JS SPA with WebSocket streaming</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Built with the GitHub Copilot SDK</span>
+    <a href="https://github.com/aharsan/CopilotSDKChallenge">github.com/aharsan/CopilotSDKChallenge</a>
+  </div>
+  <div class="slide-number">2 / 2</div>
+</div>
+
+</body>
+</html>
