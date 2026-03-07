@@ -8,7 +8,9 @@
       2. Azure SQL Server + Database (with Azure AD admin)
       3. SQL Firewall rule for current IP
       4. Entra ID (Azure AD) App Registration
-      5. Generates .env file with all values populated
+      5. RBAC role assignment (Contributor) for ARM deployments
+      6. Resource provider registration (Microsoft.Web, Microsoft.Sql, etc.)
+      7. Generates .env file with all values populated
 
     After running this script, just: python web_start.py
 
@@ -136,7 +138,7 @@ $sessionSecret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 |
 # Step 1: Resource Group
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 1/5 — Resource Group"
+Write-Step "Step 1/7 — Resource Group"
 
 $rgExists = az group exists --name $ResourceGroup 2>&1
 if ($rgExists -eq "true") {
@@ -151,7 +153,7 @@ if ($rgExists -eq "true") {
 # Step 2: Azure SQL Server + Database
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 2/5 — Azure SQL Server + Database"
+Write-Step "Step 2/7 — Azure SQL Server + Database"
 
 if ($SkipSql) {
     Write-Warn "Skipping SQL setup (-SkipSql). You must set AZURE_SQL_CONNECTION_STRING manually."
@@ -236,7 +238,7 @@ if ($SkipSql) {
 # Step 3: Entra ID App Registration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 3/5 — Entra ID App Registration"
+Write-Step "Step 3/7 — Entra ID App Registration"
 
 $entraClientId = ""
 $entraClientSecret = ""
@@ -303,7 +305,61 @@ if ($SkipEntraId) {
 # Step 4: Generate .env file
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 4/5 — Generate .env file"
+Write-Step "Step 4/7 — RBAC & Resource Providers"
+
+# Assign Contributor role to current user (needed for ARM deployments)
+Write-Host "  Checking Contributor role assignment..."
+$currentUserOidForRbac = az ad signed-in-user show --query id -o tsv 2>&1
+$existingRole = az role assignment list --assignee $currentUserOidForRbac --role Contributor --scope "/subscriptions/$subscriptionId" --query "[0].id" -o tsv 2>&1
+if ($existingRole -and $existingRole -notmatch "ERROR") {
+    Write-Ok "Contributor role already assigned"
+} else {
+    Write-Host "  Assigning Contributor role on subscription..."
+    az role assignment create `
+        --role Contributor `
+        --assignee $currentUserOidForRbac `
+        --scope "/subscriptions/$subscriptionId" `
+        -o none 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Contributor role assigned"
+    } else {
+        Write-Warn "Could not assign Contributor role — you may need Owner or User Access Administrator."
+        Write-Host "    ARM deployments may fail without this. Ask your tenant admin to run:" -ForegroundColor Gray
+        Write-Host "    az role assignment create --role Contributor --assignee $currentUserOidForRbac --scope /subscriptions/$subscriptionId" -ForegroundColor DarkGray
+    }
+}
+
+# Register resource providers needed for infrastructure deployments
+$providers = @(
+    "Microsoft.Web",            # App Service, Functions
+    "Microsoft.Sql",            # Azure SQL
+    "Microsoft.Storage",        # Storage Accounts
+    "Microsoft.KeyVault",       # Key Vault
+    "Microsoft.Network",        # VNets, NSGs, Load Balancers
+    "Microsoft.Compute",        # VMs, VMSS
+    "Microsoft.ContainerService", # AKS
+    "Microsoft.OperationalInsights", # Log Analytics
+    "Microsoft.Insights",       # Application Insights, Monitoring
+    "Microsoft.ManagedIdentity", # Managed Identities
+    "Microsoft.Authorization"   # RBAC, Policies
+)
+
+Write-Host "  Registering resource providers (this may take a minute)..."
+foreach ($provider in $providers) {
+    $state = az provider show --namespace $provider --query registrationState -o tsv 2>&1
+    if ($state -eq "Registered") {
+        continue
+    }
+    az provider register --namespace $provider -o none 2>&1
+    Write-Host "    Registering $provider..." -ForegroundColor Gray
+}
+Write-Ok "Resource providers registered ($($providers.Count) providers)"
+
+# ─────────────────────────────────────────────────────────
+# Step 5/7: Generate .env file
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Step 5/7 — Generate .env file"
 
 if (-not $skipEnvWrite) {
     $envContent = @"
@@ -354,7 +410,7 @@ FABRIC_LAKEHOUSE_NAME=
 # Step 5: Install Python dependencies + first run
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 5/5 — Python dependencies"
+Write-Step "Step 6/7 — Python dependencies"
 
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
@@ -378,6 +434,46 @@ Write-Host "  Installing dependencies..."
 Write-Ok "Dependencies installed"
 
 # ─────────────────────────────────────────────────────────
+# Step 7/7: Verify connectivity
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Step 7/7 — Verify connectivity"
+
+if (-not $SkipSql -and $connectionString) {
+    Write-Host "  Testing SQL connection..."
+    $pythonExe = Join-Path $venvPath "Scripts" "python.exe"
+    if (-not (Test-Path $pythonExe)) { $pythonExe = Join-Path $venvPath "bin" "python" }
+    
+    $testScript = @"
+import sys, os
+os.environ['AZURE_SQL_CONNECTION_STRING'] = '''$connectionString'''
+try:
+    from azure.identity import DefaultAzureCredential
+    cred = DefaultAzureCredential(exclude_shared_token_cache_credential=True)
+    token = cred.get_token('https://database.windows.net/.default')
+    import pyodbc
+    conn = pyodbc.connect('''$connectionString''', attrs_before={1256: token.token.encode('UTF-16-LE')})
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1')
+    print('OK')
+    conn.close()
+except Exception as e:
+    print(f'FAIL: {e}')
+    sys.exit(1)
+"@
+    $result = & $pythonExe -c $testScript 2>&1
+    if ($result -match "OK") {
+        Write-Ok "SQL connection successful"
+    } else {
+        Write-Warn "SQL connection test failed: $result"
+        Write-Host "    This may resolve after a few minutes (DNS propagation)." -ForegroundColor Gray
+        Write-Host "    You can also try: az login --tenant $tenantId" -ForegroundColor Gray
+    }
+} else {
+    Write-Warn "Skipped SQL connectivity test"
+}
+
+# ─────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────
 
@@ -396,6 +492,10 @@ if (-not $SkipEntraId -and $entraClientId) {
     Write-Host "    App Registration: $AppName (appId: $entraClientId)" -ForegroundColor Gray
 }
 Write-Host "    .env file:       $((Resolve-Path $envPath -ErrorAction SilentlyContinue) ?? $envPath)" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  RBAC & Providers:" -ForegroundColor White
+Write-Host "    Contributor:    assigned on subscription $subscriptionId" -ForegroundColor Gray
+Write-Host "    Providers:      11 resource providers registered" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Remaining manual steps:" -ForegroundColor Yellow
 Write-Host "    1. Set GITHUB_TOKEN and GITHUB_ORG in .env (optional — for GitHub publishing)" -ForegroundColor Gray
