@@ -1,19 +1,20 @@
-# InfraForge — Self-Service Infrastructure Platform
+# InfraForge — AI-Powered Azure Service Onboarding
 
-**InfraForge** enables enterprise teams to provision production-ready Azure infrastructure
-through natural language — powered by the GitHub Copilot SDK. Instead of waiting days for
-platform teams to hand-write Bicep or Terraform, app teams describe what they need in plain
-English and InfraForge handles the rest.
+Enterprise developers are routinely blocked from using Azure services because IT hasn't
+vetted, secured, and automated deployment for each service — a manual process involving
+Terraform, Bicep, ARM templates, and CI/CD pipelines that takes weeks per service.
+**InfraForge eliminates this bottleneck by letting AI do the onboarding.**
 
-The agent searches a **pre-approved template catalog** first, composes from existing modules,
-and falls back to AI generation only when no match exists. Every request passes through an
-automated **policy engine** (tags, naming, security, regions) and a **cost estimator** before
-anything is deployed. Generated templates are registered back into the catalog for
-organization-wide reuse.
+Using the GitHub Copilot SDK, InfraForge provides three capabilities:
+**1) CISO Agent** — IT and Security define organizational policies through natural language
+chat, not JSON or YAML manifests.
+**2) AI Service Onboarding** — AI writes production-grade ARM/Bicep templates to security
+specifications, validates compliance with IT policy, tests the templates, and versions
+everything — no human IaC authoring required.
+**3) Template Composition** — Developers build reusable infrastructure templates from
+onboarded services: landing zones, web apps, multi-resource setups — without writing code.
 
-**Key capabilities:** catalog-first search, Bicep/Terraform generation, GitHub Actions & Azure
-DevOps pipelines, architecture diagrams, design documents, ARM SDK deployment with What-If
-preview, cost estimation, policy compliance, and service governance — all through conversation.
+AI writes the policies. AI writes the templates. AI tests them. Zero code required.
 
 Built with: Python · FastAPI · GitHub Copilot SDK · Azure SQL · Microsoft Entra ID
 
@@ -28,13 +29,13 @@ deployment, architecture, and Responsible AI notes
 
 🎬 **[Demo Video](#)** — 3-minute walkthrough *(update link after recording)*
 
-📊 **[Presentation Deck](presentations/InfraForge.pptx)** — Business value and architecture
+📊 **[Presentation Deck](presentations/InfraForge.html)** — Business value and architecture
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/<your-org>/infraforge.git
-cd infraforge
+git clone https://github.com/aharsan/CopilotSDKChallenge.git
+cd CopilotSDKChallenge
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 python web_start.py
