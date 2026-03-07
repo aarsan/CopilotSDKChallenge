@@ -7,8 +7,12 @@ import uvicorn
 from src.config import WEB_HOST, WEB_PORT
 
 # Ensure UTF-8 output (avoids cp1252 crashes with emoji on Windows)
-if sys.platform == "win32" and not os.environ.get("PYTHONIOENCODING"):
-    os.environ["PYTHONIOENCODING"] = "utf-8"
+if sys.platform == "win32":
+    if not os.environ.get("PYTHONIOENCODING"):
+        os.environ["PYTHONIOENCODING"] = "utf-8"
+    # Reconfigure stdout/stderr for this process (env var only affects subprocesses)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 if __name__ == "__main__":
     print(f"⚒️  InfraForge Web UI starting on http://localhost:{WEB_PORT}")

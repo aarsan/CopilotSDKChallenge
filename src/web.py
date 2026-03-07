@@ -66,14 +66,52 @@ from src.auth import (
     is_auth_configured,
 )
 from src.database import (
-    init_db,
-    save_session,
-    save_chat_message,
-    log_usage,
-    get_usage_stats,
+    ARTIFACT_TYPES,
+    approve_service_artifact,
+    bulk_update_api_versions,
     cleanup_expired_sessions,
-    get_approval_requests,
-    update_approval_request,
+    cleanup_orphaned_pipeline_runs,
+    complete_pipeline_run,
+    compute_next_semver,
+    create_pipeline_run,
+    create_service_version,
+    create_template_version,
+    delete_service_versions_by_status,
+    delete_template,
+    fail_service_validation,
+    get_active_service_version,
+    get_all_services,
+    get_all_templates,
+    get_backend,
+    get_governance_policies_as_dict,
+    get_governance_reviews,
+    get_latest_semver,
+    get_latest_service_version,
+    get_pipeline_runs,
+    get_service,
+    get_service_artifacts,
+    get_service_version,
+    get_service_versions,
+    get_services_basic,
+    get_template_by_id,
+    get_template_version,
+    get_template_versions,
+    get_version_summary_batch,
+    init_db,
+    log_usage,
+    promote_service_after_validation,
+    promote_template_version,
+    save_governance_review,
+    save_service_artifact,
+    set_active_service_version,
+    unapprove_service_artifact,
+    update_service_version_deployment_info,
+    update_service_version_status,
+    update_service_version_template,
+    update_template_validation_status,
+    update_template_version_status,
+    upsert_service,
+    upsert_template,
 )
 from src.utils import ensure_output_dir
 from src.standards import init_standards
@@ -102,6 +140,42 @@ from src.pipeline_helpers import (
     copilot_heal_template  as _copilot_heal_template,
     PARAM_DEFAULTS         as _PARAM_DEFAULTS,
 )
+
+
+# ── Shared request helpers ───────────────────────────────────
+
+async def _require_template(template_id: str) -> dict:
+    """Fetch a template by ID or raise 404."""
+    from src.database import get_template_by_id
+    tmpl = await get_template_by_id(template_id)
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tmpl
+
+
+async def _require_service(service_id: str) -> dict:
+    """Fetch a service by resource type ID or raise 404."""
+    from src.database import get_service
+    svc = await get_service(service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    return svc
+
+
+async def _parse_body(request: Request) -> dict:
+    """Parse JSON body, returning empty dict on failure."""
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+async def _parse_body_required(request: Request) -> dict:
+    """Parse JSON body, raising 400 on failure."""
+    try:
+        return await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
 
 def _build_api_version_status(svc: dict, versions: list[dict]) -> dict | None:
@@ -196,10 +270,6 @@ async def _deep_heal_composed_template(
     ``on_event`` is an async callable for streaming progress events.
     """
     import uuid as _dh_uuid
-    from src.database import (
-        get_service, get_active_service_version, create_service_version,
-        upsert_template, create_template_version, get_template_by_id,
-    )
     from src.tools.arm_generator import (
         generate_arm_template, has_builtin_skeleton,
         _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER,
@@ -506,7 +576,6 @@ async def _deep_heal_composed_template(
             created_by="deep-healer",
         )
         # Also update the catalog_templates content
-        from src.database import get_backend
         backend = await get_backend()
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
@@ -556,7 +625,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     await cleanup_expired_sessions()
     # Mark any pipeline runs left as 'running' from a previous crash as failed
-    from src.database import cleanup_orphaned_pipeline_runs
     await cleanup_orphaned_pipeline_runs()
     logger.info("Initializing organization standards...")
     await init_standards()
@@ -625,7 +693,6 @@ async def get_service_catalog():
     letting users see at a glance which services are approved, conditional,
     under review, or not yet approved.
     """
-    from src.database import get_all_services
 
     try:
         services = await get_all_services()
@@ -656,8 +723,6 @@ async def get_template_catalog(
     template_type: Optional[str] = None,
 ):
     """Return the template catalog from the database."""
-    from src.database import get_all_templates, get_backend
-
     try:
         templates = await get_all_templates(
             category=category, fmt=fmt, template_type=template_type,
@@ -698,12 +763,7 @@ async def get_template_catalog(
 @app.post("/api/catalog/services")
 async def onboard_service(request: Request):
     """Onboard a new Azure service into the approved service catalog."""
-    from src.database import upsert_service, get_service
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     required = ["id", "name", "category", "status"]
     missing = [f for f in required if not body.get(f)]
@@ -732,17 +792,10 @@ async def update_service_governance(service_id: str, request: Request):
     documentation, approved_skus, approved_regions, policies, conditions.
     The service must already exist in the catalog.
     """
-    from src.database import get_service, upsert_service
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     # Fetch the existing service
-    existing = await get_service(service_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    existing = await _require_service(service_id)
 
     # Validate status if provided
     valid_statuses = {"approved", "conditional", "under_review", "not_approved"}
@@ -773,12 +826,7 @@ async def update_service_governance(service_id: str, request: Request):
 @app.post("/api/catalog/templates")
 async def onboard_template(request: Request):
     """Onboard a new template into the template catalog."""
-    from src.database import upsert_template, get_template_by_id
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     required = ["id", "name", "format", "category"]
     missing = [f for f in required if not body.get(f)]
@@ -805,7 +853,6 @@ async def get_approved_services_for_templates():
     template-builder UI can show parameter checkboxes.
     """
     try:
-        from src.database import get_all_services, get_active_service_version, get_service_versions
         from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
         import json as _json
 
@@ -942,17 +989,10 @@ async def compose_template_from_services(request: Request):
     deduplicating shared standard parameters and prefixing resource-specific
     names with an index when quantity > 1.
     """
-    from src.database import (
-        get_service, get_active_service_version, get_service_version, upsert_template,
-        create_template_version,
-    )
     from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
     import json as _json
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     name = body.get("name", "").strip()
     description = body.get("description", "").strip()
@@ -979,9 +1019,7 @@ async def compose_template_from_services(request: Request):
         chosen_params = set(sel.get("parameters", []))
         chosen_version = sel.get("version")  # None means "use active/latest"
 
-        svc = await get_service(sid)
-        if not svc:
-            raise HTTPException(status_code=404, detail=f"Service '{sid}' not found")
+        svc = await _require_service(sid)
         if svc.get("status") != "approved":
             raise HTTPException(
                 status_code=400,
@@ -1019,6 +1057,8 @@ async def compose_template_from_services(request: Request):
                     pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
+            if sid not in pinned_versions:
+                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if not tpl_dict:
             raise HTTPException(
                 status_code=400,
@@ -1068,6 +1108,8 @@ async def compose_template_from_services(request: Request):
                 pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
             dep_tpl = generate_arm_template(dep_sid)
+            if dep_sid not in pinned_versions:
+                pinned_versions[dep_sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if dep_tpl:
             service_templates.append({
                 "svc": dep_svc,
@@ -1229,20 +1271,10 @@ async def test_template(template_id: str, request: Request):
     6. Dependency check — service_ids match known services
     7. Tag compliance — resources include standard tags
     """
-    from src.database import (
-        get_template_by_id, get_template_versions, get_template_version,
-    )
-
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     # Determine which version to test
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    body = await _parse_body(request)
 
     requested_version = body.get("version")
     ver = None
@@ -1522,12 +1554,9 @@ async def update_compliance_profile(template_id: str, request: Request):
     - profile = [] means the template is exempt from all compliance checks
     - profile = null means not configured (scan checks all standards — legacy behavior)
     """
-    from src.database import get_template_by_id, get_backend
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(404, "Template not found")
+    tmpl = await _require_template(template_id)
 
     body = await request.json()
     profile = body.get("profile")  # None or list
@@ -1561,24 +1590,14 @@ async def compliance_scan_template(template_id: str, request: Request):
 
     Body (optional): { "version": 1 }
     """
-    from src.database import (
-        get_template_by_id, get_template_versions, get_template_version,
-        get_all_templates,
-    )
     from src.standards import get_all_standards
     import json as _json
     import fnmatch
     import re
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    body = await _parse_body(request)
 
     # ── Gather ARM content from this template + dependencies ──
     templates_to_scan = []
@@ -1606,7 +1625,6 @@ async def compliance_scan_template(template_id: str, request: Request):
     # catalog_templates.content (which may be stale after remediation).
     dep_service_ids = tmpl.get("service_ids", []) or []
     if dep_service_ids:
-        from src.database import get_service_versions
         all_tmpls = await get_all_templates()
         tmpl_by_id = {t["id"]: t for t in all_tmpls}
         for sid in dep_service_ids:
@@ -1793,20 +1811,13 @@ async def compliance_remediate_plan(template_id: str, request: Request):
     """
     import asyncio
     from src.model_router import Task, get_model_for_task
-    from src.database import (
-        get_template_by_id, get_template_versions, get_template_version,
-        get_all_templates, get_latest_semver, compute_next_semver,
-        get_latest_service_version,
-    )
 
     body = await request.json()
     scan_data = body.get("scan_data")
     if not scan_data:
         raise HTTPException(400, "scan_data is required (pass the full scan results)")
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(404, "Template not found")
+    tmpl = await _require_template(template_id)
 
     # ── Gather dependency info for composed templates (BEFORE violations) ──
     dep_service_ids = tmpl.get("service_ids", []) or []
@@ -2242,11 +2253,6 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     import time
     import uuid
     from src.model_router import Task, get_model_for_task
-    from src.database import (
-        get_template_by_id, get_template_versions, get_template_version,
-        create_template_version, get_backend, get_latest_semver, compute_next_semver,
-        get_latest_service_version, create_service_version,
-    )
     from src.tools.deploy_engine import run_what_if, _get_subscription_id, _get_resource_client
 
     body = await request.json()
@@ -2256,9 +2262,7 @@ async def compliance_remediate_execute(template_id: str, request: Request):
     if not plan_steps:
         raise HTTPException(400, "plan is required (pass the steps array)")
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(404, "Template not found")
+    tmpl = await _require_template(template_id)
 
     client = await ensure_copilot_client()
     if not client:
@@ -3091,7 +3095,6 @@ async def compliance_remediate_execute(template_id: str, request: Request):
             # ── Persist remediation log onto the new version ──
             if not template_unchanged and not is_service_dep and new_version_num != "?":
                 try:
-                    from src.database import update_template_validation_status
                     await update_template_validation_status(
                         tid,
                         new_version_num,
@@ -3380,16 +3383,9 @@ async def auto_heal_template(template_id: str):
 
     No user input required — the system figures out what's wrong and fixes it.
     """
-    from src.database import (
-        get_template_by_id, get_template_versions, get_template_version,
-        upsert_template, create_template_version,
-        update_template_version_status,
-    )
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     # Get latest version and its test results
     versions = await get_template_versions(template_id)
@@ -3505,8 +3501,7 @@ async def auto_heal_template(template_id: str):
             new_status = "passed" if _tr["all_passed"] else "failed"
             await update_template_version_status(template_id, new_ver_num, new_status, _tr)
 
-            from src.database import get_backend as _get_tmpl_backend
-            _tb = await _get_tmpl_backend()
+            _tb = await get_backend()
             await _tb.execute_write(
                 "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
                 (new_status, datetime.now(timezone.utc).isoformat(), template_id),
@@ -3625,8 +3620,6 @@ async def auto_heal_template(template_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
     # Re-run structural tests on the fixed version
-    from starlette.testclient import TestClient
-    # Instead of internal call, just run the tests inline
     new_version_num = new_ver["version"]
     new_arm = fixed_arm
 
@@ -3697,8 +3690,7 @@ async def auto_heal_template(template_id: str):
     await update_template_version_status(template_id, new_version_num, retest_status, retest_results)
 
     # Sync parent template status
-    from src.database import get_backend as _get_tmpl_backend
-    _tb = await _get_tmpl_backend()
+    _tb = await get_backend()
     await _tb.execute_write(
         "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
         (retest_status, datetime.now(timezone.utc).isoformat(), template_id),
@@ -3908,10 +3900,9 @@ def _run_structural_tests(
 
 async def _update_test_status(template_id: str, version_num: int, test_results: dict):
     """Persist structural test results to the version row and sync parent status."""
-    from src.database import update_template_version_status, get_backend as _get_tmpl_backend
     new_status = "passed" if test_results["all_passed"] else "failed"
     await update_template_version_status(template_id, version_num, new_status, test_results)
-    _tb = await _get_tmpl_backend()
+    _tb = await get_backend()
     await _tb.execute_write(
         "UPDATE catalog_templates SET status = ?, updated_at = ? WHERE id = ?",
         (new_status, datetime.now(timezone.utc).isoformat(), template_id),
@@ -3939,10 +3930,6 @@ async def _recompose_with_pinned(
 
     Returns a dict with recompose results including the new version.
     """
-    from src.database import (
-        get_template_by_id, get_service, get_active_service_version,
-        get_service_version, upsert_template, create_template_version,
-    )
     from src.tools.arm_generator import (
         _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
         has_builtin_skeleton,
@@ -3950,9 +3937,7 @@ async def _recompose_with_pinned(
     from src.template_engine import analyze_dependencies
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     # Parse service_ids
     svc_ids_raw = tmpl.get("service_ids") or tmpl.get("service_ids_json") or []
@@ -3986,9 +3971,7 @@ async def _recompose_with_pinned(
     service_version_details: list[dict] = []
     pinned_versions: dict = {}
     for sid in svc_ids:
-        svc = await get_service(sid)
-        if not svc:
-            raise HTTPException(status_code=404, detail=f"Service '{sid}' not found")
+        svc = await _require_service(sid)
 
         tpl_dict = None
         version_info = {"service_id": sid, "name": svc.get("name", sid), "source": "builtin"}
@@ -4028,6 +4011,8 @@ async def _recompose_with_pinned(
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             version_info["source"] = "builtin"
+            if sid not in pinned_versions:
+                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if not tpl_dict:
             raise HTTPException(
                 status_code=400, detail=f"No ARM template available for '{sid}'",
@@ -4065,6 +4050,8 @@ async def _recompose_with_pinned(
                 pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
             dep_tpl = generate_arm_template(dep_sid)
+            if dep_sid not in pinned_versions:
+                pinned_versions[dep_sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if dep_tpl:
             service_templates.append({
                 "svc": dep_svc,
@@ -4229,19 +4216,11 @@ async def fix_and_validate_template(template_id: str, request: Request):
     Streams NDJSON progress throughout. This replaces the confusing
     "Auto-Heal" + "Re-validate" two-button flow with a single operation.
     """
-    from src.database import (
-        get_template_by_id, get_template_versions,
-    )
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
     region = body.get("region", "eastus2")
 
     is_blueprint = bool(tmpl.get("is_blueprint"))
@@ -4394,7 +4373,6 @@ async def fix_and_validate_template(template_id: str, request: Request):
         _target_semver = _latest.get("semver", "")
 
         from src.pipelines.validation import stream_validation
-        from src.database import create_pipeline_run, complete_pipeline_run
 
         _run_id = _uuid.uuid4().hex[:8]
         await create_pipeline_run(
@@ -4452,8 +4430,7 @@ async def fix_and_validate_template(template_id: str, request: Request):
         # threw an exception the template stays at whatever _recompose
         # set it to (usually 'passed'). Correct that here.
         try:
-            from src.database import get_backend as _get_fb
-            _fb = await _get_fb()
+            _fb = await get_backend()
             _current = await get_template_by_id(template_id)
             _cur_status = (_current or {}).get("status", "")
             if final_status == "completed" and _cur_status != "validated":
@@ -4509,15 +4486,9 @@ async def get_template_composition(template_id: str):
     Azure SQL round-trips.
     """
     import asyncio
-    from src.database import (
-        get_template_by_id, get_services_basic,
-        get_version_summary_batch, get_latest_semver,
-    )
     from src.template_engine import RESOURCE_DEPENDENCIES
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     service_ids = tmpl.get("service_ids", [])
     if not service_ids:
@@ -4648,18 +4619,10 @@ async def pin_service_version(template_id: str, request: Request):
     a new template version whose ARM content actually reflects the chosen
     service version — so deploying uses the pinned version's resources.
     """
-    from src.database import (
-        get_template_by_id, get_service_version,
-    )
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     service_id = body.get("service_id", "").strip()
     version = body.get("version")
@@ -4727,13 +4690,8 @@ async def get_template_service_versions(template_id: str, service_id: str):
 
     Returns the version list with the pinned version marked.
     """
-    from src.database import (
-        get_template_by_id, get_service_versions,
-    )
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     svc_ids = tmpl.get("service_ids", [])
     if service_id not in svc_ids:
@@ -4770,11 +4728,8 @@ async def get_template_service_versions(template_id: str, service_id: str):
 @app.get("/api/catalog/templates/{template_id}/versions")
 async def list_template_versions(template_id: str):
     """List all versions of a template (arm_template stripped for performance)."""
-    from src.database import get_template_by_id, get_template_versions
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     versions = await get_template_versions(template_id)
 
@@ -4810,11 +4765,8 @@ async def get_catalog_template_version(template_id: str, version: str):
     ``version`` may be an integer or the literal ``"latest"`` to return the
     most recent version (useful when ``active_version`` is NULL).
     """
-    from src.database import get_template_by_id, get_template_version, get_backend
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     # Resolve "latest" to the actual max version number
     if version == "latest":
@@ -4867,19 +4819,11 @@ async def create_new_template_version(template_id: str, request: Request):
         "semver": "2.0.0"         // optional
     }
     """
-    from src.database import (
-        get_template_by_id, create_template_version, upsert_template,
-    )
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     arm_template = body.get("arm_template", "")
     if not arm_template:
@@ -4924,11 +4868,8 @@ async def get_template_diff(template_id: str, request: Request):
     Returns hunks with line numbers suitable for GitHub-style rendering.
     """
     import difflib, json as _json
-    from src.database import get_template_by_id, get_template_version
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     params = request.query_params
     try:
@@ -5036,16 +4977,10 @@ async def promote_template(template_id: str, request: Request):
 
     Body: { "version": 1 }
     """
-    from src.database import get_template_by_id, promote_template_version
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     version = body.get("version")
     if not version:
@@ -5079,14 +5014,8 @@ async def validate_template(template_id: str, request: Request):
     }
     """
     import uuid as _uuid
-    from src.database import (
-        get_template_by_id, get_template_version, get_template_versions,
-        update_template_validation_status,
-    )
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     # Find the latest version that can be validated
     versions = await get_template_versions(template_id)
@@ -5108,10 +5037,7 @@ async def validate_template(template_id: str, request: Request):
 
     version_num = target_ver["version"]
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     user_params = body.get("parameters", {})
     region = body.get("region", "eastus2")
@@ -5168,7 +5094,6 @@ async def validate_template(template_id: str, request: Request):
         svc_ids = list(svc_ids_raw) if svc_ids_raw else []
 
     from src.pipelines.validation import stream_validation
-    from src.database import create_pipeline_run, complete_pipeline_run
     import uuid as _run_uuid
 
     _run_id = _run_uuid.uuid4().hex[:8]
@@ -5273,7 +5198,6 @@ async def get_template_pipeline_runs(template_id: str):
 
     Returns run metadata plus stored NDJSON events for replay.
     """
-    from src.database import get_pipeline_runs
     runs = await get_pipeline_runs(template_id, limit=20)
     # Strip the raw JSON columns to keep the response clean
     for r in runs:
@@ -5291,19 +5215,10 @@ async def publish_template(template_id: str, request: Request):
     Only templates that have passed ARM What-If validation can be published.
     Body: { "version": 1 }  (optional — defaults to latest validated version)
     """
-    from src.database import (
-        get_template_by_id, get_template_versions,
-        promote_template_version, get_latest_semver,
-    )
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     version = body.get("version")
 
@@ -5465,14 +5380,8 @@ async def deploy_template(template_id: str, request: Request):
       {"type": "result",  "status": "succeeded|needs_work"}    — final outcome
     """
     import uuid as _uuid
-    from src.database import (
-        get_template_by_id, get_template_versions,
-        create_template_version, update_template_version_status,
-    )
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
     if tmpl.get("status") not in ("approved",):
         raise HTTPException(
@@ -5481,10 +5390,7 @@ async def deploy_template(template_id: str, request: Request):
                    f"Current: {tmpl.get('status')}. Run validation and publish first.",
         )
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     resource_group = body.get("resource_group", "").strip()
     if not resource_group:
@@ -5541,7 +5447,6 @@ async def deploy_template(template_id: str, request: Request):
 @app.delete("/api/catalog/services/{service_id}")
 async def delete_service_endpoint(service_id: str):
     """Remove a service from the catalog."""
-    from src.database import get_backend
 
     backend = await get_backend()
     rows = await backend.execute("SELECT id FROM services WHERE id = ?", (service_id,))
@@ -5566,12 +5471,9 @@ async def offboard_service_endpoint(service_id: str):
 
     The service can be re-onboarded later if needed.
     """
-    from src.database import get_service, get_backend
     from datetime import datetime, timezone
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     if svc.get("status") == "offboarded":
         raise HTTPException(status_code=400, detail="Service is already offboarded")
@@ -5689,7 +5591,6 @@ async def check_service_updates():
     2. Compares each service's ARM template apiVersion against Azure's latest
     3. Returns update list + all_api_versions map for the frontend to populate the column
     """
-    from src.database import get_all_services, get_service_versions, bulk_update_api_versions, get_backend
 
     try:
         services = await get_all_services()
@@ -5827,22 +5728,16 @@ async def analyze_upgrade_compatibility(service_id: str, request: Request):
 
     Streams NDJSON events for real-time progress in the UI.
     """
-    from src.database import get_service, get_service_versions
     from src.agents import UPGRADE_ANALYST
     from src.model_router import get_model_for_task, get_model_display
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     active_ver_num = svc.get("active_version")
     if active_ver_num is None:
         raise HTTPException(status_code=400, detail="Service has no active version to analyze")
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     target_api = body.get("target_version") or svc.get("latest_api_version")
     if not target_api:
@@ -6059,19 +5954,10 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
     """
     from src.agents import UPGRADE_ANALYST
     from src.model_router import get_model_for_task
-    from src.database import (
-        get_service, get_service_versions, get_active_service_version,
-        get_template_by_id, get_services_basic,
-    )
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     message = body.get("message", "").strip()
     if not message:
@@ -6318,15 +6204,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     deploy sub-loop). Two-phase healing: analyze root cause → plan → fix.
     Escalates from surface healer to deep healer after threshold.
     """
-    from src.database import (
-        get_service, get_service_version, create_service_version,
-        update_service_version_status, update_service_version_template,
-        set_active_service_version, fail_service_validation,
-        get_governance_policies_as_dict,
-        update_service_version_deployment_info,
-        delete_service_versions_by_status,
-        get_backend, compute_next_semver,
-    )
     from src.tools.static_policy_validator import (
         validate_template, validate_template_against_standards,
         build_remediation_prompt,
@@ -6337,9 +6214,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
     DEEP_HEAL_THRESHOLD = 3        # escalate to two-phase after this many deploy heals
     MAX_DEPLOY_SUB_HEALS = 2       # deploy-specific retries per outer attempt
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     if svc.get("status") == "offboarded":
         raise HTTPException(status_code=400, detail="Cannot update an offboarded service. Re-onboard the service first.")
@@ -6349,17 +6224,13 @@ async def update_api_version_pipeline(service_id: str, request: Request):
         raise HTTPException(status_code=400, detail="Service has no active version to update")
 
     # Resolve semver for display (never show raw integer versions)
-    from src.database import get_latest_semver
     _active_semver = await get_latest_semver(service_id) or f"{active_ver_num}.0.0"
 
     latest_api = svc.get("latest_api_version")
     if not latest_api:
         raise HTTPException(status_code=400, detail="No Azure API version data — run Check for Updates first")
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     # Allow caller to specify a target version (e.g. recommended vs latest)
     target_api = body.get("target_version") or latest_api
@@ -6383,7 +6254,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
         try:  # ← top-level error wrapper for the entire stream
 
             # Record pipeline run for history
-            from src.database import create_pipeline_run, complete_pipeline_run
             await create_pipeline_run(
                 _run_id, service_id, "api_version_update",
                 created_by="copilot-sdk",
@@ -6896,8 +6766,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
             updated_template = _ensure_parameter_defaults(updated_template)
 
             # ── Save as new draft version ─────────────────────────
-            from src.database import get_backend as _get_db_backend
-            _db = await _get_db_backend()
+            _db = await get_backend()
             _vrows = await _db.execute(
                 "SELECT MAX(version) as max_ver FROM service_versions WHERE service_id = ?",
                 (service_id,),
@@ -6956,7 +6825,6 @@ async def update_api_version_pipeline(service_id: str, request: Request):
 
             try:
                 from src.governance import run_governance_review, format_review_summary
-                from src.database import save_governance_review
 
                 yield json.dumps({
                     "type": "progress", "phase": "governance_review",
@@ -7796,8 +7664,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 _update_policy_deployed = False
                 try:
                     # Fetch the service's policy artifact (generated during onboarding)
-                    from src.database import get_service_artifacts as _get_arts
-                    _arts = await _get_arts(service_id)
+                    _arts = await get_service_artifacts(service_id)
                     _policy_content = (_arts.get("policy", {}).get("content") or "").strip()
                     _policy_obj = None
                     if _policy_content:
@@ -8037,7 +7904,6 @@ async def sync_stats():
     in our DB, total approved, and current sync status — all in one call.
     """
     from src.azure_sync import sync_manager
-    from src.database import get_all_services
 
     try:
         services = await get_all_services()
@@ -8087,18 +7953,12 @@ async def arm_template_qa(template_id: str, request: Request):
     Body: { "question": "What does the networkSecurityGroup resource do?" }
     Returns: { "answer": "..." }
     """
-    from src.database import get_template_by_id, get_active_service_version
     from src.copilot_helpers import copilot_send
     from src.model_router import get_model_for_task, Task
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     question = body.get("question", "").strip()
     if not question:
@@ -8108,18 +7968,9 @@ async def arm_template_qa(template_id: str, request: Request):
     arm_content = ""
     active_ver = tmpl.get("active_version") or 1
     try:
-        from src.database import get_db_connection
-        conn = await get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT TOP 1 arm_template FROM template_versions "
-            "WHERE template_id = ? AND version = ?",
-            template_id, active_ver,
-        )
-        row = cursor.fetchone()
-        if row and row.arm_template:
-            arm_content = row.arm_template
-        conn.close()
+        ver_row = await get_template_version(template_id, active_ver)
+        if ver_row and ver_row.get("arm_template"):
+            arm_content = ver_row["arm_template"]
     except Exception as exc:
         logger.warning(f"[arm-qa] Failed to load ARM content: {exc}")
 
@@ -8193,10 +8044,6 @@ async def template_feedback(template_id: str, request: Request):
 
     This is the human-in-the-loop channel for the autonomous orchestrator.
     """
-    from src.database import (
-        get_template_by_id, upsert_template, create_template_version,
-        get_service, get_active_service_version,
-    )
     from src.orchestrator import analyze_template_feedback
     from src.tools.arm_generator import (
         _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
@@ -8205,14 +8052,9 @@ async def template_feedback(template_id: str, request: Request):
     from src.template_engine import analyze_dependencies
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     message = body.get("message", "").strip()
     if not message:
@@ -8248,6 +8090,7 @@ async def template_feedback(template_id: str, request: Request):
     }
 
     service_templates: list[dict] = []
+    pinned_versions: dict = {}
     for sid in new_service_ids:
         svc = await get_service(sid)
         if not svc:
@@ -8257,10 +8100,16 @@ async def template_feedback(template_id: str, request: Request):
         if active and active.get("arm_template"):
             try:
                 tpl_dict = _json.loads(active["arm_template"])
+                pinned_versions[sid] = {
+                    "version": active.get("version"),
+                    "semver": active.get("semver"),
+                }
             except Exception:
                 pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
+            if sid not in pinned_versions:
+                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if not tpl_dict:
             continue
         service_templates.append({
@@ -8393,6 +8242,7 @@ async def template_feedback(template_id: str, request: Request):
         "outputs": list(combined_outputs.keys()),
         "is_blueprint": len(service_templates) > 1,
         "service_ids": new_service_ids,
+        "pinned_versions": pinned_versions,
         "status": "draft",  # Reset to draft — needs re-testing
         "registered_by": tmpl.get("registered_by", "template-composer"),
         "template_type": dep_analysis["template_type"],
@@ -8445,17 +8295,11 @@ async def revision_policy_check(template_id: str, request: Request):
     Returns instant pass/warning/block feedback BEFORE any changes are made.
     Call this first; if it passes, call the /revise endpoint.
     """
-    from src.database import get_template_by_id
     from src.orchestrator import check_revision_policy
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     prompt = body.get("prompt", "").strip()
     if not prompt:
@@ -8494,10 +8338,6 @@ async def revise_template(template_id: str, request: Request):
         "ts": "ISO timestamp"
     }
     """
-    from src.database import (
-        get_template_by_id, upsert_template, create_template_version,
-        get_service, get_active_service_version,
-    )
     from src.orchestrator import (
         check_revision_policy, analyze_template_feedback,
     )
@@ -8508,14 +8348,9 @@ async def revise_template(template_id: str, request: Request):
     from src.template_engine import analyze_dependencies
     import json as _json
 
-    tmpl = await get_template_by_id(template_id)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Template not found")
+    tmpl = await _require_template(template_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     prompt = body.get("prompt", "").strip()
     if not prompt:
@@ -8648,6 +8483,7 @@ async def revise_template(template_id: str, request: Request):
                         "outputs": tmpl.get("outputs", []),
                         "is_blueprint": tmpl.get("is_blueprint", False),
                         "service_ids": tmpl.get("service_ids", []),
+                        "pinned_versions": tmpl.get("pinned_versions", {}),
                         "status": "draft",
                         "registered_by": tmpl.get("registered_by", "template-composer"),
                         "template_type": tmpl.get("template_type", ""),
@@ -8707,6 +8543,7 @@ async def revise_template(template_id: str, request: Request):
             }
 
             service_templates: list[dict] = []
+            pinned_versions: dict = {}
             for sid in new_service_ids:
                 svc = await get_service(sid)
                 if not svc:
@@ -8718,12 +8555,18 @@ async def revise_template(template_id: str, request: Request):
                 if active and active.get("arm_template"):
                     try:
                         tpl_dict = _json.loads(active["arm_template"])
+                        pinned_versions[sid] = {
+                            "version": active.get("version"),
+                            "semver": active.get("semver"),
+                        }
                         yield emit("log", "onboard", "running",
                                    f"● {svc.get('name', sid)} — loaded from catalog")
                     except Exception:
                         pass
                 if not tpl_dict and has_builtin_skeleton(sid):
                     tpl_dict = generate_arm_template(sid)
+                    if sid not in pinned_versions:
+                        pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
                     yield emit("log", "onboard", "running",
                                f"● {svc.get('name', sid)} — generated ARM skeleton")
                 if not tpl_dict:
@@ -8863,6 +8706,7 @@ async def revise_template(template_id: str, request: Request):
                 "outputs": list(combined_outputs.keys()),
                 "is_blueprint": len(service_templates) > 1,
                 "service_ids": new_service_ids,
+                "pinned_versions": pinned_versions,
                 "status": "draft",
                 "registered_by": tmpl.get("registered_by", "template-composer"),
                 "template_type": dep_analysis["template_type"],
@@ -8925,10 +8769,6 @@ async def compose_template_from_prompt(request: Request):
     5. Run structural tests
     6. Return the composed template
     """
-    from src.database import (
-        get_service, get_active_service_version, upsert_template,
-        create_template_version,
-    )
     from src.orchestrator import (
         check_revision_policy, determine_services_from_prompt,
         resolve_composition_dependencies,
@@ -8940,10 +8780,7 @@ async def compose_template_from_prompt(request: Request):
     from src.template_engine import analyze_dependencies
     import json as _json
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     prompt = body.get("prompt", "").strip()
     if not prompt:
@@ -9018,6 +8855,8 @@ async def compose_template_from_prompt(request: Request):
                 pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
+            if sid not in pinned_versions:
+                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if not tpl_dict:
             continue
 
@@ -9177,7 +9016,6 @@ async def compose_template_from_prompt(request: Request):
 @app.delete("/api/catalog/templates/{template_id}")
 async def delete_template_endpoint(template_id: str):
     """Remove a template from the catalog."""
-    from src.database import delete_template
 
     deleted = await delete_template(template_id)
     if not deleted:
@@ -9226,10 +9064,7 @@ async def analyze_template_dependencies(request: Request):
     """
     from src.template_engine import analyze_dependencies
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     service_ids = body.get("service_ids", [])
     if not service_ids:
@@ -9281,11 +9116,8 @@ async def discover_subnets_endpoint(vnet_id: str):
 @app.get("/api/services/{service_id:path}/artifacts")
 async def get_artifacts_endpoint(service_id: str):
     """Get all approval artifacts for a service."""
-    from src.database import get_service_artifacts, get_service
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     artifacts = await get_service_artifacts(service_id)
     return JSONResponse(artifacts)
@@ -9294,7 +9126,6 @@ async def get_artifacts_endpoint(service_id: str):
 @app.put("/api/services/{service_id:path}/artifacts/{artifact_type}")
 async def save_artifact_endpoint(service_id: str, artifact_type: str, request: Request):
     """Save or update an artifact (policy, template, or pipeline) for a service."""
-    from src.database import save_service_artifact, get_service, ARTIFACT_TYPES
 
     if artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(
@@ -9302,14 +9133,9 @@ async def save_artifact_endpoint(service_id: str, artifact_type: str, request: R
             detail=f"Invalid artifact type. Must be one of: {', '.join(ARTIFACT_TYPES)}",
         )
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     content = body.get("content", "")
     notes = body.get("notes", "")
@@ -9335,7 +9161,6 @@ async def save_artifact_endpoint(service_id: str, artifact_type: str, request: R
 @app.post("/api/services/{service_id:path}/artifacts/{artifact_type}/approve")
 async def approve_artifact_endpoint(service_id: str, artifact_type: str, request: Request):
     """Approve an artifact gate. If both gates are approved, the service moves to 'validating'."""
-    from src.database import approve_service_artifact, get_service, ARTIFACT_TYPES
 
     if artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(
@@ -9343,14 +9168,9 @@ async def approve_artifact_endpoint(service_id: str, artifact_type: str, request
             detail=f"Invalid artifact type. Must be one of: {', '.join(ARTIFACT_TYPES)}",
         )
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     approved_by = body.get("approved_by", "IT Staff")
 
@@ -9362,7 +9182,6 @@ async def approve_artifact_endpoint(service_id: str, artifact_type: str, request
         )
 
         # Check if all gates are now approved → validation required
-        from src.database import get_service_artifacts
         all_artifacts = await get_service_artifacts(service_id)
         all_approved = all_artifacts["_summary"]["all_approved"]
 
@@ -9387,7 +9206,6 @@ async def approve_artifact_endpoint(service_id: str, artifact_type: str, request
 @app.post("/api/services/{service_id:path}/artifacts/{artifact_type}/unapprove")
 async def unapprove_artifact_endpoint(service_id: str, artifact_type: str):
     """Revert an artifact back to draft (e.g. for edits after approval)."""
-    from src.database import unapprove_service_artifact, ARTIFACT_TYPES
 
     if artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(
@@ -9419,16 +9237,10 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
     On success the service is promoted to 'approved'.
     On failure it is set to 'validation_failed'.
     """
-    from src.database import (
-        get_service, get_service_artifacts, save_service_artifact,
-        promote_service_after_validation, fail_service_validation,
-    )
 
     MAX_HEAL_ATTEMPTS = 5
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     artifacts = await get_service_artifacts(service_id)
     if not artifacts["_summary"]["all_approved"]:
@@ -9439,10 +9251,7 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
     if not template_content:
         raise HTTPException(status_code=400, detail="ARM template artifact has no content")
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     region = body.get("region", "eastus2")
     import uuid as _uuid
@@ -10451,7 +10260,6 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
       {"type": "done", "content": "..."}    — final full content
       {"type": "error", "message": "..."}   — error
     """
-    from src.database import get_service, ARTIFACT_TYPES
 
     if artifact_type not in ARTIFACT_TYPES:
         raise HTTPException(
@@ -10459,14 +10267,9 @@ async def generate_artifact_endpoint(service_id: str, artifact_type: str, reques
             detail=f"Invalid artifact type. Must be one of: {', '.join(ARTIFACT_TYPES)}",
         )
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     user_prompt = body.get("prompt", "").strip()
     if not user_prompt:
@@ -10551,12 +10354,9 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
     Query params:
         status: filter by version status (e.g. 'approved', 'failed', 'draft')
     """
-    from src.database import get_service, get_service_versions
 
     try:
-        svc = await get_service(service_id)
-        if not svc:
-            raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+        svc = await _require_service(service_id)
 
         versions = await get_service_versions(service_id, status=status)
         # Strip arm_template from listing to keep payload small; use single-version endpoint to fetch it
@@ -10621,11 +10421,8 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
 @app.get("/api/services/{service_id:path}/versions/latest")
 async def get_service_latest_version(service_id: str):
     """Get the latest approved (or highest) version's ARM template for a service."""
-    from src.database import get_service, get_service_versions
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     versions = await get_service_versions(service_id)
     if not versions:
@@ -10643,22 +10440,43 @@ async def get_service_latest_version(service_id: str):
     if not match:
         match = max(versions, key=lambda v: v.get("version", 0))
 
+    # Ensure contentVersion in ARM JSON matches the stored semver
+    _arm_raw = match.get("arm_template") or ""
+    _ver_semver = match.get("semver") or ""
+    if _arm_raw and _ver_semver:
+        try:
+            _arm = json.loads(_arm_raw)
+            if isinstance(_arm, dict) and _arm.get("contentVersion") != _ver_semver:
+                _arm["contentVersion"] = _ver_semver
+                match["arm_template"] = json.dumps(_arm, indent=2)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return JSONResponse(match)
 
 
 @app.get("/api/services/{service_id:path}/versions/{version:int}")
 async def get_service_version_detail(service_id: str, version: int):
     """Get a single version including the full ARM template content."""
-    from src.database import get_service, get_service_versions
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     versions = await get_service_versions(service_id)
     match = next((v for v in versions if v.get("version") == version), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
+
+    # Ensure contentVersion in ARM JSON matches the stored semver
+    _arm_raw = match.get("arm_template") or ""
+    _ver_semver = match.get("semver") or ""
+    if _arm_raw and _ver_semver:
+        try:
+            _arm = json.loads(_arm_raw)
+            if isinstance(_arm, dict) and _arm.get("contentVersion") != _ver_semver:
+                _arm["contentVersion"] = _ver_semver
+                match["arm_template"] = json.dumps(_arm, indent=2)
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     return JSONResponse(match)
 
@@ -10666,11 +10484,8 @@ async def get_service_version_detail(service_id: str, version: int):
 @app.delete("/api/services/{service_id:path}/versions/{version:int}")
 async def delete_service_version_endpoint(service_id: str, version: int):
     """Delete a single draft or failed service version. Cannot delete the active version."""
-    from src.database import get_service, get_backend
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     if svc.get("active_version") == version:
         raise HTTPException(status_code=400, detail="Cannot delete the active version")
@@ -10696,11 +10511,8 @@ async def delete_service_version_endpoint(service_id: str, version: int):
 @app.delete("/api/services/{service_id:path}/versions/drafts")
 async def delete_all_draft_versions_endpoint(service_id: str):
     """Delete all draft and failed versions for a service."""
-    from src.database import get_service, delete_service_versions_by_status
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
     count = await delete_service_versions_by_status(service_id, ["draft", "failed"])
     return JSONResponse({"deleted": count})
@@ -10709,7 +10521,6 @@ async def delete_all_draft_versions_endpoint(service_id: str):
 @app.get("/api/services/{service_id:path}/pipeline-runs")
 async def get_service_pipeline_runs(service_id: str, limit: int = 20):
     """Get recent pipeline runs for a service."""
-    from src.database import get_pipeline_runs
 
     runs = await get_pipeline_runs(service_id, limit=min(limit, 100))
     return JSONResponse(runs)
@@ -10722,7 +10533,6 @@ async def get_service_governance_reviews(
     limit: int = 20,
 ):
     """Get governance reviews for a service, optionally filtered by version."""
-    from src.database import get_governance_reviews
 
     reviews = await get_governance_reviews(service_id, version=version, limit=min(limit, 100))
     return JSONResponse(reviews)
@@ -10742,20 +10552,11 @@ async def modify_service_version(service_id: str, version: int, request: Request
 
     Streams NDJSON events for real-time progress tracking.
     """
-    from src.database import (
-        get_service, get_service_versions, create_service_version,
-        delete_service_versions_by_status,
-    )
     from src.tools.arm_generator import modify_arm_template_with_copilot
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be JSON with a 'prompt' field")
+    body = await _parse_body_required(request)
 
     modification_prompt = (body.get("prompt") or "").strip()
     if not modification_prompt:
@@ -10825,8 +10626,7 @@ async def modify_service_version(service_id: str, version: int, request: Request
             modified_template = _ensure_parameter_defaults(modified_template)
 
             # Compute new version number
-            from src.database import get_backend as _get_db_backend
-            _db = await _get_db_backend()
+            _db = await get_backend()
             _vrows = await _db.execute(
                 "SELECT MAX(version) as max_ver FROM service_versions WHERE service_id = ?",
                 (service_id,),
@@ -10927,16 +10727,10 @@ async def onboard_service_endpoint(service_id: str, request: Request):
     Streams NDJSON events for real-time progress tracking.
     Auto-healing via Copilot SDK (up to 5 attempts).
     """
-    from src.database import get_service
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body = await _parse_body(request)
 
     region = body.get("region", "eastus2")
     # Allow per-request model override, fall back to active global model
@@ -11070,8 +10864,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             # if the client disconnects or the async generator is cancelled,
             # the runner's finally block may not execute reliably.
             try:
-                from src.database import complete_pipeline_run, get_backend as _get_be
-                _be = await _get_be()
+                _be = await get_backend()
                 _rows = await _be.execute(
                     "SELECT status FROM pipeline_runs WHERE run_id = ?", (_run_id,)
                 )
@@ -11092,7 +10885,6 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     # Also fix the service status if stuck at 'validating'
                     if _db_status == "failed":
                         try:
-                            from src.database import fail_service_validation
                             await fail_service_validation(
                                 service_id,
                                 _err[:500] if _err else "Pipeline failed without explicit status update",
@@ -11125,16 +10917,10 @@ async def governance_resolve_endpoint(service_id: str, request: Request):
 
     Streams NDJSON events (same format as /onboard) for real-time progress.
     """
-    from src.database import get_service, get_latest_service_version, update_service_version_template
 
-    svc = await get_service(service_id)
-    if not svc:
-        raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
+    svc = await _require_service(service_id)
 
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    body = await _parse_body_required(request)
 
     action = body.get("action")
     if action not in ("heal", "exception"):
@@ -11274,8 +11060,7 @@ async def governance_resolve_endpoint(service_id: str, request: Request):
         finally:
             # Safety net: finalize the pipeline run if it's still "running"
             try:
-                from src.database import complete_pipeline_run, get_backend as _get_be
-                _be = await _get_be()
+                _be = await get_backend()
                 _rows = await _be.execute(
                     "SELECT status FROM pipeline_runs WHERE run_id = ?", (_run_id,)
                 )
@@ -11290,7 +11075,6 @@ async def governance_resolve_endpoint(service_id: str, request: Request):
                     )
                     if _db_status == "failed":
                         try:
-                            from src.database import fail_service_validation
                             await fail_service_validation(service_id, _err[:500] if _err else "Pipeline failed")
                         except Exception:
                             pass

@@ -5104,6 +5104,7 @@ tr:hover .svc-view-tpl-btn {
     border-radius: 0 0 8px 8px;
     max-height: 60vh;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 .replay-header {
     display: flex;
@@ -6574,6 +6575,7 @@ tr:hover .svc-view-tpl-btn {
 .pipeline-overlay-canvas {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 2rem 1rem 3rem;
     display: flex;
     flex-direction: column;
@@ -13184,6 +13186,38 @@ details[open] > .tmpl-deploy-group-optional {
     letter-spacing: 0.05em;
 }
 
+/* Pipeline status badge — shown in the pipeline header */
+.vf-pipeline-status {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.2rem 0.6rem;
+    border-radius: 10px;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+.vf-pipeline-running {
+    color: var(--accent-blue);
+    background: rgba(59,130,246,0.1);
+    border: 1px solid rgba(59,130,246,0.25);
+    animation: vfStatusPulse 2s ease-in-out infinite;
+}
+.vf-pipeline-succeeded {
+    color: #3fb950;
+    background: rgba(63,185,80,0.1);
+    border: 1px solid rgba(63,185,80,0.25);
+}
+.vf-pipeline-failed {
+    color: #f85149;
+    background: rgba(248,81,73,0.1);
+    border: 1px solid rgba(248,81,73,0.25);
+}
+@keyframes vfStatusPulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.6; }
+}
+
 /* ── Stage bar (horizontal pipeline header) ── */
 .vf-stage-bar {
     display: flex;
@@ -13218,8 +13252,8 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-stage-active { color: var(--accent-blue); }
 .vf-stage-done .vf-stage-dot { background: var(--accent-blue); border-color: var(--accent-blue); }
 .vf-stage-done { color: var(--accent-blue); }
-.vf-stage-error .vf-stage-dot { background: var(--accent-blue); border-color: var(--accent-blue); }
-.vf-stage-error { color: var(--accent-blue); }
+.vf-stage-error .vf-stage-dot { background: #f85149; border-color: #f85149; }
+.vf-stage-error { color: #f85149; }
 
 @keyframes vfPulse {
     0%, 100% { box-shadow: 0 0 4px rgba(59,130,246,0.3); }
@@ -13261,8 +13295,10 @@ details[open] > .tmpl-deploy-group-optional {
     gap: 0;
     max-height: 800px;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 0.25rem 0;
     position: relative;
+    width: 100%;
 }
 
 /* ── Vertical connector line between nodes ── */
@@ -13315,6 +13351,10 @@ details[open] > .tmpl-deploy-group-optional {
     border-color: #3fb950;
     box-shadow: 0 0 0 1px rgba(63,185,80,0.15);
 }
+.vf-flow-node-failed {
+    border-color: #f85149;
+    box-shadow: 0 0 0 1px rgba(248,81,73,0.15);
+}
 
 /* ── Node header — icon + title + status badge ── */
 .vf-node-header {
@@ -13358,6 +13398,10 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-badge-success {
     color: #3fb950;
     background: rgba(63,185,80,0.1);
+}
+.vf-badge-failed {
+    color: #f85149;
+    background: rgba(248,81,73,0.1);
 }
 .vf-badge-pulse {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
@@ -13423,6 +13467,7 @@ details[open] > .tmpl-deploy-group-optional {
 /* ── Branch region — contains branching sub-process nodes ── */
 .vf-branch-region {
     width: 100%;
+    max-width: 860px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -13446,10 +13491,11 @@ details[open] > .tmpl-deploy-group-optional {
 /* Branch container — horizontal row of nodes with connecting lines */
 .vf-branch-container {
     display: flex;
-    gap: 1rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
     width: 100%;
     max-width: 860px;
-    overflow-x: auto;
+    justify-content: center;
     padding: 0.25rem 0.5rem;
     position: relative;
 }
@@ -13460,7 +13506,7 @@ details[open] > .tmpl-deploy-group-optional {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 32px;
+    height: 24px;
     width: 100%;
     max-width: 860px;
 }
@@ -13470,31 +13516,19 @@ details[open] > .tmpl-deploy-group-optional {
     top: 0;
     left: 50%;
     width: 2px;
-    height: 16px;
+    height: 100%;
     background: rgba(139,92,246,0.4);
     transform: translateX(-50%);
 }
-.vf-branch-connector-bar {
-    position: absolute;
-    top: 16px;
-    height: 2px;
-    background: rgba(139,92,246,0.3);
-    left: var(--bar-left, 25%);
-    right: var(--bar-right, 25%);
-}
-.vf-branch-drop {
-    position: absolute;
-    top: 16px;
-    width: 2px;
-    height: 16px;
-    background: rgba(139,92,246,0.3);
-}
+/* Hide individual drop/bar lines — wrapping layout makes % positions unreliable */
+.vf-branch-connector-bar { display: none; }
+.vf-branch-drop { display: none; }
 
 /* Branch sub-process node */
 .vf-branch-node {
-    flex: 1;
-    min-width: 280px;
-    max-width: 400px;
+    flex: 1 1 180px;
+    min-width: 160px;
+    max-width: 260px;
     border: 1px solid rgba(139,92,246,0.25);
     border-radius: 10px;
     background: var(--bg-primary);
@@ -13519,21 +13553,22 @@ details[open] > .tmpl-deploy-group-optional {
 .vf-branch-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem;
     background: rgba(139,92,246,0.06);
     border-bottom: 1px solid rgba(139,92,246,0.12);
+    min-width: 0;
 }
 .vf-branch-icon {
-    width: 26px; height: 26px; border-radius: 5px;
+    width: 22px; height: 22px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.85rem;
+    font-size: 0.75rem;
     background: rgba(139,92,246,0.12);
     flex-shrink: 0;
 }
 .vf-branch-title {
     flex: 1;
-    font-weight: 600; font-size: 0.82rem;
+    font-weight: 600; font-size: 0.75rem;
     color: var(--text-primary);
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -13557,20 +13592,23 @@ details[open] > .tmpl-deploy-group-optional {
 
 /* Branch node body — compact activity log */
 .vf-branch-body {
-    padding: 0.45rem 0.65rem;
-    display: flex; flex-direction: column; gap: 0.2rem;
+    padding: 0.35rem 0.5rem;
+    display: flex; flex-direction: column; gap: 0.15rem;
     flex: 1;
-    font-size: 0.8rem;
-    max-height: 280px;
+    font-size: 0.72rem;
+    max-height: 200px;
     overflow-y: auto;
+    min-width: 0;
 }
 .vf-branch-step {
-    display: flex; align-items: flex-start; gap: 0.35rem;
-    padding: 0.2rem 0.4rem; border-radius: 4px;
+    display: flex; align-items: flex-start; gap: 0.3rem;
+    padding: 0.15rem 0.3rem; border-radius: 4px;
     color: var(--text-secondary);
-    line-height: 1.45;
+    line-height: 1.4;
+    min-width: 0;
+    word-break: break-word;
 }
-.vf-branch-step-icon { flex-shrink: 0; font-size: 0.8rem; }
+.vf-branch-step-icon { flex-shrink: 0; font-size: 0.72rem; }
 
 /* Merge connector — lines come back together after branch */
 .vf-merge-connector {
@@ -13578,32 +13616,20 @@ details[open] > .tmpl-deploy-group-optional {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 32px;
+    height: 24px;
     width: 100%;
     max-width: 860px;
 }
-.vf-merge-connector-bar {
-    position: absolute;
-    top: 0;
-    height: 2px;
-    background: rgba(139,92,246,0.3);
-    left: var(--bar-left, 25%);
-    right: var(--bar-right, 25%);
-}
-.vf-merge-drop {
-    position: absolute;
-    top: 0;
-    width: 2px;
-    height: 16px;
-    background: rgba(139,92,246,0.3);
-}
+/* Hide individual drop/bar lines — wrapping layout makes % positions unreliable */
+.vf-merge-connector-bar { display: none; }
+.vf-merge-drop { display: none; }
 .vf-merge-connector::after {
     content: '';
     position: absolute;
-    bottom: 0;
+    top: 0;
     left: 50%;
     width: 2px;
-    height: 14px;
+    height: 100%;
     background: rgba(139,92,246,0.4);
     transform: translateX(-50%);
 }

@@ -1443,13 +1443,10 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'API version update failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let failed = false;
 
         const phaseLabels = {
@@ -1487,36 +1484,15 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
 
         let completed = false;  // Track whether we received a terminal event
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    if (event.type === 'error') failed = true;
-                    updateBadge(event);
-                    // Buffer event for replay if drawer opens later
-                    const buf = _tableUpdateEventBuffers.get(serviceId);
-                    if (buf) buf.push(event);
-                    // Forward to drawer if open for this service
-                    if (_openDrawerServiceId === serviceId) _handleUpdateEvent(event);
-                } catch (e) {}
-            }
-        }
-        if (buffer.trim()) {
-            try {
-                const last = JSON.parse(buffer);
-                if (last.type === 'error') failed = true;
-                updateBadge(last);
-                const buf2 = _tableUpdateEventBuffers.get(serviceId);
-                if (buf2) buf2.push(last);
-                if (_openDrawerServiceId === serviceId) _handleUpdateEvent(last);
-            } catch (e) {}
-        }
+        await readNDJSONStream(res, (event) => {
+            if (event.type === 'error') failed = true;
+            updateBadge(event);
+            // Buffer event for replay if drawer opens later
+            const buf = _tableUpdateEventBuffers.get(serviceId);
+            if (buf) buf.push(event);
+            // Forward to drawer if open for this service
+            if (_openDrawerServiceId === serviceId) _handleUpdateEvent(event);
+        });
 
         // Detect stream interruption — no terminal event received
         if (!completed && !failed) {
@@ -2413,30 +2389,13 @@ async function submitTemplateModification() {
         }
 
         // Stream NDJSON events
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let finalEvent = null;
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const ev = JSON.parse(line);
-                    const icon = ev.type === 'error' ? '❌' : ev.type === 'complete' ? '✅' : '⏳';
-                    progressEl.innerHTML += `<div class="modify-progress-item">${icon} ${escapeHtml(ev.detail || '')}</div>`;
-                    progressEl.scrollTop = progressEl.scrollHeight;
-                    finalEvent = ev;
-                } catch {}
-            }
-        }
+        await readNDJSONStream(res, (ev) => {
+            const icon = ev.type === 'error' ? '❌' : ev.type === 'complete' ? '✅' : '⏳';
+            progressEl.innerHTML += `<div class="modify-progress-item">${icon} ${escapeHtml(ev.detail || '')}</div>`;
+            progressEl.scrollTop = progressEl.scrollHeight;
+            finalEvent = ev;
+        });
 
         // Handle completion
         if (finalEvent?.type === 'complete') {
@@ -2665,7 +2624,7 @@ async function deleteDraftVersion(serviceId, version, semver) {
     try {
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}`, { method: 'DELETE' });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Delete failed');
         }
         showToast(`Deleted draft v${semver}`, 'info');
@@ -2681,7 +2640,7 @@ async function deleteAllDraftVersions(serviceId) {
     try {
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/drafts`, { method: 'DELETE' });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Delete failed');
         }
         const data = await res.json();
@@ -2706,7 +2665,7 @@ async function offboardService(serviceId, serviceName) {
     try {
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/offboard`, { method: 'POST' });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Offboarding failed');
         }
         const data = await res.json();
@@ -2760,36 +2719,13 @@ async function triggerDraftValidation(serviceId, version, semver) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Validation request failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    _handleValidationEvent(event);
-                } catch (e) {}
-            }
-        }
-
-        if (buffer.trim()) {
-            try {
-                _handleValidationEvent(JSON.parse(buffer));
-            } catch (e) {}
-        }
+        await readNDJSONStream(res, (event) => {
+            _handleValidationEvent(event);
+        });
 
         await loadAllData();
         await showServiceDetail(serviceId);
@@ -2915,32 +2851,9 @@ async function triggerOnboarding(serviceId) {
             throw new Error(errMsg);
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    _handleValidationEvent(event);
-                } catch (e) {}
-            }
-        }
-
-        if (buffer.trim()) {
-            try {
-                _handleValidationEvent(JSON.parse(buffer));
-            } catch (e) {}
-        }
+        await readNDJSONStream(res, (event) => {
+            _handleValidationEvent(event);
+        });
 
         await loadAllData();
         await showServiceDetail(serviceId);
@@ -3012,47 +2925,17 @@ async function analyzeUpgradeCompatibility(serviceId, targetVersion) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Analysis request failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let analysisResult = null;
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const ev = JSON.parse(line);
-                    _handleUpgradeAnalysisEvent(ev, container);
-                    if (ev.type === 'analysis_complete') {
-                        analysisResult = ev;
-                    }
-                } catch (e) {
-                    console.warn('[upgrade-analysis] failed to parse event:', line);
-                }
+        await readNDJSONStream(res, (ev) => {
+            _handleUpgradeAnalysisEvent(ev, container);
+            if (ev.type === 'analysis_complete') {
+                analysisResult = ev;
             }
-        }
-
-        // Process remaining buffer
-        if (buffer.trim()) {
-            try {
-                const ev = JSON.parse(buffer);
-                _handleUpgradeAnalysisEvent(ev, container);
-                if (ev.type === 'analysis_complete') {
-                    analysisResult = ev;
-                }
-            } catch (e) { /* ignore */ }
-        }
+        });
 
         if (analysisResult) {
             _renderUpgradeAnalysisResult(analysisResult, container, serviceId);
@@ -3222,57 +3105,30 @@ async function _sendUpgradeChat(chatId, serviceId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Chat request failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let fullResponse = '';
         let streamingContent = '';
+        let streamError = null;
 
         // Replace typing indicator with streaming content
         const bubbleEl = assistantBubble.querySelector('.upgrade-chat-bubble');
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const ev = JSON.parse(line);
-                    if (ev.type === 'delta') {
-                        streamingContent += ev.content || '';
-                        bubbleEl.innerHTML = _markdownToHtml(streamingContent);
-                        messagesEl.scrollTop = messagesEl.scrollHeight;
-                    } else if (ev.type === 'done') {
-                        fullResponse = ev.content || streamingContent;
-                    } else if (ev.type === 'error') {
-                        throw new Error(ev.detail || 'Chat error');
-                    }
-                } catch (e) {
-                    if (e.message && !e.message.includes('JSON')) throw e;
-                }
+        await readNDJSONStream(res, (ev) => {
+            if (ev.type === 'delta') {
+                streamingContent += ev.content || '';
+                bubbleEl.innerHTML = _markdownToHtml(streamingContent);
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            } else if (ev.type === 'done') {
+                fullResponse = ev.content || streamingContent;
+            } else if (ev.type === 'error') {
+                streamError = ev.detail || 'Chat error';
             }
-        }
+        });
 
-        // Process remaining buffer
-        if (buffer.trim()) {
-            try {
-                const ev = JSON.parse(buffer);
-                if (ev.type === 'delta') {
-                    streamingContent += ev.content || '';
-                } else if (ev.type === 'done') {
-                    fullResponse = ev.content || streamingContent;
-                }
-            } catch (e) { /* skip */ }
-        }
+        if (streamError) throw new Error(streamError);
 
         // Final render
         const finalText = fullResponse || streamingContent;
@@ -3393,46 +3249,20 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         console.log('[update] fetch response status:', res.status);
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'API version update failed');
         }
 
         showToast('API version update pipeline started…', 'info');
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let _updateFailed = false;
         let _updateCompleted = false;  // tracks whether a terminal event was received
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    console.log('[update] event:', event.type, event.phase, event.detail?.substring(0, 80));
-                    if (event.type === 'error') { _updateFailed = true; _updateCompleted = true; }
-                    if (event.type === 'done') _updateCompleted = true;
-                    _handleUpdateEvent(event);
-                } catch (e) { console.warn('[update] parse error:', e, line.substring(0, 100)); }
-            }
-        }
-
-        if (buffer.trim()) {
-            try {
-                const last = JSON.parse(buffer);
-                if (last.type === 'error') { _updateFailed = true; _updateCompleted = true; }
-                if (last.type === 'done') _updateCompleted = true;
-                _handleUpdateEvent(last);
-            } catch (e) {}
-        }
+        await readNDJSONStream(res, (event) => {
+            console.log('[update] event:', event.type, event.phase, event.detail?.substring(0, 80));
+            if (event.type === 'error') { _updateFailed = true; _updateCompleted = true; }
+            if (event.type === 'done') _updateCompleted = true;
+            _handleUpdateEvent(event);
+        });
 
         // Detect stream interruption: server closed the connection without a terminal event
         if (!_updateCompleted && !_updateFailed) {
@@ -3715,30 +3545,9 @@ async function resolveGovernanceBlock(serviceId, action) {
             throw new Error(errMsg);
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    _handleValidationEvent(event);
-                } catch (e) {}
-            }
-        }
-
-        if (buffer.trim()) {
-            try { _handleValidationEvent(JSON.parse(buffer)); } catch (e) {}
-        }
+        await readNDJSONStream(res, (event) => {
+            _handleValidationEvent(event);
+        });
 
         await loadAllData();
         await showServiceDetail(serviceId);
@@ -5586,6 +5395,7 @@ async function _loadTemplateComposition(templateId) {
 
         // ── Render hero graph ────────────────────────────────
         const anyUpgrade = components.some(c => c.upgrade_available);
+        const anyUntracked = components.some(c => c.version_known === false);
         const providesList = data.provides || [];
 
         let html = '<div class="comp-hero-graph-inner">';
@@ -5679,6 +5489,8 @@ async function _loadTemplateComposition(templateId) {
         html += '<div class="comp-hero-actions">';
         if (anyUpgrade) {
             html += `<button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">🔄 Upgrade All Dependencies</button>`;
+        } else if (anyUntracked) {
+            html += `<button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">🔄 Recompose to Lock Versions</button>`;
         }
         html += `<button class="btn btn-sm tmpl-check-updates-btn" id="tmpl-check-updates-btn" onclick="checkForUpdates('${escapeHtml(templateId)}')">🔍 Check for Updates</button>`;
         html += '</div>';
@@ -5748,41 +5560,16 @@ async function analyzeUpgradeForDep(serviceId, targetVersion, currentVersion, te
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Analysis failed');
         }
 
         const modalBody = document.getElementById('upgrade-analysis-modal-body');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let analysisResult = null;
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const ev = JSON.parse(line);
-                    _handleUpgradeAnalysisEvent(ev, modalBody);
-                    if (ev.type === 'analysis_complete') analysisResult = ev;
-                } catch (e) { /* skip */ }
-            }
-        }
-
-        if (buffer.trim()) {
-            try {
-                const ev = JSON.parse(buffer);
-                _handleUpgradeAnalysisEvent(ev, modalBody);
-                if (ev.type === 'analysis_complete') analysisResult = ev;
-            } catch (e) { /* skip */ }
-        }
+        await readNDJSONStream(res, (ev) => {
+            _handleUpgradeAnalysisEvent(ev, modalBody);
+            if (ev.type === 'analysis_complete') analysisResult = ev;
+        });
 
         if (analysisResult && modalBody) {
             _renderUpgradeAnalysisResult(analysisResult, modalBody, serviceId, templateId);
@@ -6055,12 +5842,19 @@ async function checkForUpdates(templateId) {
 
         html += '</div>';
 
-        // Upgrade all button
+        // Upgrade all / recompose button
         if (updatable.length) {
             html += `
                 <div class="upd-chain-actions-footer">
                     <button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">
                         🔄 Upgrade All (${updatable.length} update${updatable.length > 1 ? 's' : ''})
+                    </button>
+                </div>`;
+        } else if (untracked.length) {
+            html += `
+                <div class="upd-chain-actions-footer">
+                    <button class="btn btn-sm btn-primary" onclick="recomposeBlueprint('${escapeHtml(templateId)}')">
+                        🔄 Recompose to Lock Versions
                     </button>
                 </div>`;
         }
@@ -6550,7 +6344,7 @@ async function runComplianceScan(templateId) {
             body: JSON.stringify({}),
         });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Scan failed');
         }
         const data = await res.json();
@@ -6754,7 +6548,7 @@ async function runComplianceRemediation(templateId) {
             body: JSON.stringify({ scan_data: _lastScanData }),
         });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Plan generation failed');
         }
         const data = await res.json();
@@ -6918,35 +6712,13 @@ async function _executeAndWait(templateId, planSteps) {
                 throw new Error(err.detail || 'Execution failed');
             }
 
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
             let state = null;
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const event = JSON.parse(line);
-                        if (event.type === 'pipeline_done') {
-                            pipelineDoneData = event;
-                        }
-                        state = _adoHandleEvent(pipeline, event, state);
-                    } catch { /* skip malformed */ }
+            await readNDJSONStream(res, (event) => {
+                if (event.type === 'pipeline_done') {
+                    pipelineDoneData = event;
                 }
-            }
-            if (buffer.trim()) {
-                try {
-                    const event = JSON.parse(buffer);
-                    if (event.type === 'pipeline_done') pipelineDoneData = event;
-                    state = _adoHandleEvent(pipeline, event, state);
-                } catch {}
-            }
+                state = _adoHandleEvent(pipeline, event, state);
+            });
         } catch (err) {
             pipeline.innerHTML += `<div class="ado-error"><span class="ado-error-icon">❌</span><span>Pipeline failed: ${escapeHtml(err.message)}</span></div>`;
         }
@@ -7103,31 +6875,14 @@ async function executeRemediationPlan(templateId) {
             body: JSON.stringify({ plan: planSteps, scan_data: _lastScanData }),
         });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Execution failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let state = null;
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    state = _adoHandleEvent(pipeline, JSON.parse(line), state);
-                } catch { /* skip malformed */ }
-            }
-        }
-        if (buffer.trim()) {
-            try { state = _adoHandleEvent(pipeline, JSON.parse(buffer), state); } catch {}
-        }
+        await readNDJSONStream(res, (event) => {
+            state = _adoHandleEvent(pipeline, event, state);
+        });
     } catch (err) {
         pipeline.innerHTML = `
             <div class="ado-error">
@@ -7213,15 +6968,22 @@ function renderLogStreamEvent(container, event) {
     }
 }
 
+/** Safely parse a JSON error response, falling back to statusText if not JSON. */
+async function _safeJsonError(res) {
+    try { return await res.json(); }
+    catch (_) { return { detail: `Server error (${res.status} ${res.statusText})` }; }
+}
+
 /**
- * Read an NDJSON stream and render events into a container.
- * Returns the final 'result' event (or null on error).
+ * Generic NDJSON stream reader.
+ * Reads newline-delimited JSON from a fetch Response and invokes `onEvent`
+ * for every parsed object.  Returns an array of all parsed events.
  */
-async function consumeLogStream(response, container) {
+async function readNDJSONStream(response, onEvent) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let finalResult = null;
+    const events = [];
 
     while (true) {
         const { value, done } = await reader.read();
@@ -7235,10 +6997,8 @@ async function consumeLogStream(response, container) {
             if (!line.trim()) continue;
             try {
                 const event = JSON.parse(line);
-                if (event.type === 'result' || event.type === 'error') {
-                    finalResult = event;
-                }
-                renderLogStreamEvent(container, event);
+                events.push(event);
+                onEvent(event);
             } catch (e) { /* skip malformed */ }
         }
     }
@@ -7247,13 +7007,26 @@ async function consumeLogStream(response, container) {
     if (buffer.trim()) {
         try {
             const event = JSON.parse(buffer);
-            if (event.type === 'result' || event.type === 'error') {
-                finalResult = event;
-            }
-            renderLogStreamEvent(container, event);
+            events.push(event);
+            onEvent(event);
         } catch (e) { /* skip */ }
     }
 
+    return events;
+}
+
+/**
+ * Read an NDJSON stream and render events into a container.
+ * Returns the final 'result' event (or null on error).
+ */
+async function consumeLogStream(response, container) {
+    let finalResult = null;
+    await readNDJSONStream(response, (event) => {
+        if (event.type === 'result' || event.type === 'error') {
+            finalResult = event;
+        }
+        renderLogStreamEvent(container, event);
+    });
     return finalResult;
 }
 
@@ -7929,6 +7702,10 @@ async function runTemplateValidation(templateId) {
         resultsDiv.innerHTML = '<div class="compose-loading">🧪 Working on it… This usually takes 1-5 minutes.</div>';
     }
 
+    // Hide the stale status CTA while pipeline runs
+    const staleCta = document.querySelector('.tmpl-test-cta');
+    if (staleCta) staleCta.style.display = 'none';
+
     showToast('🧪 Starting validation — Copilot SDK will deploy the template and handle any issues', 'info');
 
     // Initialize tracker
@@ -7966,50 +7743,19 @@ async function runTemplateValidation(templateId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Validation failed');
         }
 
         // Read NDJSON stream — render to current resultsDiv if visible
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete line
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    tracker.events.push(event);
-                    tracker.finalEvent = event;
-                    // Render to the live resultsDiv if still in DOM
-                    const liveDiv = document.getElementById('tmpl-validate-results');
-                    if (liveDiv) {
-                        _renderDeployProgress(liveDiv, event, 'validate');
-                    }
-                } catch (e) { /* skip malformed */ }
+        await readNDJSONStream(res, (event) => {
+            tracker.events.push(event);
+            tracker.finalEvent = event;
+            const liveDiv = document.getElementById('tmpl-validate-results');
+            if (liveDiv) {
+                _renderDeployProgress(liveDiv, event, 'validate');
             }
-        }
-
-        // Process final buffer
-        if (buffer.trim()) {
-            try {
-                const event = JSON.parse(buffer);
-                tracker.events.push(event);
-                tracker.finalEvent = event;
-                const liveDiv = document.getElementById('tmpl-validate-results');
-                if (liveDiv) {
-                    _renderDeployProgress(liveDiv, event, 'validate');
-                }
-            } catch (e) { /* skip */ }
-        }
+        });
 
         if (tracker.finalEvent && tracker.finalEvent.status === 'succeeded') {
             const resolved = tracker.finalEvent.issues_resolved || 0;
@@ -8462,41 +8208,15 @@ async function _runPostRevisionValidation(templateId, container) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Validation failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    tracker.events.push(event);
-                    tracker.finalEvent = event;
-                    _renderDeployProgress(progressDiv, event, 'validate');
-                } catch (e) { /* skip malformed */ }
-            }
-        }
-
-        if (buffer.trim()) {
-            try {
-                const event = JSON.parse(buffer);
-                tracker.events.push(event);
-                tracker.finalEvent = event;
-                _renderDeployProgress(progressDiv, event, 'validate');
-            } catch (e) { /* skip */ }
-        }
+        await readNDJSONStream(res, (event) => {
+            tracker.events.push(event);
+            tracker.finalEvent = event;
+            _renderDeployProgress(progressDiv, event, 'validate');
+        });
 
         if (tracker.finalEvent?.status === 'succeeded') {
             const resolved = tracker.finalEvent.issues_resolved || 0;
@@ -8549,7 +8269,7 @@ async function publishTemplate(templateId, btn) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Publish failed');
         }
 
@@ -8901,42 +8621,16 @@ async function deployTemplate(templateId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Deploy failed');
         }
 
         // Read NDJSON stream — phase-based events for flowchart rendering
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let finalResult = null;
-
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // keep incomplete line
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    _renderDeployProgress(progressDiv, event, 'deploy');
-                    if (event.phase === 'complete') finalResult = event;
-                } catch (e) { /* skip malformed */ }
-            }
-        }
-
-        // Process final buffer
-        if (buffer.trim()) {
-            try {
-                const event = JSON.parse(buffer);
-                _renderDeployProgress(progressDiv, event, 'deploy');
-                if (event.phase === 'complete') finalResult = event;
-            } catch (e) { /* skip */ }
-        }
+        await readNDJSONStream(res, (event) => {
+            _renderDeployProgress(progressDiv, event, 'deploy');
+            if (event.phase === 'complete') finalResult = event;
+        });
 
         if (finalResult && finalResult.status === 'succeeded') {
             showToast(`Deployment complete. ${(finalResult.provisioned_resources || []).length} resources provisioned.`, 'info');
@@ -8993,6 +8687,7 @@ function _renderDeployProgress(container, event, ctx) {
         flowchart.innerHTML = `
             <div class="vf-pipeline-header">
                 <span class="vf-pipeline-label">${isValidate ? 'Validation Pipeline' : 'Deploy Pipeline'}</span>
+                <span class="vf-pipeline-status vf-pipeline-running"><span class="vf-badge-pulse"></span> Running</span>
                 ${_copilotBadge(true)}
             </div>
             <div class="vf-stage-bar">
@@ -9116,12 +8811,15 @@ function _renderDeployProgress(container, event, ctx) {
     function _finalizeNode(nodeEl, status) {
         if (!nodeEl) return;
         nodeEl.classList.remove('vf-flow-node-active');
-        nodeEl.classList.add(status === 'success' ? 'vf-flow-node-success' : 'vf-flow-node-done');
+        if (status === 'success') nodeEl.classList.add('vf-flow-node-success');
+        else if (status === 'failed') nodeEl.classList.add('vf-flow-node-failed');
+        else nodeEl.classList.add('vf-flow-node-done');
         const badge = nodeEl.querySelector('.vf-node-badge');
         if (!badge) return;
         const labels = {
             success: { cls: 'vf-badge-success', label: '● Complete' },
             done:    { cls: 'vf-badge-done',    label: '● Done' },
+            failed:  { cls: 'vf-badge-failed',  label: '● Failed' },
         };
         const l = labels[status] || labels.done;
         badge.className = `vf-node-badge ${l.cls}`;
@@ -9584,6 +9282,23 @@ function _renderDeployProgress(container, event, ctx) {
 
         liveProgress.innerHTML = '';
 
+        // Update pipeline status badge in header
+        const pipelineStatus = flowchart.querySelector('.vf-pipeline-status');
+        if (pipelineStatus) {
+            pipelineStatus.className = `vf-pipeline-status ${isSuccess ? 'vf-pipeline-succeeded' : 'vf-pipeline-failed'}`;
+            pipelineStatus.innerHTML = isSuccess ? '● Succeeded' : '● Failed';
+        }
+
+        // Finalize any branch nodes still showing "Working"
+        for (const branchNode of Object.values(state.branchNodes)) {
+            const badge = branchNode.querySelector('.vf-branch-badge');
+            if (badge && badge.classList.contains('vf-branch-badge-running')) {
+                badge.className = 'vf-branch-badge vf-branch-badge-failed';
+                badge.textContent = 'Stopped';
+                branchNode.classList.remove('vf-branch-node-active');
+            }
+        }
+
         // Update stage bar
         if (isSuccess) {
             flowchart.querySelectorAll('.vf-stage').forEach(s => {
@@ -9591,16 +9306,18 @@ function _renderDeployProgress(container, event, ctx) {
                 s.classList.add('vf-stage-done');
             });
         } else {
-            _setActiveStage('verify');
+            // Mark all completed stages as done, and the current one as error
             flowchart.querySelectorAll('.vf-stage').forEach(s => {
-                s.classList.remove('vf-stage-active', 'vf-stage-error');
-                s.classList.add('vf-stage-done');
+                if (s.classList.contains('vf-stage-active')) {
+                    s.classList.remove('vf-stage-active');
+                    s.classList.add('vf-stage-error');
+                }
             });
         }
 
         // Finalize last active node
         const lastNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
-        if (lastNode) _finalizeNode(lastNode, isSuccess ? 'success' : 'done');
+        if (lastNode) _finalizeNode(lastNode, isSuccess ? 'success' : 'failed');
 
         // Add edge to result
         _addEdge('vf-flow-edge-done');
@@ -9688,12 +9405,12 @@ function _renderDeployProgress(container, event, ctx) {
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
                     <span class="vf-result-icon">●</span>
-                    <span>${isValidate ? 'Still working through some details' : 'Deployment needs a few adjustments'}</span>
+                    <span>${isValidate ? 'Validation failed — issues remain' : 'Deployment failed'}</span>
                 </div>
                 <div class="vf-result-body">
                     ${isValidate
-                        ? '<p>The agent worked through several iterations. Take a look at the flow above to see the progress.</p>'
-                        : `<p>${event.analysis ? escapeHtml(event.analysis) : 'The deployment needs some adjustments. You might want to revise the template or check the parameters.'}</p>`}
+                        ? `<p>The agent attempted multiple iterations but could not fully resolve all issues.${issuesResolved > 0 ? ` ${issuesResolved} issue${issuesResolved !== 1 ? 's were' : ' was'} fixed along the way.` : ''} Review the flow above for details.</p>`
+                        : `<p>${event.analysis ? escapeHtml(event.analysis) : 'The deployment could not be completed. You may need to revise the template or check the parameters.'}</p>`}
                     ${healHistory.length ? `
                     <details class="vf-heal-summary">
                         <summary>🔄 ${healHistory.length} iteration${healHistory.length !== 1 ? 's' : ''} attempted</summary>
@@ -9786,6 +9503,10 @@ async function fixAndValidateTemplate(templateId) {
     if (resultsDiv) resultsDiv.remove();
     const detailBody = document.getElementById('detail-template-body');
     if (detailBody) {
+        // Hide the stale status CTA (the "I found some issues..." banner) while pipeline runs
+        const staleCta = detailBody.querySelector('.tmpl-test-cta');
+        if (staleCta) staleCta.style.display = 'none';
+
         resultsDiv = document.createElement('div');
         resultsDiv.id = 'fix-validate-progress';
         resultsDiv.className = 'tmpl-validate-results detail-section';
@@ -9809,44 +9530,28 @@ async function fixAndValidateTemplate(templateId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Fix & Validate failed');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        await readNDJSONStream(res, (event) => {
+            tracker.events.push(event);
+            tracker.finalEvent = event;
+            if (resultsDiv) _renderDeployProgress(resultsDiv, event, 'validate');
+        });
 
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-
-            for (const line of lines) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line);
-                    tracker.events.push(event);
-                    tracker.finalEvent = event;
-                    if (resultsDiv) _renderDeployProgress(resultsDiv, event, 'validate');
-                } catch (e) { /* skip */ }
+        // Refresh data and update the status badge + CTA in-place
+        await loadAllData();
+        const updatedTmpl = allTemplates.find(t => t.id === templateId);
+        if (updatedTmpl) {
+            // Update status badge
+            const badgeEl = document.querySelector('#detail-template-body .status-badge');
+            if (badgeEl) {
+                const statusBadgeMap = { draft:'📝 Draft', passed:'✅ Passed', validated:'✅ Validated', failed:'❌ Failed', approved:'🚀 Published', deprecated:'⚠️ Deprecated' };
+                badgeEl.className = `status-badge ${updatedTmpl.status || 'draft'}`;
+                badgeEl.textContent = statusBadgeMap[updatedTmpl.status] || updatedTmpl.status;
             }
         }
-
-        if (buffer.trim()) {
-            try {
-                const event = JSON.parse(buffer);
-                tracker.events.push(event);
-                tracker.finalEvent = event;
-                if (resultsDiv) _renderDeployProgress(resultsDiv, event, 'validate');
-            } catch (e) { /* skip */ }
-        }
-
-        // Refresh data
-        await loadAllData();
         const final = tracker.finalEvent;
         if (final && final.phase === 'complete' && (final.status === 'succeeded' || final.status === 'tested_with_issues')) {
             showToast('✅ Template fixed and validated — ready to publish!', 'success');
@@ -9917,7 +9622,7 @@ async function runTemplateTest(templateId) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Test failed');
         }
 
@@ -10624,7 +10329,7 @@ async function submitGovernanceUpdate(event) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Failed to update service');
         }
 
@@ -10891,7 +10596,7 @@ async function submitTemplateOnboarding(event) {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Failed to compose template');
         }
 
@@ -12174,7 +11879,7 @@ async function saveStandard(event) {
         }
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Failed to save standard');
         }
 
@@ -12197,7 +11902,7 @@ async function deleteStandard(standardId) {
             method: 'DELETE',
         });
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Failed to delete');
         }
         showToast(`Standard ${standardId} deleted`);
@@ -12821,7 +12526,7 @@ async function extractStandards() {
         });
 
         if (!res.ok) {
-            const err = await res.json();
+            const err = await _safeJsonError(res);
             throw new Error(err.detail || 'Import failed');
         }
 

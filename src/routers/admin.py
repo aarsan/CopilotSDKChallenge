@@ -410,59 +410,46 @@ async def get_analytics_dashboard():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _analytics_handler(method_name: str):
+    """Factory for analytics endpoints that all follow the same pattern."""
+    async def handler():
+        from src.fabric import AnalyticsEngine
+        try:
+            return JSONResponse(await getattr(AnalyticsEngine, method_name)())
+        except Exception as e:
+            logger.error(f"{method_name} error: {e}")
+            return JSONResponse({"error": str(e)}, status_code=500)
+    return handler
+
+
 @router.get("/api/analytics/pipelines")
 async def get_pipeline_analytics():
     """Pipeline execution trends and success rates."""
-    from src.fabric import AnalyticsEngine
-    try:
-        return JSONResponse(await AnalyticsEngine.get_pipeline_analytics())
-    except Exception as e:
-        logger.error(f"Pipeline analytics error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return await _analytics_handler("get_pipeline_analytics")()
 
 
 @router.get("/api/analytics/governance")
 async def get_governance_analytics():
     """Governance review verdict distribution and trends."""
-    from src.fabric import AnalyticsEngine
-    try:
-        return JSONResponse(await AnalyticsEngine.get_governance_analytics())
-    except Exception as e:
-        logger.error(f"Governance analytics error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return await _analytics_handler("get_governance_analytics")()
 
 
 @router.get("/api/analytics/services")
 async def get_service_analytics():
     """Service catalog adoption metrics."""
-    from src.fabric import AnalyticsEngine
-    try:
-        return JSONResponse(await AnalyticsEngine.get_service_analytics())
-    except Exception as e:
-        logger.error(f"Service analytics error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return await _analytics_handler("get_service_analytics")()
 
 
 @router.get("/api/analytics/deployments")
 async def get_deployment_analytics():
     """Deployment success rates and regional distribution."""
-    from src.fabric import AnalyticsEngine
-    try:
-        return JSONResponse(await AnalyticsEngine.get_deployment_analytics())
-    except Exception as e:
-        logger.error(f"Deployment analytics error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return await _analytics_handler("get_deployment_analytics")()
 
 
 @router.get("/api/analytics/compliance")
 async def get_compliance_analytics():
     """Compliance assessment score trends."""
-    from src.fabric import AnalyticsEngine
-    try:
-        return JSONResponse(await AnalyticsEngine.get_compliance_analytics())
-    except Exception as e:
-        logger.error(f"Compliance analytics error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return await _analytics_handler("get_compliance_analytics")()
 
 
 @router.post("/api/fabric/sync")

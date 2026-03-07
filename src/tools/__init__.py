@@ -34,6 +34,10 @@ from src.tools.deploy_engine import (
     get_deployment_status,
     teardown_deployment,
 )
+from src.tools.service_details import get_service_details
+from src.tools.template_browser import browse_template_catalog
+from src.tools.deployment_history import list_deployments
+from src.tools.platform_overview import get_platform_overview
 
 
 def get_all_tools() -> list:
@@ -53,6 +57,7 @@ def get_all_tools() -> list:
         check_service_approval,
         request_service_approval,
         list_approved_services,
+        get_service_details,
         get_approval_request_status,
         review_approval_request,
         # Standards & compliance
@@ -62,6 +67,7 @@ def get_all_tools() -> list:
         request_policy_modification,
         # Catalog-first workflow
         search_template_catalog,
+        browse_template_catalog,
         compose_from_catalog,
         register_template,
         # Generation (fallback)
@@ -79,7 +85,10 @@ def get_all_tools() -> list:
         validate_deployment,
         deploy_infrastructure,
         get_deployment_status,
+        list_deployments,
         teardown_deployment,
+        # Platform analytics
+        get_platform_overview,
         # Output
         save_output_to_file,
         # Publishing
