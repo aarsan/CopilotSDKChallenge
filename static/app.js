@@ -4528,6 +4528,28 @@ function _handleValidationEvent(event) {
             logEl.appendChild(guidanceEl);
             logEl.scrollTop = logEl.scrollHeight;
         }
+    } else if (type === 'error' && phase === 'quota_exceeded') {
+        _flowFinalizeActive(logEl, 'failed');
+        const altRegions = event.alternative_regions || [];
+        const quota = event.quota || {};
+        let regionHtml = '';
+        if (altRegions.length > 0) {
+            const svcId = card ? card.dataset.serviceId : '';
+            const btns = altRegions.map(r =>
+                `<button class="btn btn-sm btn-accent" style="margin:0.2rem" onclick="retryWithRegion('${escapeHtml(svcId)}', '${escapeHtml(r)}')">${escapeHtml(r)}</button>`
+            ).join('');
+            regionHtml = `
+                <div class="uf-quota-alternatives" style="margin-top:0.75rem; padding:0.75rem; border-radius:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25);">
+                    <div style="font-weight:600; margin-bottom:0.4rem;">Available regions with quota:</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:0.25rem;">${btns}</div>
+                </div>`;
+        }
+        _flowResult(logEl, 'failed',
+            `VM quota exceeded in ${escapeHtml(quota.region || 'this region')} `
+            + `(${quota.used || '?'}/${quota.limit || '?'} cores in use). `
+            + `No deployment possible without additional quota.`
+            + regionHtml
+        );
     } else if (type === 'error') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'failed', detail || 'Onboarding failed');

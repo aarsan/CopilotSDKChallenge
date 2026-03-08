@@ -7252,6 +7252,29 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     f"--- END MIGRATION CONTEXT ---\n"
                 )
 
+            # ── Pre-flight quota check ────────────────────────
+            from src.pipeline_helpers import find_available_regions
+            _quota_primary, _quota_alts = await find_available_regions(region)
+            if not _quota_primary["ok"]:
+                _alt_names = [a["region"] for a in _quota_alts[:5]]
+                yield json.dumps({
+                    "type": "error", "phase": "quota_exceeded",
+                    "detail": (
+                        f"Subscription VM quota exceeded in {region} "
+                        f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use). "
+                        f"Cannot deploy to this region."
+                    ),
+                    "quota": _quota_primary,
+                    "alternative_regions": _alt_names,
+                    "progress": 1.0,
+                }) + "\n"
+                await update_service_version_status(service_id, new_ver, "failed")
+                await complete_pipeline_run(
+                    _run_id, "failed",
+                    error_detail=f"VM quota exceeded in {region} ({_quota_primary['used']}/{_quota_primary['limit']} cores)",
+                    heal_count=0)
+                return
+
             while attempt < MAX_HEAL_ATTEMPTS and not promoted:
                 attempt += 1
                 if attempt > 1:

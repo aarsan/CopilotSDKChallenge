@@ -1450,7 +1450,131 @@ def is_quota_or_capacity_error(error_msg: str) -> bool:
     return any(kw in lower for kw in QUOTA_KEYWORDS)
 
 
-def build_final_params(tpl: dict, user_params: dict | None = None) -> dict:
+# ── Pre-flight quota check ──────────────────────────────────────
+
+# Candidate regions to suggest when the primary region is over quota.
+FALLBACK_REGIONS = (
+    "eastus2", "westus2", "centralus", "eastus", "westus3",
+    "northeurope", "westeurope", "southeastasia", "uksouth",
+)
+
+
+async def check_region_quota(
+    region: str,
+    *,
+    min_cores: int = 2,
+) -> dict:
+    """Check if *region* has enough VM quota for a validation deployment.
+
+    Returns::
+
+        {
+            "ok": True/False,
+            "region": "eastus2",
+            "available_cores": 8,
+            "limit": 10,
+            "used": 2,
+            "error": ""  # non-empty only on API failure
+        }
+    """
+    try:
+        import httpx
+        from azure.identity import DefaultAzureCredential
+
+        credential = DefaultAzureCredential(
+            exclude_workload_identity_credential=True,
+            exclude_managed_identity_credential=True,
+        )
+        token = credential.get_token("https://management.azure.com/.default")
+
+        sub_id = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+        if not sub_id:
+            import subprocess
+            result = subprocess.run(
+                ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                sub_id = result.stdout.strip()
+
+        if not sub_id:
+            return {"ok": True, "region": region, "available_cores": -1,
+                    "limit": -1, "used": -1, "error": "no_subscription_id"}
+
+        url = (
+            f"https://management.azure.com/subscriptions/{sub_id}"
+            f"/providers/Microsoft.Compute/locations/{region}/usages"
+            f"?api-version=2024-07-01"
+        )
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers={
+                "Authorization": f"Bearer {token.token}",
+            })
+
+        if resp.status_code != 200:
+            return {"ok": True, "region": region, "available_cores": -1,
+                    "limit": -1, "used": -1,
+                    "error": f"api_error_{resp.status_code}"}
+
+        data = resp.json()
+        # Look for "Total Regional vCPUs" usage entry
+        for item in data.get("value", []):
+            name = item.get("name", {})
+            if name.get("value", "").lower() == "cores":
+                limit = item.get("limit", 0)
+                used = item.get("currentValue", 0)
+                available = limit - used
+                return {
+                    "ok": available >= min_cores,
+                    "region": region,
+                    "available_cores": available,
+                    "limit": limit,
+                    "used": used,
+                    "error": "",
+                }
+
+        # Couldn't find cores entry — assume OK
+        return {"ok": True, "region": region, "available_cores": -1,
+                "limit": -1, "used": -1, "error": "cores_entry_not_found"}
+
+    except Exception as e:
+        logger.warning(f"Quota pre-check for {region} failed: {e}")
+        # Don't block deployment on a failed check
+        return {"ok": True, "region": region, "available_cores": -1,
+                "limit": -1, "used": -1, "error": str(e)[:200]}
+
+
+async def find_available_regions(
+    primary_region: str,
+    *,
+    min_cores: int = 2,
+) -> tuple[dict, list[dict]]:
+    """Check quota in the primary region and, if low, scan fallback regions.
+
+    Returns ``(primary_result, alternatives)`` where *alternatives* is a
+    list of regions that have at least *min_cores* available, sorted by
+    available cores descending.
+    """
+    primary = await check_region_quota(primary_region, min_cores=min_cores)
+
+    if primary["ok"]:
+        return primary, []
+
+    # Primary is over quota — check alternatives in parallel
+    candidates = [r for r in FALLBACK_REGIONS if r != primary_region]
+    tasks = [check_region_quota(r, min_cores=min_cores) for r in candidates]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    alternatives = []
+    for r in results:
+        if isinstance(r, Exception):
+            continue
+        if r.get("ok") and r.get("available_cores", 0) > 0:
+            alternatives.append(r)
+
+    alternatives.sort(key=lambda x: x.get("available_cores", 0), reverse=True)
+    return primary, alternativesdef build_final_params(tpl: dict, user_params: dict | None = None) -> dict:
     """Build parameter values for ARM deployment from template defaults + user overrides."""
     tpl_params = tpl.get("parameters", {})
     final_params: dict = {}

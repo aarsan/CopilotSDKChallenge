@@ -138,6 +138,25 @@ async def stream_validation(
         "mode": "validation",
     }) + "\n"
 
+    # ── Pre-flight quota check ────────────────────────────────
+    from src.pipeline_helpers import find_available_regions
+    _quota_primary, _quota_alts = await find_available_regions(region)
+    if not _quota_primary["ok"]:
+        _alt_names = [a["region"] for a in _quota_alts[:5]]
+        yield json.dumps({
+            "phase": "complete",
+            "status": "failed",
+            "detail": (
+                f"Subscription VM quota exceeded in {region} "
+                f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use). "
+                f"Cannot deploy to this region."
+            ),
+            "error": f"VM quota exceeded in {region}",
+            "quota": _quota_primary,
+            "alternative_regions": _alt_names,
+        }) + "\n"
+        return
+
     for attempt in range(1, MAX_HEAL + 1):
         is_last = attempt == MAX_HEAL
         events: list[dict] = []

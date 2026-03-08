@@ -1276,6 +1276,28 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
     except Exception as pv_err:
         logger.warning(f"Pre-validation check error (non-fatal): {pv_err}")
 
+    # ── Pre-flight quota check ────────────────────────────────
+    from src.pipeline_helpers import find_available_regions
+    _quota_primary, _quota_alts = await find_available_regions(ctx.region)
+    if not _quota_primary["ok"]:
+        _alt_names = [a["region"] for a in _quota_alts[:5]]
+        yield emit(
+            "error", "quota_exceeded",
+            (
+                f"Subscription VM quota exceeded in {ctx.region} "
+                f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use). "
+                f"Cannot deploy to this region."
+            ),
+            ctx.progress(1.0),
+            quota=_quota_primary,
+            alternative_regions=_alt_names,
+        )
+        raise StepFailure(
+            f"VM quota exceeded in {ctx.region}",
+            healable=False,
+            phase="deploy_quota",
+        )
+
     attempt = 0
     while attempt < MAX_HEAL:
         attempt += 1
