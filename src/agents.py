@@ -1028,9 +1028,15 @@ def test_<resource_name>_health():
 
 ## RULES
 
-- Use azure.mgmt.resource for generic resource queries
-- Use resource-specific SDKs (azure.mgmt.web, azure.mgmt.sql, etc.) ONLY if they \
-  are commonly available. Prefer generic REST via `credential.get_token()` + requests.
+- **ONLY** use these imports: `os`, `json`, `requests`, `azure.identity`, `azure.mgmt.resource`. \
+  These are the ONLY packages guaranteed to be installed.
+- **NEVER** import resource-specific SDKs like azure.mgmt.network, azure.mgmt.web, \
+  azure.mgmt.sql, azure.mgmt.compute, azure.mgmt.storage, azure.mgmt.keyvault, \
+  azure.mgmt.monitor, or ANY other azure.mgmt.* package besides azure.mgmt.resource. \
+  They are NOT installed and will cause an ImportError that crashes ALL tests.
+- For resource-specific queries, use azure.mgmt.resource.ResourceManagementClient's \
+  generic `resources.get()` / `resources.get_by_id()`, or use direct REST calls via \
+  `credential.get_token("https://management.azure.com/.default")` + `requests`.
 - For HTTP endpoint checks, use requests with a 10-second timeout. Accept any HTTP \
   status (even 403/401) as "reachable". Only fail on ConnectionError or DNS failure.
 - Each test function must be independent — no shared state between tests.

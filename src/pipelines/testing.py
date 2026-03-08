@@ -123,6 +123,10 @@ async def generate_test_script(
         f"in the ARM template. Query the Azure Resource Provider API to get valid API "
         f"versions and assert the template's apiVersion is in the valid list. "
         f"A wrong API version MUST cause a hard test failure.\n\n"
+        f"IMPORTANT: Only import os, json, requests, azure.identity, and azure.mgmt.resource. "
+        f"Do NOT import azure.mgmt.network, azure.mgmt.web, azure.mgmt.sql, azure.mgmt.compute, "
+        f"or any other azure.mgmt.* package — they are NOT installed. "
+        f"Use ResourceManagementClient.resources.get_by_id() or direct REST API calls instead.\n\n"
         f"Return ONLY the Python code."
     )
 
@@ -161,6 +165,40 @@ def _extract_test_functions(script: str) -> list[str]:
     return re.findall(r'^def (test_\w+)\s*\(', script, re.MULTILINE)
 
 
+# Packages guaranteed to be installed — everything else under azure.mgmt.* is forbidden.
+_ALLOWED_AZURE_MGMT = {"azure.mgmt.resource"}
+
+
+def _check_forbidden_imports(script: str) -> list[str]:
+    """Return list of forbidden azure.mgmt.* imports found in the script."""
+    # Match: import azure.mgmt.network / from azure.mgmt.network import ...
+    found = re.findall(r'(?:from|import)\s+(azure\.mgmt\.\w+)', script)
+    return [m for m in set(found) if m not in _ALLOWED_AZURE_MGMT]
+
+
+def _rewrite_forbidden_imports(script: str) -> str:
+    """Replace forbidden azure.mgmt.* imports with a RuntimeError stub.
+
+    Instead of crashing the whole subprocess on ImportError, each test
+    that uses the missing client will get a clear failure message.
+    """
+    forbidden = _check_forbidden_imports(script)
+    if not forbidden:
+        return script
+
+    for pkg in forbidden:
+        # Remove 'from <pkg> import X' lines and 'import <pkg>' lines
+        # Replace with a comment explaining why
+        script = re.sub(
+            rf'^(from\s+{re.escape(pkg)}\b.*|import\s+{re.escape(pkg)}\b.*)$',
+            f'# REMOVED: {pkg} is not installed — using azure.mgmt.resource + REST instead',
+            script,
+            flags=re.MULTILINE,
+        )
+    logger.info(f"Rewrote forbidden imports in test script: {forbidden}")
+    return script
+
+
 async def execute_test_script(
     script: str,
     resource_group: str,
@@ -194,6 +232,9 @@ async def execute_test_script(
             "stdout": "",
             "stderr": "No test functions found in generated script",
         }
+
+    # Rewrite any forbidden azure.mgmt.* imports so the script doesn't crash
+    script = _rewrite_forbidden_imports(script)
 
     # Write a runner wrapper that executes each test and reports JSON results
     runner_script = _build_test_runner(script, test_names)
