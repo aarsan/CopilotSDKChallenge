@@ -44,6 +44,7 @@ from src.pipeline_helpers import (
     is_transient_error,
     is_quota_or_capacity_error,
     brief_azure_error,
+    find_available_regions,
 )
 from src.model_router import Task, get_model_for_task
 
@@ -82,6 +83,7 @@ async def stream_deploy(
     )
 
     heal_history: list[dict] = []
+    tried_regions: set[str] = {region}
 
     # ── STEP 1: SANITIZE ─────────────────────────────────────
     yield json.dumps({
@@ -142,6 +144,34 @@ async def stream_deploy(
                 }) + "\n"
                 await asyncio.sleep(10)
                 continue
+
+            # Quota / capacity errors — try a different region
+            if is_quota_or_capacity_error(what_if_errors):
+                _primary, _alts = await find_available_regions(region)
+                _alts = [a for a in _alts if a["region"] not in tried_regions]
+                if _alts:
+                    old_region = region
+                    region = _alts[0]["region"]
+                    tried_regions.add(region)
+                    final_params["location"] = region
+                    yield json.dumps({
+                        "phase": "region_fallback",
+                        "detail": f"Region **{old_region}** doesn't have capacity — switching to **{region}**…",
+                        "old_region": old_region,
+                        "new_region": region,
+                    }) + "\n"
+                    continue
+                brief = brief_azure_error(what_if_errors)
+                yield json.dumps({
+                    "phase": "error",
+                    "detail": (
+                        f"Quota/capacity exceeded in all tried regions "
+                        f"({', '.join(sorted(tried_regions))}). "
+                        f"Request a quota increase or free up resources. Error: {brief}"
+                    ),
+                    "progress": 1.0,
+                }) + "\n"
+                return
 
             # Template error — heal it
             yield json.dumps({
@@ -349,15 +379,29 @@ async def stream_deploy(
             await asyncio.sleep(10)
             continue
 
-        # Quota / capacity errors — no template fix possible.
+        # Quota / capacity errors — try a different region
         if is_quota_or_capacity_error(deploy_error):
+            _primary, _alts = await find_available_regions(region)
+            _alts = [a for a in _alts if a["region"] not in tried_regions]
+            if _alts:
+                old_region = region
+                region = _alts[0]["region"]
+                tried_regions.add(region)
+                final_params["location"] = region
+                yield json.dumps({
+                    "phase": "region_fallback",
+                    "detail": f"Region **{old_region}** hit a quota/capacity limit — switching to **{region}**…",
+                    "old_region": old_region,
+                    "new_region": region,
+                }) + "\n"
+                continue
             brief = brief_azure_error(deploy_error)
             yield json.dumps({
                 "phase": "error",
                 "detail": (
-                    f"Subscription quota exceeded — cannot deploy in this region. "
-                    f"Request a quota increase, deploy to a different region, "
-                    f"or free up existing resources. Error: {brief}"
+                    f"Quota/capacity exceeded in all tried regions "
+                    f"({', '.join(sorted(tried_regions))}). "
+                    f"Request a quota increase or free up resources. Error: {brief}"
                 ),
                 "progress": 1.0,
             }) + "\n"

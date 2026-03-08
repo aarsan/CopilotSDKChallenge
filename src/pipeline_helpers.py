@@ -1418,6 +1418,7 @@ TRANSIENT_KEYWORDS = (
 )
 
 # Quota / capacity errors that no template change can fix.
+# Region fallback is the only automated remediation.
 QUOTA_KEYWORDS = (
     "subscriptionisoverquotaforsku",
     "overquota",
@@ -1427,9 +1428,17 @@ QUOTA_KEYWORDS = (
     "quota limit",
     "exceeds the maximum allowed",
     "skuisnotavailableinregion",
+    "sku is not available",
+    "skunotavailable",
     "zonalallocationfailed",
     "allocationfailed",
     "notenoughcores",
+    "locationnotavailableforresourcetype",
+    "insufficientquota",
+    "resourcequotaexceeded",
+    "capacityconstraint",
+    "regioncapacityconstraint",
+    "operationnotallowedforsku",
 )
 
 
@@ -1574,7 +1583,10 @@ async def find_available_regions(
             alternatives.append(r)
 
     alternatives.sort(key=lambda x: x.get("available_cores", 0), reverse=True)
-    return primary, alternativesdef build_final_params(tpl: dict, user_params: dict | None = None) -> dict:
+    return primary, alternatives
+
+
+def build_final_params(tpl: dict, user_params: dict | None = None) -> dict:
     """Build parameter values for ARM deployment from template defaults + user overrides."""
     tpl_params = tpl.get("parameters", {})
     final_params: dict = {}

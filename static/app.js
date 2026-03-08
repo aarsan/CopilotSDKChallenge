@@ -732,7 +732,14 @@ function renderMarkdown(text) {
     };
 
     try {
-        return marked.parse(text, { renderer });
+        let html = marked.parse(text, { renderer });
+        // Strip iframes, scripts, and other embeds the LLM might produce
+        html = html.replace(/<iframe[\s\S]*?<\/iframe>/gi, '');
+        html = html.replace(/<iframe[^>]*\/>/gi, '');
+        html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+        html = html.replace(/<embed[^>]*>/gi, '');
+        html = html.replace(/<object[\s\S]*?<\/object>/gi, '');
+        return html;
     } catch {
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
@@ -1403,7 +1410,7 @@ let _runningTableUpdates = new Map();  // serviceId → AbortController for conc
 let _tableUpdateEventBuffers = new Map();  // serviceId → array of events (replayed when drawer opens)
 let _openDrawerServiceId = null;  // currently open service detail drawer
 
-async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion) {
+async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion, region) {
     // If this service already has a table update running, ignore
     if (_runningTableUpdates.has(serviceId)) {
         console.warn('[update] table update already running for', serviceId);
@@ -1434,6 +1441,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion)
     try {
         const body = {};
         if (targetVersion) body.target_version = targetVersion;
+        if (region) body.region = region;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/update-api-version`, {
             method: 'POST',
@@ -2823,7 +2831,22 @@ async function changeGlobalModel(modelId) {
     }
 }
 
-async function triggerOnboarding(serviceId) {
+async function retryWithRegion(serviceId, region) {
+    showToast(`Retrying onboarding in ${region}…`, 'info');
+    triggerOnboarding(serviceId, { region });
+}
+
+async function retryVersionUpdateWithRegion(serviceId, region) {
+    showToast(`Retrying version update in ${region}…`, 'info');
+    startApiVersionUpdateFromTable(serviceId, null, null, region);
+}
+
+async function retryTemplateValidationWithRegion(templateId, region) {
+    showToast(`Retrying template validation in ${region}…`, 'info');
+    runFullValidation(templateId, true, { region });
+}
+
+async function triggerOnboarding(serviceId, opts = {}) {
     const svc = allServices.find(s => s.id === serviceId);
     const svcName = svc ? svc.name : serviceId;
     openPipelineOverlay('Onboarding Pipeline', '⏳', `Onboarding ${svcName}…`);
@@ -2852,6 +2875,7 @@ async function triggerOnboarding(serviceId) {
 
     try {
         const body = {};
+        if (opts.region) body.region = opts.region;
 
         const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
             method: 'POST',
@@ -2891,6 +2915,32 @@ async function triggerOnboarding(serviceId) {
             const cardEl = document.getElementById('validation-card');
             if (cardEl) cardEl.className = 'validation-card validation-failed';
         }
+    }
+}
+
+/** Sequentially onboard multiple services that aren't fully onboarded.
+ *  Navigates to the first service's detail page and kicks off its pipeline,
+ *  then continues to the next after each one completes. */
+async function onboardAllDeps(serviceIds) {
+    if (!serviceIds || !serviceIds.length) return;
+    const names = serviceIds.map(id => {
+        const svc = allServices.find(s => s.id === id);
+        return svc ? svc.name : id.split('/').pop();
+    });
+    if (!confirm(
+        `Onboard ${serviceIds.length} service(s)?\n\n` +
+        names.map((n, i) => `${i + 1}. ${n}`).join('\n') +
+        `\n\nEach service will go through the full onboarding pipeline (generate → validate → deploy ARM template). ` +
+        `The first service will start immediately.`
+    )) return;
+
+    // Navigate to the first service and kick off onboarding
+    showServiceDetail(serviceIds[0]);
+    setTimeout(() => triggerOnboarding(serviceIds[0]), 300);
+
+    // Show toast about remaining services
+    if (serviceIds.length > 1) {
+        showToast(`🚀 Onboarding ${names[0]}… ${serviceIds.length - 1} more service(s) queued. After this completes, navigate to each remaining service to onboard it.`, 'info', 8000);
     }
 }
 
@@ -4102,6 +4152,28 @@ function _handleUpdateEvent(event) {
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Version updated — v${event.new_semver || '?'}`);
+    } else if (type === 'error' && phase === 'quota_exceeded') {
+        _flowFinalizeActive(logEl, 'failed');
+        const altRegions = event.alternative_regions || [];
+        const quota = event.quota || {};
+        let regionHtml = '';
+        if (altRegions.length > 0) {
+            const svcId = card ? card.dataset.serviceId : '';
+            const btns = altRegions.map(r =>
+                `<button class="btn btn-sm btn-accent" style="margin:0.2rem" onclick="retryVersionUpdateWithRegion('${escapeHtml(svcId)}', '${escapeHtml(r)}')">${escapeHtml(r)}</button>`
+            ).join('');
+            regionHtml = `
+                <div class="uf-quota-alternatives" style="margin-top:0.75rem; padding:0.75rem; border-radius:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25);">
+                    <div style="font-weight:600; margin-bottom:0.4rem;">Available regions with quota:</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:0.25rem;">${btns}</div>
+                </div>`;
+        }
+        _flowResult(logEl, 'failed',
+            `VM quota exceeded in ${escapeHtml(quota.region || 'this region')} `
+            + `(${quota.used || '?'}/${quota.limit || '?'} cores in use). `
+            + `No deployment possible without additional quota.`
+            + regionHtml
+        );
     } else if (type === 'error') {
         // Don't render a separate error result if governance already blocks — the card handles it
         if (phase === 'governance_blocked' && logEl._flow?.cards?.['governance']) {
@@ -5541,7 +5613,7 @@ async function _loadTemplateComposition(templateId) {
                                         ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
-                            ${notOnboarded ? '<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div>' : ''}
+                            ${notOnboarded ? `<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(c.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(c.service_id)}'), 300)" title="Run the onboarding pipeline for this service">🚀 Onboard</button>` : ''}
                             ${depIconsHtml}
                         </div>
                     </div>`;
@@ -5577,9 +5649,12 @@ async function _loadTemplateComposition(templateId) {
 
         // Not-onboarded warning banner
         if (anyNotOnboarded) {
+            const notOnboardedIds = components.filter(c => c.fully_onboarded === false).map(c => c.service_id);
+            const idsAttr = escapeHtml(JSON.stringify(notOnboardedIds));
             html += `<div class="comp-hero-not-onboarded-banner">
-                ⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
-                — their ARM templates have not been deployment-validated. Run the onboarding pipeline on these services before deploying.
+                <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                — their ARM templates have not been deployment-validated.</div>
+                <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids))" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
             </div>`;
         }
 
@@ -7705,7 +7780,7 @@ function _renderRemediationResults(data) {
 }
 
 /** Full validation pipeline: structural tests → ARM validation (auto-chains) */
-async function runFullValidation(templateId, skipTests = false) {
+async function runFullValidation(templateId, skipTests = false, opts = {}) {
     if (!skipTests) {
         // Step 1: Run structural tests
         showToast('� Let me check the structure first…', 'info');
@@ -7745,7 +7820,7 @@ async function runFullValidation(templateId, skipTests = false) {
 
     // Step 3: Auto-trigger ARM validation
     await new Promise(r => setTimeout(r, 200));
-    runTemplateValidation(templateId);
+    runTemplateValidation(templateId, opts.region);
 }
 
 /** Show the validation form with parameter inputs */
@@ -7788,7 +7863,7 @@ function showValidateForm(templateId) {
 }
 
 /** Run ARM validation (streaming NDJSON with self-healing) */
-async function runTemplateValidation(templateId) {
+async function runTemplateValidation(templateId, regionOverride) {
     const btn = document.getElementById('tmpl-validate-btn');
     const resultsDiv = document.getElementById('tmpl-validate-results');
     if (btn) {
@@ -7831,7 +7906,7 @@ async function runTemplateValidation(templateId) {
         });
 
         const regionSelect = document.getElementById('tmpl-validate-region');
-        const region = regionSelect ? regionSelect.value : 'eastus2';
+        const region = regionOverride || (regionSelect ? regionSelect.value : 'eastus2');
 
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/validate`, {
             method: 'POST',
@@ -7925,21 +8000,93 @@ function _renderValidationResults(container, data, passed) {
     `;
 }
 
-/** Recompose a composite template from its latest service templates */
+/** Recompose a composite template from its latest service templates.
+ *  Streams NDJSON: onboarding progress events followed by the final result. */
 async function recomposeBlueprint(templateId) {
-    if (!confirm('Recompose this template from the latest service templates?\n\nThis pulls the current version of each underlying service template, re-merges them, and creates a new major version.')) return;
+    if (!confirm('Recompose this template from the latest service templates?\n\nThis will onboard any services that haven\'t been validated yet, then re-merge everything into a new major version.')) return;
 
     showToast('🔄 Pulling latest service template versions…', 'info');
+
+    // Create a live progress area in the composition section
+    const compContainer = document.getElementById('tmpl-composition');
+    let progressDiv = document.getElementById('recompose-progress');
+    if (progressDiv) progressDiv.remove();
+    if (compContainer) {
+        progressDiv = document.createElement('div');
+        progressDiv.id = 'recompose-progress';
+        progressDiv.className = 'recompose-progress-panel';
+        progressDiv.innerHTML = '<div class="recompose-progress-title">🔄 Recomposing…</div><div class="recompose-progress-log" id="recompose-log"></div>';
+        compContainer.prepend(progressDiv);
+    }
+
+    const logDiv = document.getElementById('recompose-log');
+    function appendLog(icon, msg) {
+        if (!logDiv) return;
+        const line = document.createElement('div');
+        line.className = 'recompose-log-line';
+        line.textContent = `${icon} ${msg}`;
+        logDiv.appendChild(line);
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
 
     try {
         const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/recompose`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
         });
-        const data = await res.json();
 
         if (!res.ok) {
-            showToast(`Recompose: ${data.detail || 'Could not proceed'}`, 'info');
+            const err = await _safeJsonError(res);
+            showToast(`Recompose: ${err.detail || 'Could not proceed'}`, 'info');
+            if (progressDiv) progressDiv.remove();
+            return;
+        }
+
+        let data = null;
+        await readNDJSONStream(res, (evt) => {
+            if (evt.type === 'result') {
+                data = evt;
+                return;
+            }
+            if (evt.type === 'error') {
+                appendLog('❌', evt.detail || 'Unknown error');
+                return;
+            }
+
+            // Onboarding progress events
+            const phase = evt.phase || '';
+            if (phase === 'onboarding_gate') {
+                appendLog('🔍', evt.detail);
+            } else if (phase === 'onboarding_start') {
+                appendLog('🚀', evt.detail);
+            } else if (phase === 'onboarding_progress') {
+                // Sub-pipeline progress — show key milestones
+                const inner = evt.event || {};
+                const iType = inner.type || '';
+                const iStep = inner.step_id || inner.phase || '';
+                if (iType === 'step' && inner.status === 'success') {
+                    appendLog('  ✅', `${evt.service_name}: ${inner.detail || iStep}`);
+                } else if (iType === 'step' && inner.status === 'running') {
+                    appendLog('  ⏳', `${evt.service_name}: ${inner.detail || iStep}`);
+                } else if (iType === 'error') {
+                    appendLog('  ❌', `${evt.service_name}: ${inner.detail || 'error'}`);
+                }
+            } else if (phase === 'onboarding_complete') {
+                appendLog('✅', evt.detail);
+            } else if (phase === 'onboarding_failed') {
+                appendLog('❌', evt.detail);
+            } else if (phase === 'onboarding_gate_passed') {
+                appendLog('🎯', evt.detail);
+            } else if (phase === 'onboarding_gate_partial') {
+                appendLog('⚠️', evt.detail);
+            } else if (phase === 'composing') {
+                appendLog('🔧', evt.detail);
+            }
+        });
+
+        if (!data) {
+            showToast('Recompose: no result received from server', 'info');
+            if (progressDiv) progressDiv.remove();
             return;
         }
 
@@ -7965,24 +8112,51 @@ async function recomposeBlueprint(templateId) {
             detail += `\n⚠️ ${tr.failed}/${tr.total} structural tests need attention`;
         }
 
-        // Warn about services not fully onboarded
+        // Inline-onboarded services
+        const onboardedInline = data.onboarded_inline || [];
+        if (onboardedInline.length) {
+            detail += `\n\n🚀 ${onboardedInline.length} service(s) onboarded inline:`;
+            for (const s of onboardedInline) {
+                detail += `\n  • ${s.name || s.service_id}`;
+            }
+        }
+
+        // Warn about services still not onboarded
         const notOnboarded = data.not_onboarded || [];
         if (notOnboarded.length) {
-            detail += `\n\n⚠️ ${notOnboarded.length} service(s) not fully onboarded:`;
+            detail += `\n\n⚠️ ${notOnboarded.length} service(s) still not fully onboarded:`;
             for (const s of notOnboarded) {
                 detail += `\n  • ${s.name || s.service_id} (${s.reason})`;
             }
-            detail += `\nOnboard these services to deployment-validate their ARM templates.`;
         }
 
-        const toastType = notOnboarded.length ? 'info' : (tr && tr.all_passed) ? 'success' : 'info';
-        showToast(detail, toastType, notOnboarded.length ? 12000 : 8000);
+        // Onboarding failures
+        const onboardFailed = data.onboard_failed || [];
+        if (onboardFailed.length) {
+            detail += `\n\n❌ ${onboardFailed.length} service(s) failed onboarding:`;
+            for (const s of onboardFailed) {
+                detail += `\n  • ${s.service_id} — ${s.reason}`;
+            }
+        }
+
+        const hasWarnings = notOnboarded.length || onboardFailed.length;
+        const toastType = hasWarnings ? 'info' : (tr && tr.all_passed) ? 'success' : 'info';
+        showToast(detail, toastType, hasWarnings ? 12000 : 8000);
+
+        // Mark progress panel as done
+        if (progressDiv) {
+            const titleEl = progressDiv.querySelector('.recompose-progress-title');
+            if (titleEl) titleEl.textContent = hasWarnings
+                ? '⚠️ Recompose complete (with warnings)'
+                : '✅ Recompose complete';
+        }
 
         // Refresh the detail view
         await loadAllData();
         showTemplateDetail(templateId);
     } catch (err) {
         showToast(`Recompose: ${err.message}`, 'info');
+        if (progressDiv) progressDiv.remove();
     }
 }
 
@@ -9064,6 +9238,45 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
+    // Region fallback — quota/capacity exceeded, switching to another region
+    if (phase === 'region_fallback') {
+        const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
+        if (curNode) _finalizeNode(curNode, 'done');
+
+        _addEdge('vf-flow-edge-active');
+        state.nodeCount++;
+        const nodeId = `vf-node-${state.nodeCount}`;
+        const node = document.createElement('div');
+        node.className = 'vf-flow-node vf-flow-node-active';
+        node.id = nodeId;
+        const oldRegion = event.old_region || '';
+        const newRegion = event.new_region || '';
+        node.innerHTML = `
+            <div class="vf-node-header">
+                <div class="vf-node-icon" style="background:var(--bg-accent-muted,#1c3a5e)">🌍</div>
+                <div class="vf-node-title">Region Fallback</div>
+                <div class="vf-node-badge vf-badge-done">● Rerouting</div>
+            </div>
+            <div class="vf-node-body">
+                <div class="vf-activity vf-activity-fix">
+                    <span>⚠️</span> <span>${escapeHtml(oldRegion)} has no capacity — switching to <strong>${escapeHtml(newRegion)}</strong></span>
+                </div>
+            </div>
+        `;
+        canvas.appendChild(node);
+        state.currentNodeId = nodeId;
+
+        // Update the region tag in the header info
+        const regionTag = container.querySelector('.vf-target-info .vf-tag:nth-child(2)');
+        if (regionTag && regionTag.textContent.startsWith('Region:')) {
+            regionTag.textContent = `Region: ${newRegion}`;
+        }
+
+        _finalizeNode(node, 'success');
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
     // Error — brief agent note in current node, then finalize it
     if (phase === 'error') {
         _setActiveStage('analyze');
@@ -9523,6 +9736,18 @@ function _renderDeployProgress(container, event, ctx) {
                 </details>
             `;
         } else {
+            const altRegions = event.alternative_regions || [];
+            let quotaHtml = '';
+            if (altRegions.length > 0) {
+                const btns = altRegions.map(r =>
+                    `<button class="btn btn-sm btn-accent" style="margin:0.2rem" onclick="retryTemplateValidationWithRegion('${escapeHtml(event.template_id || '')}', '${escapeHtml(r)}')">${escapeHtml(r)}</button>`
+                ).join('');
+                quotaHtml = `
+                    <div style="margin-top:0.75rem; padding:0.75rem; border-radius:8px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25);">
+                        <div style="font-weight:600; margin-bottom:0.4rem;">Available regions with quota:</div>
+                        <div style="display:flex; flex-wrap:wrap; gap:0.25rem;">${btns}</div>
+                    </div>`;
+            }
             resultDiv.className = 'vf-result vf-result-fail';
             resultDiv.innerHTML = `
                 <div class="vf-result-header">
@@ -9545,6 +9770,7 @@ function _renderDeployProgress(container, event, ctx) {
                             `).join('')}
                         </div>
                     </details>` : ''}
+                    ${quotaHtml}
                 </div>
                 ${event.deployment_id ? `<div class="vf-result-meta">Deployment: <code>${escapeHtml(event.deployment_id)}</code></div>` : ''}
             `;

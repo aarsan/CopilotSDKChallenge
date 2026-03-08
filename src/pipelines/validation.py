@@ -34,6 +34,8 @@ from src.pipeline_helpers import (
     extract_param_values,
     copilot_heal_template,
     build_final_params,
+    is_quota_or_capacity_error,
+    find_available_regions,
 )
 
 logger = logging.getLogger("infraforge.pipeline.validation")
@@ -139,23 +141,38 @@ async def stream_validation(
     }) + "\n"
 
     # ── Pre-flight quota check ────────────────────────────────
-    from src.pipeline_helpers import find_available_regions
+    tried_regions: set[str] = {region}
     _quota_primary, _quota_alts = await find_available_regions(region)
     if not _quota_primary["ok"]:
-        _alt_names = [a["region"] for a in _quota_alts[:5]]
-        yield json.dumps({
-            "phase": "complete",
-            "status": "failed",
-            "detail": (
-                f"Subscription VM quota exceeded in {region} "
-                f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use). "
-                f"Cannot deploy to this region."
-            ),
-            "error": f"VM quota exceeded in {region}",
-            "quota": _quota_primary,
-            "alternative_regions": _alt_names,
-        }) + "\n"
-        return
+        _quota_alts = [a for a in _quota_alts if a["region"] not in tried_regions]
+        if _quota_alts:
+            old_region = region
+            region = _quota_alts[0]["region"]
+            tried_regions.add(region)
+            current_params["location"] = region
+            yield json.dumps({
+                "phase": "region_fallback",
+                "detail": (
+                    f"VM quota exceeded in **{old_region}** "
+                    f"({_quota_primary['used']}/{_quota_primary['limit']} cores) "
+                    f"— switching to **{region}**…"
+                ),
+                "old_region": old_region,
+                "new_region": region,
+            }) + "\n"
+        else:
+            yield json.dumps({
+                "phase": "complete",
+                "status": "failed",
+                "detail": (
+                    f"Subscription VM quota exceeded in {region} "
+                    f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use) "
+                    f"and no fallback regions have capacity."
+                ),
+                "error": f"VM quota exceeded in {region}",
+                "quota": _quota_primary,
+            }) + "\n"
+            return
 
     for attempt in range(1, MAX_HEAL + 1):
         is_last = attempt == MAX_HEAL
@@ -350,6 +367,24 @@ async def stream_validation(
 
         # ── FAILURE ──
         error_msg = result.get("error") or result.get("detail") or "Unknown deployment error"
+
+        # Quota / capacity errors — try a different region instead of healing
+        if is_quota_or_capacity_error(error_msg):
+            _primary, _alts = await find_available_regions(region)
+            _alts = [a for a in _alts if a["region"] not in tried_regions]
+            if _alts:
+                old_region = region
+                region = _alts[0]["region"]
+                tried_regions.add(region)
+                current_params["location"] = region
+                yield json.dumps({
+                    "phase": "region_fallback",
+                    "detail": f"Region **{old_region}** hit a quota/capacity limit — switching to **{region}**…",
+                    "old_region": old_region,
+                    "new_region": region,
+                }) + "\n"
+                continue
+            # No alternatives left — fall through to normal failure handling
 
         if is_last:
             yield json.dumps({
