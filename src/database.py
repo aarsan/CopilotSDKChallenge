@@ -1794,7 +1794,7 @@ async def get_services_basic(service_ids: list[str]) -> dict[str, dict]:
     backend = await get_backend()
     placeholders = ", ".join("?" for _ in service_ids)
     rows = await backend.execute(
-        f"SELECT id, name, category, status, latest_api_version, template_api_version FROM services WHERE id IN ({placeholders})",
+        f"SELECT id, name, category, status, reviewed_by, latest_api_version, template_api_version FROM services WHERE id IN ({placeholders})",
         tuple(service_ids),
     )
     return {r["id"]: dict(r) for r in rows}
@@ -2922,6 +2922,33 @@ async def get_active_service_version(service_id: str) -> dict | None:
     if not rows or not rows[0].get("active_version"):
         return None
     return await get_service_version(service_id, rows[0]["active_version"])
+
+
+async def is_service_fully_validated(service_id: str) -> tuple[bool, str]:
+    """Check whether a service completed the full onboarding pipeline.
+
+    Returns ``(is_validated, reason)``.
+
+    A service auto-approved by the orchestrator has ``reviewed_by='orchestrator'``
+    and no ``validated_at`` on its active version.  A fully validated service has
+    ``reviewed_by='Deployment Validated'`` (set only by ``set_active_service_version``
+    at pipeline completion).
+    """
+    svc = await get_service(service_id)
+    if not svc:
+        return False, "not_found"
+    if svc.get("status") != "approved":
+        return False, f"status={svc.get('status')}"
+    if svc.get("reviewed_by") == "orchestrator":
+        return False, "auto_approved_stub"
+    if svc.get("reviewed_by") != "Deployment Validated":
+        return False, f"reviewed_by={svc.get('reviewed_by')}"
+    active = await get_active_service_version(service_id)
+    if not active:
+        return False, "no_active_version"
+    if not active.get("validated_at"):
+        return False, "not_validated"
+    return True, "fully_validated"
 
 
 async def get_version_summary_batch(service_ids: list[str]) -> dict[str, dict]:
@@ -4163,6 +4190,21 @@ async def seed_orchestration_processes() -> int:
                 },
                 {
                     "step_order": 2,
+                    "name": "Check dependency gates",
+                    "description": (
+                        "Inspect all required external dependencies of this service type. "
+                        "For each dependency that exists only as an auto-approved stub "
+                        "(reviewed_by='orchestrator', no validated_at), run the full "
+                        "onboarding pipeline inline before proceeding. Skip dependencies "
+                        "that are created_by_template (inline), optional, or already "
+                        "fully validated (reviewed_by='Deployment Validated')."
+                    ),
+                    "action": "check_dependency_gates",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 3,
                     "name": "Analyze organization standards",
                     "description": (
                         "Fetch applicable organization standards for the service type. "
@@ -4174,7 +4216,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "abort",
                 },
                 {
-                    "step_order": 3,
+                    "step_order": 4,
                     "name": "Plan architecture",
                     "description": (
                         "LLM planning call to reason about ARM template structure, "
@@ -4187,7 +4229,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"skippable": true}',
                 },
                 {
-                    "step_order": 4,
+                    "step_order": 5,
                     "name": "Generate ARM template",
                     "description": (
                         "Generate ARM template via built-in skeleton or Copilot SDK. "
@@ -4199,7 +4241,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "abort",
                 },
                 {
-                    "step_order": 5,
+                    "step_order": 6,
                     "name": "Generate Azure Policy",
                     "description": (
                         "Generate Azure Policy definition via LLM or deterministic "
@@ -4212,7 +4254,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"skippable": true}',
                 },
                 {
-                    "step_order": 6,
+                    "step_order": 7,
                     "name": "Governance review gate",
                     "description": (
                         "Run CISO and CTO structured reviews on the generated ARM "
@@ -4226,7 +4268,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"skippable": false}',
                 },
                 {
-                    "step_order": 7,
+                    "step_order": 8,
                     "name": "Validate via ARM deploy",
                     "description": (
                         "Full healing loop: parse JSON → static policy check → "
@@ -4240,7 +4282,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"max_heal_attempts": 5}',
                 },
                 {
-                    "step_order": 8,
+                    "step_order": 9,
                     "name": "Infrastructure smoke tests",
                     "description": (
                         "Generate and execute Python infrastructure tests against the "
@@ -4255,7 +4297,7 @@ async def seed_orchestration_processes() -> int:
                     "config_json": '{"skippable": true}',
                 },
                 {
-                    "step_order": 9,
+                    "step_order": 10,
                     "name": "Deploy Azure Policy",
                     "description": (
                         "Deploy the generated Azure Policy definition to enforce "
@@ -4267,7 +4309,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 10,
+                    "step_order": 11,
                     "name": "Cleanup",
                     "description": (
                         "Delete the temporary validation resource group and clean up "
@@ -4278,7 +4320,7 @@ async def seed_orchestration_processes() -> int:
                     "on_failure": "next",
                 },
                 {
-                    "step_order": 11,
+                    "step_order": 12,
                     "name": "Approve and promote",
                     "description": (
                         "Mark service version as approved, set as active version. "

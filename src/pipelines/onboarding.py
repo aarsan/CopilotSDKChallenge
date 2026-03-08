@@ -4,17 +4,18 @@ Service Onboarding Pipeline — migrated from web.py's ``stream_onboarding()``.
 Registers step handlers on a ``PipelineRunner`` that drives the end-to-end
 service onboarding flow:
 
-  1. initialize         — model routing, cleanup stale drafts
-  2. analyze_standards  — fetch org standards
-  3. plan_architecture  — LLM planning call
-  4. generate_arm       — ARM template generation (skeleton or LLM)
-  5. generate_policy    — Azure Policy generation
-  6. governance_review  — CISO + CTO structured review gate
-  7. validate_arm_deploy — HealingLoop with all checks
-  8. infra_testing      — AI-generated infrastructure smoke tests
-  9. deploy_policy      — deploy Azure Policy to Azure
- 10. cleanup            — delete temp RG + policy
- 11. promote_service    — mark approved, set active version
+  1. initialize              — model routing, cleanup stale drafts
+  2. check_dependency_gates  — validate required deps are fully onboarded
+  3. analyze_standards       — fetch org standards
+  4. plan_architecture       — LLM planning call
+  5. generate_arm            — ARM template generation (skeleton or LLM)
+  6. generate_policy         — Azure Policy generation
+  7. governance_review       — CISO + CTO structured review gate
+  8. validate_arm_deploy     — HealingLoop with all checks
+  9. infra_testing           — AI-generated infrastructure smoke tests
+ 10. deploy_policy           — deploy Azure Policy to Azure
+ 11. cleanup                 — delete temp RG + policy
+ 12. promote_service         — mark approved, set active version
 
 The endpoint still lives in web.py — it just delegates to
 ``runner.execute(ctx)`` now.
@@ -57,6 +58,7 @@ from src.pipeline_helpers import (
     cleanup_rg,
     guard_locations,
     is_transient_error,
+    is_quota_or_capacity_error,
     build_final_params,
 )
 from src.model_router import Task, get_model_for_task, get_model_display, get_task_reason
@@ -370,6 +372,7 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
         f"Pipeline: Onboard {svc.get('name', ctx.service_id)} with full ARM template generation & validation",
         ctx.progress(0.4),
         steps=[
+            "Check dependency validation gates",
             "Analyze organization standards & governance policies",
             "AI plans cloud architecture for this service",
             "Generate production-ready ARM template",
@@ -394,6 +397,228 @@ async def step_initialize(ctx: PipelineContext, step: StepDef):
         )
 
     yield emit("progress", "init_complete", "✓ Initialization complete", ctx.progress(1.0))
+
+
+# ══════════════════════════════════════════════════════════════
+# DEPENDENCY VALIDATION GATE
+# ══════════════════════════════════════════════════════════════
+
+@runner.step("check_dependency_gates")
+async def step_check_dependency_gates(ctx: PipelineContext, step: StepDef):
+    """Check that all required external dependencies are fully onboarded.
+
+    For each required, non-inline dependency:
+    1. Skip if ``created_by_template`` (resource created inside the ARM template)
+    2. Skip if ``required=False`` (optional dependency)
+    3. Skip if it is a child resource whose parent is also a dependency
+    4. Call ``is_service_fully_validated()`` to check pipeline-validated status
+    5. If not validated, run the full onboarding pipeline inline as a sub-pipeline
+
+    If any dependency onboarding fails, the parent pipeline aborts.
+    """
+    import uuid
+    from src.database import get_service, is_service_fully_validated
+    from src.template_engine import RESOURCE_DEPENDENCIES, get_parent_resource_type
+
+    service_id = ctx.service_id
+    deps = RESOURCE_DEPENDENCIES.get(service_id, [])
+
+    # Circular dependency guard — carried through sub-pipelines via ctx.extra
+    onboarding_chain: set = ctx.extra.setdefault("onboarding_chain", set())
+    onboarding_chain.add(service_id)
+
+    if not deps:
+        yield emit(
+            "progress", "dep_gate_check",
+            f"No dependencies defined for {service_id.split('/')[-1]} — skipping gate",
+            ctx.progress(0.5),
+        )
+        yield emit("progress", "dep_gate_complete", "Dependency gate passed", ctx.progress(1.0))
+        return
+
+    # Filter to required external deps only
+    required_external = []
+    for dep in deps:
+        if dep.get("created_by_template"):
+            continue
+        if not dep.get("required"):
+            continue
+        required_external.append(dep)
+
+    if not required_external:
+        yield emit(
+            "progress", "dep_gate_check",
+            f"All {len(deps)} dependencies are inline or optional — gate passed",
+            ctx.progress(0.8),
+        )
+        yield emit("progress", "dep_gate_complete", "Dependency gate passed", ctx.progress(1.0))
+        return
+
+    yield emit(
+        "progress", "dep_gate_check",
+        f"Checking {len(required_external)} required external dependency(ies)...",
+        ctx.progress(0.1),
+    )
+
+    # Scan each dependency
+    needs_onboarding: list[dict] = []
+    already_valid: list[str] = []
+    skipped_child: list[str] = []
+
+    # Collect all dep types for parent-child dedup
+    dep_types = {d["type"] for d in required_external}
+
+    for i, dep in enumerate(required_external):
+        dep_type = dep["type"]
+        dep_short = dep_type.split("/")[-1]
+        progress_pct = 0.1 + (0.3 * (i + 1) / len(required_external))
+
+        # Skip child resource types whose parent is also in the dep list
+        parent = get_parent_resource_type(dep_type)
+        if parent and parent in dep_types:
+            skipped_child.append(dep_type)
+            yield emit(
+                "progress", "dep_gate_scanning",
+                f"  {dep_short} — covered by parent {parent.split('/')[-1]}",
+                ctx.progress(progress_pct),
+            )
+            continue
+
+        # Circular dependency guard
+        if dep_type in onboarding_chain:
+            yield emit(
+                "warning", "dep_gate_scanning",
+                f"  {dep_short} — circular dependency detected, skipping",
+                ctx.progress(progress_pct),
+            )
+            continue
+
+        is_valid, reason = await is_service_fully_validated(dep_type)
+
+        if is_valid:
+            already_valid.append(dep_type)
+            yield emit(
+                "progress", "dep_gate_scanning",
+                f"  {dep_short} — fully validated",
+                ctx.progress(progress_pct),
+            )
+        else:
+            needs_onboarding.append(dep)
+            yield emit(
+                "progress", "dep_gate_scanning",
+                f"  {dep_short} — needs full onboarding ({reason})",
+                ctx.progress(progress_pct),
+            )
+
+    if not needs_onboarding:
+        total = len(already_valid) + len(skipped_child)
+        yield emit(
+            "progress", "dep_gate_complete",
+            f"All {total} required dependencies are validated — gate passed",
+            ctx.progress(1.0),
+        )
+        return
+
+    # ── Onboard each unvalidated dependency inline ────────────
+    yield emit(
+        "progress", "dep_gate_onboarding",
+        f"Onboarding {len(needs_onboarding)} unvalidated dependency(ies) before proceeding...",
+        ctx.progress(0.4),
+    )
+
+    failed_deps: list[tuple[str, str]] = []
+
+    for i, dep in enumerate(needs_onboarding):
+        dep_type = dep["type"]
+        dep_short = dep_type.split("/")[-1]
+
+        yield emit(
+            "progress", "co_onboarding",
+            f"Starting onboarding for dependency: {dep_short} ({dep['reason']})",
+            ctx.progress(0.4 + (0.5 * i / len(needs_onboarding))),
+            dep_service=dep_type,
+        )
+
+        # Ensure service entry exists
+        dep_svc = await get_service(dep_type)
+        if not dep_svc:
+            from src.orchestrator import auto_onboard_service
+            await auto_onboard_service(dep_type, region=ctx.region)
+            dep_svc = await get_service(dep_type)
+
+        if not dep_svc:
+            failed_deps.append((dep_type, "Could not create service entry"))
+            yield emit(
+                "progress", "dep_onboard_failed",
+                f"  {dep_short} — could not create service entry",
+                ctx.progress(0.4 + (0.5 * (i + 1) / len(needs_onboarding))),
+                dep_service=dep_type,
+            )
+            continue
+
+        # Build child pipeline context
+        dep_run_id = uuid.uuid4().hex[:8]
+        dep_rg = f"infraforge-val-{dep_type.replace('/', '-').replace('.', '-').lower()}-{dep_run_id}"[:90]
+
+        dep_ctx = PipelineContext(
+            "service_onboarding",
+            run_id=dep_run_id,
+            service_id=dep_type,
+            region=ctx.region,
+            rg_name=dep_rg,
+            svc=dep_svc,
+            model_id=ctx.extra.get("model_id"),
+            onboarding_chain=onboarding_chain.copy(),
+        )
+
+        dep_succeeded = False
+        try:
+            async for line in runner.execute(dep_ctx):
+                try:
+                    evt = json.loads(line)
+                    evt["dep_service"] = dep_type
+                    evt["dep_name"] = dep_short
+                    if evt.get("type") == "done":
+                        dep_succeeded = True
+                    elif evt.get("type") == "error":
+                        failed_deps.append((dep_type, evt.get("detail", "unknown error")))
+                    yield json.dumps(evt) + "\n"
+                except (json.JSONDecodeError, ValueError):
+                    yield line
+        except StepFailure as sf:
+            failed_deps.append((dep_type, str(sf)))
+        except Exception as e:
+            logger.warning(f"Dependency onboarding failed for {dep_type}: {e}")
+            failed_deps.append((dep_type, str(e)))
+
+        if dep_succeeded:
+            yield emit(
+                "progress", "dep_onboard_complete",
+                f"  {dep_short} onboarded and validated successfully",
+                ctx.progress(0.4 + (0.5 * (i + 1) / len(needs_onboarding))),
+                dep_service=dep_type,
+            )
+        elif dep_type not in [f[0] for f in failed_deps]:
+            failed_deps.append((dep_type, "Pipeline did not emit 'done'"))
+
+    if failed_deps:
+        summary = "; ".join(f"{d.split('/')[-1]}: {r[:120]}" for d, r in failed_deps)
+        raise StepFailure(
+            f"Dependency onboarding failed — {summary}",
+            healable=False,
+            phase="dep_gate",
+        )
+
+    yield emit(
+        "progress", "dep_gate_complete",
+        f"All dependencies onboarded and validated — gate passed",
+        ctx.progress(1.0),
+    )
+
+    ctx.artifacts["dep_gate_results"] = {
+        "already_valid": already_valid,
+        "newly_onboarded": [d["type"] for d in needs_onboarding],
+    }
 
 
 @runner.step("analyze_standards")
@@ -1285,6 +1510,20 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 yield emit("progress", "infra_retry", "Azure is temporarily busy — retrying in 10 seconds…", ctx.progress(att_base + 0.21), step=attempt)
                 await asyncio.sleep(10)
                 continue
+
+            # Quota / capacity errors cannot be fixed by changing the template.
+            if is_quota_or_capacity_error(deploy_error):
+                await cleanup_rg(ctx.rg_name)
+                quota_msg = (
+                    f"Subscription quota exceeded — cannot deploy in this region. "
+                    f"Request a quota increase in the Azure portal, deploy to a different "
+                    f"region, or free up existing resources. Error: {brief}"
+                )
+                await update_service_version_status(
+                    ctx.service_id, ctx.version_num, "failed",
+                    validation_result={"error": deploy_error, "phase": "deploy_quota"})
+                await fail_service_validation(ctx.service_id, quota_msg)
+                raise StepFailure(quota_msg, healable=False, phase="deploy")
 
             if is_last:
                 if _regen_count < MAX_REGEN - 1:

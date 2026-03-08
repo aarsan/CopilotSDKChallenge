@@ -153,6 +153,7 @@ def brief_azure_error(error_msg: str) -> str:
         "LocationNotAvailableForResourceType": "The resource type isn't available in the selected region",
         "SkuNotAvailable": "The requested SKU or tier isn't available in the selected region",
         "QuotaExceeded": "Hit a subscription quota or resource limit",
+        "SubscriptionIsOverQuotaForSku": "Subscription VM quota exceeded — request a quota increase or try a different region",
         "ConflictingUserInput": "Conflicting parameter values were provided",
         "InvalidParameter": "One of the parameter values is invalid",
         "PropertyChangeNotAllowed": "Tried to change a property that can't be modified after creation",
@@ -1416,11 +1417,37 @@ TRANSIENT_KEYWORDS = (
     "serviceunavailable", "internalservererror",
 )
 
+# Quota / capacity errors that no template change can fix.
+QUOTA_KEYWORDS = (
+    "subscriptionisoverquotaforsku",
+    "overquota",
+    "quotaexceeded",
+    "operation cannot be completed without additional quota",
+    "not enough quota",
+    "quota limit",
+    "exceeds the maximum allowed",
+    "skuisnotavailableinregion",
+    "zonalallocationfailed",
+    "allocationfailed",
+    "notenoughcores",
+)
+
 
 def is_transient_error(error_msg: str) -> bool:
     """Check if an Azure error message indicates a transient infrastructure issue."""
     lower = error_msg.lower()
     return any(kw in lower for kw in TRANSIENT_KEYWORDS)
+
+
+def is_quota_or_capacity_error(error_msg: str) -> bool:
+    """Check if an Azure error is a subscription quota / capacity limit.
+
+    These errors cannot be fixed by changing the ARM template — the only
+    remediation is to increase the subscription quota, switch regions,
+    or free up existing resources.
+    """
+    lower = error_msg.lower()
+    return any(kw in lower for kw in QUOTA_KEYWORDS)
 
 
 def build_final_params(tpl: dict, user_params: dict | None = None) -> dict:

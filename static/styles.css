@@ -2156,6 +2156,16 @@ tr:hover .svc-view-tpl-btn {
     color: var(--accent-amber, #f59e0b);
     font-weight: 600;
 }
+.hero-node-not-onboarded {
+    border-color: var(--accent-amber, #f59e0b);
+    border-style: dashed;
+}
+.hero-node-not-onboarded-badge {
+    font-size: 0.58rem;
+    color: var(--accent-amber, #f59e0b);
+    font-weight: 600;
+    margin-top: 2px;
+}
 
 /* ── Hero Dependency Icons ──────────────── */
 .hero-node-deps {
@@ -2207,6 +2217,18 @@ tr:hover .svc-view-tpl-btn {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
+}
+
+/* ── Not-onboarded Warning Banner ───────── */
+.comp-hero-not-onboarded-banner {
+    background: color-mix(in srgb, var(--accent-amber, #f59e0b) 12%, transparent);
+    border: 1px solid var(--accent-amber, #f59e0b);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.5rem 0.75rem;
+    margin: 0.75rem 0 0.25rem;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    line-height: 1.4;
 }
 
 /* ── Hero Actions Row ────────────────────── */
@@ -4486,18 +4508,21 @@ tr:hover .svc-view-tpl-btn {
     background: rgba(245, 158, 11, 0.25);
 }
 .version-badge.version-update-running {
-    background: rgba(59, 130, 246, 0.25);
-    color: var(--accent-blue);
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border: 1.5px solid rgba(16, 185, 129, 0.5);
     pointer-events: none;
     cursor: wait;
-    opacity: 0.9;
+    font-weight: 700;
+    animation: validating-pulse 1.5s ease-in-out infinite;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
 }
 .update-badge-spinner {
     display: inline-block;
     width: 10px;
     height: 10px;
-    border: 2px solid rgba(59, 130, 246, 0.3);
-    border-top-color: var(--accent-blue);
+    border: 2px solid rgba(16, 185, 129, 0.3);
+    border-top-color: #10b981;
     border-radius: 50%;
     animation: update-badge-spin 0.6s linear infinite;
     vertical-align: middle;
@@ -5793,9 +5818,9 @@ tr:hover .svc-view-tpl-btn {
 }
 
 .validation-running {
-    border-color: #d29922aa;
-    background: rgba(210, 153, 34, 0.04);
-    box-shadow: 0 0 12px rgba(210, 153, 34, 0.08);
+    border-color: rgba(16, 185, 129, 0.55);
+    background: rgba(16, 185, 129, 0.04);
+    box-shadow: 0 0 14px rgba(16, 185, 129, 0.12);
 }
 
 .validation-succeeded {
@@ -7080,9 +7105,18 @@ tr:hover .svc-view-tpl-btn {
 
 /* Status badge additions */
 .status-badge.validating {
-    background: rgba(210, 153, 34, 0.15);
-    color: #e3b341;
-    border: 1px solid rgba(210, 153, 34, 0.3);
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border: 1.5px solid rgba(16, 185, 129, 0.5);
+    font-weight: 700;
+    font-size: 0.75rem;
+    padding: 0.3rem 0.75rem;
+    animation: validating-pulse 1.5s ease-in-out infinite;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+@keyframes validating-pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(16, 185, 129, 0.3); border-color: rgba(16, 185, 129, 0.5); }
+    50% { box-shadow: 0 0 18px rgba(16, 185, 129, 0.55); border-color: rgba(16, 185, 129, 0.8); }
 }
 
 .status-badge.validation_failed {
@@ -13198,10 +13232,11 @@ details[open] > .tmpl-deploy-group-optional {
     gap: 0.35rem;
 }
 .vf-pipeline-running {
-    color: var(--accent-blue);
-    background: rgba(59,130,246,0.1);
-    border: 1px solid rgba(59,130,246,0.25);
-    animation: vfStatusPulse 2s ease-in-out infinite;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.15);
+    border: 1.5px solid rgba(16, 185, 129, 0.4);
+    animation: vfStatusPulse 1.5s ease-in-out infinite;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
 }
 .vf-pipeline-succeeded {
     color: #3fb950;
@@ -13214,8 +13249,8 @@ details[open] > .tmpl-deploy-group-optional {
     border: 1px solid rgba(248,81,73,0.25);
 }
 @keyframes vfStatusPulse {
-    0%, 100% { opacity: 1; }
-    50%      { opacity: 0.6; }
+    0%, 100% { box-shadow: 0 0 8px rgba(16, 185, 129, 0.25); border-color: rgba(16, 185, 129, 0.4); }
+    50%      { box-shadow: 0 0 16px rgba(16, 185, 129, 0.5); border-color: rgba(16, 185, 129, 0.7); }
 }
 
 /* ── Stage bar (horizontal pipeline header) ── */
@@ -13245,19 +13280,19 @@ details[open] > .tmpl-deploy-group-optional {
     transition: all 0.3s;
 }
 .vf-stage-active .vf-stage-dot {
-    background: var(--accent-blue); border-color: var(--accent-blue);
-    box-shadow: 0 0 6px rgba(59,130,246,0.4);
+    background: #10b981; border-color: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
     animation: vfPulse 1.5s infinite;
 }
-.vf-stage-active { color: var(--accent-blue); }
-.vf-stage-done .vf-stage-dot { background: var(--accent-blue); border-color: var(--accent-blue); }
-.vf-stage-done { color: var(--accent-blue); }
+.vf-stage-active { color: #10b981; }
+.vf-stage-done .vf-stage-dot { background: #10b981; border-color: #10b981; }
+.vf-stage-done { color: #10b981; }
 .vf-stage-error .vf-stage-dot { background: #f85149; border-color: #f85149; }
 .vf-stage-error { color: #f85149; }
 
 @keyframes vfPulse {
-    0%, 100% { box-shadow: 0 0 4px rgba(59,130,246,0.3); }
-    50%      { box-shadow: 0 0 10px rgba(59,130,246,0.6); }
+    0%, 100% { box-shadow: 0 0 4px rgba(16, 185, 129, 0.3); }
+    50%      { box-shadow: 0 0 10px rgba(16, 185, 129, 0.6); }
 }
 
 .vf-stage-connector-h {
@@ -13405,7 +13440,7 @@ details[open] > .tmpl-deploy-group-optional {
 }
 .vf-badge-pulse {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent-blue);
+    background: #10b981;
     animation: vfPulse 1.5s infinite;
 }
 

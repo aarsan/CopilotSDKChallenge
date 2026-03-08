@@ -3920,6 +3920,7 @@ async def _recompose_with_pinned(
     changelog: str = "Recomposed",
     change_type: str = "major",
     created_by: str = "recomposer",
+    progress_callback=None,
 ) -> dict:
     """Core recompose logic that respects pinned versions.
 
@@ -3927,6 +3928,9 @@ async def _recompose_with_pinned(
     - If version_overrides specifies a version for this service, use that
     - If ignore_existing_pins is False and the template has a pinned version, use that
     - Otherwise fall back to the active (latest promoted) version
+
+    If a service has not been fully onboarded (deployment-validated), the
+    onboarding pipeline is run inline before composition proceeds.
 
     Returns a dict with recompose results including the new version.
     """
@@ -3967,9 +3971,143 @@ async def _recompose_with_pinned(
     }
 
     # ── Gather ARM templates for each service (respecting pins) ─
+    from src.database import is_service_fully_validated
+
+    async def _emit(msg: dict):
+        if progress_callback:
+            await progress_callback(msg)
+
     service_templates: list[dict] = []
     service_version_details: list[dict] = []
     pinned_versions: dict = {}
+    not_onboarded: list[dict] = []
+    onboarded_inline: list[dict] = []
+    onboard_failed: list[dict] = []
+
+    # First pass: identify which services need onboarding
+    for sid in svc_ids:
+        svc = await _require_service(sid)
+        is_valid, validation_reason = await is_service_fully_validated(sid)
+        if not is_valid:
+            not_onboarded.append({
+                "service_id": sid,
+                "name": svc.get("name", sid),
+                "reason": validation_reason,
+            })
+
+    # Run onboarding for any service that isn't fully validated
+    if not_onboarded:
+        await _emit({
+            "phase": "onboarding_gate",
+            "detail": f"{len(not_onboarded)} service(s) need onboarding before composition",
+            "services": [s["service_id"] for s in not_onboarded],
+        })
+
+        import uuid
+        from src.pipelines.onboarding import runner as onboarding_runner
+        from src.pipeline import PipelineContext
+
+        for i, entry in enumerate(not_onboarded):
+            sid = entry["service_id"]
+            short = sid.split("/")[-1]
+            await _emit({
+                "phase": "onboarding_start",
+                "detail": f"Onboarding {short} ({i+1}/{len(not_onboarded)})…",
+                "service_id": sid,
+                "index": i,
+                "total": len(not_onboarded),
+            })
+
+            svc = await get_service(sid)
+            if not svc:
+                onboard_failed.append({"service_id": sid, "reason": "service not found"})
+                await _emit({
+                    "phase": "onboarding_failed",
+                    "detail": f"{short}: service entry not found",
+                    "service_id": sid,
+                })
+                continue
+
+            run_id = uuid.uuid4().hex[:8]
+            rg_name = f"infraforge-val-{sid.replace('/', '-').replace('.', '-').lower()}-{run_id}"[:90]
+
+            ctx = PipelineContext(
+                "service_onboarding",
+                run_id=run_id,
+                service_id=sid,
+                region="eastus2",
+                rg_name=rg_name,
+                svc=svc,
+                onboarding_chain={sid},
+            )
+
+            succeeded = False
+            last_error = ""
+            try:
+                async for line in onboarding_runner.execute(ctx):
+                    try:
+                        evt = json.loads(line)
+                        evt["dep_service"] = sid
+                        evt["dep_name"] = short
+                        # Forward progress events to the caller
+                        await _emit({
+                            "phase": "onboarding_progress",
+                            "service_id": sid,
+                            "service_name": short,
+                            "event": evt,
+                            "detail": evt.get("detail", evt.get("message", "")),
+                        })
+                        if evt.get("type") == "done":
+                            succeeded = True
+                        elif evt.get("type") == "error":
+                            last_error = evt.get("detail", "unknown error")
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Recompose: onboarding failed for {sid}: {e}")
+
+            if succeeded:
+                onboarded_inline.append({"service_id": sid, "name": entry["name"]})
+                await _emit({
+                    "phase": "onboarding_complete",
+                    "detail": f"{short} onboarded and validated",
+                    "service_id": sid,
+                })
+            else:
+                onboard_failed.append({"service_id": sid, "reason": last_error or "pipeline did not complete"})
+                await _emit({
+                    "phase": "onboarding_failed",
+                    "detail": f"{short}: {last_error or 'pipeline did not complete'}",
+                    "service_id": sid,
+                })
+
+        # Refresh the not_onboarded list after onboarding attempts
+        still_not_onboarded = []
+        for entry in not_onboarded:
+            is_valid, reason = await is_service_fully_validated(entry["service_id"])
+            if not is_valid:
+                still_not_onboarded.append({**entry, "reason": reason})
+        not_onboarded = still_not_onboarded
+
+        if not_onboarded:
+            await _emit({
+                "phase": "onboarding_gate_partial",
+                "detail": f"{len(onboarded_inline)} onboarded, {len(not_onboarded)} still pending — proceeding with best-effort composition",
+                "still_pending": [s["service_id"] for s in not_onboarded],
+            })
+        else:
+            await _emit({
+                "phase": "onboarding_gate_passed",
+                "detail": f"All {len(onboarded_inline)} services onboarded — proceeding to composition",
+            })
+
+    await _emit({"phase": "composing", "detail": "Assembling ARM template from service templates…"})
+
+    service_templates: list[dict] = []
+    service_version_details: list[dict] = []
+    pinned_versions: dict = {}
+
     for sid in svc_ids:
         svc = await _require_service(sid)
 
@@ -4183,6 +4321,12 @@ async def _recompose_with_pinned(
             f"{test_results['passed']}/{test_results['total']} passed → {test_status}"
         )
 
+    if not_onboarded:
+        logger.warning(
+            f"Recompose '{template_id}': {len(not_onboarded)} service(s) not fully onboarded: "
+            + ", ".join(f"{s['service_id']} ({s['reason']})" for s in not_onboarded)
+        )
+
     logger.info(
         f"Recomposed blueprint '{template_id}' from {len(svc_ids)} services "
         f"→ {len(combined_resources)} resources, {len(combined_params)} params"
@@ -4199,6 +4343,9 @@ async def _recompose_with_pinned(
         "pinned_versions": pinned_versions,
         "test_results": test_results,
         "test_status": test_status,
+        "not_onboarded": not_onboarded,
+        "onboarded_inline": onboarded_inline,
+        "onboard_failed": onboard_failed,
     }
 
 
@@ -4456,22 +4603,50 @@ async def recompose_blueprint(template_id: str):
     Fetches the active ARM templates for each service_id stored on the
     blueprint and recomposes. Clears all pinned version locks so each
     service moves to its current active version.
+
+    Streams NDJSON progress events (onboarding, composition) followed
+    by a final ``{"type": "result", ...}`` event with the full result.
     """
-    result = await _recompose_with_pinned(
-        template_id,
-        version_overrides=None,
-        ignore_existing_pins=True,  # upgrade all → use active for every service
-        changelog="Recomposed from current service templates",
-        change_type="major",
-        created_by="recomposer",
-    )
-    # Clear all pins so recompose always grabs active versions
-    # (The helper already recorded the active versions as the new pins)
-    result["message"] = (
-        f"Template recomposed from {len(result['services_recomposed'])} services "
-        f"with latest templates"
-    )
-    return JSONResponse(result)
+    import json as _json
+
+    async def _stream():
+        events: list[dict] = []
+
+        async def _progress_cb(evt: dict):
+            events.append(evt)
+
+        try:
+            result = await _recompose_with_pinned(
+                template_id,
+                version_overrides=None,
+                ignore_existing_pins=True,
+                changelog="Recomposed from current service templates",
+                change_type="major",
+                created_by="recomposer",
+                progress_callback=_progress_cb,
+            )
+            result["message"] = (
+                f"Template recomposed from {len(result['services_recomposed'])} services "
+                f"with latest templates"
+            )
+
+            # Emit all collected progress events
+            for evt in events:
+                yield _json.dumps(evt) + "\n"
+
+            # Emit final result
+            yield _json.dumps({"type": "result", **result}) + "\n"
+
+        except Exception as e:
+            # Emit any progress that was collected before the error
+            for evt in events:
+                yield _json.dumps(evt) + "\n"
+            yield _json.dumps({
+                "type": "error",
+                "detail": str(e),
+            }) + "\n"
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
 
 # ── Template Composition Info ─────────────────────────────────
@@ -4555,6 +4730,7 @@ async def get_template_composition(template_id: str):
             "name": svc.get("name", sid.split("/")[-1]),
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
+            "fully_onboarded": svc.get("reviewed_by") == "Deployment Validated",
             "current_version": pinned_int,
             "current_semver": pinned_semver or (f"{pinned_int}.0.0" if pinned_int else None),
             "latest_version": active_int,
@@ -5121,6 +5297,48 @@ async def validate_template(template_id: str, request: Request):
         )
 
         try:
+            # ── Dependency gate: check composed services are validated ──
+            if svc_ids:
+                from src.database import is_service_fully_validated, get_service
+                _unvalidated = []
+                for _dep_sid in svc_ids:
+                    _dep_valid, _dep_reason = await is_service_fully_validated(_dep_sid)
+                    _dep_svc = await get_service(_dep_sid)
+                    _dep_name = _dep_svc.get("name", _dep_sid) if _dep_svc else _dep_sid
+                    _dep_short = _dep_sid.split("/")[-1]
+                    if _dep_valid:
+                        yield json.dumps({
+                            "phase": "dep_check",
+                            "detail": f"✅ {_dep_short} — fully validated",
+                        }) + "\n"
+                    else:
+                        _unvalidated.append((_dep_sid, _dep_short, _dep_name, _dep_reason))
+                        yield json.dumps({
+                            "phase": "dep_check",
+                            "detail": f"⚠️ {_dep_short} — not validated ({_dep_reason})",
+                        }) + "\n"
+
+                if _unvalidated:
+                    _dep_list = ", ".join(d[1] for d in _unvalidated)
+                    _error_msg = (
+                        f"Cannot validate this template: {len(_unvalidated)} dependent "
+                        f"service(s) need onboarding first: {_dep_list}. "
+                        f"Open each service and run 'Onboard Service' before retrying."
+                    )
+                    yield json.dumps({
+                        "phase": "complete",
+                        "status": "failed",
+                        "detail": _error_msg,
+                        "error": _error_msg,
+                    }) + "\n"
+                    error_detail = _error_msg
+                    await complete_pipeline_run(
+                        _run_id, "failed",
+                        error_detail=_error_msg,
+                    )
+                    await update_template_version_status(_tmpl_id, _ver_num, "failed")
+                    return
+
             async for line in stream_validation(
                 template_id=_tmpl_id,
                 template_name=_tmpl_name,
@@ -7412,6 +7630,29 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 while not deploy_ok and _deploy_heals < MAX_DEPLOY_SUB_HEALS:
                     _deploy_heals += 1
                     _total_deploy_heals += 1
+
+                    # Quota / capacity errors — stop immediately, no LLM fix possible
+                    _is_quota_vu = any(kw in deploy_error.lower() for kw in
+                        ("subscriptionisoverquotaforsku", "overquota",
+                         "quotaexceeded", "operation cannot be completed without additional quota",
+                         "notenoughcores", "allocationfailed", "zonalallocationfailed"))
+                    if _is_quota_vu:
+                        await update_service_version_status(service_id, new_ver, "failed")
+                        await complete_pipeline_run(
+                            _run_id, "failed",
+                            error_detail="Subscription quota exceeded — no template fix possible",
+                            heal_count=len(heal_history))
+                        yield json.dumps({
+                            "type": "error", "phase": "deploy", "step": attempt,
+                            "detail": (
+                                "Subscription quota exceeded — cannot deploy in this region. "
+                                "Request a quota increase in the Azure portal, deploy to a "
+                                "different region, or free up existing resources."
+                            ),
+                            "progress": 1.0,
+                        }) + "\n"
+                        return
+
                     if _client is None:
                         _client = await ensure_copilot_client()
                     if not _client:
@@ -9872,6 +10113,12 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                          "serviceunavailable", "internalservererror",
                          "still being deleted"))
 
+                    # Detect quota / capacity errors — no template fix possible
+                    _is_quota = any(kw in deploy_error.lower() for kw in
+                        ("subscriptionisoverquotaforsku", "overquota",
+                         "quotaexceeded", "operation cannot be completed without additional quota",
+                         "notenoughcores", "allocationfailed", "zonalallocationfailed"))
+
                     yield json.dumps({
                         "type": "progress", "phase": "deploy_failed", "step": attempt,
                         "detail": f"ARM deployment 'validate-{attempt}' failed in resource group '{rg_name}' ({region}). Error from Azure: {deploy_error[:400]}",
@@ -9884,6 +10131,19 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                             "progress": att_base + 0.13}) + "\n"
                         await asyncio.sleep(10)
                         continue
+
+                    if _is_quota:
+                        await _cleanup_rg(rg_name)
+                        _quota_msg = (
+                            "Subscription quota exceeded — cannot deploy in this region. "
+                            "Request a quota increase in the Azure portal, deploy to a "
+                            "different region, or free up existing resources."
+                        )
+                        await fail_service_validation(service_id, _quota_msg)
+                        yield json.dumps({"type": "error", "phase": "deploy", "step": attempt,
+                            "detail": _quota_msg,
+                            "progress": 1.0}) + "\n"
+                        return
 
                     if is_last:
                         await _cleanup_rg(rg_name)
@@ -10822,6 +11082,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             svc=svc,
             use_version=use_version,
             model_id=model_id,
+            onboarding_chain={service_id},
         )
 
         async for line in runner.execute(ctx):
@@ -11016,6 +11277,7 @@ async def governance_resolve_endpoint(service_id: str, request: Request):
             rg_name=rg_name,
             svc=svc,
             model_id=model_id,
+            onboarding_chain={service_id},
             **extra_kwargs,
         )
 

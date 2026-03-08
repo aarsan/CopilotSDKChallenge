@@ -1117,7 +1117,7 @@ const statusLabels = {
     conditional: '⚠️ Conditional',
     under_review: '🔄 Under Review',
     not_approved: '❌ Not Approved',
-    validating: '🔄 Validating…',
+    validating: '● Running',
     validation_failed: '⛔ Validation Failed',
     offboarded: '📦 Offboarded',
 };
@@ -1812,6 +1812,26 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                    ⬆ Update API (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
         }
+    }
+
+    // ── Auto-approved stub (never went through real onboarding) ──
+    const isStub = status === 'approved' && (svc.reviewed_by === 'orchestrator' || svc.gates_approved === 0);
+    if (isStub) {
+        const stubVer = latestVersion ? ` (stub v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
+        return `
+        <div class="svc-status-card svc-status-ready" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">⚠️</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Needs Full Onboarding${stubVer}</div>
+                    <div class="svc-status-sub">Auto-approved with a skeleton template — never validated through the pipeline. Run onboarding to generate, validate, and deploy a real ARM template.</div>
+                </div>
+            </div>
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Onboard Service</button>
+            </div>
+            <div class="validation-log" id="validation-log"></div>
+        </div>`;
     }
 
     // ── Onboarded ──
@@ -4189,6 +4209,22 @@ function _handleValidationEvent(event) {
     const type = event.type || '';
     const detail = event.detail || '';
 
+    // ── Forwarded events from dependency sub-pipelines ──
+    // Route to the depGate card and return early — don't let these
+    // trigger phase handlers or terminal done/error handlers.
+    if (event.dep_service && phase !== 'dep_gate_check' && phase !== 'dep_gate_scanning'
+        && phase !== 'dep_gate_onboarding' && phase !== 'dep_gate_complete'
+        && phase !== 'dep_onboard_complete' && phase !== 'dep_onboard_failed'
+        && phase !== 'co_onboarding') {
+        if (!logEl._flow?.cards['depGate']) _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
+        const depName = event.dep_name || event.dep_service.split('/').pop();
+        const icon = type === 'error' ? '❌' : type === 'done' ? '✅' : '▸';
+        const cls = type === 'error' ? 'uf-text-error' : type === 'done' ? 'uf-text-success' : '';
+        if (detail) _flowDetailOnCard(logEl, 'depGate', icon,
+            '[' + escapeHtml(depName) + '] ' + escapeHtml(detail), cls);
+        return;
+    }
+
     // ── Phase → flow card mapping ──
     // Cards reuse their key across iterations — _flowCard reopens
     // a finalized card and inserts an iteration separator inside it.
@@ -4394,9 +4430,32 @@ function _handleValidationEvent(event) {
     } else if (phase === 'promoting') {
         _flowCard(logEl, 'promoting', '🏆', 'Publishing Version');
         if (detail) _flowDetail(logEl, 'promoting', '▸', escapeHtml(detail));
+
+    // ── Dependency Validation Gate ──────────────────────────
+    } else if (phase === 'dep_gate_check') {
+        _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
+        if (detail) _flowDetail(logEl, 'depGate', '▸', escapeHtml(detail));
+    } else if (phase === 'dep_gate_scanning') {
+        if (!logEl._flow?.cards['depGate']) _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
+        const isValid = detail && detail.includes('fully validated');
+        const icon = isValid ? '✅' : '⚠️';
+        const cls = isValid ? 'uf-text-success' : 'uf-text-warning';
+        if (detail) _flowDetail(logEl, 'depGate', icon, escapeHtml(detail), cls);
+    } else if (phase === 'dep_gate_onboarding') {
+        if (detail) _flowDetail(logEl, 'depGate', '🔧', escapeHtml(detail));
     } else if (phase === 'co_onboarding') {
-        _flowCard(logEl, 'coOnboard', '👶', 'Co-boarding Dependencies');
-        if (detail) _flowDetail(logEl, 'coOnboard', '▸', escapeHtml(detail));
+        if (!logEl._flow?.cards['depGate']) {
+            _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
+        }
+        if (detail) _flowDetail(logEl, 'depGate', '👶', escapeHtml(detail));
+    } else if (phase === 'dep_onboard_complete') {
+        if (detail) _flowDetail(logEl, 'depGate', '✅', escapeHtml(detail), 'uf-text-success');
+    } else if (phase === 'dep_onboard_failed') {
+        if (detail) _flowDetail(logEl, 'depGate', '❌', escapeHtml(detail), 'uf-text-error');
+    } else if (phase === 'dep_gate_complete') {
+        if (detail) _flowDetail(logEl, 'depGate', '✓', escapeHtml(detail), 'uf-text-success');
+        _flowFinalize(logEl, 'depGate', 'done', 'Dependencies OK');
+
     } else if (phase === 'infra_retry') {
         // Transient Azure error — add as detail in the active or last failed card
         const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
@@ -4490,6 +4549,9 @@ function _handleValidationEvent(event) {
     if (phase === 'init_model' && header) {
         header.textContent = 'Setting Up Pipeline…';
         if (iconEl) { iconEl.textContent = '⚙️'; iconEl.classList.add('validation-spinner'); }
+    } else if (phase === 'dep_gate_check' && header) {
+        header.textContent = 'Checking Dependency Gates…';
+        if (iconEl) { iconEl.textContent = '🔗'; iconEl.classList.add('validation-spinner'); }
     } else if (phase === 'standards_analysis' && header) {
         header.textContent = 'Analyzing Organization Standards…';
         if (iconEl) { iconEl.textContent = '📋'; iconEl.classList.add('validation-spinner'); }
@@ -5397,6 +5459,8 @@ async function _loadTemplateComposition(templateId) {
         // ── Render hero graph ────────────────────────────────
         const anyUpgrade = components.some(c => c.upgrade_available);
         const anyUntracked = components.some(c => c.version_known === false);
+        const anyNotOnboarded = components.some(c => c.fully_onboarded === false);
+        const notOnboardedNames = components.filter(c => c.fully_onboarded === false).map(c => c.name || c.service_id.split('/').pop());
         const providesList = data.provides || [];
 
         let html = '<div class="comp-hero-graph-inner">';
@@ -5431,16 +5495,18 @@ async function _loadTemplateComposition(templateId) {
                 }
 
                 // Build tooltip text
+                const notOnboarded = c.fully_onboarded === false;
                 const tooltipLines = [
                     c.service_id,
                     catLabel ? `Category: ${catLabel}` : '',
                     `Version: ${verDisplay}`,
                     c.upgrade_available ? `Latest: ${c.latest_semver}` : 'Up to date',
+                    notOnboarded ? 'Not fully onboarded — ARM template has not been deployment-validated' : '',
                     depNames.length ? `Depends on: ${depNames.join(', ')}` : '',
                 ].filter(Boolean).join('\n');
 
                 html += `
-                    <div class="hero-node ${statusCls} ${upgradeCls}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
+                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
                         <div class="hero-node-icon">${_azureIcon(c.service_id, 28)}</div>
                         <div class="hero-node-body">
                             <div class="hero-node-name">${escapeHtml(shortName)}</div>
@@ -5453,6 +5519,7 @@ async function _loadTemplateComposition(templateId) {
                                         ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
+                            ${notOnboarded ? '<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div>' : ''}
                             ${depIconsHtml}
                         </div>
                     </div>`;
@@ -5485,6 +5552,14 @@ async function _loadTemplateComposition(templateId) {
         }
 
         html += '</div>';
+
+        // Not-onboarded warning banner
+        if (anyNotOnboarded) {
+            html += `<div class="comp-hero-not-onboarded-banner">
+                ⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                — their ARM templates have not been deployment-validated. Run the onboarding pipeline on these services before deploying.
+            </div>`;
+        }
 
         // Recompose all / check for updates row
         html += '<div class="comp-hero-actions">';
@@ -7868,7 +7943,18 @@ async function recomposeBlueprint(templateId) {
             detail += `\n⚠️ ${tr.failed}/${tr.total} structural tests need attention`;
         }
 
-        showToast(detail, (tr && tr.all_passed) ? 'success' : 'info', 8000);
+        // Warn about services not fully onboarded
+        const notOnboarded = data.not_onboarded || [];
+        if (notOnboarded.length) {
+            detail += `\n\n⚠️ ${notOnboarded.length} service(s) not fully onboarded:`;
+            for (const s of notOnboarded) {
+                detail += `\n  • ${s.name || s.service_id} (${s.reason})`;
+            }
+            detail += `\nOnboard these services to deployment-validate their ARM templates.`;
+        }
+
+        const toastType = notOnboarded.length ? 'info' : (tr && tr.all_passed) ? 'success' : 'info';
+        showToast(detail, toastType, notOnboarded.length ? 12000 : 8000);
 
         // Refresh the detail view
         await loadAllData();
@@ -8890,6 +8976,19 @@ function _renderDeployProgress(container, event, ctx) {
     if (phase === 'pre_validation_fix') {
         const curNode = state.currentNodeId ? document.getElementById(state.currentNodeId) : null;
         _addActivity('🔧', escapeHtml(detail), 'vf-activity-fix');
+        return;
+    }
+
+    // Dependency check — pre-flight gate for composed templates
+    if (phase === 'dep_check') {
+        if (!state._depNode) {
+            state._depNode = _createNode('🔗', 'Dependency Validation Gate');
+        }
+        const isOk = detail && detail.startsWith('✅');
+        const icon = isOk ? '✅' : '⚠️';
+        const cls = isOk ? 'vf-activity-success' : 'vf-activity-error';
+        _addActivity(icon, escapeHtml(detail || 'Checking dependency…'), cls);
+        canvas.scrollTop = canvas.scrollHeight;
         return;
     }
 

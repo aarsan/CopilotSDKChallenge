@@ -42,6 +42,8 @@ from src.pipeline_helpers import (
     summarize_fix,
     copilot_heal_template,
     is_transient_error,
+    is_quota_or_capacity_error,
+    brief_azure_error,
 )
 from src.model_router import Task, get_model_for_task
 
@@ -346,6 +348,20 @@ async def stream_deploy(
             }) + "\n"
             await asyncio.sleep(10)
             continue
+
+        # Quota / capacity errors — no template fix possible.
+        if is_quota_or_capacity_error(deploy_error):
+            brief = brief_azure_error(deploy_error)
+            yield json.dumps({
+                "phase": "error",
+                "detail": (
+                    f"Subscription quota exceeded — cannot deploy in this region. "
+                    f"Request a quota increase, deploy to a different region, "
+                    f"or free up existing resources. Error: {brief}"
+                ),
+                "progress": 1.0,
+            }) + "\n"
+            return
 
         if is_last:
             break
