@@ -334,7 +334,7 @@ async def list_security_standards(category: Optional[str] = None):
     from src.database import get_security_standards as db_get_standards
 
     try:
-        standards = await db_get_standards(category=category, enabled_only=True)
+        standards = await db_get_standards(category=category, enabled_only=False)
         # Convert Row to dict
         result = [dict(s) if not isinstance(s, dict) else s for s in standards]
         categories = sorted(set(s.get("category", "") for s in result))
@@ -354,7 +354,7 @@ async def list_compliance_frameworks():
     from src.database import get_compliance_frameworks as db_get_frameworks
 
     try:
-        frameworks = await db_get_frameworks(enabled_only=True)
+        frameworks = await db_get_frameworks(enabled_only=False)
         result = []
         for fw in frameworks:
             fw_dict = dict(fw) if not isinstance(fw, dict) else fw
@@ -377,7 +377,7 @@ async def list_governance_policies(category: Optional[str] = None):
     from src.database import get_governance_policies as db_get_policies
 
     try:
-        policies = await db_get_policies(category=category, enabled_only=True)
+        policies = await db_get_policies(category=category, enabled_only=False)
         result = [dict(p) if not isinstance(p, dict) else p for p in policies]
         categories = sorted(set(p.get("category", "") for p in result))
         return JSONResponse({
