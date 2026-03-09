@@ -5070,14 +5070,14 @@ function renderTemplateTable(templates) {
     const statusLabelsMap = {
         approved: '✅ Published',
         draft: '📝 Draft',
-        passed: '🧪 Tested — needs validation',
-        validated: '🔬 Validated — ready to publish',
+        passed: '🧪 Tested',
+        validated: '✅ Deploy Tested — ready to publish',
         failed: '❌ Failed',
         deprecated: '⚠️ Deprecated',
     };
 
     // Lifecycle progress: which stages are completed for this status
-    const lifecycleStages = ['Composed', 'Tested', 'Validated', 'Published'];
+    const lifecycleStages = ['Composed', 'Tested', 'Deploy Tested', 'Published'];
     const statusProgress = {
         draft: 1,       // Composed only
         passed: 2,      // Composed + Tested
@@ -5295,8 +5295,8 @@ function showTemplateDetail(templateId) {
     const statusBadgeMap = {
         approved: '✅ Published',
         draft: '📝 Draft',
-        passed: '🧪 Tested — needs validation',
-        validated: '🔬 Validated — ready to publish',
+        passed: '🧪 Tested',
+        validated: '✅ Deploy Tested — ready to publish',
         failed: '❌ Failed',
         deprecated: '⚠️ Deprecated',
     };
@@ -5327,7 +5327,7 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-ready">
-                ✅ <strong>Verified</strong> — I've tested this template against Azure and it's good to go. Ready to publish!
+                ✅ <strong>Deploy Tested</strong> — This template deployed successfully to a temporary resource group. Ready to publish!
             </div>
             <button class="btn btn-primary btn-sm publish-btn" id="btn-publish-${escapeHtml(tmpl.id)}" onclick="publishTemplate('${escapeHtml(tmpl.id)}', this)">
                 🚀 Publish to Catalog
