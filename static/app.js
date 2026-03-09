@@ -168,6 +168,7 @@ let currentPage = 'dashboard';
 let allServices = [];
 let allTemplates = [];
 let _serviceUpdates = {};  // serviceId → update info from check-updates
+let _batchOnboardState = null;  // batch onboarding tracker state
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -2999,30 +3000,349 @@ async function triggerOnboarding(serviceId, opts = {}) {
     }
 }
 
-/** Sequentially onboard multiple services that aren't fully onboarded.
- *  Navigates to the first service's detail page and kicks off its pipeline,
- *  then continues to the next after each one completes. */
-async function onboardAllDeps(serviceIds) {
+/** Batch-onboard multiple services with an inline progress tracker.
+ *  Fires all onboard requests in parallel, polls /api/activity for status,
+ *  and renders per-service mini-cards with live progress. */
+async function onboardAllDeps(serviceIds, templateId) {
     if (!serviceIds || !serviceIds.length) return;
-    const names = serviceIds.map(id => {
+    if (_batchOnboardState) {
+        showToast('A batch onboarding is already in progress.', 'warning');
+        return;
+    }
+
+    const serviceNames = {};
+    const nameList = serviceIds.map((id, i) => {
         const svc = allServices.find(s => s.id === id);
-        return svc ? svc.name : id.split('/').pop();
+        const name = svc ? svc.name : id.split('/').pop();
+        serviceNames[id] = name;
+        return `${i + 1}. ${name}`;
     });
+
     if (!confirm(
         `Onboard ${serviceIds.length} service(s)?\n\n` +
-        names.map((n, i) => `${i + 1}. ${n}`).join('\n') +
-        `\n\nEach service will go through the full onboarding pipeline (generate → validate → deploy ARM template). ` +
-        `The first service will start immediately.`
+        nameList.join('\n') +
+        `\n\nAll services will start onboarding in parallel. ` +
+        `You can monitor progress inline and click any service to see its full pipeline.`
     )) return;
 
-    // Navigate to the first service and kick off onboarding
-    showServiceDetail(serviceIds[0]);
-    setTimeout(() => triggerOnboarding(serviceIds[0]), 300);
-
-    // Show toast about remaining services
-    if (serviceIds.length > 1) {
-        showToast(`🚀 Onboarding ${names[0]}… ${serviceIds.length - 1} more service(s) queued. After this completes, navigate to each remaining service to onboard it.`, 'info', 8000);
+    // Initialize batch state
+    const statuses = {};
+    for (const id of serviceIds) {
+        statuses[id] = { phase: '', progress: 0, detail: 'Queued…', status: 'pending', error: '' };
     }
+    _batchOnboardState = {
+        templateId,
+        serviceIds,
+        serviceNames,
+        pollTimer: null,
+        startedAt: Date.now(),
+        statuses,
+    };
+
+    // Render the batch tracker panel (replaces the banner)
+    _renderBatchOnboardPanel();
+
+    // Fire all onboard requests concurrently (no await — fire-and-forget)
+    for (const id of serviceIds) {
+        _fireOnboardRequest(id);
+    }
+
+    // Start polling /api/activity for live status
+    _startBatchPoll();
+}
+
+/** Fire a single onboard POST request and drain the NDJSON stream silently.
+ *  The server-side generator populates _active_validations as it runs,
+ *  which /api/activity then exposes. We drain the stream to keep the
+ *  server generator alive (an unconsumed stream would stall). */
+async function _fireOnboardRequest(serviceId) {
+    if (!_batchOnboardState) return;
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/onboard`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+
+        if (!res.ok) {
+            let errMsg = 'Onboarding request failed';
+            try {
+                const err = await res.json();
+                errMsg = err.detail || errMsg;
+            } catch (_) {
+                const text = await res.text().catch(() => '');
+                errMsg = text || `Server error (${res.status})`;
+            }
+            if (_batchOnboardState && _batchOnboardState.statuses[serviceId]) {
+                _batchOnboardState.statuses[serviceId].status = 'failed';
+                _batchOnboardState.statuses[serviceId].error = errMsg;
+                _batchOnboardState.statuses[serviceId].detail = errMsg;
+                _renderBatchOnboardPanel();
+            }
+            return;
+        }
+
+        // Drain the stream with a no-op callback — keeps server generator running
+        await readNDJSONStream(res, () => {});
+    } catch (err) {
+        if (_batchOnboardState && _batchOnboardState.statuses[serviceId]) {
+            _batchOnboardState.statuses[serviceId].status = 'failed';
+            _batchOnboardState.statuses[serviceId].error = err.message;
+            _batchOnboardState.statuses[serviceId].detail = err.message;
+            _renderBatchOnboardPanel();
+        }
+    }
+}
+
+// ── Batch Onboarding Polling ────────────────────────────────
+
+function _startBatchPoll() {
+    if (!_batchOnboardState) return;
+    _stopBatchPoll();
+    _pollBatchActivity();
+    _batchOnboardState.pollTimer = setInterval(_pollBatchActivity, 2500);
+}
+
+function _stopBatchPoll() {
+    if (_batchOnboardState && _batchOnboardState.pollTimer) {
+        clearInterval(_batchOnboardState.pollTimer);
+        _batchOnboardState.pollTimer = null;
+    }
+}
+
+async function _pollBatchActivity() {
+    if (!_batchOnboardState) return;
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const jobMap = {};
+        for (const job of (data.jobs || [])) {
+            jobMap[job.service_id] = job;
+        }
+
+        let anyActive = false;
+        for (const id of _batchOnboardState.serviceIds) {
+            const st = _batchOnboardState.statuses[id];
+            // Don't overwrite a client-side failure (e.g., POST returned 400)
+            if (st.status === 'failed') continue;
+
+            const job = jobMap[id];
+            if (job) {
+                st.phase = job.phase || '';
+                st.progress = job.progress || 0;
+                st.detail = job.detail || st.detail;
+                if (job.is_running) {
+                    st.status = 'running';
+                    anyActive = true;
+                } else if (job.status === 'approved') {
+                    st.status = 'succeeded';
+                    st.progress = 1;
+                } else if (job.status === 'validation_failed') {
+                    st.status = 'failed';
+                    st.error = job.error || 'Validation failed';
+                    st.detail = job.error || job.detail || 'Validation failed';
+                } else if (job.status === 'validating') {
+                    // Still in validating state but job not marked running yet
+                    st.status = 'running';
+                    anyActive = true;
+                } else {
+                    // Possibly pending or transitioning
+                    if (st.status === 'pending') anyActive = true;
+                }
+            } else {
+                // No job entry yet — service may still be starting
+                if (st.status === 'pending') anyActive = true;
+            }
+        }
+
+        _renderBatchOnboardPanel();
+
+        if (!anyActive) {
+            _stopBatchPoll();
+            await loadAllData();
+        }
+    } catch (err) {
+        console.warn('[batch-onboard] Poll failed:', err.message);
+    }
+}
+
+// ── Batch Onboarding Panel Renderer ─────────────────────────
+
+function _renderBatchOnboardPanel() {
+    if (!_batchOnboardState) return;
+    const { serviceIds, serviceNames, statuses, startedAt } = _batchOnboardState;
+
+    // Count statuses
+    let running = 0, succeeded = 0, failed = 0, pending = 0;
+    for (const id of serviceIds) {
+        const s = statuses[id].status;
+        if (s === 'running') running++;
+        else if (s === 'succeeded') succeeded++;
+        else if (s === 'failed') failed++;
+        else pending++;
+    }
+
+    const allDone = running === 0 && pending === 0;
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    const elMin = Math.floor(elapsed / 60);
+    const elSec = elapsed % 60;
+    const elapsedStr = elMin > 0 ? `${elMin}m ${elSec}s` : `${elSec}s`;
+
+    // Summary text
+    const parts = [];
+    if (running > 0) parts.push(`${running} in progress`);
+    if (succeeded > 0) parts.push(`${succeeded} done`);
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (pending > 0) parts.push(`${pending} queued`);
+    const summaryText = `Onboarding ${serviceIds.length} services — ${parts.join(', ')}`;
+
+    const summaryIcon = allDone
+        ? (failed > 0 ? '⚠️' : '✅')
+        : '🚀';
+
+    // Build mini-cards
+    let cardsHtml = '';
+    for (const id of serviceIds) {
+        const st = statuses[id];
+        const name = serviceNames[id] || id.split('/').pop();
+        const shortId = id.split('/').pop();
+        const pct = Math.round(st.progress * 100);
+
+        let statusIcon, statusCls, progressCls;
+        switch (st.status) {
+            case 'running':
+                statusIcon = '<span class="batch-card-spinner">⏳</span>';
+                statusCls = 'batch-card-running';
+                progressCls = 'batch-progress-animated';
+                break;
+            case 'succeeded':
+                statusIcon = '✅';
+                statusCls = 'batch-card-succeeded';
+                progressCls = 'batch-progress-done';
+                break;
+            case 'failed':
+                statusIcon = '❌';
+                statusCls = 'batch-card-failed';
+                progressCls = 'batch-progress-failed';
+                break;
+            default:
+                statusIcon = '🕐';
+                statusCls = 'batch-card-pending';
+                progressCls = '';
+        }
+
+        const phaseLabel = _batchPhaseLabel(st.phase);
+        const detailText = st.status === 'failed'
+            ? (st.error || 'Failed')
+            : (phaseLabel || st.detail || 'Waiting…');
+
+        cardsHtml += `
+            <div class="batch-card ${statusCls}" onclick="showServiceDetail('${escapeHtml(id)}')" title="Click to view full pipeline for ${escapeHtml(name)}">
+                <div class="batch-card-header">
+                    <span class="batch-card-icon">${statusIcon}</span>
+                    <div class="batch-card-name">
+                        <span class="batch-card-svc-name">${escapeHtml(name)}</span>
+                        <span class="batch-card-svc-id">${escapeHtml(shortId)}</span>
+                    </div>
+                    ${st.status === 'running' ? `<span class="batch-card-pct">${pct}%</span>` : ''}
+                </div>
+                <div class="batch-card-progress">
+                    <div class="batch-card-progress-track">
+                        <div class="batch-card-progress-fill ${progressCls}" style="width: ${pct}%"></div>
+                    </div>
+                </div>
+                <div class="batch-card-detail">${escapeHtml(detailText)}</div>
+            </div>`;
+    }
+
+    const panelHtml = `
+        <div class="batch-onboard-header">
+            <div class="batch-onboard-summary">
+                <span class="batch-onboard-icon">${summaryIcon}</span>
+                <span class="batch-onboard-title">${escapeHtml(summaryText)}</span>
+            </div>
+            <div class="batch-onboard-meta">
+                <span class="batch-onboard-elapsed">${elapsedStr}</span>
+                ${allDone ? `<button class="btn btn-sm btn-ghost batch-onboard-dismiss" onclick="_dismissBatchPanel()">Dismiss</button>` : ''}
+            </div>
+        </div>
+        <div class="batch-onboard-cards">${cardsHtml}</div>`;
+
+    // Insert or update the panel
+    let panel = document.getElementById('batch-onboard-panel');
+    if (panel) {
+        panel.innerHTML = panelHtml;
+    } else {
+        // Replace the static banner if present
+        const banner = document.querySelector('.comp-hero-not-onboarded-banner');
+        if (banner) {
+            const div = document.createElement('div');
+            div.id = 'batch-onboard-panel';
+            div.className = 'batch-onboard-panel';
+            div.innerHTML = panelHtml;
+            banner.replaceWith(div);
+        } else {
+            // Try the placeholder anchor
+            const anchor = document.getElementById('batch-onboard-panel-anchor');
+            if (anchor) {
+                const div = document.createElement('div');
+                div.id = 'batch-onboard-panel';
+                div.className = 'batch-onboard-panel';
+                div.innerHTML = panelHtml;
+                anchor.replaceWith(div);
+            }
+        }
+    }
+}
+
+/** Map pipeline phase strings to short human-readable labels */
+function _batchPhaseLabel(phase) {
+    if (!phase) return '';
+    const labels = {
+        init_model: 'Initializing…',
+        init_complete: 'Ready',
+        standards_analysis: 'Analyzing standards…',
+        standards_complete: 'Standards done',
+        planning: 'Planning template…',
+        planning_complete: 'Plan ready',
+        generating: 'Generating ARM template…',
+        generated: 'Template generated',
+        policy_generation: 'Generating policies…',
+        policy_generation_complete: 'Policies ready',
+        governance_review: 'Governance review…',
+        governance_complete: 'Governance passed',
+        governance_blocked: 'Governance blocked',
+        static_policy_check: 'Static policy check…',
+        static_policy_complete: 'Policies passed',
+        what_if: 'What-If preview…',
+        what_if_complete: 'What-If done',
+        deploying: 'Deploying to Azure…',
+        deploy_progress: 'Deploying…',
+        deploy_complete: 'Deployed',
+        deploy_failed: 'Deploy failed',
+        resource_check: 'Checking resources…',
+        resource_check_complete: 'Resources verified',
+        testing_start: 'Running tests…',
+        testing_complete: 'Tests passed',
+        cleanup: 'Cleaning up…',
+        cleanup_complete: 'Cleanup done',
+        promoting: 'Promoting…',
+        replanning: 'Re-planning…',
+        regenerating: 'Regenerating…',
+    };
+    return labels[phase] || phase.replace(/_/g, ' ');
+}
+
+function _dismissBatchPanel() {
+    const templateId = _batchOnboardState ? _batchOnboardState.templateId : null;
+    _stopBatchPoll();
+    _batchOnboardState = null;
+    const panel = document.getElementById('batch-onboard-panel');
+    if (panel) panel.remove();
+    // Reload composition to restore banner if services still need onboarding
+    if (templateId) _loadTemplateComposition(templateId);
 }
 
 // ── Upgrade Compatibility Analysis ──────────────────────────
@@ -5541,6 +5861,13 @@ function showTemplateDetail(templateId) {
                 <div class="compose-loading">Loading…</div>
             </div>
         </div>
+
+        <!-- Delete template -->
+        <div class="detail-section tmpl-danger-section">
+            <button class="btn btn-sm btn-danger" onclick="deleteTemplate('${escapeHtml(tmpl.id)}')">
+                🗑 Delete Template
+            </button>
+        </div>
     `;
 
     document.getElementById('template-detail-drawer').classList.remove('hidden');
@@ -5989,14 +6316,17 @@ async function _loadTemplateComposition(templateId) {
 
         html += '</div>';
 
-        // Not-onboarded warning banner
-        if (anyNotOnboarded) {
+        // Not-onboarded warning banner (or batch panel if onboarding is active)
+        if (_batchOnboardState && _batchOnboardState.templateId === templateId) {
+            // Batch onboarding is active — insert a placeholder for the tracker panel
+            html += '<div id="batch-onboard-panel-anchor"></div>';
+        } else if (anyNotOnboarded) {
             const notOnboardedIds = components.filter(c => c.fully_onboarded === false).map(c => c.service_id);
             const idsAttr = escapeHtml(JSON.stringify(notOnboardedIds));
             html += `<div class="comp-hero-not-onboarded-banner">
                 <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
                 — their ARM templates have not been deployment-validated.</div>
-                <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids))" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
+                <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids), '${escapeHtml(templateId)}')" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
             </div>`;
         }
 
@@ -6012,6 +6342,11 @@ async function _loadTemplateComposition(templateId) {
         html += '<div id="tmpl-updates-results"></div>';
 
         container.innerHTML = html;
+
+        // If batch onboarding is active, render the tracker panel into the anchor
+        if (_batchOnboardState && _batchOnboardState.templateId === templateId) {
+            _renderBatchOnboardPanel();
+        }
 
         // Update the template version display with semver from the API
         const semver = data.template_semver;
@@ -6469,6 +6804,21 @@ async function _clearTemplateDrafts(templateId) {
         _loadTemplateVersionHistory(templateId);
     } catch (err) {
         showToast(`Failed to clear drafts: ${err.message}`, 'error');
+    }
+}
+
+async function deleteTemplate(templateId) {
+    if (!confirm('Permanently delete this template and all its versions? This cannot be undone.')) return;
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast('Template deleted', 'success');
+        closeTemplateDetail();
+        await loadAllData();
+    } catch (err) {
+        showToast(`Failed to delete template: ${err.message}`, 'error');
     }
 }
 
@@ -8229,6 +8579,13 @@ function showValidateForm(templateId) {
 
 /** Run ARM validation (streaming NDJSON with self-healing) */
 async function runTemplateValidation(templateId, regionOverride) {
+    // Guard: prevent concurrent pipelines for the same template
+    const existingTracker = _activeTemplateValidations[templateId];
+    if (existingTracker && existingTracker.running) {
+        showToast('A pipeline is already running for this template. Wait for it to finish.', 'info');
+        return;
+    }
+
     const btn = document.getElementById('tmpl-validate-btn');
     const resultsDiv = document.getElementById('tmpl-validate-results');
     if (btn) {
@@ -8282,6 +8639,15 @@ async function runTemplateValidation(templateId, regionOverride) {
 
         if (!res.ok) {
             const err = await _safeJsonError(res);
+            if (res.status === 409) {
+                // Pipeline already running — clear tracker and show message
+                tracker.running = false;
+                delete _activeTemplateValidations[templateId];
+                showToast(err.detail || 'A pipeline is already running for this template.', 'info');
+                if (btn) { btn.disabled = false; btn.innerHTML = '🧪 ARM Validate'; }
+                if (resultsDiv) resultsDiv.style.display = 'none';
+                return;
+            }
             throw new Error(err.detail || 'Validation failed');
         }
 
@@ -10206,6 +10572,13 @@ function _renderDeployProgress(container, event, ctx) {
  *  Streams NDJSON progress inline.
  */
 async function fixAndValidateTemplate(templateId) {
+    // Guard: prevent concurrent pipelines for the same template
+    const existingTracker = _activeTemplateValidations[templateId];
+    if (existingTracker && existingTracker.running) {
+        showToast('A pipeline is already running for this template. Wait for it to finish.', 'info');
+        return;
+    }
+
     showToast('🔧 Fixing and validating — this may take a few minutes…', 'info');
 
     // Open the detail view and create a live progress area
@@ -10248,6 +10621,13 @@ async function fixAndValidateTemplate(templateId) {
 
         if (!res.ok) {
             const err = await _safeJsonError(res);
+            if (res.status === 409) {
+                tracker.running = false;
+                delete _activeTemplateValidations[templateId];
+                showToast(err.detail || 'A pipeline is already running for this template.', 'info');
+                if (resultsDiv) resultsDiv.remove();
+                return;
+            }
             throw new Error(err.detail || 'Fix & Validate failed');
         }
 

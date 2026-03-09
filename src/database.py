@@ -2024,6 +2024,9 @@ async def delete_template(template_id: str) -> bool:
     if not rows:
         return False
     await backend.execute_write(
+        "DELETE FROM template_versions WHERE template_id = ?", (template_id,)
+    )
+    await backend.execute_write(
         "DELETE FROM catalog_templates WHERE id = ?", (template_id,)
     )
     return True
@@ -4096,6 +4099,21 @@ async def cleanup_orphaned_pipeline_runs():
                     logger.info(f"Fixed stuck service '{svc_id}' — validating → validation_failed")
             except Exception as e:
                 logger.debug(f"Failed to fix stuck service '{svc_id}': {e}")
+
+
+async def has_running_pipeline(service_id: str) -> dict | None:
+    """Check whether a pipeline is already running for the given service/template.
+
+    Returns the running pipeline_run row if one exists, else None.
+    """
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT TOP 1 run_id, pipeline_type, started_at "
+        "FROM pipeline_runs WHERE service_id = ? AND status = 'running' "
+        "ORDER BY started_at DESC",
+        (service_id,),
+    )
+    return rows[0] if rows else None
 
 
 async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:

@@ -89,6 +89,7 @@ from src.database import (
     get_latest_semver,
     get_latest_service_version,
     get_pipeline_runs,
+    has_running_pipeline,
     get_service,
     get_service_artifacts,
     get_service_version,
@@ -161,6 +162,18 @@ async def _require_service(service_id: str) -> dict:
     if not svc:
         raise HTTPException(status_code=404, detail=f"Service '{service_id}' not found")
     return svc
+
+
+async def _reject_if_pipeline_running(template_id: str) -> None:
+    """Raise 409 Conflict if a pipeline is already running for this template."""
+    existing = await has_running_pipeline(template_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A pipeline is already running for this template "
+                   f"(run {existing['run_id']}, type: {existing['pipeline_type']}). "
+                   f"Wait for it to finish or check the Pipeline Runs tab.",
+        )
 
 
 async def _parse_body(request: Request) -> dict:
@@ -4368,6 +4381,7 @@ async def fix_and_validate_template(template_id: str, request: Request):
     import json as _json
 
     tmpl = await _require_template(template_id)
+    await _reject_if_pipeline_running(template_id)
 
     body = await _parse_body(request)
     region = body.get("region", "eastus2")
@@ -5211,6 +5225,7 @@ async def validate_template(template_id: str, request: Request):
     import uuid as _uuid
 
     tmpl = await _require_template(template_id)
+    await _reject_if_pipeline_running(template_id)
 
     # Find the latest version that can be validated
     versions = await get_template_versions(template_id)
@@ -5614,6 +5629,7 @@ async def deploy_template(template_id: str, request: Request):
     import uuid as _uuid
 
     tmpl = await _require_template(template_id)
+    await _reject_if_pipeline_running(template_id)
 
     if tmpl.get("status") not in ("approved",):
         raise HTTPException(

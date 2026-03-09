@@ -1,0 +1,145 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0",
+  "parameters": {
+    "profileName": {
+      "type": "string",
+      "defaultValue": "cdnprofile-infraforge-dev-eus2-001",
+      "metadata": {
+        "description": "Name of the CDN profile"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for the CDN profile"
+      }
+    },
+    "sku": {
+      "type": "string",
+      "defaultValue": "Premium_Microsoft",
+      "allowedValues": [
+        "Standard_Microsoft",
+        "Premium_Microsoft",
+        "Standard_Akamai",
+        "Standard_Verizon",
+        "Premium_Verizon"
+      ],
+      "metadata": {
+        "description": "CDN profile SKU"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Resource ID of the Log Analytics workspace for diagnostic logging"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "dev",
+      "allowedValues": [
+        "dev",
+        "test",
+        "staging",
+        "prod"
+      ],
+      "metadata": {
+        "description": "Environment name"
+      }
+    },
+    "owner": {
+      "type": "string",
+      "defaultValue": "platform-team@company.com",
+      "metadata": {
+        "description": "Resource owner email"
+      }
+    },
+    "costCenter": {
+      "type": "string",
+      "defaultValue": "IT-Infrastructure",
+      "metadata": {
+        "description": "Cost center for billing"
+      }
+    },
+    "project": {
+      "type": "string",
+      "defaultValue": "infraforge",
+      "metadata": {
+        "description": "Project name"
+      }
+    },
+    "createdDate": {
+      "type": "string",
+      "defaultValue": "[utcNow('yyyy-MM-dd')]",
+      "metadata": {
+        "description": "Creation date for resource tagging"
+      }
+    }
+  },
+  "variables": {},
+  "resources": [
+    {
+      "type": "Microsoft.Cdn/profiles",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('profileName')]",
+      "location": "global",
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "owner": "[parameters('owner')]",
+        "costCenter": "[parameters('costCenter')]",
+        "project": "[parameters('project')]",
+        "resourceType": "cdn-profile",
+        "region": "eus2",
+        "deployedBy": "InfraForge",
+        "createdDate": "[parameters('createdDate')]"
+      },
+      "sku": {
+        "name": "[parameters('sku')]"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "originResponseTimeoutSeconds": 60,
+        "extendedProperties": {}
+      }
+    }
+  ],
+  "outputs": {
+    "cdnProfileId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Cdn/profiles', parameters('profileName'))]"
+    },
+    "cdnProfileName": {
+      "type": "string",
+      "value": "[parameters('profileName')]"
+    },
+    "cdnProfileHostname": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles', parameters('profileName'))).hostName]"
+    },
+    "managedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles', parameters('profileName')), '2023-05-01', 'full').identity.principalId]"
+    }
+  },
+  "metadata": {
+    "_generator": {
+      "name": "InfraForge",
+      "version": "2.0.0",
+      "templateHash": "285cd47aa226"
+    },
+    "infrapiForge": {
+      "serviceId": "Microsoft.Cdn/profiles",
+      "version": 2,
+      "semver": "2.0.0",
+      "generatedAt": "2026-03-09T01:20:45.884349+00:00",
+      "generatedBy": "Copilot SDK (Claude Sonnet 4)",
+      "region": "eastus2",
+      "platform": "InfraForge Self-Service Infrastructure"
+    }
+  }
+}
