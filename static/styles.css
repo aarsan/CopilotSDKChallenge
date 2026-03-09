@@ -250,6 +250,23 @@ tr:hover .svc-view-tpl-btn {
     line-height: 1.5;
 }
 
+.demo-video-link {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 1rem;
+    padding: 0.5rem 1.25rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    text-decoration: none;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    transition: color 0.15s, border-color 0.15s;
+}
+.demo-video-link:hover {
+    color: var(--accent-blue, #58a6ff);
+    border-color: var(--accent-blue, #58a6ff);
+}
+
 /* ── App Layout ───────────────────────────────────────────── */
 
 #app-screen {
@@ -2295,6 +2312,169 @@ tr:hover .svc-view-tpl-btn {
 .comp-hero-onboard-all-btn {
     flex-shrink: 0;
     white-space: nowrap;
+}
+
+/* ── Batch Onboarding Panel ──────────────── */
+.batch-onboard-panel {
+    background: var(--bg-secondary, #1e1e2e);
+    border: 1px solid var(--accent-blue, #58a6ff);
+    border-radius: var(--radius-md, 8px);
+    padding: 0.75rem 1rem;
+    margin: 0.75rem 0 0.25rem;
+    animation: detail-fade-in 0.3s ease;
+}
+.batch-onboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+.batch-onboard-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.batch-onboard-icon {
+    font-size: 1.1rem;
+}
+.batch-onboard-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary, #e6edf3);
+}
+.batch-onboard-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.batch-onboard-elapsed {
+    font-size: 0.72rem;
+    color: var(--text-muted, #8b949e);
+    font-family: var(--font-mono, monospace);
+}
+.batch-onboard-dismiss {
+    font-size: 0.72rem;
+}
+
+/* ── Batch Mini-Card Grid ────────────────── */
+.batch-onboard-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 0.5rem;
+}
+.batch-card {
+    background: var(--bg-tertiary, #161b22);
+    border: 1px solid var(--border-default, #30363d);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.5rem 0.65rem;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.batch-card:hover {
+    border-color: var(--accent-blue, #58a6ff);
+    box-shadow: 0 0 8px rgba(88, 166, 255, 0.12);
+}
+.batch-card-running {
+    border-left: 3px solid var(--accent-blue, #58a6ff);
+}
+.batch-card-succeeded {
+    border-left: 3px solid var(--accent-green, #3fb950);
+}
+.batch-card-failed {
+    border-left: 3px solid var(--accent-red, #f85149);
+}
+.batch-card-pending {
+    border-left: 3px solid var(--text-muted, #8b949e);
+    opacity: 0.7;
+}
+.batch-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.3rem;
+}
+.batch-card-icon {
+    font-size: 0.9rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.batch-card-spinner {
+    display: inline-block;
+    animation: spin 1.5s linear infinite;
+}
+.batch-card-name {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.batch-card-svc-name {
+    font-weight: 600;
+    font-size: 0.78rem;
+    color: var(--text-primary, #e6edf3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.batch-card-svc-id {
+    font-size: 0.65rem;
+    color: var(--text-muted, #8b949e);
+    font-family: var(--font-mono, monospace);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.batch-card-pct {
+    font-size: 0.68rem;
+    color: var(--text-secondary, #c9d1d9);
+    font-family: var(--font-mono, monospace);
+    flex-shrink: 0;
+    min-width: 28px;
+    text-align: right;
+}
+
+/* ── Card Progress Bar ───────────────────── */
+.batch-card-progress {
+    margin-bottom: 0.25rem;
+}
+.batch-card-progress-track {
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.batch-card-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent-blue, #58a6ff);
+    transition: width 0.5s ease;
+}
+.batch-progress-animated {
+    background: linear-gradient(90deg, var(--accent-blue, #58a6ff), var(--accent-cyan, #79c0ff), var(--accent-blue, #58a6ff));
+    background-size: 200% 100%;
+    animation: progress-shimmer 2s linear infinite;
+}
+.batch-progress-done {
+    background: var(--accent-green, #3fb950);
+}
+.batch-progress-failed {
+    background: var(--accent-red, #f85149);
+}
+
+/* ── Card Detail Text ────────────────────── */
+.batch-card-detail {
+    font-size: 0.68rem;
+    color: var(--text-secondary, #c9d1d9);
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.batch-card-failed .batch-card-detail {
+    color: var(--accent-red, #f85149);
 }
 
 /* ── Recompose Progress Panel ───────────── */
