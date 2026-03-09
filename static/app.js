@@ -230,12 +230,8 @@ async function doLogin() {
         const res = await fetch('/api/auth/login');
         const data = await res.json();
 
-        if (data.mode === 'demo') {
-            sessionToken = data.sessionToken;
-            currentUser = data.user;
-            localStorage.setItem('infraforge_session', sessionToken);
-            showApp();
-            connectWebSocket();
+        if (!res.ok) {
+            showLoginError(data.error || 'Authentication service unavailable. Please configure Microsoft Entra ID.');
         } else if (data.mode === 'entra') {
             localStorage.setItem('infraforge_flow_id', data.flowId);
             window.location.href = data.authUrl;
