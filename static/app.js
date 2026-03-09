@@ -1608,6 +1608,7 @@ let _apiUpdateAbort = null;  // AbortController for drawer-initiated updates
 let _runningTableUpdates = new Map();  // serviceId → AbortController for concurrent table updates
 let _tableUpdateEventBuffers = new Map();  // serviceId → array of events (replayed when drawer opens)
 let _openDrawerServiceId = null;  // currently open service detail drawer
+let _drawerActivityPollTimer = null; // poll timer for live pipeline in drawer
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion, region) {
     // If this service already has a table update running, ignore
@@ -1805,12 +1806,26 @@ async function showServiceDetail(serviceId) {
     `;
     drawer.classList.remove('hidden');
 
-    // Fetch versions and model settings in parallel
+    // Fetch versions, model settings, and activity data in parallel
     try {
-        const [versionsRes] = await Promise.all([
+        const [versionsRes, activityRes] = await Promise.all([
             fetch(`/api/services/${encodeURIComponent(serviceId)}/versions`),
+            fetch('/api/activity').catch(() => null),
             loadModelSettings(),
         ]);
+
+        // Update activity cache so _renderOnboardButton can detect running pipelines
+        if (activityRes && activityRes.ok) {
+            try {
+                const actData = await activityRes.json();
+                const newCache = {};
+                for (const j of (actData.jobs || [])) {
+                    if (j.is_running) newCache[j.service_id] = j;
+                }
+                _catalogActivityCache = newCache;
+            } catch (_) { /* ignore parse errors */ }
+        }
+
         if (!versionsRes.ok) {
             const errText = await versionsRes.text();
             throw new Error(`Server returned ${versionsRes.status}: ${errText.slice(0, 200)}`);
@@ -2011,6 +2026,178 @@ function _renderChildResources(childResources, parentResource) {
     return html;
 }
 
+/** Render a live pipeline card for the service detail drawer (reuses Activity Monitor patterns) */
+function _renderDrawerPipelineCard(job) {
+    const pipelineSteps = [
+        { key: 'parsing', label: 'Parse', icon: '📝' },
+        { key: 'what_if', label: 'What-If', icon: '🔍' },
+        { key: 'deploying', label: 'Deploy', icon: '🚀' },
+        { key: 'resource_check', label: 'Verify', icon: '🔎' },
+        { key: 'policy_testing', label: 'Policy', icon: '🛡️' },
+        { key: 'policy_deploy', label: 'Enforce', icon: '📜' },
+        { key: 'cleanup', label: 'Cleanup', icon: '🧹' },
+        { key: 'promoting', label: 'Approve', icon: '🏆' },
+    ];
+    const phaseToStep = {
+        starting: 'parsing', what_if: 'what_if', what_if_complete: 'what_if',
+        deploying: 'deploying', deploy_complete: 'deploying', deploy_failed: 'deploying',
+        resource_check: 'resource_check', resource_check_complete: 'resource_check',
+        resource_check_warning: 'resource_check',
+        policy_testing: 'policy_testing', policy_failed: 'policy_testing', policy_skip: 'policy_testing',
+        policy_deploy: 'policy_deploy', policy_deploy_complete: 'policy_deploy',
+        cleanup: 'cleanup', cleanup_complete: 'cleanup',
+        promoting: 'promoting',
+        fixing_template: job.phase, template_fixed: job.phase, infra_retry: job.phase,
+    };
+    const phaseLabels = {
+        starting: '🔧 Initializing pipeline…',
+        what_if: '🔍 Running ARM What-If analysis…',
+        what_if_complete: '✓ What-If analysis passed',
+        deploying: '🚀 Deploying resources to Azure…',
+        deploy_complete: '📦 Deployment succeeded',
+        deploy_failed: '💥 Deployment failed — preparing auto-heal',
+        resource_check: '🔎 Verifying provisioned resources…',
+        resource_check_complete: '✓ Resources verified in Azure',
+        policy_testing: '🛡️ Evaluating policy compliance…',
+        policy_failed: '⚠️ Policy violation detected',
+        policy_skip: 'ℹ️ No policy to evaluate',
+        policy_deploy: '📜 Deploying Azure Policy…',
+        policy_deploy_complete: '✓ Azure Policy deployed',
+        cleanup: '🧹 Cleaning up validation resources…',
+        cleanup_complete: '✓ Cleanup initiated',
+        promoting: '🏆 Promoting service to approved…',
+        fixing_template: '🤖 Copilot SDK auto-healing template…',
+        template_fixed: '🔧 Template fixed by Copilot SDK',
+        infra_retry: '⏳ Waiting for Azure (transient error)…',
+        fixing_policy: '🤖 Copilot SDK fixing policy JSON…',
+    };
+
+    const isRunning = job.is_running;
+    const activeStep = phaseToStep[job.phase] || job.phase;
+    const completedSteps = job.steps_completed || [];
+    const pct = Math.min(Math.round((job.progress || 0) * 100), 100);
+
+    const pipelineHtml = _wfPipeline(pipelineSteps, {
+        activeKey: isRunning ? activeStep : undefined,
+        completedKeys: completedSteps,
+        allDone: job.status === 'approved',
+    });
+
+    const phaseText = phaseLabels[job.phase] || job.phase || '';
+    const phaseHtml = phaseText ? `<div class="activity-phase">${phaseText}</div>` : '';
+    const detailHtml = isRunning && job.detail ? `<div class="activity-detail-live">${escapeHtml(job.detail)}</div>` : '';
+
+    const progressHtml = isRunning ? `
+        <div class="activity-progress">
+            <div class="activity-progress-track">
+                <div class="activity-progress-fill activity-progress-animated" style="width: ${pct}%"></div>
+            </div>
+            <span class="activity-progress-pct">${pct}%</span>
+        </div>` : '';
+
+    const rgHtml = isRunning && job.rg_name
+        ? `<div class="activity-rg-bar"><span class="activity-rg-label">Resource Group:</span> <span class="activity-rg-name">${escapeHtml(job.rg_name)}</span></div>`
+        : '';
+
+    // Meta chips
+    let metaHtml = '';
+    const meta = job.template_meta || {};
+    if (meta.resource_count || meta.size_kb || job.region) {
+        const chips = [];
+        if (job.region) chips.push(`<span class="activity-meta-chip">📍 ${escapeHtml(job.region)}</span>`);
+        if (meta.size_kb) chips.push(`<span class="activity-meta-chip">📄 ${meta.size_kb} KB</span>`);
+        if (meta.resource_count) chips.push(`<span class="activity-meta-chip">📦 ${meta.resource_count} resource(s)</span>`);
+        metaHtml = `<div class="activity-meta-chips">${chips.join('')}</div>`;
+    }
+
+    // Event log
+    let eventsHtml = '';
+    if (job.events && job.events.length > 0) {
+        const eventLines = job.events.map(e => {
+            let icon = '▸';
+            if (e.type === 'error') icon = '❌';
+            else if (e.type === 'done') icon = '✅';
+            else if (e.type === 'healing') icon = '🤖';
+            else if (e.phase === 'deploying') icon = '🚀';
+            else if (e.phase === 'what_if') icon = '🔍';
+            else if (e.phase === 'resource_check') icon = '🔎';
+            else if (e.phase === 'cleanup') icon = '🧹';
+            else if (e.phase === 'promoting') icon = '🏆';
+            const timeStr = e.time ? `<span class="activity-event-time">${_timeShort(e.time)}</span>` : '';
+            return `<div class="activity-event-line">${timeStr}${icon} ${escapeHtml(e.detail)}</div>`;
+        }).join('');
+        eventsHtml = `
+            <div class="activity-events-toggle" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.chevron').textContent = this.nextElementSibling.classList.contains('hidden') ? '▸' : '▾'">
+                <span class="chevron">▾</span> ${job.events.length} event${job.events.length !== 1 ? 's' : ''} — pipeline log
+            </div>
+            <div class="activity-events">${eventLines}</div>`;
+    }
+
+    const timeHtml = job.started_at ? `<span class="activity-time">Started ${_timeAgo(job.started_at)}</span>` : '';
+
+    return `
+    <div class="svc-status-card svc-status-running" id="validation-card">
+        <div class="svc-status-row">
+            <span class="svc-status-icon svc-status-spin">⟳</span>
+            <div class="svc-status-info">
+                <div class="svc-status-title">Onboarding In Progress</div>
+                <div class="svc-status-sub">Pipeline is running — live updates below. ${timeHtml}</div>
+            </div>
+        </div>
+        ${metaHtml}
+        ${pipelineHtml}
+        ${phaseHtml}
+        ${detailHtml}
+        ${progressHtml}
+        ${rgHtml}
+        ${eventsHtml}
+        <div class="validation-log" id="validation-log"></div>
+    </div>`;
+}
+
+function _startDrawerActivityPoll(serviceId) {
+    _stopDrawerActivityPoll();
+    _drawerActivityPollTimer = setInterval(() => _pollDrawerActivity(serviceId), 2500);
+}
+
+function _stopDrawerActivityPoll() {
+    if (_drawerActivityPollTimer) {
+        clearInterval(_drawerActivityPollTimer);
+        _drawerActivityPollTimer = null;
+    }
+}
+
+async function _pollDrawerActivity(serviceId) {
+    if (_openDrawerServiceId !== serviceId) { _stopDrawerActivityPoll(); return; }
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+        const job = (data.jobs || []).find(j => j.service_id === serviceId && j.is_running);
+
+        // Also update the catalog cache while we're at it
+        const newCache = {};
+        for (const j of (data.jobs || [])) {
+            if (j.is_running) newCache[j.service_id] = j;
+        }
+        _catalogActivityCache = newCache;
+
+        const card = document.getElementById('validation-card');
+        if (!card) return;
+
+        if (job) {
+            card.outerHTML = _renderDrawerPipelineCard(job);
+        } else {
+            // Pipeline finished — stop polling and refresh the drawer
+            _stopDrawerActivityPoll();
+            loadAllData();
+            setTimeout(() => showServiceDetail(serviceId), 500);
+        }
+    } catch (err) {
+        console.warn('[drawer-poll] failed:', err.message);
+    }
+}
+
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
     // API Version Update button — shown when a newer API version is available
     let updateBtn = '';
@@ -2024,6 +2211,13 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                    ⬆ Update API (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
         }
+    }
+
+    // ── Live pipeline running — show full pipeline card instead of static button ──
+    const liveJob = _catalogActivityCache[svc.id];
+    if (liveJob && liveJob.is_running) {
+        _startDrawerActivityPoll(svc.id);
+        return _renderDrawerPipelineCard(liveJob);
     }
 
     // ── Auto-approved stub (never went through real onboarding) ──
@@ -5508,6 +5702,7 @@ function toggleReasoningVisibility() {
 
 function closeServiceDetail() {
     _openDrawerServiceId = null;
+    _stopDrawerActivityPoll();
     document.getElementById('service-detail-drawer').classList.add('hidden');
 }
 
