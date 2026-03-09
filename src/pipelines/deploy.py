@@ -147,7 +147,7 @@ async def stream_deploy(
 
             # Quota / capacity errors — try a different region
             if is_quota_or_capacity_error(what_if_errors):
-                _primary, _alts = await find_available_regions(region)
+                _primary, _alts = await find_available_regions(region, force_fallback=True)
                 _alts = [a for a in _alts if a["region"] not in tried_regions]
                 if _alts:
                     old_region = region
@@ -163,12 +163,27 @@ async def stream_deploy(
                     continue
                 brief = brief_azure_error(what_if_errors)
                 yield json.dumps({
-                    "phase": "error",
+                    "type": "action_required",
+                    "phase": "quota_exceeded",
                     "detail": (
                         f"Quota/capacity exceeded in all tried regions "
                         f"({', '.join(sorted(tried_regions))}). "
                         f"Request a quota increase or free up resources. Error: {brief}"
                     ),
+                    "failure_category": "quota_exceeded",
+                    "pipeline": "deploy",
+                    "service_id": template_id,
+                    "actions": [
+                        {"id": "retry", "label": "Retry Deploy",
+                         "description": "Re-run the deployment pipeline",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and request a quota increase",
+                         "style": "danger"},
+                    ],
+                    "context": {"template_id": template_id, "region": region,
+                                "tried_regions": sorted(tried_regions),
+                                "resource_group": resource_group},
                     "progress": 1.0,
                 }) + "\n"
                 return
@@ -313,7 +328,7 @@ async def stream_deploy(
                         created_by="deployment-agent",
                     )
                     await update_template_version_status(
-                        template_id, new_ver["version"], "approved",
+                        template_id, new_ver["version"], "validated",
                     )
                     logger.info(
                         f"Deploy pipeline saved healed template "
@@ -381,7 +396,7 @@ async def stream_deploy(
 
         # Quota / capacity errors — try a different region
         if is_quota_or_capacity_error(deploy_error):
-            _primary, _alts = await find_available_regions(region)
+            _primary, _alts = await find_available_regions(region, force_fallback=True)
             _alts = [a for a in _alts if a["region"] not in tried_regions]
             if _alts:
                 old_region = region
@@ -397,12 +412,27 @@ async def stream_deploy(
                 continue
             brief = brief_azure_error(deploy_error)
             yield json.dumps({
-                "phase": "error",
+                "type": "action_required",
+                "phase": "quota_exceeded",
                 "detail": (
                     f"Quota/capacity exceeded in all tried regions "
                     f"({', '.join(sorted(tried_regions))}). "
                     f"Request a quota increase or free up resources. Error: {brief}"
                 ),
+                "failure_category": "quota_exceeded",
+                "pipeline": "deploy",
+                "service_id": template_id,
+                "actions": [
+                    {"id": "retry", "label": "Retry Deploy",
+                     "description": "Re-run the deployment pipeline",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop and request a quota increase",
+                     "style": "danger"},
+                ],
+                "context": {"template_id": template_id, "region": region,
+                            "tried_regions": sorted(tried_regions),
+                            "resource_group": resource_group},
                 "progress": 1.0,
             }) + "\n"
             return
@@ -486,10 +516,27 @@ async def stream_deploy(
     )
 
     yield json.dumps({
-        "phase": "complete",
+        "type": "action_required",
+        "phase": "exhausted_heals",
         "status": "needs_work",
-        "step": len(heal_history),
-        "deployment_id": deployment_name,
+        "detail": analysis or (
+            f"Tried {len(heal_history)} fix{'es' if len(heal_history) != 1 else ''} "
+            f"but the issue persists."
+        ),
+        "failure_category": "exhausted_heals",
+        "pipeline": "deploy",
+        "service_id": template_id,
+        "actions": [
+            {"id": "retry", "label": "Retry Deploy",
+             "description": "Re-run the deployment pipeline",
+             "style": "primary"},
+            {"id": "end_pipeline", "label": "End Pipeline",
+             "description": "Stop and review the template manually",
+             "style": "danger"},
+        ],
+        "context": {"template_id": template_id, "region": region,
+                     "resource_group": resource_group,
+                     "deployment_id": deployment_name},
         "heal_history": heal_history,
         "analysis": analysis,
     }) + "\n"

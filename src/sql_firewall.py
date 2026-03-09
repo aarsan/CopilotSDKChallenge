@@ -11,12 +11,19 @@ Requires: Azure CLI (`az`) installed and authenticated.
 
 import logging
 import os
+import shutil
 import subprocess
+import sys
 
 logger = logging.getLogger("infraforge.firewall")
 
 # Firewall rule name managed by InfraForge (won't touch other rules)
 _RULE_NAME = "infraforge-dev-auto"
+
+# On Windows, `az` is a .cmd batch wrapper — subprocess needs shell=True
+# or the full path to find it.  We resolve once at import time.
+_IS_WIN = sys.platform == "win32"
+_AZ = shutil.which("az") or "az"
 
 
 async def ensure_sql_firewall() -> None:
@@ -84,16 +91,19 @@ def _get_existing_rule_ip(server: str, rg: str) -> str | None:
     """Check if our firewall rule exists and what IP it's set to."""
     try:
         result = subprocess.run(
-            ["az", "sql", "server", "firewall-rule", "show",
+            [_AZ, "sql", "server", "firewall-rule", "show",
              "--server", server, "--resource-group", rg,
              "--name", _RULE_NAME,
              "--query", "startIpAddress", "-o", "tsv"],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=30,
+            shell=_IS_WIN,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
-    except Exception:
-        pass
+        if result.returncode != 0 and result.stderr.strip():
+            logger.debug(f"Firewall rule lookup: {result.stderr.strip()}")
+    except Exception as e:
+        logger.debug(f"Firewall rule lookup failed: {e}")
     return None
 
 
@@ -101,27 +111,34 @@ def _update_firewall_rule(server: str, rg: str, ip: str) -> bool:
     """Create or update the firewall rule with the current IP."""
     try:
         result = subprocess.run(
-            ["az", "sql", "server", "firewall-rule", "create",
+            [_AZ, "sql", "server", "firewall-rule", "create",
              "--server", server, "--resource-group", rg,
              "--name", _RULE_NAME,
              "--start-ip-address", ip, "--end-ip-address", ip,
              "-o", "none"],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=30,
+            shell=_IS_WIN,
         )
+        if result.returncode != 0:
+            logger.warning(f"az firewall-rule create failed: {result.stderr.strip()}")
         return result.returncode == 0
-    except Exception:
+    except Exception as e:
+        logger.warning(f"az firewall-rule create exception: {e}")
         return False
 
 
 def _ensure_public_access(server: str, rg: str) -> None:
     """Ensure public network access is enabled on the SQL server."""
     try:
-        subprocess.run(
-            ["az", "sql", "server", "update",
+        result = subprocess.run(
+            [_AZ, "sql", "server", "update",
              "--name", server, "--resource-group", rg,
              "--enable-public-network", "true",
              "-o", "none"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30,
+            shell=_IS_WIN,
         )
-    except Exception:
-        pass
+        if result.returncode != 0:
+            logger.debug(f"Enable public access failed: {result.stderr.strip()}")
+    except Exception as e:
+        logger.debug(f"Enable public access exception: {e}")

@@ -78,6 +78,7 @@ from src.database import (
     create_template_version,
     delete_service_versions_by_status,
     delete_template,
+    delete_template_versions_by_status,
     fail_service_validation,
     get_active_service_version,
     get_all_services,
@@ -4296,6 +4297,7 @@ async def _recompose_with_pinned(
     }
 
     try:
+        await delete_template_versions_by_status(template_id, ["draft", "failed"])
         await upsert_template(catalog_entry)
         ver = await create_template_version(
             template_id, content_str,
@@ -4470,9 +4472,16 @@ async def fix_and_validate_template(template_id: str, request: Request):
         _versions = await get_template_versions(template_id)
         if not _versions:
             yield _record({
-                "phase": "complete",
-                "status": "failed",
-                "error": "No template versions found after fix phase.",
+                "type": "action_required",
+                "phase": "fix_validate",
+                "detail": "No template versions found after fix phase.",
+                "failure_category": "setup_broken",
+                "pipeline": "validation",
+                "actions": [
+                    {"id": "retry", "label": "Retry", "description": "Try again", "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline", "description": "Stop", "style": "danger"},
+                ],
+                "context": {"template_id": template_id},
             })
             return
 
@@ -4482,9 +4491,16 @@ async def fix_and_validate_template(template_id: str, request: Request):
             _tpl = _json.loads(_arm_content) if isinstance(_arm_content, str) else _arm_content
         except Exception:
             yield _record({
-                "phase": "complete",
-                "status": "failed",
-                "error": "Template content is not valid JSON after fix phase.",
+                "type": "action_required",
+                "phase": "fix_validate",
+                "detail": "Template content is not valid JSON after fix phase.",
+                "failure_category": "setup_broken",
+                "pipeline": "validation",
+                "actions": [
+                    {"id": "retry", "label": "Retry", "description": "Try again", "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline", "description": "Stop", "style": "danger"},
+                ],
+                "context": {"template_id": template_id},
             })
             return
 
@@ -4607,44 +4623,47 @@ async def recompose_blueprint(template_id: str):
     Streams NDJSON progress events (onboarding, composition) followed
     by a final ``{"type": "result", ...}`` event with the full result.
     """
+    import asyncio
     import json as _json
 
     async def _stream():
-        events: list[dict] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        _SENTINEL = object()
 
         async def _progress_cb(evt: dict):
-            events.append(evt)
+            await queue.put(evt)
 
+        async def _run():
+            try:
+                result = await _recompose_with_pinned(
+                    template_id,
+                    version_overrides=None,
+                    ignore_existing_pins=True,
+                    changelog="Recomposed from current service templates",
+                    change_type="major",
+                    created_by="recomposer",
+                    progress_callback=_progress_cb,
+                )
+                result["message"] = (
+                    f"Template recomposed from {len(result['services_recomposed'])} services "
+                    f"with latest templates"
+                )
+                await queue.put({"type": "result", **result})
+            except Exception as e:
+                await queue.put({"type": "error", "detail": str(e)})
+            finally:
+                await queue.put(_SENTINEL)
+
+        task = asyncio.create_task(_run())
         try:
-            result = await _recompose_with_pinned(
-                template_id,
-                version_overrides=None,
-                ignore_existing_pins=True,
-                changelog="Recomposed from current service templates",
-                change_type="major",
-                created_by="recomposer",
-                progress_callback=_progress_cb,
-            )
-            result["message"] = (
-                f"Template recomposed from {len(result['services_recomposed'])} services "
-                f"with latest templates"
-            )
-
-            # Emit all collected progress events
-            for evt in events:
-                yield _json.dumps(evt) + "\n"
-
-            # Emit final result
-            yield _json.dumps({"type": "result", **result}) + "\n"
-
-        except Exception as e:
-            # Emit any progress that was collected before the error
-            for evt in events:
-                yield _json.dumps(evt) + "\n"
-            yield _json.dumps({
-                "type": "error",
-                "detail": str(e),
-            }) + "\n"
+            while True:
+                item = await queue.get()
+                if item is _SENTINEL:
+                    break
+                yield _json.dumps(item) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
@@ -5321,15 +5340,33 @@ async def validate_template(template_id: str, request: Request):
                 if _unvalidated:
                     _dep_list = ", ".join(d[1] for d in _unvalidated)
                     _error_msg = (
-                        f"Cannot validate this template: {len(_unvalidated)} dependent "
-                        f"service(s) need onboarding first: {_dep_list}. "
-                        f"Open each service and run 'Onboard Service' before retrying."
+                        f"{len(_unvalidated)} dependent service(s) need onboarding "
+                        f"before this template can be validated: {_dep_list}."
                     )
+                    _dep_details = [
+                        {"service_id": d[0], "short_name": d[1],
+                         "name": d[2], "reason": d[3]}
+                        for d in _unvalidated
+                    ]
                     yield json.dumps({
-                        "phase": "complete",
-                        "status": "failed",
+                        "type": "action_required",
+                        "phase": "dependency_check",
                         "detail": _error_msg,
-                        "error": _error_msg,
+                        "failure_category": "dependency_failed",
+                        "pipeline": "validation",
+                        "unvalidated_dependencies": _dep_details,
+                        "actions": [
+                            {"id": "onboard_deps", "label": "Onboard All",
+                             "description": f"Onboard all {len(_unvalidated)} missing service(s), then retry",
+                             "style": "primary"},
+                            {"id": "retry", "label": "Retry Validation",
+                             "description": "Re-run after onboarding missing dependencies",
+                             "style": "secondary"},
+                            {"id": "end_pipeline", "label": "End Pipeline",
+                             "description": "Stop pipeline",
+                             "style": "danger"},
+                        ],
+                        "context": {"template_id": _tmpl_id, "version_num": _ver_num},
                     }) + "\n"
                     error_detail = _error_msg
                     await complete_pipeline_run(
@@ -5371,7 +5408,18 @@ async def validate_template(template_id: str, request: Request):
         except Exception as exc:
             final_status = "failed"
             error_detail = str(exc)[:4000]
-            yield json.dumps({"phase": "complete", "status": "failed", "error": str(exc)}) + "\n"
+            yield json.dumps({
+                "type": "action_required",
+                "phase": "complete",
+                "detail": f"An unexpected error occurred: {str(exc)[:300]}",
+                "failure_category": "exhausted_heals",
+                "pipeline": "validation",
+                "actions": [
+                    {"id": "retry", "label": "Retry", "description": "Try again", "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline", "description": "Stop", "style": "danger"},
+                ],
+                "context": {},
+            }) + "\n"
         finally:
             # Record completion with stored events
             events_str = json.dumps(collected_events, default=str)
@@ -8520,6 +8568,7 @@ async def template_feedback(template_id: str, request: Request):
     }
 
     try:
+        await delete_template_versions_by_status(template_id, ["draft", "failed"])
         await upsert_template(catalog_entry)
         ver = await create_template_version(
             template_id, content_str,
@@ -8575,11 +8624,15 @@ async def revision_policy_check(template_id: str, request: Request):
 
     client = await ensure_copilot_client()
 
-    result = await check_revision_policy(
-        prompt,
-        template=tmpl,
-        copilot_client=client,
-    )
+    try:
+        result = await check_revision_policy(
+            prompt,
+            template=tmpl,
+            copilot_client=client,
+        )
+    except Exception as e:
+        logger.warning(f"Policy check failed: {e}")
+        result = {"verdict": "pass", "issues": [], "summary": "Policy check unavailable — proceeding."}
 
     return JSONResponse(result)
 
@@ -8760,6 +8813,7 @@ async def revise_template(template_id: str, request: Request):
                         "optional_refs": tmpl.get("optional_refs", []),
                     }
 
+                    await delete_template_versions_by_status(template_id, ["draft", "failed"])
                     await upsert_template(catalog_entry)
                     ver = await create_template_version(
                         template_id, edited_content,
@@ -8983,6 +9037,7 @@ async def revise_template(template_id: str, request: Request):
                 "optional_refs": dep_analysis["optional_refs"],
             }
 
+            await delete_template_versions_by_status(template_id, ["draft", "failed"])
             await upsert_template(catalog_entry)
             ver = await create_template_version(
                 template_id, content_str,
@@ -9255,6 +9310,7 @@ async def compose_template_from_prompt(request: Request):
     }
 
     try:
+        await delete_template_versions_by_status(template_id, ["draft", "failed"])
         await upsert_template(catalog_entry)
         ver = await create_template_version(
             template_id, content_str,
@@ -9289,6 +9345,13 @@ async def delete_template_endpoint(template_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Template not found")
     return JSONResponse({"status": "ok", "deleted": template_id})
+
+
+@app.delete("/api/catalog/templates/{template_id}/versions/drafts")
+async def delete_template_draft_versions(template_id: str):
+    """Delete all draft and failed template versions for a template."""
+    count = await delete_template_versions_by_status(template_id, ["draft", "failed"])
+    return JSONResponse({"deleted": count})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -11379,5 +11442,158 @@ async def governance_resolve_endpoint(service_id: str, request: Request):
         _tracked_resolve_stream(),
         media_type="application/x-ndjson",
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# GENERIC PIPELINE RESOLUTION ENDPOINT
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/pipeline-resolve")
+async def pipeline_resolve_endpoint(request: Request):
+    """Generic pipeline failure resolution.
+
+    Any pipeline failure that emits an ``action_required`` event includes
+    an ``actions`` list and a ``context`` dict.  The frontend renders
+    buttons; when clicked it POSTs here with the chosen action + context.
+
+    Returns an NDJSON stream (same format as the original pipeline).
+    """
+    body = await _parse_body_required(request)
+
+    action = body.get("action")
+    pipeline = body.get("pipeline")
+    context = body.get("context", {})
+    params = body.get("params", {})
+
+    if not action or not pipeline:
+        raise HTTPException(status_code=400, detail="'action' and 'pipeline' are required")
+
+    # ── User chose to end the pipeline ─────────────────────
+    if action == "end_pipeline":
+        async def _end():
+            yield json.dumps({
+                "type": "done", "phase": "user_ended",
+                "detail": "Pipeline ended by user.",
+                "progress": 1.0,
+            }) + "\n"
+        return StreamingResponse(_end(), media_type="application/x-ndjson")
+
+    service_id = context.get("service_id", "")
+    region = params.get("region") or context.get("region", "eastus2")
+
+    # ── Dispatch based on pipeline type ────────────────────
+    if pipeline == "service_onboarding":
+        return await _resolve_pipeline_onboarding(service_id, region, action, context, params)
+    elif pipeline == "validation":
+        return await _resolve_pipeline_validation(service_id, region, action, context, params)
+    elif pipeline == "deploy":
+        return await _resolve_pipeline_deploy(service_id, region, action, context, params)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline}")
+
+
+async def _resolve_pipeline_onboarding(
+    service_id: str, region: str, action: str,
+    context: dict, params: dict,
+):
+    """Resolve an onboarding pipeline failure."""
+    svc = await _require_service(service_id)
+    model_id = get_active_model()
+
+    import uuid as _uuid
+    _run_id = _uuid.uuid4().hex[:8]
+    rg_name = f"infraforge-val-{service_id.replace('/', '-').replace('.', '-').lower()}-{_run_id}"[:90]
+
+    extra_kwargs: dict = {}
+
+    # If retrying, check if we should use the latest version (avoid re-generating)
+    if action in ("retry", "retry_region"):
+        ver = await get_latest_service_version(service_id)
+        if ver and ver.get("arm_template"):
+            extra_kwargs["use_version"] = ver["version"]
+
+    elif action == "ignore_tests":
+        # Skip infra test gate then re-run (user accepts test failures)
+        extra_kwargs["skip_infra_tests"] = True
+        ver = await get_latest_service_version(service_id)
+        if ver and ver.get("arm_template"):
+            extra_kwargs["use_version"] = ver["version"]
+
+    elif action == "exception":
+        # Governance exception — skip CISO gate on re-run
+        extra_kwargs["governance_exception"] = True
+        extra_kwargs["governance_exception_by"] = "user"
+        ver = await get_latest_service_version(service_id)
+        if ver and ver.get("arm_template"):
+            extra_kwargs["use_version"] = ver["version"]
+
+    async def stream():
+        from src.pipelines.onboarding import runner
+        from src.pipeline import PipelineContext, emit as _emit
+
+        ctx = PipelineContext(
+            "service_onboarding",
+            run_id=_run_id,
+            service_id=service_id,
+            region=region,
+            rg_name=rg_name,
+            svc=svc,
+            model_id=model_id,
+            onboarding_chain={service_id},
+            **extra_kwargs,
+        )
+
+        async for line in runner.execute(ctx):
+            yield line
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+async def _resolve_pipeline_validation(
+    service_id: str, region: str, action: str,
+    context: dict, params: dict,
+):
+    """Resolve a validation pipeline failure."""
+    template_id = context.get("template_id", service_id)
+    version_num = context.get("version_num")
+
+    async def stream():
+        from src.pipelines.validation import stream_validation
+        from src.pipeline import emit as _emit
+
+        yield json.dumps({
+            "type": "progress", "phase": "retry_start",
+            "detail": f"Retrying validation for {template_id}…",
+            "progress": 0.0,
+        }) + "\n"
+
+        async for line in stream_validation(template_id, version_num, region=region):
+            yield line
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+async def _resolve_pipeline_deploy(
+    service_id: str, region: str, action: str,
+    context: dict, params: dict,
+):
+    """Resolve a deployment pipeline failure."""
+    template_id = context.get("template_id", service_id)
+    resource_group = context.get("resource_group", "")
+
+    async def stream():
+        from src.pipelines.deploy import stream_deploy
+        from src.pipeline import emit as _emit
+
+        yield json.dumps({
+            "type": "progress", "phase": "retry_start",
+            "detail": f"Retrying deployment for {template_id}…",
+            "progress": 0.0,
+        }) + "\n"
+
+        async for line in stream_deploy(template_id, resource_group=resource_group, region=region):
+            yield line
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 

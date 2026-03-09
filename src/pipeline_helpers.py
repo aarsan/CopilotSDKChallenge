@@ -1507,7 +1507,7 @@ async def check_region_quota(
                 sub_id = result.stdout.strip()
 
         if not sub_id:
-            return {"ok": True, "region": region, "available_cores": -1,
+            return {"ok": False, "region": region, "available_cores": -1,
                     "limit": -1, "used": -1, "error": "no_subscription_id"}
 
         url = (
@@ -1522,7 +1522,7 @@ async def check_region_quota(
             })
 
         if resp.status_code != 200:
-            return {"ok": True, "region": region, "available_cores": -1,
+            return {"ok": False, "region": region, "available_cores": -1,
                     "limit": -1, "used": -1,
                     "error": f"api_error_{resp.status_code}"}
 
@@ -1549,29 +1549,58 @@ async def check_region_quota(
 
     except Exception as e:
         logger.warning(f"Quota pre-check for {region} failed: {e}")
-        # Don't block deployment on a failed check
-        return {"ok": True, "region": region, "available_cores": -1,
+        # API failure — report as not-ok so callers scan alternatives
+        return {"ok": False, "region": region, "available_cores": -1,
                 "limit": -1, "used": -1, "error": str(e)[:200]}
+
+
+async def _get_allowed_regions() -> list[str]:
+    """Load allowed regions from the governance DB, falling back to config."""
+    try:
+        from src.database import get_governance_policies_as_dict
+        policies = await get_governance_policies_as_dict()
+        allowed = policies.get("allowed_regions", [])
+        if allowed:
+            return [r.lower() for r in allowed]
+    except Exception as e:
+        logger.warning("Could not load allowed_regions from DB: %s", e)
+    from src.config import DEFAULT_POLICIES
+    return [r.lower() for r in DEFAULT_POLICIES.get("allowed_regions", [])]
 
 
 async def find_available_regions(
     primary_region: str,
     *,
     min_cores: int = 2,
+    force_fallback: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Check quota in the primary region and, if low, scan fallback regions.
 
     Returns ``(primary_result, alternatives)`` where *alternatives* is a
     list of regions that have at least *min_cores* available, sorted by
     available cores descending.
+
+    When *force_fallback* is True the primary region's quota result is
+    ignored and alternatives are always scanned.  Use this when calling
+    from a deploy-failure recovery path where the actual quota error may
+    be for a resource type (e.g. App Service, SQL) that the vCPU-only
+    pre-flight check cannot detect.
     """
+    # Filter fallback candidates against governance-approved regions
+    allowed = await _get_allowed_regions()
+    if allowed:
+        governance_set = set(allowed)
+        candidates = [r for r in FALLBACK_REGIONS if r.lower() in governance_set and r != primary_region]
+    else:
+        # No governance policy — use full fallback list
+        candidates = [r for r in FALLBACK_REGIONS if r != primary_region]
+
     primary = await check_region_quota(primary_region, min_cores=min_cores)
 
-    if primary["ok"]:
+    if primary["ok"] and not force_fallback:
         return primary, []
 
-    # Primary is over quota — check alternatives in parallel
-    candidates = [r for r in FALLBACK_REGIONS if r != primary_region]
+    # Primary is over quota (or force_fallback) — check alternatives in parallel
     tasks = [check_region_quota(r, min_cores=min_cores) for r in candidates]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1579,7 +1608,7 @@ async def find_available_regions(
     for r in results:
         if isinstance(r, Exception):
             continue
-        if r.get("ok") and r.get("available_cores", 0) > 0:
+        if r.get("ok") and r.get("available_cores", 0) != 0:
             alternatives.append(r)
 
     alternatives.sort(key=lambda x: x.get("available_cores", 0), reverse=True)

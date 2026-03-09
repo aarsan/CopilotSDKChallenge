@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "resourceName": {
+      "type": "string",
+      "defaultValue": "infraforge-resource"
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "dev"
+    },
+    "projectName": {
+      "type": "string",
+      "defaultValue": "infraforge"
+    },
+    "ownerEmail": {
+      "type": "string",
+      "defaultValue": "platform-team@company.com"
+    },
+    "costCenter": {
+      "type": "string",
+      "defaultValue": "IT-0001"
+    }
+  },
+  "variables": {
+    "cdnProfileName": "[concat('cdn-', parameters('projectName'), '-', parameters('environment'), '-eus2-001')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Cdn/profiles",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('cdnProfileName')]",
+      "location": "Global",
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "owner": "[parameters('ownerEmail')]",
+        "costCenter": "[parameters('costCenter')]",
+        "project": "[parameters('projectName')]",
+        "managedBy": "InfraForge"
+      },
+      "sku": {
+        "name": "Standard_Microsoft"
+      },
+      "properties": {
+        "originResponseTimeoutSeconds": 60
+      }
+    }
+  ],
+  "outputs": {
+    "cdnProfileId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Cdn/profiles', variables('cdnProfileName'))]"
+    },
+    "cdnProfileName": {
+      "type": "string",
+      "value": "[variables('cdnProfileName')]"
+    }
+  }
+}

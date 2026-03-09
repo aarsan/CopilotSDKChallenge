@@ -30,9 +30,9 @@
 **NARRATOR (Ahmet — voiceover or on-camera):**
 "This is the reality of cloud adoption in the enterprise. Every new Azure service has to go through governance reviews, Terraform or Bicep scripts have to be hand-written, security policies have to be authored, compliance has to sign off — and all of that requires expensive, specialized staff."
 
-"What if you could replace that entire bottleneck with an AI-powered IT organization — one that handles governance, infrastructure-as-code, policy generation, and deployment automatically?"
+"What if you could supercharge your entire IT organization by having AI agents do all the heavy lifting. Governance, infrastructure-as-code, security policy decision making and documentation, become fully automated via intent-driven prompts. 
 
-"This is InfraForge. Built on the GitHub Copilot SDK, powered by Claude."
+"This is InfraForge. It's no longer Infrastructure as Code, but rather Infrastructure as Prompt. Built on the GitHub Copilot SDK, powered by Claude, and running on Azure."
 
 **[SHOW: InfraForge web UI — the dashboard / landing page.]**
 

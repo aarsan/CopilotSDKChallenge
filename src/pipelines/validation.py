@@ -161,16 +161,32 @@ async def stream_validation(
                 "new_region": region,
             }) + "\n"
         else:
+            _alt_names = [a["region"] for a in _quota_alts[:5]] if _quota_alts else []
             yield json.dumps({
-                "phase": "complete",
-                "status": "failed",
+                "type": "action_required",
+                "phase": "quota_exceeded",
                 "detail": (
                     f"Subscription VM quota exceeded in {region} "
                     f"({_quota_primary['used']}/{_quota_primary['limit']} cores in use) "
                     f"and no fallback regions have capacity."
                 ),
-                "error": f"VM quota exceeded in {region}",
-                "quota": _quota_primary,
+                "failure_category": "quota_exceeded",
+                "pipeline": "validation",
+                "service_id": template_id,
+                "actions": [
+                    *[{"id": "retry_region", "label": f"Try {r}",
+                       "description": f"Re-run validation in {r}",
+                       "style": "primary", "params": {"region": r}}
+                      for r in _alt_names[:3]],
+                    {"id": "retry", "label": "Retry Same Region",
+                     "description": f"Retry in {region} (quota may have freed up)",
+                     "style": "secondary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop and request a quota increase",
+                     "style": "danger"},
+                ],
+                "context": {"template_id": template_id, "version_num": version_num,
+                            "region": region, "quota": _quota_primary},
             }) + "\n"
             return
 
@@ -370,7 +386,7 @@ async def stream_validation(
 
         # Quota / capacity errors — try a different region instead of healing
         if is_quota_or_capacity_error(error_msg):
-            _primary, _alts = await find_available_regions(region)
+            _primary, _alts = await find_available_regions(region, force_fallback=True)
             _alts = [a for a in _alts if a["region"] not in tried_regions]
             if _alts:
                 old_region = region
@@ -388,12 +404,22 @@ async def stream_validation(
 
         if is_last:
             yield json.dumps({
-                "phase": "complete",
-                "status": "failed",
-                "issues_resolved": len(heal_history),
-                "deployment_id": result.get("deployment_id"),
-                "error": error_msg,
+                "type": "action_required",
+                "phase": "exhausted_heals",
                 "detail": "I've tried everything I can think of, but this one's beyond what I can auto-fix. You may need to review the template manually.",
+                "failure_category": "exhausted_heals",
+                "pipeline": "validation",
+                "service_id": template_id,
+                "actions": [
+                    {"id": "retry", "label": "Retry Validation",
+                     "description": "Re-run the full validation pipeline",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop and review the template manually",
+                     "style": "danger"},
+                ],
+                "context": {"template_id": template_id, "version_num": version_num,
+                            "region": region, "error": error_msg[:500]},
                 "heal_history": [
                     {"error": h["error"][:200], "fix_summary": h["fix_summary"]}
                     for h in heal_history
@@ -509,10 +535,22 @@ async def stream_validation(
             fixed_tpl = json.loads(fixed_json)
         except Exception as heal_err:
             yield json.dumps({
-                "phase": "complete",
-                "status": "failed",
-                "error": error_msg,
+                "type": "action_required",
+                "phase": "heal_failed",
                 "detail": f"I wasn't able to figure out a fix for this one. The error is a bit tricky: {heal_err}",
+                "failure_category": "exhausted_heals",
+                "pipeline": "validation",
+                "service_id": template_id,
+                "actions": [
+                    {"id": "retry", "label": "Retry Validation",
+                     "description": "Re-run the full validation pipeline",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop and review the template manually",
+                     "style": "danger"},
+                ],
+                "context": {"template_id": template_id, "version_num": version_num,
+                            "region": region, "error": error_msg[:500]},
             }) + "\n"
             final_status = "failed"
             break

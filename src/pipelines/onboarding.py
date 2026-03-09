@@ -36,7 +36,6 @@ from src.pipeline import (
     HealingLoop,
     StepDef,
     StepFailure,
-    PipelineAbort,
     emit,
 )
 from src.pipeline_helpers import (
@@ -290,6 +289,14 @@ async def _regenerate_template(
         raise StepFailure(
             "Copilot SDK not available for regeneration",
             healable=False, phase="regen",
+            actions=[
+                {"id": "retry", "label": "Retry Pipeline",
+                 "description": "Re-run the pipeline — the SDK may become available",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and investigate SDK availability",
+                 "style": "danger"},
+            ],
         )
 
     new_template = await generate_arm_template_with_copilot(
@@ -607,6 +614,14 @@ async def step_check_dependency_gates(ctx: PipelineContext, step: StepDef):
             f"Dependency onboarding failed — {summary}",
             healable=False,
             phase="dep_gate",
+            actions=[
+                {"id": "retry", "label": "Retry Dependencies",
+                 "description": "Re-attempt onboarding the failed dependencies",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and onboard dependencies manually",
+                 "style": "danger"},
+            ],
         )
 
     yield emit(
@@ -634,11 +649,31 @@ async def step_analyze_standards(ctx: PipelineContext, step: StepDef):
         all_vers = await _get_svc_versions(ctx.service_id)
         draft = next((v for v in all_vers if v.get("version") == use_version), None)
         if not draft:
-            raise PipelineAbort(f"Version {use_version} not found for {ctx.service_id}")
+            raise StepFailure(
+                f"Version {use_version} not found for {ctx.service_id}",
+                healable=False, phase="use_version",
+                actions=[
+                    {"id": "retry", "label": "Retry Pipeline",
+                     "description": "Re-run without specifying a version",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop", "style": "danger"},
+                ],
+            )
 
         current_template = draft.get("arm_template", "")
         if not current_template:
-            raise PipelineAbort(f"Version {use_version} has no ARM template content")
+            raise StepFailure(
+                f"Version {use_version} has no ARM template content",
+                healable=False, phase="use_version",
+                actions=[
+                    {"id": "retry", "label": "Retry Pipeline",
+                     "description": "Re-run with a fresh generation",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop", "style": "danger"},
+                ],
+            )
 
         ctx.template = current_template
         ctx.version_num = use_version
@@ -834,21 +869,52 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
             from src.database import fail_service_validation
             logger.error(f"ARM generation failed for {ctx.service_id}: {gen_err}", exc_info=True)
             await fail_service_validation(ctx.service_id, f"ARM generation failed: {gen_err}")
-            raise PipelineAbort(f"ARM template generation failed: {str(gen_err)[:300]}")
+            raise StepFailure(
+                f"ARM template generation failed: {str(gen_err)[:300]}",
+                healable=False, phase="generate_arm",
+                actions=[
+                    {"id": "retry", "label": "Retry Generation",
+                     "description": "Try generating the ARM template again",
+                     "style": "primary"},
+                    {"id": "end_pipeline", "label": "End Pipeline",
+                     "description": "Stop and investigate the error",
+                     "style": "danger"},
+                ],
+            )
         ctx.gen_source = f"Copilot SDK ({_gen_model})"
 
     # Validate we have JSON
     if not ctx.template or not ctx.template.strip():
         from src.database import fail_service_validation
         await fail_service_validation(ctx.service_id, "ARM template generation returned empty content")
-        raise PipelineAbort("ARM template generation returned empty content")
+        raise StepFailure(
+            "ARM template generation returned empty content",
+            healable=False, phase="generate_arm",
+            actions=[
+                {"id": "retry", "label": "Retry Generation",
+                 "description": "Try generating the ARM template again",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and investigate", "style": "danger"},
+            ],
+        )
 
     try:
         _parsed = json.loads(ctx.template)
     except json.JSONDecodeError as e:
         from src.database import fail_service_validation
         await fail_service_validation(ctx.service_id, f"Generated ARM template is not valid JSON: {e}")
-        raise PipelineAbort(f"Generated ARM template is not valid JSON: {e}")
+        raise StepFailure(
+            f"Generated ARM template is not valid JSON: {e}",
+            healable=False, phase="generate_arm",
+            actions=[
+                {"id": "retry", "label": "Retry Generation",
+                 "description": "Try generating the ARM template again",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and investigate", "style": "danger"},
+            ],
+        )
 
     # Validate the template contains the expected resource type
     _generated_types = [
@@ -872,7 +938,17 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
                     f"⚠️ {_msg}", ctx.progress(0.5))
         from src.database import fail_service_validation
         await fail_service_validation(ctx.service_id, _msg)
-        raise PipelineAbort(_msg)
+        raise StepFailure(
+            _msg,
+            healable=False, phase="generate_arm",
+            actions=[
+                {"id": "retry", "label": "Retry Generation",
+                 "description": "Try generating the ARM template again",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and investigate", "style": "danger"},
+            ],
+        )
 
     # Sanitize + tag injection + metadata stamping
     ctx.template = sanitize_template(ctx.template)
@@ -1296,6 +1372,19 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             f"VM quota exceeded in {ctx.region}",
             healable=False,
             phase="deploy_quota",
+            actions=[
+                *[{"id": "retry_region", "label": f"Try {r}",
+                   "description": f"Re-run onboarding in {r}",
+                   "style": "primary", "params": {"region": r}}
+                  for r in _alt_names[:3]],
+                {"id": "retry", "label": "Retry Same Region",
+                 "description": f"Retry in {ctx.region} (quota may have freed up)",
+                 "style": "secondary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and request a quota increase",
+                 "style": "danger"},
+            ],
+            failure_context={"quota": _quota_primary, "alternative_regions": _alt_names},
         )
 
     attempt = 0
@@ -1326,7 +1415,17 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": error_msg})
                 await fail_service_validation(ctx.service_id, error_msg)
-                raise StepFailure(error_msg, healable=False, phase="parsing")
+                raise StepFailure(error_msg, healable=False, phase="parsing",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run with a fresh generation attempt",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    failure_context={"heal_history": [h.get("strategy", "") for h in ctx.heal_history[-3:]]},
+                )
             yield emit("healing", "fixing_template", f"Template has a JSON syntax issue — auto-healing…", ctx.progress(att_base + 0.02), step=attempt)
             _pre_fix = ctx.template
             ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, error_msg, standards_ctx, planning_response, ctx.heal_history)
@@ -1383,7 +1482,17 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", policy_check=report.to_dict())
                 await fail_service_validation(ctx.service_id, fail_msg)
-                raise StepFailure(fail_msg, healable=False, phase="static_policy")
+                raise StepFailure(fail_msg, healable=False, phase="static_policy",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run with a fresh generation attempt",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    failure_context={"heal_history": [h.get("strategy", "") for h in ctx.heal_history[-3:]]},
+                )
 
             failed_checks = [c for c in report.results if not c.passed and c.enforcement == "block"]
             fix_prompt = build_remediation_prompt(ctx.template, failed_checks)
@@ -1435,7 +1544,17 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     continue
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": errors, "phase": "what_if"})
                 await fail_service_validation(ctx.service_id, f"What-If failed: {brief}")
-                raise StepFailure(brief, healable=False, phase="what_if")
+                raise StepFailure(brief, healable=False, phase="what_if",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run with a fresh generation attempt",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    failure_context={"heal_history": [h.get("strategy", "") for h in ctx.heal_history[-3:]]},
+                )
 
             yield emit("healing", "fixing_template",
                         f"{brief} — auto-healing template…",
@@ -1545,7 +1664,16 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     ctx.service_id, ctx.version_num, "failed",
                     validation_result={"error": deploy_error, "phase": "deploy_quota"})
                 await fail_service_validation(ctx.service_id, quota_msg)
-                raise StepFailure(quota_msg, healable=False, phase="deploy")
+                raise StepFailure(quota_msg, healable=False, phase="deploy",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run the pipeline (quota may have freed up)",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and request a quota increase in the Azure portal",
+                         "style": "danger"},
+                    ],
+                )
 
             if is_last:
                 if _regen_count < MAX_REGEN - 1:
@@ -1558,7 +1686,17 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                 await cleanup_rg(ctx.rg_name)
                 await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": deploy_error, "phase": "deploy"})
                 await fail_service_validation(ctx.service_id, f"Deploy failed: {brief}")
-                raise StepFailure(brief, healable=False, phase="deploy")
+                raise StepFailure(brief, healable=False, phase="deploy",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run with a fresh generation attempt",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    failure_context={"heal_history": [h.get("strategy", "") for h in ctx.heal_history[-3:]]},
+                )
 
             yield emit("healing", "fixing_template",
                         f"{brief} — auto-healing template…",
@@ -1694,6 +1832,18 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                         f"Submit a policy exception request or ask the platform team to adjust standards.",
                         healable=False, phase="policy_compliance",
                         event_type="policy_blocked",
+                        actions=[
+                            {"id": "retry", "label": "Retry Onboarding",
+                             "description": "Re-run — the generated policy will be regenerated",
+                             "style": "primary"},
+                            {"id": "exception", "label": "Request Exception",
+                             "description": "Acknowledge findings and request a policy exception",
+                             "style": "secondary"},
+                            {"id": "end_pipeline", "label": "End Pipeline",
+                             "description": "Stop and adjust governance standards manually",
+                             "style": "danger"},
+                        ],
+                        failure_context={"violations": violation_details},
                     )
 
                 # ── Heal the POLICY, not the template ──
@@ -1823,6 +1973,17 @@ async def step_infra_testing(ctx: PipelineContext, step: StepDef):
                     f"{_failed_count} infrastructure test(s) failed — "
                     f"set INFRA_TEST_BLOCKING=false to make tests advisory-only",
                     healable=False, phase="infra_testing",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run the full pipeline",
+                         "style": "primary"},
+                        {"id": "ignore_tests", "label": "Accept Anyway",
+                         "description": "Approve the service despite test failures",
+                         "style": "secondary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and fix the failing tests",
+                         "style": "danger"},
+                    ],
                 )
         elif phase == "testing_feedback":
             yield emit("progress", phase, detail, prog,

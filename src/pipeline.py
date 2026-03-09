@@ -128,6 +128,14 @@ class StepFailure(Exception):
         The NDJSON event type to emit (default ``"error"``).  Use
         ``"policy_blocked"`` for policy violations so the frontend can
         render guidance instead of a hard failure.
+    actions : list[dict] | None
+        Action buttons for the user (e.g. ``[{"id": "retry", "label":
+        "Retry Pipeline", "style": "primary"}]``).  When present, the
+        runner emits an ``action_required`` event instead of a bare
+        ``error`` so the frontend can render interactive choices.
+    failure_context : dict | None
+        Opaque context dict the frontend sends back to the resolution
+        endpoint so the backend can resume/retry with full state.
     """
 
     def __init__(
@@ -137,17 +145,99 @@ class StepFailure(Exception):
         healable: bool = True,
         phase: str = "",
         event_type: str = "error",
+        actions: list[dict] | None = None,
+        failure_context: dict | None = None,
     ):
         super().__init__(error)
         self.error = error
         self.healable = healable
         self.phase = phase
         self.event_type = event_type
+        self.actions = actions
+        self.failure_context = failure_context or {}
 
 
 class PipelineAbort(Exception):
     """Raised to abort the entire pipeline immediately."""
     pass
+
+
+# ══════════════════════════════════════════════════════════════
+# ACTION-REQUIRED HELPERS
+# ══════════════════════════════════════════════════════════════
+
+_RETRY_ACTION: dict = {
+    "id": "retry", "label": "Retry Pipeline",
+    "description": "Re-run the pipeline from the beginning",
+    "style": "primary",
+}
+_END_ACTION: dict = {
+    "id": "end_pipeline", "label": "End Pipeline",
+    "description": "Stop and review manually",
+    "style": "danger",
+}
+
+
+def _default_actions() -> list[dict]:
+    """Sensible default action buttons for any pipeline failure."""
+    return [_RETRY_ACTION, _END_ACTION]
+
+
+def _categorize_failure(error: str, event_type: str = "error") -> str:
+    """Classify a failure for frontend display."""
+    low = error.lower()
+    if event_type == "policy_blocked":
+        return "policy_blocked"
+    if "quota" in low or "capacity" in low:
+        return "quota_exceeded"
+    if "not found" in low or "not available" in low:
+        return "setup_broken"
+    if "dependency" in low or "dependent" in low:
+        return "dependency_failed"
+    if "test" in low and "fail" in low:
+        return "test_failure"
+    return "exhausted_heals"
+
+
+def _build_action_required_event(
+    ctx: "PipelineContext",
+    step_name: str,
+    error: str,
+    *,
+    actions: list[dict] | None = None,
+    failure_context: dict | None = None,
+    event_type: str = "error",
+    progress: float = 1.0,
+    **extra: Any,
+) -> str:
+    """Build an ``action_required`` NDJSON event.
+
+    Merges caller-supplied context with standard pipeline state so the
+    resolution endpoint can restart the pipeline.
+    """
+    ctx_payload = {
+        "service_id": ctx.service_id,
+        "template_id": ctx.template_id,
+        "run_id": ctx.run_id,
+        "process_id": ctx.process_id,
+        "region": ctx.region,
+        "rg_name": ctx.rg_name,
+        "step": step_name,
+        "error": error[:500],
+    }
+    if failure_context:
+        ctx_payload.update(failure_context)
+
+    return emit(
+        "action_required", step_name, error,
+        progress=ctx.progress(progress) if ctx.total_steps else progress,
+        failure_category=_categorize_failure(error, event_type),
+        service_id=ctx.service_id,
+        pipeline=ctx.process_id,
+        actions=actions or _default_actions(),
+        context=ctx_payload,
+        **extra,
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -612,7 +702,10 @@ class PipelineRunner:
         try:
             steps = await self._load_steps(ctx.process_id)
         except PipelineAbort as e:
-            yield emit("error", "pipeline_init", str(e))
+            yield _build_action_required_event(
+                ctx, "pipeline_init", str(e),
+                event_type="error", progress=0.0,
+            )
             return
 
         ctx.total_steps = len(steps)
@@ -637,7 +730,9 @@ class PipelineRunner:
                         progress=ctx.progress(0),
                     )
                     if step.on_failure == "abort":
-                        yield emit("error", step.name, msg)
+                        yield _build_action_required_event(
+                            ctx, step.name, msg,
+                        )
                         return
                     step_idx += 1
                     continue
@@ -702,7 +797,12 @@ class PipelineRunner:
 
                     # Non-healable or exhausted — route on_failure
                     if target in ("abort", "mark_failed"):
-                        yield emit(e.event_type, step.name, e.error)
+                        yield _build_action_required_event(
+                            ctx, step.name, e.error,
+                            actions=e.actions,
+                            failure_context=e.failure_context,
+                            event_type=e.event_type,
+                        )
                         return
 
                     if target == "report_gap":
@@ -728,7 +828,9 @@ class PipelineRunner:
                         step_idx = next_idx
 
                 except PipelineAbort as e:
-                    yield emit("error", step.name, str(e))
+                    yield _build_action_required_event(
+                        ctx, step.name, str(e),
+                    )
                     return
 
                 except Exception as e:
@@ -737,8 +839,8 @@ class PipelineRunner:
                         f"in step '{step.name}': {e}",
                         exc_info=True,
                     )
-                    yield emit(
-                        "error", step.name,
+                    yield _build_action_required_event(
+                        ctx, step.name,
                         f"Internal error: {str(e)[:300]}",
                     )
                     if step.on_failure == "abort":

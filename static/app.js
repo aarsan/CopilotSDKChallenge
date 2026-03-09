@@ -1480,6 +1480,11 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion,
                 badge.classList.add('version-update-done');
                 badge.innerHTML = '✓ Updated';
                 completed = true;
+            } else if (event.type === 'action_required') {
+                badge.classList.remove('version-update-running');
+                badge.classList.add('version-update-error');
+                badge.innerHTML = '⚠ Action Required';
+                completed = true;
             } else if (event.type === 'error') {
                 badge.classList.remove('version-update-running');
                 badge.classList.add('version-update-error');
@@ -1493,7 +1498,7 @@ async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion,
         let completed = false;  // Track whether we received a terminal event
 
         await readNDJSONStream(res, (event) => {
-            if (event.type === 'error') failed = true;
+            if (event.type === 'error' || event.type === 'action_required') failed = true;
             updateBadge(event);
             // Buffer event for replay if drawer opens later
             const buf = _tableUpdateEventBuffers.get(serviceId);
@@ -3397,6 +3402,11 @@ function _updateTableBadge(event) {
         tblBadge.classList.add('version-update-done');
         tblBadge.innerHTML = '✓ Updated';
         _apiUpdateBadgeId = null;
+    } else if (event.type === 'action_required') {
+        tblBadge.classList.remove('version-update-running');
+        tblBadge.classList.add('version-update-error');
+        tblBadge.innerHTML = '⚠ Action Required';
+        _apiUpdateBadgeId = null;
     } else if (event.type === 'error') {
         tblBadge.classList.remove('version-update-running');
         tblBadge.classList.add('version-update-error');
@@ -3624,6 +3634,142 @@ async function resolveGovernanceBlock(serviceId, action) {
 
     } catch (err) {
         showToast(`Governance resolution failed: ${err.message}`, 'error');
+        _flowResult(logEl, 'failed', `Resolution failed: ${err.message}`);
+    }
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// GENERIC ACTION-REQUIRED RENDERER
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * Render interactive action buttons when a pipeline failure emits
+ * an ``action_required`` event.  Modeled on _renderGovernanceResolution().
+ *
+ * @param {HTMLElement} logEl - the pipeline log element
+ * @param {Object}      event - the NDJSON event with type=action_required
+ */
+function _renderActionRequired(logEl, event) {
+    const actions = event.actions || [];
+    const detail  = event.detail || 'The pipeline needs your input to continue.';
+    const pipeline = event.pipeline || '';
+    const context  = event.context || {};
+
+    // Finalize whatever flow card is currently active
+    _flowFinalizeActive(logEl, 'failed');
+
+    // Create the action panel
+    const panel = document.createElement('div');
+    panel.className = 'action-required-panel';
+
+    // Build category label
+    const catLabels = {
+        quota_exceeded:   'Quota Exceeded',
+        policy_blocked:   'Policy Blocked',
+        setup_broken:     'Setup Error',
+        dependency_failed:'Dependency Failed',
+        test_failure:     'Test Failure',
+        exhausted_heals:  'Auto-Fix Exhausted',
+    };
+    const catLabel = catLabels[event.failure_category] || 'Pipeline Paused';
+
+    const buttonsHtml = actions.map(a => {
+        const styleClass = a.style === 'primary' ? 'action-btn-primary'
+                         : a.style === 'danger'  ? 'action-btn-danger'
+                         : 'action-btn-secondary';
+        const paramsAttr = a.params ? escapeHtml(JSON.stringify(a.params)) : '{}';
+        return `
+            <button class="btn action-resolve-btn ${styleClass}"
+                    data-action-id="${escapeHtml(a.id)}"
+                    data-action-params='${paramsAttr}'>
+                <span class="action-btn-label">${escapeHtml(a.label)}</span>
+                ${a.description ? `<span class="action-btn-desc">${escapeHtml(a.description)}</span>` : ''}
+            </button>`;
+    }).join('');
+
+    panel.innerHTML = `
+        <div class="action-required-header">
+            <span class="action-required-icon">&#9888;&#65039;</span>
+            <span class="action-required-tag">${escapeHtml(catLabel)}</span>
+        </div>
+        <p class="action-required-detail">${escapeHtml(detail)}</p>
+        <div class="action-required-buttons">${buttonsHtml}</div>
+    `;
+
+    // Attach click handlers
+    panel.querySelectorAll('.action-resolve-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const actionParams = JSON.parse(btn.dataset.actionParams || '{}');
+            resolveActionRequired(pipeline, btn.dataset.actionId, context, actionParams, panel, logEl);
+        });
+    });
+
+    logEl.appendChild(panel);
+    requestAnimationFrame(() => {
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+}
+
+/**
+ * Handle a user's choice from the action-required panel.
+ * Posts to /api/pipeline-resolve and streams the response through
+ * the existing event handler.
+ */
+async function resolveActionRequired(pipeline, actionId, context, params, panel, logEl) {
+    // Disable all buttons in the panel
+    panel.querySelectorAll('.action-resolve-btn').forEach(b => {
+        b.disabled = true;
+        b.style.opacity = '0.5';
+    });
+
+    // "End Pipeline" is handled client-side
+    if (actionId === 'end_pipeline') {
+        _flowResult(logEl, 'failed', 'Pipeline ended by user.');
+        const metaEl = document.getElementById('pipeline-overlay-meta');
+        if (metaEl) metaEl.textContent = 'Ended by user';
+        return;
+    }
+
+    // Update overlay header
+    const metaEl = document.getElementById('pipeline-overlay-meta');
+    if (metaEl) metaEl.textContent = actionId === 'retry' || actionId === 'retry_region'
+        ? 'Retrying pipeline…' : 'Resolving…';
+
+    // Clear existing flow to start fresh — remove all flow cards and reset state
+    if (logEl._flow) {
+        delete logEl._flow;
+        const children = Array.from(logEl.children);
+        children.forEach(c => {
+            if (!c.classList.contains('validation-log-header')
+                && !c.classList.contains('uf-expand-btn')) c.remove();
+        });
+        logEl.classList.remove('uf-flow');
+    }
+
+    try {
+        const res = await fetch('/api/pipeline-resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: actionId, pipeline, context, params }),
+        });
+
+        if (!res.ok) {
+            let errMsg = 'Resolution request failed';
+            try { const err = await res.json(); errMsg = err.detail || errMsg; } catch (_) {}
+            throw new Error(errMsg);
+        }
+
+        await readNDJSONStream(res, (event) => {
+            _handleValidationEvent(event);
+        });
+
+        await loadAllData();
+        const sid = context.service_id || context.template_id;
+        if (sid) await showServiceDetail(sid);
+
+    } catch (err) {
+        showToast(`Resolution failed: ${err.message}`, 'error');
         _flowResult(logEl, 'failed', `Resolution failed: ${err.message}`);
     }
 }
@@ -4174,6 +4320,8 @@ function _handleUpdateEvent(event) {
             + `No deployment possible without additional quota.`
             + regionHtml
         );
+    } else if (type === 'action_required') {
+        _renderActionRequired(logEl, event);
     } else if (type === 'error') {
         // Don't render a separate error result if governance already blocks — the card handles it
         if (phase === 'governance_blocked' && logEl._flow?.cards?.['governance']) {
@@ -4243,6 +4391,10 @@ function _handleUpdateEvent(event) {
         card.className = 'validation-card validation-succeeded';
         if (header) header.textContent = `API Version Updated — v${event.new_semver || '?'}`;
         if (iconEl) { iconEl.textContent = '✅'; iconEl.classList.remove('validation-spinner'); }
+    } else if (type === 'action_required' && card) {
+        card.className = 'validation-card validation-action-required';
+        if (header) header.textContent = 'Action Required';
+        if (iconEl) { iconEl.textContent = '⚠️'; iconEl.classList.remove('validation-spinner'); }
     } else if (type === 'error' && card) {
         card.className = 'validation-card validation-failed';
         if (header) header.textContent = 'API Version Update Failed';
@@ -4622,6 +4774,8 @@ function _handleValidationEvent(event) {
             + `No deployment possible without additional quota.`
             + regionHtml
         );
+    } else if (type === 'action_required') {
+        _renderActionRequired(logEl, event);
     } else if (type === 'error') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'failed', detail || 'Onboarding failed');
@@ -4694,6 +4848,10 @@ function _handleValidationEvent(event) {
         card.className = 'validation-card validation-policy-blocked';
         if (header) header.textContent = 'Policy Review Needed';
         if (iconEl) { iconEl.textContent = '🛑'; iconEl.classList.remove('validation-spinner'); }
+    } else if (type === 'action_required' && card) {
+        card.className = 'validation-card validation-action-required';
+        if (header) header.textContent = 'Action Required';
+        if (iconEl) { iconEl.textContent = '⚠️'; iconEl.classList.remove('validation-spinner'); }
     } else if (type === 'error' && card) {
         card.className = 'validation-card validation-failed';
         if (header) header.textContent = 'Onboarding Failed';
@@ -6060,7 +6218,7 @@ async function _loadTemplateVersionHistory(templateId) {
             return;
         }
 
-        const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '●', approved: '●' };
+        const statusIcons = { draft: '📝', passed: '🧪', validated: '🔬', failed: '●', approved: '●', superseded: '📦' };
 
         // Sort versions: most recent first by created_at, then by version number descending
         const sorted = [...versions].sort((a, b) => {
@@ -6072,7 +6230,14 @@ async function _loadTemplateVersionHistory(templateId) {
             return (b.version || 0) - (a.version || 0);
         });
 
-        container.innerHTML = sorted.map((v, idx) => {
+        const hasDrafts = sorted.some(v => v.status === 'draft' || v.status === 'failed');
+        const draftHeader = hasDrafts
+            ? `<div class="comp-verlog-header" style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+                   <button class="comp-verlog-btn comp-verlog-btn-logs" onclick="_clearTemplateDrafts('${escapeHtml(templateId)}')" title="Delete all draft and failed versions">Clear Drafts</button>
+               </div>`
+            : '';
+
+        container.innerHTML = draftHeader + sorted.map((v, idx) => {
             const isActive = v.version === data.active_version;
             const semverDisplay = v.semver ? v.semver : `${v.version}.0.0`;
             const changeLabel = _inferChangeType(v.created_by, v.changelog);
@@ -6099,11 +6264,27 @@ async function _loadTemplateVersionHistory(templateId) {
                         </span>
                     </div>
                     ${v.changelog ? `<div class="comp-verlog-note">${escapeHtml(v.changelog)}</div>` : ''}
+                    ${v.created_by ? `<div class="comp-verlog-note" style="opacity:0.6;font-size:0.8em;">${escapeHtml(v.created_by)}</div>` : ''}
                 </div>
             `;
         }).join('');
     } catch (err) {
         container.innerHTML = `<div class="compose-empty">Failed to load versions: ${err.message}</div>`;
+    }
+}
+
+async function _clearTemplateDrafts(templateId) {
+    if (!confirm('Delete all draft and failed versions for this template?')) return;
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/versions/drafts`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        showToast(`Deleted ${data.deleted} draft version(s)`, 'success');
+        _loadTemplateVersionHistory(templateId);
+    } catch (err) {
+        showToast(`Failed to clear drafts: ${err.message}`, 'error');
     }
 }
 
@@ -8254,6 +8435,10 @@ async function submitRevision(templateId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt }),
         });
+        if (!policyRes.ok) {
+            const errText = await policyRes.text();
+            throw new Error(errText || `Policy check failed (HTTP ${policyRes.status})`);
+        }
         const policyData = await policyRes.json();
 
         // Show policy result

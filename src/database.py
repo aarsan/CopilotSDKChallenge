@@ -1805,53 +1805,98 @@ async def get_services_basic(service_ids: list[str]) -> dict[str, dict]:
 # ══════════════════════════════════════════════════════════════
 
 async def upsert_template(tmpl: dict) -> None:
-    """Insert or replace a catalog template."""
+    """Insert or update a catalog template, preserving active_version."""
     backend = await get_backend()
     now = datetime.now(timezone.utc).isoformat()
-    await backend.execute_write(
-        "DELETE FROM catalog_templates WHERE id = ?", (tmpl["id"],)
-    )
+
     # Compliance profile: None = not configured, [] = exempt, [...] = specific
     cp = tmpl.get("compliance_profile")
     cp_json = json.dumps(cp) if cp is not None else None
 
-    await backend.execute_write(
-        """
-        INSERT INTO catalog_templates
-            (id, name, description, format, category, source_path, content,
-             tags_json, resources_json, parameters_json, outputs_json,
-             service_ids_json, is_blueprint, registered_by, status,
-             template_type, provides_json, requires_json, optional_refs_json,
-             compliance_profile_json, pinned_versions_json,
-             created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            tmpl["id"],
-            tmpl.get("name", ""),
-            tmpl.get("description", ""),
-            tmpl.get("format", "bicep"),
-            tmpl.get("category", "compute"),
-            tmpl.get("source_path", ""),
-            tmpl.get("content", ""),
-            json.dumps(tmpl.get("tags", [])),
-            json.dumps(tmpl.get("resources", [])),
-            json.dumps(tmpl.get("parameters", [])),
-            json.dumps(tmpl.get("outputs", [])),
-            json.dumps(tmpl.get("service_ids", tmpl.get("composedOf", []))),
-            1 if tmpl.get("is_blueprint", tmpl.get("category") == "blueprint") else 0,
-            tmpl.get("registered_by", "platform-team"),
-            tmpl.get("status", "draft"),
-            tmpl.get("template_type", "workload"),
-            json.dumps(tmpl.get("provides", [])),
-            json.dumps(tmpl.get("requires", [])),
-            json.dumps(tmpl.get("optional_refs", [])),
-            cp_json,
-            json.dumps(tmpl.get("pinned_versions")) if tmpl.get("pinned_versions") else None,
-            now,
-            now,
-        ),
+    existing = await backend.execute(
+        "SELECT id FROM catalog_templates WHERE id = ?", (tmpl["id"],)
     )
+
+    if existing:
+        # UPDATE — preserve active_version and created_at
+        await backend.execute_write(
+            """
+            UPDATE catalog_templates SET
+                name = ?, description = ?, format = ?, category = ?,
+                source_path = ?, content = ?,
+                tags_json = ?, resources_json = ?, parameters_json = ?,
+                outputs_json = ?, service_ids_json = ?, is_blueprint = ?,
+                registered_by = ?, status = ?,
+                template_type = ?, provides_json = ?, requires_json = ?,
+                optional_refs_json = ?, compliance_profile_json = ?,
+                pinned_versions_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                tmpl.get("name", ""),
+                tmpl.get("description", ""),
+                tmpl.get("format", "bicep"),
+                tmpl.get("category", "compute"),
+                tmpl.get("source_path", ""),
+                tmpl.get("content", ""),
+                json.dumps(tmpl.get("tags", [])),
+                json.dumps(tmpl.get("resources", [])),
+                json.dumps(tmpl.get("parameters", [])),
+                json.dumps(tmpl.get("outputs", [])),
+                json.dumps(tmpl.get("service_ids", tmpl.get("composedOf", []))),
+                1 if tmpl.get("is_blueprint", tmpl.get("category") == "blueprint") else 0,
+                tmpl.get("registered_by", "platform-team"),
+                tmpl.get("status", "draft"),
+                tmpl.get("template_type", "workload"),
+                json.dumps(tmpl.get("provides", [])),
+                json.dumps(tmpl.get("requires", [])),
+                json.dumps(tmpl.get("optional_refs", [])),
+                cp_json,
+                json.dumps(tmpl.get("pinned_versions")) if tmpl.get("pinned_versions") else None,
+                now,
+                tmpl["id"],
+            ),
+        )
+    else:
+        # INSERT — new template
+        await backend.execute_write(
+            """
+            INSERT INTO catalog_templates
+                (id, name, description, format, category, source_path, content,
+                 tags_json, resources_json, parameters_json, outputs_json,
+                 service_ids_json, is_blueprint, registered_by, status,
+                 template_type, provides_json, requires_json, optional_refs_json,
+                 compliance_profile_json, pinned_versions_json,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tmpl["id"],
+                tmpl.get("name", ""),
+                tmpl.get("description", ""),
+                tmpl.get("format", "bicep"),
+                tmpl.get("category", "compute"),
+                tmpl.get("source_path", ""),
+                tmpl.get("content", ""),
+                json.dumps(tmpl.get("tags", [])),
+                json.dumps(tmpl.get("resources", [])),
+                json.dumps(tmpl.get("parameters", [])),
+                json.dumps(tmpl.get("outputs", [])),
+                json.dumps(tmpl.get("service_ids", tmpl.get("composedOf", []))),
+                1 if tmpl.get("is_blueprint", tmpl.get("category") == "blueprint") else 0,
+                tmpl.get("registered_by", "platform-team"),
+                tmpl.get("status", "draft"),
+                tmpl.get("template_type", "workload"),
+                json.dumps(tmpl.get("provides", [])),
+                json.dumps(tmpl.get("requires", [])),
+                json.dumps(tmpl.get("optional_refs", [])),
+                cp_json,
+                json.dumps(tmpl.get("pinned_versions")) if tmpl.get("pinned_versions") else None,
+                now,
+                now,
+            ),
+        )
 
 
 async def update_template_pinned_versions(
@@ -2030,6 +2075,7 @@ async def get_latest_semver(template_id: str) -> Optional[str]:
     rows = await backend.execute(
         """SELECT TOP 1 semver FROM template_versions
            WHERE template_id = ? AND semver IS NOT NULL
+             AND status = 'approved'
            ORDER BY version DESC""",
         (template_id,),
     )
@@ -2191,6 +2237,11 @@ async def promote_template_version(template_id: str, version: int) -> bool:
         return False
 
     # Mark this version as approved, un-approve others
+    await backend.execute_write(
+        """UPDATE template_versions SET status = 'superseded'
+           WHERE template_id = ? AND status = 'approved' AND version <> ?""",
+        (template_id, version),
+    )
     await backend.execute_write(
         """UPDATE template_versions SET status = 'approved'
            WHERE template_id = ? AND version = ?""",
@@ -2869,6 +2920,45 @@ async def delete_service_versions_by_status(
     )
     if count:
         logger.info(f"Deleted {count} version(s) for {service_id} with status in {statuses}")
+    return count
+
+
+async def delete_template_versions_by_status(
+    template_id: str,
+    statuses: list[str],
+    *,
+    keep_version: int | None = None,
+) -> int:
+    """Delete template versions matching any of the given statuses.
+
+    Useful for cleaning up leftover draft/failed versions before a new
+    revision or feedback cycle.  Never deletes the active version.
+    If *keep_version* is given, that version is also excluded from deletion.
+    """
+    backend = await get_backend()
+    placeholders = ", ".join("?" for _ in statuses)
+    params: list = [template_id] + statuses
+
+    extra = ""
+    if keep_version is not None:
+        extra += " AND version <> ?"
+        params.append(keep_version)
+
+    # Safety: don't delete the active version
+    tmpl_rows = await backend.execute(
+        "SELECT active_version FROM catalog_templates WHERE id = ?", (template_id,)
+    )
+    active_ver = tmpl_rows[0]["active_version"] if tmpl_rows and tmpl_rows[0].get("active_version") else None
+    if active_ver is not None:
+        extra += " AND version <> ?"
+        params.append(active_ver)
+
+    count = await backend.execute_write(
+        f"DELETE FROM template_versions WHERE template_id = ? AND status IN ({placeholders}){extra}",
+        tuple(params),
+    )
+    if count:
+        logger.info(f"Deleted {count} template version(s) for {template_id} with status in {statuses}")
     return count
 
 

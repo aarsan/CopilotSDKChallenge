@@ -2166,6 +2166,12 @@ tr:hover .svc-view-tpl-btn {
     font-weight: 600;
     margin-top: 2px;
 }
+.hero-node-onboard-btn {
+    margin-top: 4px;
+    font-size: 0.62rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 5px;
+}
 
 /* ── Hero Dependency Icons ──────────────── */
 .hero-node-deps {
@@ -2229,6 +2235,44 @@ tr:hover .svc-view-tpl-btn {
     font-size: 0.78rem;
     color: var(--text-primary);
     line-height: 1.4;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+.comp-hero-not-onboarded-text {
+    flex: 1;
+    min-width: 200px;
+}
+.comp-hero-onboard-all-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* ── Recompose Progress Panel ───────────── */
+.recompose-progress-panel {
+    background: var(--bg-secondary, #1e1e2e);
+    border: 1px solid var(--border-color, #333);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+.recompose-progress-title {
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+.recompose-progress-log {
+    max-height: 220px;
+    overflow-y: auto;
+    font-size: 0.75rem;
+    font-family: var(--font-mono, 'Cascadia Code', monospace);
+    line-height: 1.5;
+}
+.recompose-log-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 1px 0;
 }
 
 /* ── Hero Actions Row ────────────────────── */
@@ -7027,6 +7071,106 @@ tr:hover .svc-view-tpl-btn {
 .gov-resolve-abort:hover:not(:disabled) {
     border-color: var(--accent-red);
     background: rgba(248, 81, 73, 0.06);
+}
+
+/* ── Generic Action-Required Panel ───────────────────────── */
+.action-required-panel {
+    margin: 0.75rem 0 0.25rem;
+    padding: 0.75rem;
+    background: var(--surface-secondary);
+    border: 1px solid var(--accent-yellow, #d29922);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent-yellow, #d29922);
+}
+
+.action-required-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.action-required-icon {
+    font-size: 1rem;
+}
+
+.action-required-tag {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.action-required-detail {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin: 0 0 0.6rem;
+    line-height: 1.45;
+}
+
+.action-required-buttons {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    width: 100%;
+}
+
+.action-resolve-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: var(--surface-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex: 1 1 0;
+    min-width: 110px;
+    max-width: 100%;
+    text-align: left;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.action-resolve-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+
+.action-resolve-btn:disabled {
+    cursor: not-allowed;
+}
+
+.action-btn-label {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.action-btn-desc {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.action-btn-primary:hover:not(:disabled) {
+    border-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.06);
+}
+
+.action-btn-secondary:hover:not(:disabled) {
+    border-color: var(--accent-yellow, #d29922);
+    background: rgba(210, 153, 34, 0.06);
+}
+
+.action-btn-danger:hover:not(:disabled) {
+    border-color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.06);
+}
+
+/* ── Outer card state for action-required ────────────────── */
+.validation-card.validation-action-required {
+    border-color: var(--accent-yellow, #d29922);
 }
 
 /* ── Governance Findings ─────────────────────────────────── */
