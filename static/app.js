@@ -172,6 +172,7 @@ let _batchOnboardState = null;  // batch onboarding tracker state
 let _catalogActivityCache = {};      // service_id → live activity job from /api/activity
 let _catalogActivityPollTimer = null; // poll interval for catalog onboarding overlay
 let _catalogIdlePolls = 0;           // consecutive polls with no running jobs
+let _catalogHadRunning = false;      // whether we ever saw a running job in this poll session
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -891,7 +892,7 @@ async function loadAllData() {
 
         // Render tables
         _populateServiceUpdatesFromCache();
-        renderServiceTable(allServices);
+        applyServiceFilters();
         renderTemplateTable(allTemplates);
 
         // Start catalog activity polling if on services page with validating services
@@ -1506,6 +1507,7 @@ function applyServiceFilters() {
 function _startCatalogActivityPoll() {
     _stopCatalogActivityPoll();
     _catalogIdlePolls = 0;
+    _catalogHadRunning = false;
     // Always do one initial fetch — a pipeline may be running even if no service
     // has 'validating' status yet (status transitions mid-pipeline)
     _pollCatalogActivity();
@@ -1547,15 +1549,19 @@ async function _pollCatalogActivity() {
         _updateCatalogStatusCells();
 
         const anyRunning = Object.values(newCache).some(j => j.is_running);
-        if (!anyRunning) {
+        if (anyRunning) {
+            _catalogIdlePolls = 0;
+            _catalogHadRunning = true;
+        } else {
             _catalogIdlePolls++;
             // Stop after 2 consecutive idle polls (covers startup delay)
             if (_catalogIdlePolls >= 2) {
                 _stopCatalogActivityPoll();
-                loadAllData();
+                // Only refresh data if a pipeline was actually running and has now finished
+                if (_catalogHadRunning) {
+                    loadAllData();
+                }
             }
-        } else {
-            _catalogIdlePolls = 0;
         }
     } catch (err) {
         console.warn('[catalog-activity] Poll failed:', err.message);
