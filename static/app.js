@@ -171,6 +171,7 @@ let _serviceUpdates = {};  // serviceId → update info from check-updates
 let _batchOnboardState = null;  // batch onboarding tracker state
 let _catalogActivityCache = {};      // service_id → live activity job from /api/activity
 let _catalogActivityPollTimer = null; // poll interval for catalog onboarding overlay
+let _catalogIdlePolls = 0;           // consecutive polls with no running jobs
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -1251,15 +1252,16 @@ function _renderCatalogStatusCell(svc) {
     const status = svc.status || 'not_approved';
     const job = _catalogActivityCache[svc.id];
 
-    if (status === 'validating' && job && (job.is_running || job.status === 'validating')) {
+    // Show live progress for any service with a running pipeline, regardless of DB status
+    if (job && job.is_running) {
         const pct = Math.round((job.progress || 0) * 100);
         const phase = _batchPhaseLabel(job.phase);
         const detail = phase || job.detail || 'Starting…';
         return `<div class="catalog-live-status">
-            <span class="status-badge validating">● Running</span>
+            <span class="status-badge validating">● Onboarding</span>
             <div class="catalog-progress-row">
                 <div class="catalog-progress-track">
-                    <div class="catalog-progress-fill ${job.is_running ? 'catalog-progress-animated' : ''}" style="width: ${pct}%"></div>
+                    <div class="catalog-progress-fill catalog-progress-animated" style="width: ${pct}%"></div>
                 </div>
                 <span class="catalog-progress-pct">${pct}%</span>
             </div>
@@ -1479,7 +1481,12 @@ function applyServiceFilters() {
 
     // Status filter
     if (currentStatusFilter !== 'all') {
-        filtered = filtered.filter(s => s.status === currentStatusFilter);
+        filtered = filtered.filter(s => {
+            if (s.status === currentStatusFilter) return true;
+            // "validating" filter also matches services with running pipelines
+            if (currentStatusFilter === 'validating' && _catalogActivityCache[s.id]?.is_running) return true;
+            return false;
+        });
     }
 
     // Search filter
@@ -1498,8 +1505,9 @@ function applyServiceFilters() {
 
 function _startCatalogActivityPoll() {
     _stopCatalogActivityPoll();
-    const hasValidating = allServices.some(s => s.status === 'validating');
-    if (!hasValidating) return;
+    _catalogIdlePolls = 0;
+    // Always do one initial fetch — a pipeline may be running even if no service
+    // has 'validating' status yet (status transitions mid-pipeline)
     _pollCatalogActivity();
     _catalogActivityPollTimer = setInterval(_pollCatalogActivity, 3000);
 }
@@ -1540,8 +1548,14 @@ async function _pollCatalogActivity() {
 
         const anyRunning = Object.values(newCache).some(j => j.is_running);
         if (!anyRunning) {
-            _stopCatalogActivityPoll();
-            loadAllData();
+            _catalogIdlePolls++;
+            // Stop after 2 consecutive idle polls (covers startup delay)
+            if (_catalogIdlePolls >= 2) {
+                _stopCatalogActivityPoll();
+                loadAllData();
+            }
+        } else {
+            _catalogIdlePolls = 0;
         }
     } catch (err) {
         console.warn('[catalog-activity] Poll failed:', err.message);
@@ -1552,26 +1566,27 @@ function _updateCatalogStatusCells() {
     const cells = document.querySelectorAll('td[data-svc-status]');
     for (const cell of cells) {
         const svcId = cell.getAttribute('data-svc-status');
-        const svc = allServices.find(s => s.id === svcId);
-        if (!svc || svc.status !== 'validating') continue;
-
         const job = _catalogActivityCache[svcId];
-        if (job && (job.is_running || job.status === 'validating')) {
+
+        if (job && job.is_running) {
             const pct = Math.round((job.progress || 0) * 100);
             const phase = _batchPhaseLabel(job.phase);
             const detail = phase || job.detail || 'Starting…';
             cell.innerHTML = `
                 <div class="catalog-live-status">
-                    <span class="status-badge validating">● Running</span>
+                    <span class="status-badge validating">● Onboarding</span>
                     <div class="catalog-progress-row">
                         <div class="catalog-progress-track">
-                            <div class="catalog-progress-fill ${job.is_running ? 'catalog-progress-animated' : ''}" style="width: ${pct}%"></div>
+                            <div class="catalog-progress-fill catalog-progress-animated" style="width: ${pct}%"></div>
                         </div>
                         <span class="catalog-progress-pct">${pct}%</span>
                     </div>
                     <div class="catalog-progress-phase" title="${escapeHtml(job.detail || '')}">${escapeHtml(detail)}</div>
                 </div>`;
         } else {
+            // Restore static badge (may have previously shown progress)
+            const svc = allServices.find(s => s.id === svcId);
+            if (!svc) continue;
             const status = svc.status || 'not_approved';
             cell.innerHTML = `<span class="status-badge ${status}">${statusLabels[status] || status}</span>`;
         }
