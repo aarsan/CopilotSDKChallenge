@@ -4253,6 +4253,39 @@ tr:hover .svc-view-tpl-btn {
     padding: 1.25rem;
 }
 
+/* ── Expanded (full-screen) drawer ── */
+.detail-drawer.detail-drawer-expanded {
+    width: 100vw;
+    border-left: none;
+    box-shadow: none;
+}
+.detail-drawer.detail-drawer-expanded .detail-drawer-body {
+    max-width: 1100px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 1.5rem 2rem;
+}
+.detail-drawer.detail-drawer-expanded .detail-drawer-header {
+    padding: 1rem 2rem;
+}
+
+.drawer-expand-btn {
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1;
+    transition: all 0.15s;
+}
+.drawer-expand-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
+}
+
 /* ── Modal Overlay ── */
 
 .modal-overlay {

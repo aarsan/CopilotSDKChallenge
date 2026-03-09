@@ -5703,7 +5703,17 @@ function toggleReasoningVisibility() {
 function closeServiceDetail() {
     _openDrawerServiceId = null;
     _stopDrawerActivityPoll();
-    document.getElementById('service-detail-drawer').classList.add('hidden');
+    const drawer = document.getElementById('service-detail-drawer');
+    drawer.classList.remove('detail-drawer-expanded');
+    drawer.classList.add('hidden');
+}
+
+function toggleDrawerExpand() {
+    const drawer = document.getElementById('service-detail-drawer');
+    const btn = document.getElementById('drawer-expand-btn');
+    drawer.classList.toggle('detail-drawer-expanded');
+    if (btn) btn.textContent = drawer.classList.contains('detail-drawer-expanded') ? '⛶' : '⛶';
+    if (btn) btn.title = drawer.classList.contains('detail-drawer-expanded') ? 'Collapse to side panel' : 'Expand to full screen';
 }
 
 // ── Template Catalog ────────────────────────────────────────
