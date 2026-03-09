@@ -1828,7 +1828,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
     }
 
     // ── Auto-approved stub (never went through real onboarding) ──
-    const isStub = status === 'approved' && (svc.reviewed_by === 'orchestrator' || svc.gates_approved === 0);
+    const isStub = status === 'approved' && svc.reviewed_by === 'orchestrator';
     if (isStub) {
         const stubVer = latestVersion ? ` (stub v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
         return `
@@ -3688,19 +3688,67 @@ function _renderActionRequired(logEl, event) {
             </button>`;
     }).join('');
 
+    // Build dependency list for dependency_failed events
+    let depsHtml = '';
+    const unvalidatedDeps = event.unvalidated_dependencies || [];
+    if (event.failure_category === 'dependency_failed' && unvalidatedDeps.length) {
+        const depItems = unvalidatedDeps.map(dep => {
+            const reasonLabel = dep.reason === 'auto_approved_stub' ? 'auto-approved stub'
+                              : dep.reason === 'not_validated' ? 'not validated'
+                              : dep.reason === 'no_active_version' ? 'no active version'
+                              : dep.reason;
+            return `
+                <div class="dep-onboard-item">
+                    <div class="dep-onboard-info">
+                        <span class="dep-onboard-name">${escapeHtml(dep.short_name)}</span>
+                        <span class="dep-onboard-reason">${escapeHtml(reasonLabel)}</span>
+                    </div>
+                    <button class="btn btn-sm btn-accent dep-onboard-btn"
+                            data-service-id="${escapeHtml(dep.service_id)}">
+                        Onboard
+                    </button>
+                </div>`;
+        }).join('');
+        depsHtml = `<div class="dep-onboard-list">${depItems}</div>`;
+    }
+
     panel.innerHTML = `
         <div class="action-required-header">
             <span class="action-required-icon">&#9888;&#65039;</span>
             <span class="action-required-tag">${escapeHtml(catLabel)}</span>
         </div>
         <p class="action-required-detail">${escapeHtml(detail)}</p>
+        ${depsHtml}
         <div class="action-required-buttons">${buttonsHtml}</div>
     `;
 
-    // Attach click handlers
+    // Attach per-dependency onboard buttons
+    panel.querySelectorAll('.dep-onboard-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const sid = btn.dataset.serviceId;
+            btn.disabled = true;
+            btn.textContent = 'Onboarding…';
+            triggerOnboarding(sid);
+        });
+    });
+
+    // Attach click handlers for main action buttons
     panel.querySelectorAll('.action-resolve-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const actionParams = JSON.parse(btn.dataset.actionParams || '{}');
+            if (btn.dataset.actionId === 'onboard_deps') {
+                // Trigger onboarding for all unvalidated deps
+                panel.querySelectorAll('.dep-onboard-btn').forEach(db => {
+                    if (!db.disabled) {
+                        db.disabled = true;
+                        db.textContent = 'Onboarding…';
+                        triggerOnboarding(db.dataset.serviceId);
+                    }
+                });
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                return;
+            }
             resolveActionRequired(pipeline, btn.dataset.actionId, context, actionParams, panel, logEl);
         });
     });

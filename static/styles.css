@@ -7114,6 +7114,44 @@ tr:hover .svc-view-tpl-btn {
     width: 100%;
 }
 
+/* ── Dependency onboard list (shown in dependency_failed panels) ── */
+.dep-onboard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+    background: var(--surface-secondary, rgba(0,0,0,0.15));
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+}
+.dep-onboard-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.35rem 0.5rem;
+    border-radius: 4px;
+    background: var(--surface-primary);
+    border: 1px solid var(--border-primary);
+}
+.dep-onboard-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+.dep-onboard-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+.dep-onboard-reason {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+.dep-onboard-btn {
+    flex-shrink: 0;
+}
+
 .action-resolve-btn {
     display: flex;
     flex-direction: column;
