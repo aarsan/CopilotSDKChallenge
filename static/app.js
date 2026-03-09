@@ -5066,7 +5066,6 @@ function renderTemplateTable(templates) {
     }
 
     const typeIcons = { foundation: '🏗️', workload: '⚙️', composite: '📦' };
-    const typeLabels = { foundation: 'Foundation', workload: 'Workload', composite: 'Composite' };
     const statusLabelsMap = {
         approved: '✅ Published',
         draft: '📝 Draft',
@@ -5076,18 +5075,22 @@ function renderTemplateTable(templates) {
         deprecated: '⚠️ Deprecated',
     };
 
-    // Lifecycle progress: which stages are completed for this status
+    // Lifecycle progress: only shown on drafts
     const lifecycleStages = ['Composed', 'Tested', 'Deploy Tested', 'Published'];
     const statusProgress = {
-        draft: 1,       // Composed only
-        passed: 2,      // Composed + Tested
-        failed: 1,      // Stuck (composed but failed)
-        validated: 3,    // Composed + Tested + Validated
-        approved: 4,    // All stages complete
+        draft: 1,
+        passed: 2,
+        failed: 1,
+        validated: 3,
+        approved: 4,
         deprecated: 4,
     };
 
-    grid.innerHTML = templates.map(tmpl => {
+    // ── Split into published vs in-progress ──
+    const published = templates.filter(t => t.status === 'approved');
+    const drafts = templates.filter(t => t.status !== 'approved');
+
+    function _renderCard(tmpl, showLifecycle) {
         const ttype = tmpl.template_type || 'workload';
         const icon = typeIcons[ttype] || '📋';
         const status = tmpl.status || 'draft';
@@ -5095,14 +5098,17 @@ function renderTemplateTable(templates) {
         const provides = tmpl.provides || [];
         const primaryAzIcon = provides.length ? _azureIcon(provides[0], 28) : '';
         const semver = tmpl.latest_semver || (tmpl.active_version ? `${tmpl.active_version}.0.0` : null);
-        const progress = statusProgress[status] || 1;
-        const isPublished = status === 'approved';
-        const isFailed = status === 'failed';
 
-        const lifecycleHtml = _wfPipeline(
-            lifecycleStages.map(s => ({ label: s })),
-            { progress, allDone: isPublished, failedKey: isFailed ? 'fail' : undefined, compact: true }
-        );
+        let lifecycleHtml = '';
+        if (showLifecycle) {
+            const progress = statusProgress[status] || 1;
+            const isPublished = status === 'approved';
+            const isFailed = status === 'failed';
+            lifecycleHtml = `<div class="tmpl-lifecycle">${_wfPipeline(
+                lifecycleStages.map(s => ({ label: s })),
+                { progress, allDone: isPublished, failedKey: isFailed ? 'fail' : undefined, compact: true }
+            )}</div>`;
+        }
 
         return `
         <div class="tmpl-card tmpl-card-${ttype} tmpl-status-${status}" onclick="showTemplateDetail('${escapeHtml(tmpl.id)}')">
@@ -5119,7 +5125,7 @@ function renderTemplateTable(templates) {
                     <span class="status-badge ${status}">${statusLabelsMap[status] || status}</span>
                 </div>
             </div>
-            <div class="tmpl-lifecycle">${lifecycleHtml}</div>
+            ${lifecycleHtml}
             ${tmpl.description ? `<p class="tmpl-card-desc">${escapeHtml(tmpl.description)}</p>` : ''}
             ${provides.length ? `
             <div class="tmpl-card-resources">
@@ -5132,7 +5138,29 @@ function renderTemplateTable(templates) {
                 </div>
             </div>
         </div>`;
-    }).join('');
+    }
+
+    let html = '';
+
+    // Published templates — clean cards, no lifecycle bar
+    if (published.length) {
+        html += published.map(t => _renderCard(t, false)).join('');
+    }
+
+    // Drafts / in-progress — collapsible section with lifecycle bars
+    if (drafts.length) {
+        html += `
+        <details class="tmpl-drafts-section" ${!published.length ? 'open' : ''}>
+            <summary class="tmpl-drafts-toggle">
+                Drafts &amp; In Progress <span class="tmpl-drafts-count">${drafts.length}</span>
+            </summary>
+            <div class="tmpl-drafts-grid">
+                ${drafts.map(t => _renderCard(t, true)).join('')}
+            </div>
+        </details>`;
+    }
+
+    grid.innerHTML = html;
 }
 
 /** Short display name from a resource type, e.g. "Microsoft.Network/virtualNetworks" → "virtualNetworks" */

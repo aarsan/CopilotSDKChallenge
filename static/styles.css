@@ -10250,6 +10250,48 @@ tr:hover .svc-view-tpl-btn {
     padding: 0.4rem 0;
 }
 
+/* ── Drafts & In Progress collapsible section ──────────────── */
+.tmpl-drafts-section {
+    grid-column: 1 / -1;
+    margin-top: 0.75rem;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md, 8px);
+    background: var(--bg-secondary, rgba(255,255,255,0.02));
+}
+.tmpl-drafts-toggle {
+    cursor: pointer;
+    user-select: none;
+    padding: 0.6rem 1rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.tmpl-drafts-toggle:hover {
+    color: var(--text-primary);
+}
+.tmpl-drafts-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.3rem;
+    height: 1.3rem;
+    padding: 0 0.35rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: var(--bg-tertiary, rgba(255,255,255,0.06));
+    border-radius: 100px;
+}
+.tmpl-drafts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 0.75rem;
+    padding: 0 1rem 1rem;
+}
+
 .tmpl-empty-state {
     grid-column: 1 / -1;
     text-align: center;
