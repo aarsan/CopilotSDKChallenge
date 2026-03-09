@@ -796,18 +796,9 @@ if ($SkipEntraId) {
             --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope `
             -o none --only-show-errors 2>&1
 
-        # Add Microsoft Graph User.Read.All permission (needed for /me/manager)
-        # User.Read.All permission ID = a154be20-db9c-4678-8ab7-66f6cc099a59
-        Write-Host "  Adding Microsoft Graph User.Read.All permission..."
-        az ad app permission add `
-            --id $appObjectId `
-            --api 00000003-0000-0000-c000-000000000000 `
-            --api-permissions a154be20-db9c-4678-8ab7-66f6cc099a59=Scope `
-            -o none --only-show-errors 2>&1
-
-        # Grant the permissions (avoids "admin consent required" warning)
-        Write-Host "  Granting admin consent for User.Read and User.Read.All..."
-        az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read User.Read.All" -o none --only-show-errors 2>&1
+        # Grant User.Read permission (User.Read is sufficient for /me and /me/manager)
+        Write-Host "  Granting User.Read permission..."
+        az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Permissions added and granted"
         } else {
@@ -843,32 +834,37 @@ if ($SkipEntraId) {
         }
     }
 
-    # Ensure User.Read.All permission is configured (idempotent)
-    Write-Host "  Ensuring User.Read.All permission is configured..."
-    az ad app permission add `
-        --id $appObjectId `
-        --api 00000003-0000-0000-c000-000000000000 `
-        --api-permissions a154be20-db9c-4678-8ab7-66f6cc099a59=Scope `
-        -o none --only-show-errors 2>&1
-    az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read User.Read.All" -o none --only-show-errors 2>&1
+    # Ensure User.Read permission is granted (idempotent)
+    Write-Host "  Ensuring User.Read permission is granted..."
+    az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-Ok "User.Read and User.Read.All permissions granted"
+        Write-Ok "User.Read permission granted"
     } else {
-        Write-Warn "Could not auto-grant User.Read.All. Admin consent may be required."
-        Write-Host "    Grant manually: Azure Portal → App Registrations → $AppName → API Permissions → Grant admin consent" -ForegroundColor Gray
+        Write-Warn "Could not auto-grant User.Read. Consent may be required on first sign-in."
     }
 
     # Configure optional ID token claims (email, upn, given_name, family_name)
     Write-Host "  Configuring optional ID token claims..."
-    $optionalClaimsBody = @'
-{"optionalClaims":{"idToken":[{"name":"email","essential":false},{"name":"upn","essential":false},{"name":"given_name","essential":false},{"name":"family_name","essential":false}]}}
-'@
+    $claimsJson = @{
+        optionalClaims = @{
+            idToken = @(
+                @{ name = "email";       essential = $false }
+                @{ name = "upn";         essential = $false }
+                @{ name = "given_name";  essential = $false }
+                @{ name = "family_name"; essential = $false }
+            )
+        }
+    } | ConvertTo-Json -Depth 4 -Compress
+    $claimsTmp = [System.IO.Path]::GetTempFileName()
+    Set-Content -Path $claimsTmp -Value $claimsJson -Encoding UTF8
     az rest --method PATCH `
         --url "https://graph.microsoft.com/v1.0/applications/$appObjectId" `
         --headers "Content-Type=application/json" `
-        --body $optionalClaimsBody `
+        --body "@$claimsTmp" `
         -o none --only-show-errors 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $claimsExitCode = $LASTEXITCODE
+    Remove-Item $claimsTmp -ErrorAction SilentlyContinue
+    if ($claimsExitCode -eq 0) {
         Write-Ok "Optional claims configured on ID token"
     } else {
         Write-Warn "Could not configure optional claims. Some identity fields may require Graph API fallback."
@@ -1183,8 +1179,7 @@ if (-not $githubToken) {
     Write-Host "    • Set GITHUB_TOKEN and GITHUB_ORG in .env (optional - for GitHub publishing)" -ForegroundColor Gray
     Write-Host "      Or install GitHub CLI (gh) and run 'gh auth login', then re-run setup." -ForegroundColor DarkGray
 }
-Write-Host "    • Grant admin consent for User.Read and User.Read.All in Azure Portal if required by your org" -ForegroundColor Gray
-Write-Host "      Azure Portal → Entra ID → App Registrations → $AppName → API Permissions → Grant admin consent" -ForegroundColor DarkGray
+Write-Host "    • If sign-in shows a consent prompt, approve 'User.Read' for the app" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Start InfraForge:" -ForegroundColor White
 Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
