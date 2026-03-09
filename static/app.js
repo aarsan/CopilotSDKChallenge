@@ -5053,7 +5053,9 @@ function _handleValidationEvent(event) {
     } else if (phase === 'deploy_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        _flowFinalize(logEl, 'deploy', 'failed');
+        // Don't finalize as failed — the heal loop may recover.
+        // Track it so healing events target this card.
+        logEl._flow._lastFailedKey = 'deploy';
     } else if (phase === 'resource_check') {
         _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
         if (detail) _flowDetail(logEl, 'resourceCheck', '▸', escapeHtml(detail));
