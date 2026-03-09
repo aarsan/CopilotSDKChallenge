@@ -300,6 +300,52 @@ function showLoginError(message) {
 
 // ── App Display ─────────────────────────────────────────────
 
+// ── Agent Heartbeat (global pulse indicator) ────────────────
+let _agentHeartbeatInterval = null;
+
+async function _pollAgentHeartbeat() {
+    const indicator = document.getElementById('agent-pulse');
+    const dot = document.getElementById('agent-pulse-dot');
+    const label = document.getElementById('agent-pulse-label');
+    if (!indicator || !dot || !label) return;
+
+    try {
+        const res = await fetch('/api/agents/heartbeat');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const active = data.active_pipelines || 0;
+        const recent = data.recent_calls_1m || 0;
+
+        indicator.classList.remove('pulse-active', 'pulse-recent');
+
+        if (active > 0) {
+            indicator.classList.add('pulse-active');
+            label.textContent = `${active} active`;
+        } else if (recent > 0) {
+            indicator.classList.add('pulse-recent');
+            label.textContent = `${recent} calls/min`;
+        } else {
+            label.textContent = 'idle';
+        }
+    } catch (_) {
+        // Silently ignore — connection may be gone
+    }
+}
+
+function _startAgentHeartbeat() {
+    if (_agentHeartbeatInterval) return;
+    _pollAgentHeartbeat(); // immediate first poll
+    _agentHeartbeatInterval = setInterval(_pollAgentHeartbeat, 9000);
+}
+
+function _stopAgentHeartbeat() {
+    if (_agentHeartbeatInterval) {
+        clearInterval(_agentHeartbeatInterval);
+        _agentHeartbeatInterval = null;
+    }
+}
+
 function showApp() {
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app-screen').classList.remove('hidden');
@@ -329,6 +375,9 @@ function showApp() {
 
     // If an Azure sync is already running (e.g. page was refreshed), reconnect
     checkSyncStatus();
+
+    // Start global agent heartbeat polling
+    _startAgentHeartbeat();
 }
 
 // ── Navigation ──────────────────────────────────────────────
@@ -2919,6 +2968,33 @@ async function triggerOnboarding(serviceId, opts = {}) {
             if (detail) detail.textContent = `Error: ${err.message}`;
             const cardEl = document.getElementById('validation-card');
             if (cardEl) cardEl.className = 'validation-card validation-failed';
+
+            // Populate the pipeline overlay canvas with a structured error
+            const metaEl = document.getElementById('pipeline-overlay-meta');
+            if (metaEl) metaEl.textContent = 'Pipeline failed to start';
+            const iconEl = document.getElementById('pipeline-overlay-icon');
+            if (iconEl) iconEl.textContent = '⛔';
+            const canvas = document.getElementById('pipeline-canvas');
+            if (canvas) {
+                canvas.innerHTML = `
+                    <div class="action-required-panel">
+                        <div class="action-required-header">
+                            <span class="action-required-icon">⛔</span>
+                            <span class="action-required-tag">Startup Error</span>
+                        </div>
+                        <p class="action-required-detail">${escapeHtml(err.message)}</p>
+                        <details class="action-required-details">
+                            <summary>What happened</summary>
+                            <p class="action-required-explanation">The pipeline could not start. Check that the service exists in the catalog, the server is running, and Azure credentials are configured.</p>
+                        </details>
+                        <div class="action-required-buttons">
+                            <button class="btn action-resolve-btn action-btn-primary"
+                                    onclick="triggerOnboarding('${escapeHtml(serviceId)}')">
+                                <span class="action-btn-label">Retry</span>
+                            </button>
+                        </div>
+                    </div>`;
+            }
         }
     }
 }
@@ -3712,12 +3788,37 @@ function _renderActionRequired(logEl, event) {
         depsHtml = `<div class="dep-onboard-list">${depItems}</div>`;
     }
 
+    // Build human-readable category descriptions
+    const catDescriptions = {
+        quota_exceeded:    'The deployment region does not have enough quota (CPU cores, IPs, etc.) to provision the requested resources.',
+        policy_blocked:    'The generated template violates one or more organizational governance policies.',
+        setup_broken:      'A prerequisite for the pipeline failed — the Azure subscription, credentials, or resource provider may not be configured correctly.',
+        dependency_failed: 'One or more dependent services have not been fully onboarded yet. They must complete the onboarding pipeline before this service can proceed.',
+        test_failure:      'The deployed infrastructure failed one or more automated smoke tests.',
+        exhausted_heals:   'The auto-fix loop ran all available healing attempts but could not produce a valid template.',
+    };
+    const catDesc = catDescriptions[event.failure_category] || '';
+    const failedStep = context.step ? context.step.replace(/_/g, ' ') : '';
+    const rawError = context.error || '';
+
+    let detailsHtml = '';
+    if (catDesc || failedStep || rawError) {
+        detailsHtml = `
+        <details class="action-required-details">
+            <summary>What happened</summary>
+            ${catDesc ? `<p class="action-required-explanation">${escapeHtml(catDesc)}</p>` : ''}
+            ${failedStep ? `<p class="action-required-step-info">Failed step: <strong>${escapeHtml(failedStep)}</strong></p>` : ''}
+            ${rawError ? `<pre class="action-required-raw-error">${escapeHtml(rawError)}</pre>` : ''}
+        </details>`;
+    }
+
     panel.innerHTML = `
         <div class="action-required-header">
             <span class="action-required-icon">&#9888;&#65039;</span>
             <span class="action-required-tag">${escapeHtml(catLabel)}</span>
         </div>
         <p class="action-required-detail">${escapeHtml(detail)}</p>
+        ${detailsHtml}
         ${depsHtml}
         <div class="action-required-buttons">${buttonsHtml}</div>
     `;
@@ -4826,7 +4927,14 @@ function _handleValidationEvent(event) {
         _renderActionRequired(logEl, event);
     } else if (type === 'error') {
         _flowFinalizeActive(logEl, 'failed');
-        _flowResult(logEl, 'failed', detail || 'Onboarding failed');
+        let errMsg = detail;
+        if (!errMsg) {
+            const readablePhase = phase ? phase.replace(/_/g, ' ') : '';
+            errMsg = readablePhase
+                ? `Pipeline failed during: ${readablePhase}`
+                : 'Pipeline encountered an unexpected error';
+        }
+        _flowResult(logEl, 'failed', errMsg);
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
@@ -5209,10 +5317,10 @@ function showTemplateDetail(templateId) {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
             <div class="tmpl-test-banner tmpl-test-validate">
-                ✅ The structure checks out. Let me now test it against Azure to confirm it'll actually deploy.
+                ✅ Structure validated. Ready to test a full deployment to a temporary resource group.
             </div>
             <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}', true)">
-                🧪 Validate Against Azure
+                🚀 Test Deployment
             </button>
         </div>`;
     } else if (status === 'validated') {

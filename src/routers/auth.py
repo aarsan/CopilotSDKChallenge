@@ -294,6 +294,53 @@ async def get_agents_activity():
     })
 
 
+@router.get("/api/agents/heartbeat")
+async def get_agents_heartbeat():
+    """Lightweight heartbeat: active pipeline count + recent SDK call stats.
+
+    No DB queries — pure in-memory reads from _active_validations and _activity_log.
+    Designed for frequent polling (~9s) by the global agent pulse indicator.
+    """
+    import time
+    from src.copilot_helpers import _activity_log, _activity_lock
+
+    # Count active pipelines
+    active_pipelines = sum(
+        1 for v in _active_validations.values() if v.get("status") == "running"
+    )
+
+    # Count recent SDK calls in the last 60 seconds
+    now = time.time()
+    recent_calls = 0
+    last_call_ago = -1
+
+    with _activity_lock:
+        for entry in reversed(_activity_log):
+            ts_str = entry.get("timestamp", "")
+            if not ts_str:
+                continue
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                entry_epoch = dt.timestamp()
+            except Exception:
+                continue
+
+            if last_call_ago < 0:
+                last_call_ago = now - entry_epoch
+
+            if now - entry_epoch <= 60:
+                recent_calls += 1
+            else:
+                break  # deque is chronological, older entries follow
+
+    return JSONResponse({
+        "active_pipelines": active_pipelines,
+        "recent_calls_1m": recent_calls,
+        "last_call_ago_sec": round(last_call_ago, 1) if last_call_ago >= 0 else -1,
+    })
+
+
 @router.get("/api/agents/{agent_key}/prompt")
 async def get_agent_prompt(agent_key: str):
     """Return the full system prompt for a specific agent."""

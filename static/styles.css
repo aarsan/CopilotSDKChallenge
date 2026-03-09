@@ -479,6 +479,54 @@ tr:hover .svc-view-tpl-btn {
     color: var(--text-muted);
 }
 
+/* ── Agent Pulse Indicator (global, in content header) ──── */
+.agent-pulse-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 100px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: var(--bg-tertiary, rgba(255,255,255,0.04));
+    border: 1px solid var(--border-muted);
+    transition: all 0.25s ease;
+}
+.agent-pulse-indicator:hover {
+    background: var(--bg-secondary);
+    border-color: var(--border-default);
+    color: var(--text-secondary);
+}
+.agent-pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background 0.3s ease;
+}
+.agent-pulse-indicator.pulse-active .agent-pulse-dot {
+    background: var(--accent-blue, #58a6ff);
+    animation: activity-pulse-anim 1.5s ease-in-out infinite;
+    box-shadow: 0 0 6px rgba(88, 166, 255, 0.5);
+}
+.agent-pulse-indicator.pulse-active {
+    color: var(--accent-blue, #58a6ff);
+    border-color: rgba(88, 166, 255, 0.3);
+}
+.agent-pulse-indicator.pulse-active .agent-pulse-label {
+    font-weight: 600;
+}
+.agent-pulse-indicator.pulse-recent .agent-pulse-dot {
+    background: var(--accent-green, #3fb950);
+}
+.agent-pulse-indicator.pulse-recent {
+    color: var(--accent-green, #3fb950);
+    border-color: rgba(63, 185, 80, 0.3);
+}
+
 /* ── Technology Branding Badges ────────────────────────────── */
 /* Prominent badges for hackathon demo — Copilot SDK & Fabric */
 
@@ -7105,6 +7153,51 @@ tr:hover .svc-view-tpl-btn {
     color: var(--text-secondary);
     margin: 0 0 0.6rem;
     line-height: 1.45;
+}
+
+/* ── Expandable "What happened" section in action_required panels ── */
+.action-required-details {
+    margin: 0 0 0.6rem;
+    padding: 0.5rem;
+    background: var(--bg-tertiary, rgba(0,0,0,0.1));
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 0.75rem;
+}
+.action-required-details summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    user-select: none;
+}
+.action-required-details[open] summary {
+    margin-bottom: 0.4rem;
+}
+.action-required-explanation {
+    color: var(--text-secondary);
+    margin: 0 0 0.4rem;
+    line-height: 1.4;
+}
+.action-required-step-info {
+    color: var(--text-secondary);
+    margin: 0 0 0.4rem;
+}
+.action-required-step-info strong {
+    color: var(--text-primary);
+}
+.action-required-raw-error {
+    margin: 0.3rem 0 0;
+    padding: 0.4rem 0.5rem;
+    background: var(--bg-primary, rgba(0,0,0,0.15));
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 8rem;
+    overflow-y: auto;
 }
 
 .action-required-buttons {
