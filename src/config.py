@@ -5,7 +5,7 @@ InfraForge configuration and constants.
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ── App Settings ──────────────────────────────────────────────
 APP_NAME = "InfraForge"
@@ -69,7 +69,7 @@ ENTRA_TENANT_ID = os.getenv("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_SECRET = os.getenv("ENTRA_CLIENT_SECRET", "")
 ENTRA_REDIRECT_URI = os.getenv("ENTRA_REDIRECT_URI", f"http://localhost:{WEB_PORT}/api/auth/callback")
 ENTRA_AUTHORITY = f"https://login.microsoftonline.com/{ENTRA_TENANT_ID}" if ENTRA_TENANT_ID else ""
-ENTRA_SCOPES = ["User.Read", "User.Read.All"]
+ENTRA_SCOPES = ["User.Read"]
 
 # ── GitHub Integration ────────────────────────────────────────
 # Service-level GitHub credential for publishing repos and PRs.

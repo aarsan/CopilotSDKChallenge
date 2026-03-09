@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    InfraForge — First-time setup wizard for a new Azure tenant.
+    InfraForge - First-time setup wizard for a new Azure tenant.
 
 .DESCRIPTION
     Creates all Azure infrastructure required to run InfraForge:
@@ -61,6 +61,32 @@ function Test-Command {
 
 function Get-RandomSuffix {
     -join ((97..122) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+}
+
+function New-AppClientSecret {
+    <#
+    .SYNOPSIS
+        Create a client secret with fallback for tenant credential lifetime policies.
+        Tries 1 year, 6 months, 3 months, 1 month in order.
+    #>
+    param([string]$AppObjectId, [string]$DisplayName = "InfraForge Setup")
+
+    $endDates = @(
+        @{ Label = "1 year";   Date = (Get-Date).AddYears(1).ToString("yyyy-MM-dd") },
+        @{ Label = "6 months"; Date = (Get-Date).AddMonths(6).ToString("yyyy-MM-dd") },
+        @{ Label = "3 months"; Date = (Get-Date).AddMonths(3).ToString("yyyy-MM-dd") },
+        @{ Label = "1 month";  Date = (Get-Date).AddMonths(1).ToString("yyyy-MM-dd") }
+    )
+
+    foreach ($attempt in $endDates) {
+        $raw = az ad app credential reset --id $AppObjectId --append `
+            --display-name $DisplayName --end-date $attempt.Date -o json --only-show-errors 2>&1
+        $result = ConvertFrom-AzJson $raw
+        if ($result -and (Get-Member -InputObject $result -Name "password" -ErrorAction SilentlyContinue)) {
+            return @{ Password = $result.password; Expiry = $attempt.Label }
+        }
+    }
+    return $null
 }
 
 function Merge-EnvFile {
@@ -127,13 +153,13 @@ function ConvertFrom-AzJson {
 }
 
 # ─────────────────────────────────────────────────────────
-# Cleanup mode — tear down resources from a failed setup
+# Cleanup mode - tear down resources from a failed setup
 # ─────────────────────────────────────────────────────────
 
 if ($Cleanup) {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Yellow
-    Write-Host "║       InfraForge — Cleanup Failed Setup              ║" -ForegroundColor Yellow
+    Write-Host "║       InfraForge - Cleanup Failed Setup              ║" -ForegroundColor Yellow
     Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Yellow
     Write-Host ""
 
@@ -154,7 +180,7 @@ if ($Cleanup) {
         az ad app delete --id $existingApp.id -o none 2>&1
         Write-Ok "Deleted app registration '$AppName' (appId: $($existingApp.appId))"
     } else {
-        Write-Warn "No app registration named '$AppName' found — skipping"
+        Write-Warn "No app registration named '$AppName' found - skipping"
     }
 
     # 2. Delete SQL Server (also deletes its databases and firewall rules)
@@ -175,10 +201,10 @@ if ($Cleanup) {
                 }
             }
         } else {
-            Write-Warn "No InfraForge SQL servers found in '$ResourceGroup' — skipping"
+            Write-Warn "No InfraForge SQL servers found in '$ResourceGroup' - skipping"
         }
 
-        # 3. Delete resource group (only if user confirms — it deletes EVERYTHING in it)
+        # 3. Delete resource group (only if user confirms - it deletes EVERYTHING in it)
         Write-Host ""
         Write-Warn "Resource group '$ResourceGroup' still exists."
         $deleteRg = Read-Host "  Delete the entire resource group? This removes ALL resources in it. (y/N)"
@@ -194,7 +220,7 @@ if ($Cleanup) {
             Write-Warn "Keeping resource group. You can delete individual resources manually."
         }
     } else {
-        Write-Warn "Resource group '$ResourceGroup' does not exist — skipping"
+        Write-Warn "Resource group '$ResourceGroup' does not exist - skipping"
     }
 
     # 4. Remove .env file
@@ -204,7 +230,7 @@ if ($Cleanup) {
         Remove-Item $envPath -Force
         Write-Ok "Deleted .env file"
     } else {
-        Write-Warn "No .env file found — skipping"
+        Write-Warn "No .env file found - skipping"
     }
 
     Write-Host ""
@@ -220,7 +246,7 @@ if ($Cleanup) {
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║       InfraForge — First-Time Setup Wizard          ║" -ForegroundColor Cyan
+Write-Host "║       InfraForge - First-Time Setup Wizard          ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 
 Write-Step "Checking prerequisites"
@@ -247,6 +273,14 @@ Write-Ok "Logged in as $userEmail"
 Write-Ok "Subscription: $($account.name) ($subscriptionId)"
 Write-Ok "Tenant: $tenantId"
 
+# Get current user OID (reused by RBAC checks, SQL AD admin, role assignment)
+$currentUserOid = az ad signed-in-user show --query id -o tsv 2>&1
+if (-not $currentUserOid -or $currentUserOid -match "ERROR") {
+    Write-Err "Could not determine signed-in user Object ID."
+    exit 1
+}
+Write-Ok "User OID: $currentUserOid"
+
 # Python
 if (-not (Test-Command "python")) {
     Write-Err "Python not found. Install Python 3.9+."
@@ -266,12 +300,185 @@ if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
     if ($continue -ne "y") { exit 1 }
 }
 
-# Check existing .env — we'll merge if it exists (non-destructive)
+# Check existing .env - we'll merge if it exists (non-destructive)
 $envFile = Join-Path $PSScriptRoot ".." ".env"
 $envFileExists = Test-Path $envFile
 if ($envFileExists -and -not $Force) {
     Write-Warn ".env file already exists at: $envFile"
     Write-Host "  Managed values will be updated in-place. Manual customizations preserved." -ForegroundColor Gray
+}
+
+# ─────────────────────────────────────────────────────────
+# Preflight: Azure permissions
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Checking Azure permissions"
+
+# Subscription RBAC check
+$hasContributor = $false
+$hasOwner = $false
+$hasRoleAssignmentWrite = $false
+
+$rawRoles = az role assignment list `
+    --assignee $currentUserOid `
+    --scope "/subscriptions/$subscriptionId" `
+    --query "[].roleDefinitionName" `
+    -o json 2>&1
+$roles = ConvertFrom-AzJson $rawRoles
+
+if ($roles) {
+    $roleNames = @($roles)
+    if ($roleNames -contains "Owner") {
+        $hasOwner = $true
+        $hasContributor = $true
+        $hasRoleAssignmentWrite = $true
+        Write-Ok "Subscription role: Owner (full permissions)"
+    } elseif ($roleNames -contains "Contributor") {
+        $hasContributor = $true
+        Write-Ok "Subscription role: Contributor"
+    }
+    if ($roleNames -contains "User Access Administrator") {
+        $hasRoleAssignmentWrite = $true
+    }
+}
+
+if (-not $hasContributor) {
+    Write-Err "No Contributor or Owner role found on subscription $subscriptionId"
+    Write-Host "  You need at least Contributor to create resource groups, SQL servers, etc." -ForegroundColor Gray
+    Write-Host "  Ask your tenant admin to assign it:" -ForegroundColor Gray
+    Write-Host "  az role assignment create --role Contributor --assignee $currentUserOid --scope /subscriptions/$subscriptionId" -ForegroundColor DarkGray
+    exit 1
+}
+
+if (-not $hasRoleAssignmentWrite) {
+    Write-Warn "No Owner or User Access Administrator role - RBAC role assignment will be skipped in Step 4"
+}
+
+# Entra ID permission check
+$canCreateApps = $false
+if (-not $SkipEntraId) {
+    # Check tenant setting: "Users can register applications"
+    $authPolicyRaw = az rest --method GET `
+        --url "https://graph.microsoft.com/v1.0/policies/authorizationPolicy" `
+        --query "defaultUserRolePermissions.allowedToCreateApps" `
+        -o tsv 2>&1
+    if ($authPolicyRaw -eq "true") {
+        $canCreateApps = $true
+        Write-Ok "Entra ID: tenant allows users to register applications"
+    }
+
+    # If tenant setting didn't confirm, check directory roles
+    if (-not $canCreateApps) {
+        $dirRolesRaw = az rest --method GET `
+            --url "https://graph.microsoft.com/v1.0/me/memberOf/microsoft.graph.directoryRole" `
+            --query "value[].displayName" `
+            -o json 2>&1
+        $dirRoles = ConvertFrom-AzJson $dirRolesRaw
+        if ($dirRoles) {
+            $dirRoleNames = @($dirRoles)
+            $appRoles = @("Application Developer", "Application Administrator", "Cloud Application Administrator", "Global Administrator")
+            $matchedRole = $dirRoleNames | Where-Object { $_ -in $appRoles } | Select-Object -First 1
+            if ($matchedRole) {
+                $canCreateApps = $true
+                Write-Ok "Entra ID: can create apps via role '$matchedRole'"
+            }
+        }
+    }
+
+    if (-not $canCreateApps) {
+        Write-Warn "Entra ID: could not verify app registration permission"
+        Write-Host "  App registration (Step 3) may fail if your tenant restricts it." -ForegroundColor Gray
+        Write-Host "  Options:" -ForegroundColor Gray
+        Write-Host "    - Ask your admin to enable 'Users can register applications' in Entra ID" -ForegroundColor DarkGray
+        Write-Host "    - Ask for the Application Developer role" -ForegroundColor DarkGray
+        Write-Host "    - Run with -SkipEntraId to skip app registration" -ForegroundColor DarkGray
+        $continueEntra = Read-Host "  Continue anyway? (y/N)"
+        if ($continueEntra -ne "y") { exit 1 }
+    }
+}
+
+# GitHub CLI check (informational)
+$ghAvailable = $false
+$ghAuthenticated = $false
+if (Test-Command "gh") {
+    $ghAvailable = $true
+    $ghAuthCheck = gh auth status 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $ghAuthenticated = $true
+        Write-Ok "GitHub CLI: authenticated"
+    } else {
+        Write-Warn "GitHub CLI: installed but not authenticated (run 'gh auth login')"
+    }
+} else {
+    Write-Warn "GitHub CLI: not installed (GitHub integration will be skipped)"
+    Write-Host "  Install: https://cli.github.com/" -ForegroundColor Gray
+}
+
+# ─────────────────────────────────────────────────────────
+# Preflight: resource providers
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Checking resource providers"
+
+$allProviders = @(
+    "Microsoft.Web", "Microsoft.Sql", "Microsoft.Storage",
+    "Microsoft.KeyVault", "Microsoft.Network", "Microsoft.Compute",
+    "Microsoft.ContainerService", "Microsoft.OperationalInsights",
+    "Microsoft.Insights", "Microsoft.ManagedIdentity", "Microsoft.Authorization"
+)
+$criticalProviders = @("Microsoft.Sql", "Microsoft.Web")
+$unregisteredCritical = @()
+$unregisteredOther = @()
+
+foreach ($provider in $allProviders) {
+    $state = az provider show --namespace $provider --query registrationState -o tsv 2>&1
+    if ($state -ne "Registered") {
+        if ($provider -in $criticalProviders) {
+            $unregisteredCritical += $provider
+        } else {
+            $unregisteredOther += $provider
+        }
+    }
+}
+
+if ($unregisteredCritical.Count -gt 0) {
+    foreach ($provider in $unregisteredCritical) {
+        Write-Host "  Registering $provider (required for setup)..." -ForegroundColor Gray
+        az provider register --namespace $provider -o none 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Failed to register $provider."
+            Write-Host "  Ask your subscription admin: az provider register --namespace $provider" -ForegroundColor Gray
+            exit 1
+        }
+    }
+    # Wait for registration to propagate (async operation)
+    Write-Host "  Waiting for provider registration to propagate..."
+    foreach ($provider in $unregisteredCritical) {
+        $maxWait = 60; $waited = 0
+        while ($waited -lt $maxWait) {
+            $state = az provider show --namespace $provider --query registrationState -o tsv 2>&1
+            if ($state -eq "Registered") { break }
+            Start-Sleep -Seconds 5
+            $waited += 5
+        }
+        if ($state -eq "Registered") {
+            Write-Ok "$provider registered"
+        } else {
+            Write-Warn "$provider still registering (state: $state) - proceeding anyway"
+        }
+    }
+} else {
+    Write-Ok "Critical providers registered (Microsoft.Sql, Microsoft.Web)"
+}
+
+# Register non-critical providers in background (these are also registered in Step 4)
+if ($unregisteredOther.Count -gt 0) {
+    foreach ($provider in $unregisteredOther) {
+        az provider register --namespace $provider -o none 2>&1
+    }
+    Write-Ok "Queued registration for $($unregisteredOther.Count) additional providers"
+} else {
+    Write-Ok "All $($allProviders.Count) resource providers registered"
 }
 
 # ─────────────────────────────────────────────────────────
@@ -326,11 +533,11 @@ if (-not $SkipSql -and -not $existingSqlServer) {
             -o json 2>&1
         $cap = ConvertFrom-AzJson $capRaw
         if ($cap -and $cap.status -eq "Available") {
-            Write-Ok "$region — available"
+            Write-Ok "$region - available"
             $availableRegions += $region
         } else {
             $reason = if ($cap -and $cap.reason) { $cap.reason.Substring(0, [Math]::Min(80, $cap.reason.Length)) } else { "unknown" }
-            Write-Warn "$region — restricted ($reason)"
+            Write-Warn "$region - restricted ($reason)"
         }
     }
 
@@ -351,7 +558,7 @@ if (-not $SkipSql -and -not $existingSqlServer) {
     $resolvedLocation = $existingSqlServer.location
     Write-Ok "Using region '$resolvedLocation' (from existing SQL Server)"
 } else {
-    Write-Ok "SQL skipped — using requested region '$Location'"
+    Write-Ok "SQL skipped - using requested region '$Location'"
 }
 
 # Check existing SQL database (only possible if server exists)
@@ -375,14 +582,34 @@ $sessionSecret = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 |
 
 # ── Preflight summary ──────────────────────────────────
 Write-Step "Setup plan"
-Write-Host "  Region:           $resolvedLocation" -ForegroundColor White
-Write-Host "  Resource Group:   $ResourceGroup $(if ($rgExists -eq 'true') {'(exists)'} else {'(will create)'})" -ForegroundColor White
+
+Write-Host ""
+Write-Host "  Permissions:" -ForegroundColor White
+$rbacLabel = if ($hasOwner) { "Owner" } elseif ($hasContributor) { "Contributor" } else { "None" }
+$rbacColor = if ($hasContributor) { "Green" } else { "Red" }
+Write-Host "    Subscription RBAC: $rbacLabel on $subscriptionId" -ForegroundColor $rbacColor
+$roleWriteLabel = if ($hasRoleAssignmentWrite) { "can write" } else { "read-only (will skip RBAC assignment)" }
+$roleWriteColor = if ($hasRoleAssignmentWrite) { "Green" } else { "Yellow" }
+Write-Host "    Role assignment:   $roleWriteLabel" -ForegroundColor $roleWriteColor
+if (-not $SkipEntraId) {
+    $entraLabel = if ($canCreateApps) { "can create" } else { "unverified (may fail)" }
+    $entraColor = if ($canCreateApps) { "Green" } else { "Yellow" }
+    Write-Host "    Entra ID apps:     $entraLabel" -ForegroundColor $entraColor
+}
+$ghLabel = if ($ghAuthenticated) { "authenticated" } elseif ($ghAvailable) { "not authenticated" } else { "not installed" }
+$ghColor = if ($ghAuthenticated) { "Green" } else { "Yellow" }
+Write-Host "    GitHub CLI:        $ghLabel" -ForegroundColor $ghColor
+
+Write-Host ""
+Write-Host "  Resources:" -ForegroundColor White
+Write-Host "    Region:           $resolvedLocation" -ForegroundColor White
+Write-Host "    Resource Group:   $ResourceGroup $(if ($rgExists -eq 'true') {'(exists)'} else {'(will create)'})" -ForegroundColor White
 if (-not $SkipSql) {
-    Write-Host "  SQL Server:       $SqlServerName $(if ($existingSqlServer) {'(exists)'} else {'(will create)'})" -ForegroundColor White
-    Write-Host "  SQL Database:     $SqlDatabaseName $(if ($existingSqlDb) {'(exists)'} else {'(will create)'})" -ForegroundColor White
+    Write-Host "    SQL Server:       $SqlServerName $(if ($existingSqlServer) {'(exists)'} else {'(will create)'})" -ForegroundColor White
+    Write-Host "    SQL Database:     $SqlDatabaseName $(if ($existingSqlDb) {'(exists)'} else {'(will create)'})" -ForegroundColor White
 }
 if (-not $SkipEntraId) {
-    Write-Host "  App Registration: $AppName $(if ($existingEntraApp) {'(exists)'} else {'(will create)'})" -ForegroundColor White
+    Write-Host "    App Registration: $AppName $(if ($existingEntraApp) {'(exists)'} else {'(will create)'})" -ForegroundColor White
 }
 Write-Host ""
 $proceed = Read-Host "  Proceed with setup? (Y/n)"
@@ -392,14 +619,14 @@ if ($proceed -eq "n") {
 }
 
 # ═════════════════════════════════════════════════════════
-# PROVISIONING — all preflight checks passed
+# PROVISIONING - all preflight checks passed
 # ═════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────
 # Step 1: Resource Group
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 1/8 — Resource Group"
+Write-Step "Step 1/8 - Resource Group"
 
 if ($rgExists -eq "true") {
     Write-Ok "Resource group '$ResourceGroup' already exists"
@@ -413,7 +640,7 @@ if ($rgExists -eq "true") {
 # Step 2: Azure SQL Server + Database
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 2/8 — Azure SQL Server + Database"
+Write-Step "Step 2/8 - Azure SQL Server + Database"
 
 if ($SkipSql) {
     Write-Warn "Skipping SQL setup (-SkipSql). You must set AZURE_SQL_CONNECTION_STRING manually."
@@ -422,9 +649,7 @@ if ($SkipSql) {
         Write-Ok "SQL Server '$SqlServerName' already exists"
     } else {
         Write-Host "  Creating SQL Server '$SqlServerName' in $resolvedLocation..."
-        Write-Host "  (Azure AD-only authentication — no SQL password needed)" -ForegroundColor Gray
-
-        $currentUserOid = az ad signed-in-user show --query id -o tsv 2>&1
+        Write-Host "  (Azure AD-only authentication - no SQL password needed)" -ForegroundColor Gray
 
         $createOutput = az sql server create `
             --name $SqlServerName `
@@ -446,7 +671,7 @@ if ($SkipSql) {
     # Enable public network access
     Write-Host "  Enabling public network access..."
     az sql server update --name $SqlServerName --resource-group $ResourceGroup --enable-public-network true -o none --only-show-errors 2>&1
-    if ($LASTEXITCODE -ne 0) { Write-Warn "Could not enable public network access — continuing..." }
+    if ($LASTEXITCODE -ne 0) { Write-Warn "Could not enable public network access - continuing..." }
     else { Write-Ok "Public network access enabled" }
 
     # Firewall: add current IP
@@ -476,7 +701,7 @@ if ($SkipSql) {
     if ($existingSqlDb) {
         Write-Ok "Database '$SqlDatabaseName' already exists"
     } else {
-        Write-Host "  Creating database '$SqlDatabaseName' (Basic tier — ~`$5/mo)..."
+        Write-Host "  Creating database '$SqlDatabaseName' (Basic tier - ~`$5/mo)..."
         az sql db create `
             --server $SqlServerName `
             --resource-group $ResourceGroup `
@@ -501,7 +726,7 @@ if ($SkipSql) {
 # Step 3: Entra ID App Registration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 3/8 — Entra ID App Registration"
+Write-Step "Step 3/8 - Entra ID App Registration"
 
 $entraClientId = ""
 $entraClientSecret = ""
@@ -526,13 +751,14 @@ if ($SkipEntraId) {
             Write-Warn "Could not update redirect URI. Update manually if port changed."
         }
 
-        # Always create a new secret — old secrets cannot be retrieved from Entra ID
+        # Always create a new secret - old secrets cannot be retrieved from Entra ID
         $createNewSecret = Read-Host "  Create a new client secret? (Y/n)"
         if ($createNewSecret -ne "n") {
-            $secretResult = ConvertFrom-AzJson (az ad app credential reset --id $appObjectId --append --display-name "InfraForge Setup" --years 1 -o json --only-show-errors 2>&1)
-            if ($secretResult -and (Get-Member -InputObject $secretResult -Name "password" -ErrorAction SilentlyContinue)) {
-                $entraClientSecret = $secretResult.password
-                Write-Ok "New client secret created (expires in 1 year)"
+            Write-Host "  Creating client secret..."
+            $secretInfo = New-AppClientSecret -AppObjectId $appObjectId
+            if ($secretInfo) {
+                $entraClientSecret = $secretInfo.Password
+                Write-Ok "New client secret created (expires in $($secretInfo.Expiry))"
             } else {
                 Write-Warn "Could not create client secret."
                 Write-Host "    Create one manually: Azure Portal → App Registrations → $AppName → Certificates & Secrets" -ForegroundColor Gray
@@ -591,12 +817,12 @@ if ($SkipEntraId) {
 
         # Create client secret
         Write-Host "  Creating client secret..."
-        $secretResult = ConvertFrom-AzJson (az ad app credential reset --id $appObjectId --append --display-name "InfraForge Setup" --years 1 -o json --only-show-errors 2>&1)
-        if ($secretResult -and (Get-Member -InputObject $secretResult -Name "password" -ErrorAction SilentlyContinue)) {
-            $entraClientSecret = $secretResult.password
-            Write-Ok "Client secret created (expires in 1 year)"
+        $secretInfo = New-AppClientSecret -AppObjectId $appObjectId
+        if ($secretInfo) {
+            $entraClientSecret = $secretInfo.Password
+            Write-Ok "Client secret created (expires in $($secretInfo.Expiry))"
         } else {
-            Write-Warn "Could not retrieve client secret from credential reset."
+            Write-Warn "Could not create client secret."
             Write-Host "    Create one manually: Azure Portal → App Registrations → $AppName → Certificates & Secrets" -ForegroundColor Gray
         }
     }
@@ -659,31 +885,32 @@ if ($SkipEntraId) {
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 4: Generate .env file
+# Step 4: RBAC & Resource Providers
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 4/8 — RBAC & Resource Providers"
+Write-Step "Step 4/8 - RBAC & Resource Providers"
 
 # Assign Contributor role to current user (needed for ARM deployments)
 Write-Host "  Checking Contributor role assignment..."
-$currentUserOidForRbac = az ad signed-in-user show --query id -o tsv 2>&1
-$existingRole = az role assignment list --assignee $currentUserOidForRbac --role Contributor --scope "/subscriptions/$subscriptionId" --query "[0].id" -o tsv 2>&1
+$existingRole = az role assignment list --assignee $currentUserOid --role Contributor --scope "/subscriptions/$subscriptionId" --query "[0].id" -o tsv 2>&1
 if ($existingRole -and $existingRole -notmatch "ERROR") {
     Write-Ok "Contributor role already assigned"
-} else {
+} elseif ($hasRoleAssignmentWrite) {
     Write-Host "  Assigning Contributor role on subscription..."
     az role assignment create `
         --role Contributor `
-        --assignee $currentUserOidForRbac `
+        --assignee $currentUserOid `
         --scope "/subscriptions/$subscriptionId" `
         -o none 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "Contributor role assigned"
     } else {
-        Write-Warn "Could not assign Contributor role — you may need Owner or User Access Administrator."
-        Write-Host "    ARM deployments may fail without this. Ask your tenant admin to run:" -ForegroundColor Gray
-        Write-Host "    az role assignment create --role Contributor --assignee $currentUserOidForRbac --scope /subscriptions/$subscriptionId" -ForegroundColor DarkGray
+        Write-Warn "Could not assign Contributor role."
     }
+} else {
+    Write-Warn "Skipping role assignment (no Owner/User Access Administrator detected in preflight)"
+    Write-Host "    Ask your tenant admin to run:" -ForegroundColor Gray
+    Write-Host "    az role assignment create --role Contributor --assignee $currentUserOid --scope /subscriptions/$subscriptionId" -ForegroundColor DarkGray
 }
 
 # Register resource providers needed for infrastructure deployments
@@ -716,7 +943,7 @@ Write-Ok "Resource providers registered ($($providers.Count) providers)"
 # Step 5/8: GitHub Integration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 5/8 — GitHub Integration"
+Write-Step "Step 5/8 - GitHub Integration"
 
 $githubToken = ""
 $githubOrg = ""
@@ -738,7 +965,7 @@ if (Test-Command "gh") {
             Write-Warn "Could not retrieve token from gh auth."
         }
 
-        # Detect user/org — prefer org if available, fall back to user
+        # Detect user/org - prefer org if available, fall back to user
         $ghUser = (gh api user --jq ".login" 2>&1).Trim()
         if ($ghUser -and $ghUser -notmatch "ERROR") {
             Write-Ok "GitHub account: $ghUser"
@@ -785,7 +1012,7 @@ if (Test-Command "gh") {
 # Step 6/8: Generate .env file
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 6/8 — Generate .env file"
+Write-Step "Step 6/8 - Generate .env file"
 
 # Build hashtable of managed key-value pairs
 $managedEnvValues = @{
@@ -814,7 +1041,7 @@ if ($envFileExists -and -not $Force) {
 } else {
     # First-run or forced overwrite: write the full template
     $envContent = @"
-# InfraForge — Environment Configuration
+# InfraForge - Environment Configuration
 # Generated by setup.ps1 on $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
 # Entra ID (Azure AD) Authentication
@@ -839,13 +1066,13 @@ INFRAFORGE_SESSION_SECRET=$sessionSecret
 # Output
 INFRAFORGE_OUTPUT_DIR=./output
 
-# Database — Azure SQL with Azure AD auth (pyodbc + DefaultAzureCredential)
+# Database - Azure SQL with Azure AD auth (pyodbc + DefaultAzureCredential)
 AZURE_SQL_CONNECTION_STRING=$connectionString
 AZURE_SQL_SERVER=$SqlServerName
 AZURE_RESOURCE_GROUP=$ResourceGroup
 AZURE_SUBSCRIPTION_ID=$subscriptionId
 
-# Microsoft Fabric Integration (Optional — leave blank to disable)
+# Microsoft Fabric Integration (Optional - leave blank to disable)
 FABRIC_WORKSPACE_ID=
 FABRIC_ONELAKE_DFS_ENDPOINT=
 FABRIC_LAKEHOUSE_NAME=
@@ -857,10 +1084,10 @@ FABRIC_LAKEHOUSE_NAME=
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 5: Install Python dependencies + first run
+# Step 7/8: Install Python dependencies
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 7/8 — Python dependencies"
+Write-Step "Step 7/8 - Python dependencies"
 
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
@@ -887,7 +1114,7 @@ Write-Ok "Dependencies installed"
 # Step 8/8: Verify connectivity
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 8/8 — Verify connectivity"
+Write-Step "Step 8/8 - Verify connectivity"
 
 if (-not $SkipSql -and $connectionString) {
     Write-Host "  Testing SQL connection..."
@@ -953,7 +1180,7 @@ Write-Host "    Providers:      11 resource providers registered" -ForegroundCol
 Write-Host ""
 Write-Host "  Remaining manual steps:" -ForegroundColor Yellow
 if (-not $githubToken) {
-    Write-Host "    • Set GITHUB_TOKEN and GITHUB_ORG in .env (optional — for GitHub publishing)" -ForegroundColor Gray
+    Write-Host "    • Set GITHUB_TOKEN and GITHUB_ORG in .env (optional - for GitHub publishing)" -ForegroundColor Gray
     Write-Host "      Or install GitHub CLI (gh) and run 'gh auth login', then re-run setup." -ForegroundColor DarkGray
 }
 Write-Host "    • Grant admin consent for User.Read and User.Read.All in Azure Portal if required by your org" -ForegroundColor Gray

@@ -11,6 +11,7 @@ Before exploring source code, **always consult the architecture reference**:
 - **`docs/UI_STYLE_GUIDE.md`** — Design tokens, component patterns, layout conventions,
   and section inventory. **Consult before and after any frontend/UI change.**
 - **`docs/README.md`** — Project overview, setup instructions, and usage examples.
+- **`docs/SETUP.md`** — Setup script guide: parameters, permissions, and troubleshooting.
 
 These documents exist so the LLM **does not have to rediscover** the codebase structure,
 SQL syntax rules, SDK API patterns, or enum values on every session. Reference them.
