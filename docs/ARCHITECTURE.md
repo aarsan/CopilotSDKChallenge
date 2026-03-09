@@ -241,9 +241,8 @@ All endpoints are in `src/web.py`. The app is a single FastAPI instance on port 
 | GET | `/` | Serve the SPA |
 | GET | `/api/version` | App name and version |
 | GET | `/api/auth/config` | Entra ID client config for MSAL.js |
-| GET | `/api/auth/login` | Initiate login (Entra or demo mode) |
+| GET | `/api/auth/login` | Initiate Entra ID login |
 | GET | `/api/auth/callback` | OAuth2 callback |
-| POST | `/api/auth/demo` | Demo mode login |
 | POST | `/api/auth/logout` | Logout |
 | GET | `/api/auth/me` | Current user info |
 | GET | `/api/settings/model` | Current LLM model |
@@ -691,9 +690,8 @@ Registration automatically.
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/auth/config` | Returns Entra ID client config for MSAL.js (client ID, tenant, scopes) |
-| `GET /api/auth/login` | Initiates OAuth2 login (Entra or demo mode) |
+| `GET /api/auth/login` | Initiates OAuth2 login (requires Entra ID) |
 | `GET /api/auth/callback` | OAuth2 redirect — exchanges code for tokens |
-| `POST /api/auth/demo` | Demo mode login (when Entra is not configured) |
 | `POST /api/auth/logout` | Clears session |
 | `GET /api/auth/me` | Returns current user context |
 

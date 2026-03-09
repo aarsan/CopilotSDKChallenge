@@ -27,7 +27,6 @@ from src.auth import (
     get_pending_session,
     get_user_context,
     invalidate_session,
-    create_demo_session,
     is_auth_configured,
 )
 from src.database import save_session, get_usage_stats
@@ -88,25 +87,10 @@ async def auth_config():
 async def login():
     """Initiate the Entra ID login flow."""
     if not is_auth_configured():
-        # Demo mode — create a demo session and persist to DB
-        session_token, user = create_demo_session()
-        pending = get_pending_session(session_token)
-        if pending:
-            await save_session(session_token, _user_context_to_dict(user), "demo-token")
-        return JSONResponse({
-            "mode": "demo",
-            "sessionToken": session_token,
-            "user": {
-                "displayName": user.display_name,
-                "email": user.email,
-                "jobTitle": user.job_title,
-                "department": user.department,
-                "costCenter": user.cost_center,
-                "team": user.team,
-                "isAdmin": user.is_admin,
-                "isPlatformTeam": user.is_platform_team,
-            },
-        })
+        return JSONResponse(
+            {"error": "Microsoft Entra ID is not configured. Set ENTRA_CLIENT_ID, ENTRA_TENANT_ID, and ENTRA_CLIENT_SECRET to enable SSO."},
+            status_code=503,
+        )
 
     auth_url, flow_id = create_auth_url()
     return JSONResponse({
@@ -141,28 +125,6 @@ async def auth_callback(request: Request):
     return RedirectResponse(url=f"/?session={session_token}")
 
 
-@router.post("/api/auth/demo")
-async def demo_login():
-    """Create a demo session (when Entra ID is not configured)."""
-    session_token, user = create_demo_session()
-    pending = get_pending_session(session_token)
-    if pending:
-        await save_session(session_token, _user_context_to_dict(user), "demo-token")
-    return JSONResponse({
-        "sessionToken": session_token,
-        "user": {
-            "displayName": user.display_name,
-            "email": user.email,
-            "jobTitle": user.job_title,
-            "department": user.department,
-            "costCenter": user.cost_center,
-            "team": user.team,
-            "isAdmin": user.is_admin,
-            "isPlatformTeam": user.is_platform_team,
-        },
-    })
-
-
 @router.post("/api/auth/logout")
 async def logout(request: Request):
     """End the user session."""
@@ -192,10 +154,6 @@ async def get_current_user(request: Request):
     user = await get_user_context(session_token)
     if not user:
         raise HTTPException(status_code=401, detail="Session expired")
-
-    # Reject stale demo sessions when real Entra ID auth is configured
-    if is_auth_configured() and user.user_id == "demo-user-001":
-        raise HTTPException(status_code=401, detail="Demo session expired — please sign in with Microsoft")
 
     return JSONResponse({
         "displayName": user.display_name,

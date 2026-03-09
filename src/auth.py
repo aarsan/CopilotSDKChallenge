@@ -324,45 +324,6 @@ def _fetch_graph_profile(access_token: str) -> Optional[dict]:
     return result if result else None
 
 
-# ── Demo / Development Mode ─────────────────────────────────
-# When Entra ID isn't configured, provide a demo user context
-# so the web UI works without requiring a real tenant.
-
-
-def create_demo_session() -> tuple[str, UserContext]:
-    """Create a demo session with a sample user for development/demo purposes.
-
-    Returns (session_token, user_context). The caller must persist the session
-    to the database by calling save_session() from src.database.
-    """
-    demo_user = UserContext(
-        user_id="demo-user-001",
-        display_name="Alex Johnson",
-        email="alex.johnson@contoso.com",
-        job_title="Senior Cloud Engineer",
-        department="Engineering",
-        cost_center="CC-ENG-4200",
-        manager="Jordan Smith",
-        groups=["Engineering", "Cloud-Platform", "Azure-Contributors"],
-        roles=["Developer"],
-        team="Cloud Platform",
-        is_platform_team=False,
-        is_admin=False,
-    )
-
-    session_token = secrets.token_urlsafe(48)
-
-    # Store temporarily so web.py can persist to DB (same flow as real auth)
-    _pending_sessions[session_token] = {
-        "access_token": "demo-token",
-        "claims": {},
-        "user_context": demo_user,
-        "created_at": time.time(),
-    }
-
-    return session_token, demo_user
-
-
 def is_auth_configured() -> bool:
     """Check if Entra ID authentication is properly configured."""
     return bool(ENTRA_CLIENT_ID and ENTRA_TENANT_ID and ENTRA_CLIENT_SECRET)

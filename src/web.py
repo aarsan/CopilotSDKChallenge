@@ -64,7 +64,6 @@ from src.auth import (
     get_pending_session,
     get_user_context,
     invalidate_session,
-    create_demo_session,
     is_auth_configured,
 )
 from src.database import (

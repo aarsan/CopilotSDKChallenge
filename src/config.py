@@ -62,8 +62,8 @@ WEB_PORT = int(os.getenv("INFRAFORGE_WEB_PORT", "8080"))
 SESSION_SECRET = os.getenv("INFRAFORGE_SESSION_SECRET", "infraforge-dev-secret-change-in-prod")
 
 # ── Entra ID (Azure AD) Authentication ───────────────────────
-# Configure these to enable corporate SSO. When not set, InfraForge
-# runs in demo mode with a sample user identity.
+# Configure these to enable corporate SSO. When not set, login is
+# disabled and users will see a configuration error.
 ENTRA_CLIENT_ID = os.getenv("ENTRA_CLIENT_ID", "")
 ENTRA_TENANT_ID = os.getenv("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_SECRET = os.getenv("ENTRA_CLIENT_SECRET", "")
