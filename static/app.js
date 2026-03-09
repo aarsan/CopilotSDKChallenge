@@ -11485,6 +11485,7 @@ async function submitPromptCompose() {
     btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
+    let succeeded = false;
 
     try {
         // ── Step 1: Policy pre-check via a lightweight POST ──
@@ -11620,7 +11621,9 @@ async function submitPromptCompose() {
                 </div>
             </div>`;
 
-        textarea.value = '';
+        btn.disabled = true;
+        btn.textContent = '✅ Template Created';
+        succeeded = true;
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
         setTimeout(async () => {
@@ -11637,8 +11640,10 @@ async function submitPromptCompose() {
         resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
         showToast(`❌ Compose error: ${err.message}`, 'error');
     } finally {
-        btn.disabled = false;
-        btn.textContent = '🚀 Create Template';
+        if (!succeeded) {
+            btn.disabled = false;
+            btn.textContent = '🚀 Create Template';
+        }
     }
 }
 
