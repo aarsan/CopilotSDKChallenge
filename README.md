@@ -33,11 +33,17 @@ deployment, architecture, and Responsible AI notes
 
 ## Quick Start
 
-```bash
+```powershell
 git clone https://github.com/aharsan/CopilotSDKChallenge.git
 cd CopilotSDKChallenge
-python -m venv .venv && .venv\Scripts\activate
-pip install -r requirements.txt
-python web_start.py
-# Open http://localhost:8080
+.\scripts\setup.ps1      # provisions Azure SQL, Entra ID, .env, venv, and dependencies
+python web_start.py       # open http://localhost:8080
 ```
+
+The setup script is an interactive wizard that handles everything — Azure resources,
+app registration, environment config, Python venv, and dependency installation.
+See **[Setup Guide](docs/SETUP.md)** for parameters and options.
+
+> **Already have infrastructure?** Create a `.env` file manually
+> ([template](docs/SETUP.md#env-file)), install dependencies with
+> `pip install -r requirements.txt`, and run `python web_start.py`.
