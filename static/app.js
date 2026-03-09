@@ -169,6 +169,8 @@ let allServices = [];
 let allTemplates = [];
 let _serviceUpdates = {};  // serviceId → update info from check-updates
 let _batchOnboardState = null;  // batch onboarding tracker state
+let _catalogActivityCache = {};      // service_id → live activity job from /api/activity
+let _catalogActivityPollTimer = null; // poll interval for catalog onboarding overlay
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -448,6 +450,13 @@ function navigateTo(page) {
         _startActivityPolling();
     } else {
         _stopActivityPolling();
+    }
+
+    // Start catalog activity polling when on services page with validating services
+    if (page === 'services') {
+        _startCatalogActivityPoll();
+    } else {
+        _stopCatalogActivityPoll();
     }
 
     // Load standards when switching to governance page
@@ -884,6 +893,11 @@ async function loadAllData() {
         renderServiceTable(allServices);
         renderTemplateTable(allTemplates);
 
+        // Start catalog activity polling if on services page with validating services
+        if (currentPage === 'services') {
+            _startCatalogActivityPoll();
+        }
+
         // Render approval tracker
         renderApprovalTracker(approvalData.requests || []);
 
@@ -930,6 +944,13 @@ function _renderStatsPanel(data) {
     const approvedEl = document.getElementById('svc-stat-approved');
     if (approvedEl) {
         approvedEl.textContent = data.total_approved != null ? data.total_approved.toLocaleString() : '—';
+    }
+
+    // Onboarding count (services currently validating)
+    const onboardEl = document.getElementById('svc-stat-onboarding');
+    if (onboardEl) {
+        const validatingCount = allServices.filter(s => s.status === 'validating').length;
+        onboardEl.textContent = validatingCount;
     }
 
     // Sync status
@@ -1226,6 +1247,29 @@ function _updateCheckButton() {
     }
 }
 
+function _renderCatalogStatusCell(svc) {
+    const status = svc.status || 'not_approved';
+    const job = _catalogActivityCache[svc.id];
+
+    if (status === 'validating' && job && (job.is_running || job.status === 'validating')) {
+        const pct = Math.round((job.progress || 0) * 100);
+        const phase = _batchPhaseLabel(job.phase);
+        const detail = phase || job.detail || 'Starting…';
+        return `<div class="catalog-live-status">
+            <span class="status-badge validating">● Running</span>
+            <div class="catalog-progress-row">
+                <div class="catalog-progress-track">
+                    <div class="catalog-progress-fill ${job.is_running ? 'catalog-progress-animated' : ''}" style="width: ${pct}%"></div>
+                </div>
+                <span class="catalog-progress-pct">${pct}%</span>
+            </div>
+            <div class="catalog-progress-phase" title="${escapeHtml(job.detail || '')}">${escapeHtml(detail)}</div>
+        </div>`;
+    }
+
+    return `<span class="status-badge ${status}">${statusLabels[status] || status}</span>`;
+}
+
 function renderServiceTable(services) {
     const tbody = document.getElementById('catalog-tbody');
 
@@ -1325,7 +1369,7 @@ function renderServiceTable(services) {
             <td>${svc.latest_semver ? `<span class="version-badge version-semver">${escapeHtml(svc.latest_semver)}</span>` : (svc.active_version ? `<span class="version-badge version-semver-int">v${svc.active_version}</span>` : '<span class="version-badge version-none">—</span>')}</td>
             <td>${versionHtml}</td>
             <td>${azureApiHtml}</td>
-            <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
+            <td data-svc-status="${escapeHtml(svc.id)}">${_renderCatalogStatusCell(svc)}</td>
             <td>${svc.active_version ? `<button class="btn btn-xs btn-outline svc-view-tpl-btn" onclick="event.stopPropagation(); viewServiceTemplate('${escapeHtml(svc.id)}')" title="View ARM template">👁 View</button>` : ''}</td>
         </tr>`;
     }).join('');
@@ -1448,6 +1492,90 @@ function applyServiceFilters() {
     }
 
     renderServiceTable(filtered);
+}
+
+// ── Catalog Activity Overlay (live onboarding in table) ──────
+
+function _startCatalogActivityPoll() {
+    _stopCatalogActivityPoll();
+    const hasValidating = allServices.some(s => s.status === 'validating');
+    if (!hasValidating) return;
+    _pollCatalogActivity();
+    _catalogActivityPollTimer = setInterval(_pollCatalogActivity, 3000);
+}
+
+function _stopCatalogActivityPoll() {
+    if (_catalogActivityPollTimer) {
+        clearInterval(_catalogActivityPollTimer);
+        _catalogActivityPollTimer = null;
+    }
+}
+
+async function _pollCatalogActivity() {
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const newCache = {};
+        for (const job of (data.jobs || [])) {
+            if (job.is_running || job.status === 'validating') {
+                newCache[job.service_id] = job;
+            }
+        }
+        _catalogActivityCache = newCache;
+
+        // Update the onboarding stat card
+        const onboardEl = document.getElementById('svc-stat-onboarding');
+        if (onboardEl) {
+            const runningCount = (data.summary && data.summary.running) || 0;
+            onboardEl.textContent = runningCount;
+            const card = onboardEl.closest('.svc-stat-card');
+            if (card) {
+                card.classList.toggle('svc-stat-onboarding-active', runningCount > 0);
+            }
+        }
+
+        _updateCatalogStatusCells();
+
+        const anyRunning = Object.values(newCache).some(j => j.is_running);
+        if (!anyRunning) {
+            _stopCatalogActivityPoll();
+            loadAllData();
+        }
+    } catch (err) {
+        console.warn('[catalog-activity] Poll failed:', err.message);
+    }
+}
+
+function _updateCatalogStatusCells() {
+    const cells = document.querySelectorAll('td[data-svc-status]');
+    for (const cell of cells) {
+        const svcId = cell.getAttribute('data-svc-status');
+        const svc = allServices.find(s => s.id === svcId);
+        if (!svc || svc.status !== 'validating') continue;
+
+        const job = _catalogActivityCache[svcId];
+        if (job && (job.is_running || job.status === 'validating')) {
+            const pct = Math.round((job.progress || 0) * 100);
+            const phase = _batchPhaseLabel(job.phase);
+            const detail = phase || job.detail || 'Starting…';
+            cell.innerHTML = `
+                <div class="catalog-live-status">
+                    <span class="status-badge validating">● Running</span>
+                    <div class="catalog-progress-row">
+                        <div class="catalog-progress-track">
+                            <div class="catalog-progress-fill ${job.is_running ? 'catalog-progress-animated' : ''}" style="width: ${pct}%"></div>
+                        </div>
+                        <span class="catalog-progress-pct">${pct}%</span>
+                    </div>
+                    <div class="catalog-progress-phase" title="${escapeHtml(job.detail || '')}">${escapeHtml(detail)}</div>
+                </div>`;
+        } else {
+            const status = svc.status || 'not_approved';
+            cell.innerHTML = `<span class="status-badge ${status}">${statusLabels[status] || status}</span>`;
+        }
+    }
 }
 
 // ── Service Detail Drawer (Versioned Onboarding) ────────────

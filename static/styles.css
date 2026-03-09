@@ -4562,7 +4562,7 @@ tr:hover .svc-view-tpl-btn {
 
 .service-stats-cards {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 0.75rem;
 }
 
@@ -7578,6 +7578,68 @@ tr:hover .svc-view-tpl-btn {
     background: rgba(248, 81, 73, 0.15);
     color: #f85149;
     border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+/* ── Catalog Inline Onboarding Progress ──────────────── */
+
+.catalog-live-status {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 120px;
+}
+
+.catalog-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.catalog-progress-track {
+    flex: 1;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.catalog-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent-blue, #58a6ff);
+    transition: width 0.5s ease;
+}
+
+.catalog-progress-animated {
+    background: linear-gradient(90deg, var(--accent-blue, #58a6ff), var(--accent-cyan, #79c0ff), var(--accent-blue, #58a6ff));
+    background-size: 200% 100%;
+    animation: progress-shimmer 2s linear infinite;
+}
+
+.catalog-progress-pct {
+    font-size: 0.625rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+    min-width: 24px;
+    text-align: right;
+}
+
+.catalog-progress-phase {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
+/* Onboarding stat card active state */
+.svc-stat-onboarding-active {
+    border-color: rgba(16, 185, 129, 0.5);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.15);
+}
+.svc-stat-onboarding-active .svc-stat-number {
+    color: #10b981;
 }
 
 
