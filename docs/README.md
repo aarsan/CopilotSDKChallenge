@@ -82,8 +82,20 @@ python -m src.main
 ## 🏗️ Architecture
 
 ```
+                     ┌───────────────────────┐
+                     │   Microsoft Entra ID  │
+                     │     (Azure AD SSO)    │
+                     │  ┌─────────────────┐  │
+                     │  │ App Registration │  │
+                     │  │  + Client Secret │  │
+                     │  │  + Group Claims  │  │
+                     │  └────────┬────────┘  │
+                     └───────────┼───────────┘
+                        Tokens   │   Graph API
+                       (MSAL)    │  (Work IQ: dept,
+                                 │   manager, cost center)
 ┌──────────────────────────────────────────────────────────────┐
-│                         User (CLI)                           │
+│                         User (Web UI / CLI)                   │
 │          "I need a web app with SQL and Key Vault"           │
 └───────────────────────┬──────────────────────────────────────┘
                         │
@@ -139,11 +151,16 @@ python -m src.main
 │  └──────────────┘                    └──────────────┘        │
 └───────────────────────┬──────────────────────────────────────┘
                         │
-                        ▼
-┌──────────────────────────────────────────────────────────────┐
-│                   Copilot CLI (Server)                        │
-│              JSON-RPC │ Model: GPT-4.1                       │
-└──────────────────────────────────────────────────────────────┘
+           ┌────────────┼────────────┐
+           ▼            ▼            ▼
+  ┌──────────────┐ ┌────────┐ ┌──────────────────────────┐
+  │  Azure SQL   │ │ Azure  │ │ Microsoft Fabric         │
+  │  (Catalog,   │ │  ARM   │ │ (Fabric IQ)              │
+  │  Governance, │ │  SDK   │ │ ┌──────────────────────┐ │
+  │  Work IQ     │ │        │ │ │ OneLake Lakehouse    │ │
+  │  Analytics)  │ │        │ │ │ → Power BI Dashboards│ │
+  └──────────────┘ └────────┘ │ └──────────────────────┘ │
+                              └──────────────────────────┘
 ```
 
 ---
@@ -299,6 +316,12 @@ It deploys ARM templates directly to Azure via the SDK — no `az`, `terraform`,
 `bicep` CLI dependencies on the deploy path.
 
 1. **Containerize** with Docker for consistent environments
-2. **Configure** Entra ID for corporate SSO (or run in demo mode)
+2. **Configure Entra ID** for corporate SSO — requires an App Registration with
+   client secret, redirect URI, and group claims (see `docs/SETUP.md` Step 3)
 3. **Set** `AZURE_SQL_CONNECTION_STRING` for Azure SQL Database
-4. **Launch** with `python web_start.py`
+4. **Configure Fabric IQ** (optional) — set `FABRIC_WORKSPACE_ID`,
+   `FABRIC_ONELAKE_DFS_ENDPOINT`, and `FABRIC_LAKEHOUSE_NAME` for OneLake analytics
+5. **Launch** with `python web_start.py`
+
+Demo mode is available when Entra ID is not configured — the app falls back to a
+sample user session for development and demos.

@@ -89,9 +89,15 @@
 <!-- SLIDE 2: Architecture Diagram -->
 <div class="slide">
   <h1>Architecture</h1>
-  <div class="subtitle">Copilot SDK + Catalog-First Pipeline</div>
+  <div class="subtitle">Copilot SDK + Entra ID + Catalog-First Pipeline + Fabric IQ</div>
 
-  <pre><span class="diagram-label">┌─────────────────────────────────────────────────────────┐</span>
+  <pre>                     <span class="diagram-accent">┌───────────────────────┐</span>
+                     <span class="diagram-accent">│</span>  <span class="diagram-highlight">Microsoft Entra ID</span>   <span class="diagram-accent">│</span>
+                     <span class="diagram-accent">│</span>  App Registration     <span class="diagram-accent">│</span>
+                     <span class="diagram-accent">│</span>  + OAuth2 + Groups    <span class="diagram-accent">│</span>
+                     <span class="diagram-accent">└──────────┬────────────┘</span>
+                        Tokens │ Graph API (Work IQ)
+<span class="diagram-label">┌─────────────────────────────────────────────────────────┐</span>
 <span class="diagram-label">│</span>                    <span class="diagram-highlight">User (Web UI / CLI)</span>                   <span class="diagram-label">│</span>
 <span class="diagram-label">│</span>         "I need a web app with SQL and Key Vault"       <span class="diagram-label">│</span>
 <span class="diagram-label">└──────────────────────────┬──────────────────────────────┘</span>
@@ -113,11 +119,12 @@
                            │
               ┌────────────┼────────────┐
               ▼            ▼            ▼
-     <span class="diagram-accent">┌──────────────┐</span> <span class="diagram-accent">┌────────┐</span> <span class="diagram-accent">┌──────────┐</span>
-     <span class="diagram-accent">│</span>  Azure SQL   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> Azure  <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  GitHub  <span class="diagram-accent">│</span>
-     <span class="diagram-accent">│</span>  (Catalog,   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  ARM   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  (Repos, <span class="diagram-accent">│</span>
-     <span class="diagram-accent">│</span>  Governance) <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  SDK   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>   PRs)   <span class="diagram-accent">│</span>
-     <span class="diagram-accent">└──────────────┘</span> <span class="diagram-accent">└────────┘</span> <span class="diagram-accent">└──────────┘</span></pre>
+     <span class="diagram-accent">┌──────────────┐</span> <span class="diagram-accent">┌────────┐</span> <span class="diagram-accent">┌──────────────┐</span>
+     <span class="diagram-accent">│</span>  Azure SQL   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> Azure  <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> MS Fabric    <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  (Catalog,   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  ARM   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> (Fabric IQ)  <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  Governance, <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  SDK   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> OneLake ETL  <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  Work IQ)    <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>        <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> → Power BI   <span class="diagram-accent">│</span>
+     <span class="diagram-accent">└──────────────┘</span> <span class="diagram-accent">└────────┘</span> <span class="diagram-accent">└──────────────┘</span></pre>
 
   <h2>Tech Stack</h2>
   <div class="columns">
@@ -126,15 +133,26 @@
         <li><strong>Runtime:</strong> Python 3.9+ / FastAPI</li>
         <li><strong>AI:</strong> GitHub Copilot SDK (GPT-4.1, Claude Sonnet)</li>
         <li><strong>Data:</strong> Azure SQL (catalog, governance, standards)</li>
+        <li><strong>Analytics:</strong> Fabric IQ (OneLake sync → Power BI)</li>
       </ul>
     </div>
     <div class="col">
       <ul>
-        <li><strong>Auth:</strong> Microsoft Entra ID (SSO + identity tagging)</li>
+        <li><strong>Auth:</strong> Entra ID App Registration (OAuth2 + MSAL)</li>
+        <li><strong>Identity:</strong> Work IQ (Graph API org enrichment)</li>
         <li><strong>Deploy:</strong> ARM SDK (no az/terraform/bicep CLI needed)</li>
         <li><strong>Frontend:</strong> Vanilla JS SPA with WebSocket streaming</li>
       </ul>
     </div>
+  </div>
+
+  <div class="tech-stack">
+    <span class="tag tag-blue">GitHub Copilot SDK</span>
+    <span class="tag tag-green">Python + FastAPI</span>
+    <span class="tag tag-orange">Azure SQL</span>
+    <span class="tag tag-purple">Microsoft Entra ID</span>
+    <span class="tag tag-blue">Work IQ</span>
+    <span class="tag tag-green">Fabric IQ</span>
   </div>
 
   <div class="footer">

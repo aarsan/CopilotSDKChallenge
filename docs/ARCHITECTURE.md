@@ -21,6 +21,8 @@ by hand.
 | Database     | Azure SQL Database (pyodbc + AAD)   |
 | AI Engine    | GitHub Copilot SDK (Python)         |
 | Auth         | Microsoft Entra ID (MSAL.js + MSAL Python) |
+| Identity IQ  | Work IQ (Microsoft Graph org data)  |
+| Analytics    | Fabric IQ (OneLake + Fabric Semantic Models) |
 | Frontend     | Vanilla JS SPA (no framework)       |
 | Deployment   | ARM SDK (azure-mgmt-resource)       |
 | Server Port  | 8080 (configurable via `INFRAFORGE_WEB_PORT`) |
@@ -627,3 +629,162 @@ Start-Sleep -Seconds 5
 | `INFRAFORGE_OUTPUT_DIR` | No | `./output` | Directory for saved files |
 | `INFRAFORGE_WEB_HOST` | No | `0.0.0.0` | Server bind host |
 | `INFRAFORGE_WEB_PORT` | No | `8080` | Server port |
+| `FABRIC_WORKSPACE_ID` | No | — | Microsoft Fabric workspace ID |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | No | — | OneLake DFS endpoint URL |
+| `FABRIC_LAKEHOUSE_NAME` | No | — | OneLake lakehouse name |
+
+---
+
+## 14. Entra ID — App Registration & Authentication
+
+InfraForge authenticates users via Microsoft Entra ID using the OAuth2 authorization
+code flow. The setup script (`scripts/setup.ps1` Step 3) creates the required App
+Registration automatically.
+
+### App Registration Configuration
+
+| Setting | Value |
+|---------|-------|
+| Display Name | `InfraForge` |
+| Sign-in audience | Single tenant (org directory only) |
+| Redirect URI | `http://localhost:8080/api/auth/callback` (Web) |
+| Client Secret | Auto-generated, 1-year expiry |
+| Optional Claims (ID token) | `email`, `upn` |
+| Group Claims | `SecurityGroup` — emitted in both ID and access tokens |
+
+### Authentication Flow
+
+```
+                                ┌─────────────────────────┐
+                                │   Microsoft Entra ID     │
+                                │   ┌───────────────────┐  │
+   ┌──────────────┐   1. Auth   │   │ App Registration   │  │
+   │  Browser     │─────────────│──▶│ ENTRA_CLIENT_ID    │  │
+   │  (MSAL.js)   │   request   │   │ + Client Secret    │  │
+   │              │◀────────────│───│ + Redirect URI     │  │
+   │              │ 2. Code +   │   │ + Group Claims     │  │
+   │              │    redirect  │   └───────────────────┘  │
+   └──────┬───────┘             └─────────────────────────┘
+          │ 3. POST /api/auth/callback (auth code)
+          ▼
+   ┌──────────────────────────────────────────────────┐
+   │  FastAPI Backend (src/auth.py)                    │
+   │                                                   │
+   │  4. MSAL ConfidentialClientApplication            │
+   │     acquire_token_by_authorization_code()         │
+   │     → ID token + Access token                     │
+   │                                                   │
+   │  5. Microsoft Graph API enrichment (Work IQ)      │
+   │     GET /me → job title, department, cost center  │
+   │     GET /me/manager → manager display name        │
+   │                                                   │
+   │  6. Build UserContext (dataclass)                  │
+   │     → user_id, email, department, cost_center,    │
+   │       manager, groups, roles, is_platform_team    │
+   │                                                   │
+   │  7. Store session in Azure SQL (user_sessions)    │
+   └──────────────────────────────────────────────────┘
+```
+
+### Key Auth Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/auth/config` | Returns Entra ID client config for MSAL.js (client ID, tenant, scopes) |
+| `GET /api/auth/login` | Initiates OAuth2 login (Entra or demo mode) |
+| `GET /api/auth/callback` | OAuth2 redirect — exchanges code for tokens |
+| `POST /api/auth/demo` | Demo mode login (when Entra is not configured) |
+| `POST /api/auth/logout` | Clears session |
+| `GET /api/auth/me` | Returns current user context |
+
+### Work IQ — Identity Intelligence
+
+Entra ID provides the foundation for **Work IQ**, which enriches every user session
+with organizational context from Microsoft Graph:
+
+- **Identity-aware tagging** — Resources are automatically tagged with the user's
+  email, department, cost center, and manager
+- **Role-based access** — PlatformTeam group membership grants full catalog access;
+  standard users work with approved templates
+- **Cost attribution** — Every action logged in `usage_logs` with department/cost center
+- **Approval routing** — Design documents routed based on manager chain from Graph API
+
+### Required Permissions
+
+| Permission | Scope | Purpose |
+|------------|-------|---------|
+| App registration creation | Entra ID | Setup script creates the app |
+| Admin consent for group claims | Entra ID | SecurityGroup claims in tokens |
+| `User.Read` | Delegated (MS Graph) | Read the signed-in user's profile |
+| `User.ReadBasic.All` | Delegated (MS Graph) | Read manager chain |
+
+---
+
+## 15. Fabric IQ — Enterprise Analytics
+
+InfraForge integrates with Microsoft Fabric to provide cross-organization analytics
+via OneLake. The `src/fabric.py` module implements the sync engine, REST client,
+and analytics computations.
+
+### Data Pipeline Architecture
+
+```
+┌───────────────────────┐       ┌──────────────────────────────────────┐
+│   Azure SQL (OLTP)    │       │      Microsoft Fabric (Fabric IQ)    │
+│                       │       │                                      │
+│ ┌───────────────────┐ │  ETL  │ ┌──────────────────────────────────┐ │
+│ │ pipeline_runs     │─│──────▶│ │  OneLake Lakehouse               │ │
+│ │ governance_reviews│─│──────▶│ │  (FABRIC_ONELAKE_DFS_ENDPOINT)   │ │
+│ │ services          │─│──────▶│ │                                  │ │
+│ │ catalog_templates │─│──────▶│ │  Tables/                         │ │
+│ │ deployments       │─│──────▶│ │    pipeline_runs.csv             │ │
+│ │ compliance_assess │─│──────▶│ │    governance_reviews.csv        │ │
+│ └───────────────────┘ │ Sync  │ │    service_catalog.csv           │ │
+│                       │       │ │    template_catalog.csv          │ │
+│                       │       │ │    deployments.csv               │ │
+│                       │       │ │    compliance_assessments.csv    │ │
+│                       │       │ └───────────────┬──────────────────┘ │
+│                       │       │                 ▼                    │
+│                       │       │ ┌──────────────────────────────────┐ │
+│                       │       │ │  Power BI / Semantic Models      │ │
+│                       │       │ │  ─ Pipeline success dashboards   │ │
+│                       │       │ │  ─ Governance compliance trends  │ │
+│                       │       │ │  ─ Cost attribution by dept      │ │
+│                       │       │ │  ─ Service adoption metrics      │ │
+│                       │       │ └──────────────────────────────────┘ │
+│                       │       └──────────────────────────────────────┘
+└───────────────────────┘
+```
+
+### Components
+
+| Class | Purpose |
+|-------|---------|
+| `FabricClient` | REST client for Fabric workspace management and OneLake DFS file operations |
+| `FabricSyncEngine` | ETL engine — reads 6 tables from Azure SQL and writes CSV to OneLake |
+| `AnalyticsEngine` | Computes real-time dashboard analytics directly from SQL |
+
+### Analytics Capabilities
+
+| Domain | Metrics |
+|--------|---------|
+| Pipeline | Success/failure rates, healing effectiveness, execution trends |
+| Governance | CISO/CTO review verdicts, policy compliance rates |
+| Services | Adoption metrics, status distribution, onboarding velocity |
+| Deployments | Regional distribution, resource group usage, ARM SDK outcomes |
+| Compliance | Framework scores (SOC2, CIS, HIPAA), control pass rates |
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/fabric/health` | Fabric connectivity status |
+| `POST` | `/api/fabric/sync` | Trigger ETL sync to OneLake |
+| `GET` | `/api/analytics/dashboard` | Real-time analytics dashboard data |
+
+### Authentication
+
+Fabric uses `DefaultAzureCredential` (the same credential used for Azure SQL)
+to authenticate to both the Fabric REST API and OneLake DFS endpoints. No additional
+app registration is required — the service principal or managed identity needs
+Fabric workspace Contributor access.

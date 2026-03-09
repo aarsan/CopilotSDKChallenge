@@ -7,28 +7,58 @@ production-ready Azure infrastructure through natural language. It combines a Fa
 Azure SQL Database for all persistent data, and the GitHub Copilot SDK for AI-driven generation.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Web Browser (SPA)                     │
-│  index.html + app.js + styles.css                       │
-│  ─ Service Catalog  ─ Templates  ─ Governance           │
-│  ─ Activity Monitor ─ Infrastructure Designer (Chat)    │
-└───────────────────────┬─────────────────────────────────┘
-                        │ HTTP/WebSocket
-┌───────────────────────▼─────────────────────────────────┐
-│               FastAPI Application (web.py)               │
-│  ─ REST endpoints    ─ WebSocket chat                    │
-│  ─ Auth (Entra ID)   ─ Standards API router              │
-│  ─ Static files      ─ Deployment orchestration          │
-├──────────┬────────────┬──────────────┬──────────────────┤
-│ Copilot  │ ARM Gen    │ Standards    │ Policy Validator  │
-│ SDK      │ Engine     │ Engine       │                   │
-└──────────┴────────────┼──────────────┴──────────────────┘
-                        │
-              ┌─────────▼──────────┐
-              │  Azure SQL Database │
-              │  (All persistent    │
-              │   data lives here)  │
-              └────────────────────┘
+                     ┌───────────────────────┐
+                     │   Microsoft Entra ID  │
+                     │   (Azure AD Tenant)   │
+                     │                       │
+                     │  ┌─────────────────┐  │
+                     │  │ App Registration │  │
+                     │  │ (ENTRA_CLIENT_ID)│  │
+                     │  │  + Client Secret │  │
+                     │  │  + Redirect URI  │  │
+                     │  │  + Group Claims  │  │
+                     │  └─────────────────┘  │
+                     └───┬──────────┬────────┘
+                  Tokens │          │ Graph API
+           (MSAL.js +    │          │ (/me, /me/manager)
+            MSAL Python) │          │
+┌────────────────────────┴──────────┴─────────────────────┐
+│                    Web Browser (SPA)                      │
+│  index.html + app.js + styles.css                        │
+│  ─ MSAL.js handles login → acquires token silently       │
+│  ─ Service Catalog  ─ Templates  ─ Governance            │
+│  ─ Activity Monitor ─ Infrastructure Designer (Chat)     │
+│  ─ Fabric Analytics (dashboard)                          │
+└───────────────────────┬──────────────────────────────────┘
+                        │ HTTP/WebSocket (Bearer token)
+┌───────────────────────▼──────────────────────────────────┐
+│               FastAPI Application (web.py)                │
+│  ─ REST endpoints    ─ WebSocket chat                     │
+│  ─ Auth (Entra ID)   ─ Standards API router               │
+│  ─ Static files      ─ Deployment orchestration           │
+│  ─ Fabric sync       ─ Work IQ analytics                  │
+├──────────┬────────────┬──────────────┬───────────────────┤
+│ Copilot  │ ARM Gen    │ Standards    │ Policy Validator   │
+│ SDK      │ Engine     │ Engine       │                    │
+└──────────┴─────┬──────┼──────────────┴───────────────────┘
+                 │      │
+        ┌────────┘      └────────┐
+        ▼                        ▼
+┌──────────────────┐   ┌─────────────────────────────────┐
+│ Azure SQL Database│   │  Microsoft Fabric (Fabric IQ)   │
+│ (All persistent   │──▶│  ┌───────────────────────────┐  │
+│  data lives here) │ETL│  │  OneLake (Lakehouse)       │  │
+│                   │   │  │  ─ pipeline_runs.csv       │  │
+└───────────────────┘   │  │  ─ governance_reviews.csv  │  │
+                        │  │  ─ service_catalog.csv     │  │
+                        │  │  ─ template_catalog.csv    │  │
+                        │  │  ─ deployments.csv         │  │
+                        │  │  ─ compliance.csv          │  │
+                        │  └─────────────┬─────────────┘  │
+                        │                ▼                 │
+                        │   Power BI / Fabric Semantic     │
+                        │   Models (analytics dashboards)  │
+                        └─────────────────────────────────┘
 ```
 
 ## Data Storage — Azure SQL Database
@@ -240,6 +270,135 @@ docs/
   README.md           — Project overview
 ```
 
+## Microsoft Entra ID — App Registration & Auth Flow
+
+InfraForge uses Microsoft Entra ID (Azure AD) for enterprise authentication with
+identity-aware infrastructure provisioning. This requires an **App Registration**
+in your Azure AD tenant.
+
+### App Registration Requirements
+
+The setup script (`scripts/setup.ps1` Step 3) creates the App Registration with:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| Display Name | `InfraForge` | Visible in Entra ID portal |
+| Client Secret | Auto-generated (1 year) | Backend token exchange |
+| Redirect URI | `http://localhost:8080/api/auth/callback` | OAuth2 callback |
+| Optional Claims | `email`, `upn` (ID token) | User identity |
+| Group Claims | `SecurityGroup` | Role-based access (PlatformTeam, Admin) |
+
+### OAuth2 Authorization Code Flow
+
+```
+┌──────────┐     1. Login click       ┌──────────────────┐
+│  Browser  │ ──────────────────────▶ │  Microsoft Entra  │
+│ (MSAL.js) │                         │    ID (Azure AD)   │
+│           │ ◀────────────────────── │                    │
+│           │  2. Auth code (redirect) │  App Registration  │
+└─────┬─────┘                         │  ─ Client ID       │
+      │                               │  ─ Tenant ID       │
+      │ 3. Auth code                  │  ─ Group claims    │
+      │    POST /api/auth/callback    └──────────┬─────────┘
+      ▼                                          │
+┌───────────────────────┐   4. Exchange code      │
+│   FastAPI Backend     │      for tokens ────────┘
+│  (MSAL Python)        │
+│  ─ ConfidentialClient │   5. Call Graph API
+│  ─ Token cache        │ ────────────────────▶ Microsoft Graph
+│  ─ Session store      │                       /me + /me/manager
+│                       │ ◀────────────────────
+│                       │   6. Org data (dept, manager, cost center)
+└───────────────────────┘
+```
+
+### Work IQ — Identity-Aware Intelligence
+
+When authenticated via Entra ID, InfraForge enriches the user context through
+Microsoft Graph API calls (`src/auth.py::_fetch_graph_profile`):
+
+| Graph Data | Source | Used For |
+|------------|--------|----------|
+| Display name, email | ID token claims | Session identity |
+| Job title, department | `/me` | Cost attribution, role context |
+| Office location | `/me` | Regional defaults |
+| Cost center | `/me` (extension attr) | Chargeback analytics |
+| Manager chain | `/me/manager` | Approval routing |
+| Group memberships | Token group claims | Role-based access (PlatformTeam, Admin) |
+
+This profile data is stored in the `user_sessions` table and attached to all
+`usage_logs` entries, enabling per-department cost attribution and organizational
+analytics — the foundation of **Work IQ**.
+
+### Required Entra ID Permissions
+
+| Permission | Type | Purpose |
+|------------|------|---------|
+| Create app registrations | Entra ID | Setup creates the app |
+| Grant admin consent | Entra ID | Group claims require consent |
+| `User.Read` | Delegated (Graph) | Read authenticated user profile |
+| `User.ReadBasic.All` | Delegated (Graph) | Read manager chain |
+
+## Fabric IQ — Analytics Data Pipeline
+
+InfraForge integrates with Microsoft Fabric to provide enterprise analytics
+through OneLake. The `src/fabric.py` module implements the full ETL pipeline.
+
+### Architecture
+
+```
+┌───────────────────┐       ┌────────────────────────────────────────┐
+│  Azure SQL (OLTP) │       │       Microsoft Fabric (Fabric IQ)     │
+│                   │       │                                        │
+│  ─ pipeline_runs  │  ETL  │  ┌──────────────────────────────────┐  │
+│  ─ governance     │──────▶│  │    OneLake Lakehouse             │  │
+│  ─ services       │ Sync  │  │    (DFS endpoint)                │  │
+│  ─ templates      │       │  │                                  │  │
+│  ─ deployments    │       │  │  Tables/                         │  │
+│  ─ compliance     │       │  │    pipeline_runs.csv             │  │
+└───────────────────┘       │  │    governance_reviews.csv        │  │
+                            │  │    service_catalog.csv           │  │
+                            │  │    template_catalog.csv          │  │
+                            │  │    deployments.csv               │  │
+                            │  │    compliance_assessments.csv    │  │
+                            │  └───────────────┬──────────────────┘  │
+                            │                  ▼                     │
+                            │  ┌──────────────────────────────────┐  │
+                            │  │  Fabric Semantic Models           │  │
+                            │  │  ─ Power BI dashboards            │  │
+                            │  │  ─ Cross-org analytics            │  │
+                            │  │  ─ Cost trend reporting           │  │
+                            │  └──────────────────────────────────┘  │
+                            └────────────────────────────────────────┘
+```
+
+### Components
+
+| Class | File | Purpose |
+|-------|------|---------|
+| `FabricClient` | `src/fabric.py` | REST API client for Fabric workspace and OneLake DFS |
+| `FabricSyncEngine` | `src/fabric.py` | Syncs 6 analytics tables from Azure SQL to OneLake CSV |
+| `AnalyticsEngine` | `src/fabric.py` | Computes dashboard metrics directly from SQL |
+
+### Fabric Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `FABRIC_WORKSPACE_ID` | Target Fabric workspace |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint URL |
+| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name |
+
+### Analytics Provided
+
+- **Pipeline analytics** — Success rates, failure trends, healing effectiveness
+- **Governance analytics** — CISO/CTO review verdicts, policy compliance rates
+- **Service analytics** — Adoption metrics, status distribution, onboarding velocity
+- **Deployment analytics** — Regional distribution, resource group usage
+- **Compliance analytics** — Framework score distribution, control pass rates
+
+Authentication to Fabric uses `DefaultAzureCredential` for both the Fabric REST
+API scope and OneLake DFS scope.
+
 ## Environment Variables
 
 | Variable | Purpose |
@@ -251,3 +410,6 @@ docs/
 | `ENTRA_TENANT_ID` | Azure AD tenant ID |
 | `ENTRA_CLIENT_SECRET` | Entra ID client secret |
 | `ENTRA_REDIRECT_URI` | Auth callback URL |
+| `FABRIC_WORKSPACE_ID` | Microsoft Fabric workspace ID |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint URL |
+| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name |

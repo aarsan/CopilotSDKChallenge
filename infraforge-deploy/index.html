@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InfraForge — Self-Service Infrastructure Platform</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0a0e17;
+            --bg-card: #111827;
+            --border: #1e293b;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.25);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Nav */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(10, 14, 23, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+            height: 64px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-brand {
+            display: flex; align-items: center; gap: 0.5rem;
+            font-size: 1.25rem; font-weight: 700; color: var(--text);
+            text-decoration: none;
+        }
+        .nav-brand span { font-size: 1.5rem; }
+        .nav-links { display: flex; gap: 2rem; align-items: center; }
+        .nav-links a {
+            color: var(--text-muted); text-decoration: none; font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--text); }
+        .nav-cta {
+            background: var(--accent) !important; color: #fff !important;
+            padding: 0.5rem 1.25rem; border-radius: 8px; font-weight: 600;
+            transition: box-shadow 0.2s;
+        }
+        .nav-cta:hover { box-shadow: 0 0 20px var(--accent-glow); }
+
+        /* Hero */
+        .hero {
+            padding: 10rem 2rem 6rem;
+            text-align: center;
+            max-width: 900px;
+            margin: 0 auto;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .badge {
+            display: inline-block;
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: var(--accent);
+            font-size: 0.8rem; font-weight: 600;
+            padding: 0.35rem 1rem; border-radius: 999px;
+            margin-bottom: 1.5rem;
+            letter-spacing: 0.5px;
+        }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            background: linear-gradient(135deg, #fff 30%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero p {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            max-width: 640px;
+            margin: 0 auto 2.5rem;
+        }
+        .hero-actions {
+            display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.85rem 2rem; border-radius: 10px; font-size: 1rem;
+            font-weight: 600; text-decoration: none; transition: all 0.2s;
+            cursor: pointer; border: none;
+        }
+        .btn-primary {
+            background: var(--accent); color: #fff;
+        }
+        .btn-primary:hover { box-shadow: 0 0 30px var(--accent-glow); transform: translateY(-1px); }
+        .btn-secondary {
+            background: transparent; color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { border-color: var(--text-muted); }
+
+        /* Video Section */
+        .video-section {
+            padding: 4rem 2rem 6rem;
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        .video-section h2 {
+            text-align: center;
+            font-size: 2rem; font-weight: 700;
+            margin-bottom: 0.75rem;
+        }
+        .video-section p.subtitle {
+            text-align: center;
+            color: var(--text-muted);
+            margin-bottom: 2.5rem;
+            font-size: 1.05rem;
+        }
+        .video-container {
+            position: relative;
+            padding-bottom: 56.25%;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            box-shadow: 0 0 60px rgba(59, 130, 246, 0.1);
+        }
+        .video-container iframe {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            border: none;
+        }
+
+        /* Features */
+        .features {
+            padding: 6rem 2rem;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .features h2 {
+            text-align: center;
+            font-size: 2rem; font-weight: 700;
+            margin-bottom: 0.75rem;
+        }
+        .features p.subtitle {
+            text-align: center;
+            color: var(--text-muted);
+            margin-bottom: 3rem;
+            font-size: 1.05rem;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .feature-card:hover {
+            border-color: rgba(59, 130, 246, 0.4);
+            box-shadow: 0 0 30px rgba(59, 130, 246, 0.05);
+        }
+        .feature-icon {
+            width: 44px; height: 44px;
+            background: rgba(59, 130, 246, 0.1);
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.3rem;
+            margin-bottom: 1rem;
+        }
+        .feature-card h3 {
+            font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;
+        }
+        .feature-card p {
+            color: var(--text-muted); font-size: 0.92rem;
+        }
+
+        /* How It Works */
+        .how-it-works {
+            padding: 6rem 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .how-it-works h2 {
+            text-align: center;
+            font-size: 2rem; font-weight: 700;
+            margin-bottom: 3rem;
+        }
+        .steps {
+            display: flex; flex-direction: column; gap: 2rem;
+            position: relative;
+        }
+        .steps::before {
+            content: '';
+            position: absolute; left: 23px; top: 0; bottom: 0;
+            width: 2px;
+            background: linear-gradient(to bottom, var(--accent), transparent);
+        }
+        .step {
+            display: flex; gap: 1.5rem; align-items: flex-start;
+        }
+        .step-num {
+            width: 48px; height: 48px; flex-shrink: 0;
+            background: var(--bg-card);
+            border: 2px solid var(--accent);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 1.1rem;
+            color: var(--accent);
+            position: relative; z-index: 1;
+        }
+        .step-content h3 {
+            font-size: 1.1rem; font-weight: 600; margin-bottom: 0.25rem;
+        }
+        .step-content p {
+            color: var(--text-muted); font-size: 0.92rem;
+        }
+
+        /* CTA */
+        .cta-section {
+            padding: 6rem 2rem;
+            text-align: center;
+        }
+        .cta-box {
+            max-width: 700px;
+            margin: 0 auto;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.08));
+            border: 1px solid rgba(59, 130, 246, 0.25);
+            border-radius: 20px;
+            padding: 4rem 2rem;
+        }
+        .cta-box h2 {
+            font-size: 2rem; font-weight: 700; margin-bottom: 1rem;
+        }
+        .cta-box p {
+            color: var(--text-muted); margin-bottom: 2rem; font-size: 1.05rem;
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        @media (max-width: 640px) {
+            nav { padding: 0 1rem; }
+            .nav-links { display: none; }
+            .hero { padding: 8rem 1.5rem 4rem; }
+            .features, .how-it-works, .video-section { padding: 3rem 1.5rem; }
+            .cta-box { padding: 2.5rem 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav>
+        <a href="#" class="nav-brand">
+            <span>&#9874;&#65039;</span> InfraForge
+        </a>
+        <div class="nav-links">
+            <a href="#demo">Demo</a>
+            <a href="#features">Features</a>
+            <a href="#how-it-works">How It Works</a>
+            <a href="#get-started" class="nav-cta">Get Started</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="badge">BUILT WITH GITHUB COPILOT SDK</div>
+        <h1>Self-Service Cloud Infrastructure Through Conversation</h1>
+        <p>InfraForge lets enterprise teams provision production-ready Azure infrastructure using natural language &mdash; with governance, cost controls, and compliance built in.</p>
+        <div class="hero-actions">
+            <a href="#demo" class="btn btn-primary">Watch the Demo</a>
+            <a href="#features" class="btn btn-secondary">Learn More</a>
+        </div>
+    </section>
+
+    <!-- Video -->
+    <section class="video-section" id="demo">
+        <h2>See InfraForge in Action</h2>
+        <p class="subtitle">From natural-language request to deployed infrastructure in minutes.</p>
+        <div class="video-container">
+            <iframe
+                src="https://www.youtube.com/embed/yV9dB4mDFxI"
+                title="InfraForge Demo"
+                referrerpolicy="origin"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowfullscreen>
+            </iframe>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features" id="features">
+        <h2>Why InfraForge?</h2>
+        <p class="subtitle">Enterprise-grade infrastructure provisioning, radically simplified.</p>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">&#128172;</div>
+                <h3>Natural Language to IaC</h3>
+                <p>Describe what you need in plain English. InfraForge generates production-ready Bicep or Terraform with best practices baked in.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128737;&#65039;</div>
+                <h3>Governance First</h3>
+                <p>Every request is checked against your organization's approved service catalog and compliance policies before any code is generated.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128218;</div>
+                <h3>Template Catalog</h3>
+                <p>Search and compose from a library of pre-approved, tested infrastructure templates. Register new ones for organization-wide reuse.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128640;</div>
+                <h3>One-Click Deploy</h3>
+                <p>Deploy directly to Azure with ARM What-If preview and real-time progress streaming. No CLI dependencies required.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128176;</div>
+                <h3>Cost Transparency</h3>
+                <p>Get instant cost estimates before provisioning. Track spend by team, department, and project with built-in attribution.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">&#128295;</div>
+                <h3>CI/CD Generation</h3>
+                <p>Automatically generate GitHub Actions or Azure DevOps pipelines with security scanning and multi-stage deployments.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works -->
+    <section class="how-it-works" id="how-it-works">
+        <h2>How It Works</h2>
+        <div class="steps">
+            <div class="step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <h3>Describe Your Infrastructure</h3>
+                    <p>Tell InfraForge what you need in natural language: "I need a web app with a SQL database and Redis cache in East US."</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <h3>Governance &amp; Catalog Check</h3>
+                    <p>InfraForge verifies all requested services are approved and searches the template catalog for existing building blocks.</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <h3>Generate &amp; Validate</h3>
+                    <p>Infrastructure code is generated or composed from templates, then validated against organization compliance policies.</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-num">4</div>
+                <div class="step-content">
+                    <h3>Preview &amp; Deploy</h3>
+                    <p>Review the architecture diagram and cost estimate, preview changes with What-If, then deploy with a single click.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta-section" id="get-started">
+        <div class="cta-box">
+            <h2>Ready to Forge Your Infrastructure?</h2>
+            <p>Stop writing YAML by hand. Let your teams self-serve infrastructure while your platform team stays in control.</p>
+            <a href="#demo" class="btn btn-primary">Watch the Demo</a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 2026 InfraForge. Built with the GitHub Copilot SDK.</p>
+    </footer>
+
+</body>
+</html>
