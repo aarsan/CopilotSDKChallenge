@@ -5316,65 +5316,31 @@ async def validate_template(template_id: str, request: Request):
         )
 
         try:
-            # ── Dependency gate: check composed services are validated ──
+            # ── Dependency info: log composed service status (non-blocking) ──
+            # The composed ARM template is self-contained — the real validation
+            # is the ARM deployment itself, not individual service onboarding.
             if svc_ids:
                 from src.database import is_service_fully_validated, get_service
-                _unvalidated = []
+                _not_onboarded = 0
                 for _dep_sid in svc_ids:
                     _dep_valid, _dep_reason = await is_service_fully_validated(_dep_sid)
-                    _dep_svc = await get_service(_dep_sid)
-                    _dep_name = _dep_svc.get("name", _dep_sid) if _dep_svc else _dep_sid
                     _dep_short = _dep_sid.split("/")[-1]
                     if _dep_valid:
                         yield json.dumps({
                             "phase": "dep_check",
-                            "detail": f"✅ {_dep_short} — fully validated",
+                            "detail": f"✅ {_dep_short} — fully onboarded",
                         }) + "\n"
                     else:
-                        _unvalidated.append((_dep_sid, _dep_short, _dep_name, _dep_reason))
+                        _not_onboarded += 1
                         yield json.dumps({
                             "phase": "dep_check",
-                            "detail": f"⚠️ {_dep_short} — not validated ({_dep_reason})",
+                            "detail": f"ℹ️ {_dep_short} — not individually onboarded ({_dep_reason})",
                         }) + "\n"
-
-                if _unvalidated:
-                    _dep_list = ", ".join(d[1] for d in _unvalidated)
-                    _error_msg = (
-                        f"{len(_unvalidated)} dependent service(s) need onboarding "
-                        f"before this template can be validated: {_dep_list}."
-                    )
-                    _dep_details = [
-                        {"service_id": d[0], "short_name": d[1],
-                         "name": d[2], "reason": d[3]}
-                        for d in _unvalidated
-                    ]
+                if _not_onboarded:
                     yield json.dumps({
-                        "type": "action_required",
-                        "phase": "dependency_check",
-                        "detail": _error_msg,
-                        "failure_category": "dependency_failed",
-                        "pipeline": "validation",
-                        "unvalidated_dependencies": _dep_details,
-                        "actions": [
-                            {"id": "onboard_deps", "label": "Onboard All",
-                             "description": f"Onboard all {len(_unvalidated)} missing service(s), then retry",
-                             "style": "primary"},
-                            {"id": "retry", "label": "Retry Validation",
-                             "description": "Re-run after onboarding missing dependencies",
-                             "style": "secondary"},
-                            {"id": "end_pipeline", "label": "End Pipeline",
-                             "description": "Stop pipeline",
-                             "style": "danger"},
-                        ],
-                        "context": {"template_id": _tmpl_id, "version_num": _ver_num},
+                        "phase": "dep_check",
+                        "detail": f"ℹ️ {_not_onboarded} service(s) not individually onboarded — proceeding with template deployment test",
                     }) + "\n"
-                    error_detail = _error_msg
-                    await complete_pipeline_run(
-                        _run_id, "failed",
-                        error_detail=_error_msg,
-                    )
-                    await update_template_version_status(_tmpl_id, _ver_num, "failed")
-                    return
 
             async for line in stream_validation(
                 template_id=_tmpl_id,
