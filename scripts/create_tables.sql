@@ -119,7 +119,7 @@ CREATE TABLE security_standards (
     validation_key  NVARCHAR(200) NOT NULL,
     validation_value NVARCHAR(MAX) NOT NULL DEFAULT 'true',
     remediation     NVARCHAR(MAX) DEFAULT '',
-    enabled         BIT DEFAULT 1,
+    enabled         BIT DEFAULT 0,
     created_at      NVARCHAR(50) NOT NULL,
     updated_at      NVARCHAR(50) NOT NULL
 );
@@ -137,7 +137,7 @@ CREATE TABLE compliance_frameworks (
     name        NVARCHAR(200) NOT NULL,
     description NVARCHAR(MAX) DEFAULT '',
     version     NVARCHAR(50) DEFAULT '1.0',
-    enabled     BIT DEFAULT 1,
+    enabled     BIT DEFAULT 0,
     created_at  NVARCHAR(50) NOT NULL
 );
 GO
@@ -269,7 +269,7 @@ CREATE TABLE governance_policies (
     rule_value_json NVARCHAR(MAX) NOT NULL,
     severity    NVARCHAR(50) NOT NULL DEFAULT 'high',
     enforcement NVARCHAR(50) NOT NULL DEFAULT 'block',
-    enabled     BIT DEFAULT 1,
+    enabled     BIT DEFAULT 0,
     created_at  NVARCHAR(50) NOT NULL,
     updated_at  NVARCHAR(50) NOT NULL
 );
