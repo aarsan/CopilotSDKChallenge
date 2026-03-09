@@ -50,6 +50,6 @@ See **[Setup Guide](docs/SETUP.md)** for parameters and options.
 
 ---
 
-## 🧑‍⚖️ Judges — Start Here!
-
-> **📋 [Demo Guide](DEMO_GUIDE.md)** — Step-by-step walkthrough of InfraForge's features, with screenshots and expected results.
+> [!IMPORTANT]
+> ## 🧑‍⚖️ Judges — Start Here!
+> **📋 [Demo Guide](DEMO_GUIDE.md)** — Step-by-step walkthrough of every InfraForge feature, with screenshots and expected results.
