@@ -327,7 +327,7 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         validation_key  NVARCHAR(200) NOT NULL,
         validation_value NVARCHAR(MAX) NOT NULL DEFAULT 'true',
         remediation     NVARCHAR(MAX) DEFAULT '',
-        enabled         BIT DEFAULT 1,
+        enabled         BIT DEFAULT 0,
         created_at      NVARCHAR(50) NOT NULL,
         updated_at      NVARCHAR(50) NOT NULL
     )
@@ -340,7 +340,7 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         name        NVARCHAR(200) NOT NULL,
         description NVARCHAR(MAX) DEFAULT '',
         version     NVARCHAR(50) DEFAULT '1.0',
-        enabled     BIT DEFAULT 1,
+        enabled     BIT DEFAULT 0,
         created_at  NVARCHAR(50) NOT NULL
     )
     """,
@@ -424,7 +424,7 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
         rule_value_json NVARCHAR(MAX) NOT NULL,
         severity    NVARCHAR(50) NOT NULL DEFAULT 'high',
         enforcement NVARCHAR(50) NOT NULL DEFAULT 'block',
-        enabled     BIT DEFAULT 1,
+        enabled     BIT DEFAULT 0,
         created_at  NVARCHAR(50) NOT NULL,
         updated_at  NVARCHAR(50) NOT NULL
     )
@@ -3121,7 +3121,7 @@ async def upsert_security_standard(std: dict) -> None:
             std["validation_key"],
             str(std.get("validation_value", "true")),
             std.get("remediation", ""),
-            int(std.get("enabled", True)),
+            int(std.get("enabled", False)),
             now,
             now,
         ),
@@ -3170,7 +3170,7 @@ async def upsert_compliance_framework(fw: dict) -> None:
             fw["name"],
             fw.get("description", ""),
             fw.get("version", "1.0"),
-            int(fw.get("enabled", True)),
+            int(fw.get("enabled", False)),
             now,
         ),
     )
@@ -3245,7 +3245,7 @@ async def upsert_governance_policy(pol: dict) -> None:
             json.dumps(pol["rule_value"]),
             pol.get("severity", "high"),
             pol.get("enforcement", "block"),
-            int(pol.get("enabled", True)),
+            int(pol.get("enabled", False)),
             pol.get("risk_id", ""),
             pol.get("policy_statement", ""),
             pol.get("purpose", ""),
@@ -3264,7 +3264,7 @@ async def get_governance_policies(
 ) -> list[dict]:
     """Get governance policies, optionally filtered."""
     backend = await get_backend()
-    where_clauses: list[str] = []
+    where_clauses: list[str] = ["category != 'migration'"]
     params: list = []
     if enabled_only:
         where_clauses.append("enabled = 1")
@@ -3395,6 +3395,8 @@ async def seed_governance_data() -> dict:
         await _apply_governance_caf_fields(backend)
         # Fix naming convention to include {region}
         await _fix_naming_convention_region(backend)
+        # Disable seed policies so fresh installs don't block deployments
+        await _disable_seed_policies_by_default(backend)
         return {"status": "already_seeded", "orchestration_processes": proc_count}
 
     logger.info("Seeding governance data into database...")
@@ -3411,6 +3413,9 @@ async def seed_governance_data() -> dict:
     # ── Seed orchestration processes ──
     proc_count = await seed_orchestration_processes()
     summary["orchestration_processes"] = proc_count
+
+    # Disable seed policies so fresh installs don't block deployments
+    await _disable_seed_policies_by_default(backend)
 
     logger.info(f"Governance data seeded: {summary}")
     return summary
@@ -3524,6 +3529,59 @@ async def _apply_governance_caf_fields(backend) -> None:
 
     if updated:
         logger.info(f"Populated CAF fields on {updated} governance policy/policies")
+
+
+async def _disable_seed_policies_by_default(backend) -> None:
+    """One-time migration: disable all seed governance policies and security standards.
+
+    Out of the box, a fresh install should have no active policies blocking
+    deployments. Admins explicitly enable the policies they want.
+
+    Uses a migration marker (GOV-MIGRATION-001) in governance_policies to
+    ensure this only runs once.
+    """
+    # Check if migration already applied
+    marker = await backend.execute(
+        "SELECT id FROM governance_policies WHERE id = 'GOV-MIGRATION-001'",
+        (),
+    )
+    if marker:
+        return  # already applied
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Disable all governance policies
+    await backend.execute_write(
+        "UPDATE governance_policies SET enabled = 0, updated_at = ? WHERE enabled = 1",
+        (now,),
+    )
+
+    # Disable all security standards
+    await backend.execute_write(
+        "UPDATE security_standards SET enabled = 0, updated_at = ? WHERE enabled = 1",
+        (now,),
+    )
+
+    # Record that this migration has been applied
+    await backend.execute_write(
+        """INSERT INTO governance_policies
+           (id, name, description, category, rule_key,
+            rule_value_json, severity, enforcement, enabled,
+            risk_id, policy_statement, purpose, scope,
+            remediation, enforcement_tool,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "GOV-MIGRATION-001",
+            "Migration: disable seed policies",
+            "Marker row — indicates the disable-seed-policies migration has run.",
+            "migration", "migration_disable_seed_policies",
+            '"applied"', "low", "warn", 0,
+            "", "", "", "", "", "",
+            now, now,
+        ),
+    )
+    logger.info("Migration: disabled all seed governance policies and security standards")
 
 
 async def _fix_naming_convention_region(backend) -> None:

@@ -384,10 +384,10 @@ async def get_activity():
         status = svc.get("status", "not_approved")
         svc_id = svc.get("id", "")
 
-        # Include services that are validating, validation_failed, or recently approved
-        if status in ("validating", "validation_failed", "approved"):
-            # Check if there's a live tracker entry
-            live = _active_validations.get(svc_id)
+        # Include services that are validating, validation_failed, recently approved,
+        # OR have a live pipeline running (status may still be not_approved early in pipeline)
+        live = _active_validations.get(svc_id)
+        if status in ("validating", "validation_failed", "approved") or (live and live.get("status") == "running"):
 
             job = {
                 "service_id": svc_id,

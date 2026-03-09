@@ -169,6 +169,10 @@ let allServices = [];
 let allTemplates = [];
 let _serviceUpdates = {};  // serviceId → update info from check-updates
 let _batchOnboardState = null;  // batch onboarding tracker state
+let _catalogActivityCache = {};      // service_id → live activity job from /api/activity
+let _catalogActivityPollTimer = null; // poll interval for catalog onboarding overlay
+let _catalogIdlePolls = 0;           // consecutive polls with no running jobs
+let _catalogHadRunning = false;      // whether we ever saw a running job in this poll session
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'all';
 let currentTemplateFilter = 'all';
@@ -444,6 +448,13 @@ function navigateTo(page) {
         _startActivityPolling();
     } else {
         _stopActivityPolling();
+    }
+
+    // Start catalog activity polling when on services page with validating services
+    if (page === 'services') {
+        _startCatalogActivityPoll();
+    } else {
+        _stopCatalogActivityPoll();
     }
 
     // Load standards when switching to governance page
@@ -877,8 +888,13 @@ async function loadAllData() {
 
         // Render tables
         _populateServiceUpdatesFromCache();
-        renderServiceTable(allServices);
+        applyServiceFilters();
         renderTemplateTable(allTemplates);
+
+        // Start catalog activity polling if on services page with validating services
+        if (currentPage === 'services') {
+            _startCatalogActivityPoll();
+        }
 
         // Render approval tracker
         renderApprovalTracker(approvalData.requests || []);
@@ -926,6 +942,13 @@ function _renderStatsPanel(data) {
     const approvedEl = document.getElementById('svc-stat-approved');
     if (approvedEl) {
         approvedEl.textContent = data.total_approved != null ? data.total_approved.toLocaleString() : '—';
+    }
+
+    // Onboarding count (services currently validating)
+    const onboardEl = document.getElementById('svc-stat-onboarding');
+    if (onboardEl) {
+        const validatingCount = allServices.filter(s => s.status === 'validating').length;
+        onboardEl.textContent = validatingCount;
     }
 
     // Sync status
@@ -1222,6 +1245,30 @@ function _updateCheckButton() {
     }
 }
 
+function _renderCatalogStatusCell(svc) {
+    const status = svc.status || 'not_approved';
+    const job = _catalogActivityCache[svc.id];
+
+    // Show live progress for any service with a running pipeline, regardless of DB status
+    if (job && job.is_running) {
+        const pct = Math.round((job.progress || 0) * 100);
+        const phase = _batchPhaseLabel(job.phase);
+        const detail = phase || job.detail || 'Starting…';
+        return `<div class="catalog-live-status">
+            <span class="status-badge validating">● Onboarding</span>
+            <div class="catalog-progress-row">
+                <div class="catalog-progress-track">
+                    <div class="catalog-progress-fill catalog-progress-animated" style="width: ${pct}%"></div>
+                </div>
+                <span class="catalog-progress-pct">${pct}%</span>
+            </div>
+            <div class="catalog-progress-phase" title="${escapeHtml(job.detail || '')}">${escapeHtml(detail)}</div>
+        </div>`;
+    }
+
+    return `<span class="status-badge ${status}">${statusLabels[status] || status}</span>`;
+}
+
 function renderServiceTable(services) {
     const tbody = document.getElementById('catalog-tbody');
 
@@ -1321,7 +1368,7 @@ function renderServiceTable(services) {
             <td>${svc.latest_semver ? `<span class="version-badge version-semver">${escapeHtml(svc.latest_semver)}</span>` : (svc.active_version ? `<span class="version-badge version-semver-int">v${svc.active_version}</span>` : '<span class="version-badge version-none">—</span>')}</td>
             <td>${versionHtml}</td>
             <td>${azureApiHtml}</td>
-            <td><span class="status-badge ${status}">${statusLabels[status] || status}</span></td>
+            <td data-svc-status="${escapeHtml(svc.id)}">${_renderCatalogStatusCell(svc)}</td>
             <td>${svc.active_version ? `<button class="btn btn-xs btn-outline svc-view-tpl-btn" onclick="event.stopPropagation(); viewServiceTemplate('${escapeHtml(svc.id)}')" title="View ARM template">👁 View</button>` : ''}</td>
         </tr>`;
     }).join('');
@@ -1431,7 +1478,12 @@ function applyServiceFilters() {
 
     // Status filter
     if (currentStatusFilter !== 'all') {
-        filtered = filtered.filter(s => s.status === currentStatusFilter);
+        filtered = filtered.filter(s => {
+            if (s.status === currentStatusFilter) return true;
+            // "validating" filter also matches services with running pipelines
+            if (currentStatusFilter === 'validating' && _catalogActivityCache[s.id]?.is_running) return true;
+            return false;
+        });
     }
 
     // Search filter
@@ -1446,6 +1498,103 @@ function applyServiceFilters() {
     renderServiceTable(filtered);
 }
 
+// ── Catalog Activity Overlay (live onboarding in table) ──────
+
+function _startCatalogActivityPoll() {
+    _stopCatalogActivityPoll();
+    _catalogIdlePolls = 0;
+    _catalogHadRunning = false;
+    // Always do one initial fetch — a pipeline may be running even if no service
+    // has 'validating' status yet (status transitions mid-pipeline)
+    _pollCatalogActivity();
+    _catalogActivityPollTimer = setInterval(_pollCatalogActivity, 3000);
+}
+
+function _stopCatalogActivityPoll() {
+    if (_catalogActivityPollTimer) {
+        clearInterval(_catalogActivityPollTimer);
+        _catalogActivityPollTimer = null;
+    }
+}
+
+async function _pollCatalogActivity() {
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const newCache = {};
+        for (const job of (data.jobs || [])) {
+            if (job.is_running || job.status === 'validating') {
+                newCache[job.service_id] = job;
+            }
+        }
+        _catalogActivityCache = newCache;
+
+        // Update the onboarding stat card
+        const onboardEl = document.getElementById('svc-stat-onboarding');
+        if (onboardEl) {
+            const runningCount = (data.summary && data.summary.running) || 0;
+            onboardEl.textContent = runningCount;
+            const card = onboardEl.closest('.svc-stat-card');
+            if (card) {
+                card.classList.toggle('svc-stat-onboarding-active', runningCount > 0);
+            }
+        }
+
+        _updateCatalogStatusCells();
+
+        const anyRunning = Object.values(newCache).some(j => j.is_running);
+        if (anyRunning) {
+            _catalogIdlePolls = 0;
+            _catalogHadRunning = true;
+        } else {
+            _catalogIdlePolls++;
+            // Stop after 2 consecutive idle polls (covers startup delay)
+            if (_catalogIdlePolls >= 2) {
+                _stopCatalogActivityPoll();
+                // Only refresh data if a pipeline was actually running and has now finished
+                if (_catalogHadRunning) {
+                    loadAllData();
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[catalog-activity] Poll failed:', err.message);
+    }
+}
+
+function _updateCatalogStatusCells() {
+    const cells = document.querySelectorAll('td[data-svc-status]');
+    for (const cell of cells) {
+        const svcId = cell.getAttribute('data-svc-status');
+        const job = _catalogActivityCache[svcId];
+
+        if (job && job.is_running) {
+            const pct = Math.round((job.progress || 0) * 100);
+            const phase = _batchPhaseLabel(job.phase);
+            const detail = phase || job.detail || 'Starting…';
+            cell.innerHTML = `
+                <div class="catalog-live-status">
+                    <span class="status-badge validating">● Onboarding</span>
+                    <div class="catalog-progress-row">
+                        <div class="catalog-progress-track">
+                            <div class="catalog-progress-fill catalog-progress-animated" style="width: ${pct}%"></div>
+                        </div>
+                        <span class="catalog-progress-pct">${pct}%</span>
+                    </div>
+                    <div class="catalog-progress-phase" title="${escapeHtml(job.detail || '')}">${escapeHtml(detail)}</div>
+                </div>`;
+        } else {
+            // Restore static badge (may have previously shown progress)
+            const svc = allServices.find(s => s.id === svcId);
+            if (!svc) continue;
+            const status = svc.status || 'not_approved';
+            cell.innerHTML = `<span class="status-badge ${status}">${statusLabels[status] || status}</span>`;
+        }
+    }
+}
+
 // ── Service Detail Drawer (Versioned Onboarding) ────────────
 
 let _currentVersions = null;
@@ -1455,6 +1604,7 @@ let _apiUpdateAbort = null;  // AbortController for drawer-initiated updates
 let _runningTableUpdates = new Map();  // serviceId → AbortController for concurrent table updates
 let _tableUpdateEventBuffers = new Map();  // serviceId → array of events (replayed when drawer opens)
 let _openDrawerServiceId = null;  // currently open service detail drawer
+let _drawerActivityPollTimer = null; // poll timer for live pipeline in drawer
 
 async function startApiVersionUpdateFromTable(serviceId, badgeId, targetVersion, region) {
     // If this service already has a table update running, ignore
@@ -1652,12 +1802,26 @@ async function showServiceDetail(serviceId) {
     `;
     drawer.classList.remove('hidden');
 
-    // Fetch versions and model settings in parallel
+    // Fetch versions, model settings, and activity data in parallel
     try {
-        const [versionsRes] = await Promise.all([
+        const [versionsRes, activityRes] = await Promise.all([
             fetch(`/api/services/${encodeURIComponent(serviceId)}/versions`),
+            fetch('/api/activity').catch(() => null),
             loadModelSettings(),
         ]);
+
+        // Update activity cache so _renderOnboardButton can detect running pipelines
+        if (activityRes && activityRes.ok) {
+            try {
+                const actData = await activityRes.json();
+                const newCache = {};
+                for (const j of (actData.jobs || [])) {
+                    if (j.is_running) newCache[j.service_id] = j;
+                }
+                _catalogActivityCache = newCache;
+            } catch (_) { /* ignore parse errors */ }
+        }
+
         if (!versionsRes.ok) {
             const errText = await versionsRes.text();
             throw new Error(`Server returned ${versionsRes.status}: ${errText.slice(0, 200)}`);
@@ -1858,6 +2022,178 @@ function _renderChildResources(childResources, parentResource) {
     return html;
 }
 
+/** Render a live pipeline card for the service detail drawer (reuses Activity Monitor patterns) */
+function _renderDrawerPipelineCard(job) {
+    const pipelineSteps = [
+        { key: 'parsing', label: 'Parse', icon: '📝' },
+        { key: 'what_if', label: 'What-If', icon: '🔍' },
+        { key: 'deploying', label: 'Deploy', icon: '🚀' },
+        { key: 'resource_check', label: 'Verify', icon: '🔎' },
+        { key: 'policy_testing', label: 'Policy', icon: '🛡️' },
+        { key: 'policy_deploy', label: 'Enforce', icon: '📜' },
+        { key: 'cleanup', label: 'Cleanup', icon: '🧹' },
+        { key: 'promoting', label: 'Approve', icon: '🏆' },
+    ];
+    const phaseToStep = {
+        starting: 'parsing', what_if: 'what_if', what_if_complete: 'what_if',
+        deploying: 'deploying', deploy_complete: 'deploying', deploy_failed: 'deploying',
+        resource_check: 'resource_check', resource_check_complete: 'resource_check',
+        resource_check_warning: 'resource_check',
+        policy_testing: 'policy_testing', policy_failed: 'policy_testing', policy_skip: 'policy_testing',
+        policy_deploy: 'policy_deploy', policy_deploy_complete: 'policy_deploy',
+        cleanup: 'cleanup', cleanup_complete: 'cleanup',
+        promoting: 'promoting',
+        fixing_template: job.phase, template_fixed: job.phase, infra_retry: job.phase,
+    };
+    const phaseLabels = {
+        starting: '🔧 Initializing pipeline…',
+        what_if: '🔍 Running ARM What-If analysis…',
+        what_if_complete: '✓ What-If analysis passed',
+        deploying: '🚀 Deploying resources to Azure…',
+        deploy_complete: '📦 Deployment succeeded',
+        deploy_failed: '💥 Deployment failed — preparing auto-heal',
+        resource_check: '🔎 Verifying provisioned resources…',
+        resource_check_complete: '✓ Resources verified in Azure',
+        policy_testing: '🛡️ Evaluating policy compliance…',
+        policy_failed: '⚠️ Policy violation detected',
+        policy_skip: 'ℹ️ No policy to evaluate',
+        policy_deploy: '📜 Deploying Azure Policy…',
+        policy_deploy_complete: '✓ Azure Policy deployed',
+        cleanup: '🧹 Cleaning up validation resources…',
+        cleanup_complete: '✓ Cleanup initiated',
+        promoting: '🏆 Promoting service to approved…',
+        fixing_template: '🤖 Copilot SDK auto-healing template…',
+        template_fixed: '🔧 Template fixed by Copilot SDK',
+        infra_retry: '⏳ Waiting for Azure (transient error)…',
+        fixing_policy: '🤖 Copilot SDK fixing policy JSON…',
+    };
+
+    const isRunning = job.is_running;
+    const activeStep = phaseToStep[job.phase] || job.phase;
+    const completedSteps = job.steps_completed || [];
+    const pct = Math.min(Math.round((job.progress || 0) * 100), 100);
+
+    const pipelineHtml = _wfPipeline(pipelineSteps, {
+        activeKey: isRunning ? activeStep : undefined,
+        completedKeys: completedSteps,
+        allDone: job.status === 'approved',
+    });
+
+    const phaseText = phaseLabels[job.phase] || job.phase || '';
+    const phaseHtml = phaseText ? `<div class="activity-phase">${phaseText}</div>` : '';
+    const detailHtml = isRunning && job.detail ? `<div class="activity-detail-live">${escapeHtml(job.detail)}</div>` : '';
+
+    const progressHtml = isRunning ? `
+        <div class="activity-progress">
+            <div class="activity-progress-track">
+                <div class="activity-progress-fill activity-progress-animated" style="width: ${pct}%"></div>
+            </div>
+            <span class="activity-progress-pct">${pct}%</span>
+        </div>` : '';
+
+    const rgHtml = isRunning && job.rg_name
+        ? `<div class="activity-rg-bar"><span class="activity-rg-label">Resource Group:</span> <span class="activity-rg-name">${escapeHtml(job.rg_name)}</span></div>`
+        : '';
+
+    // Meta chips
+    let metaHtml = '';
+    const meta = job.template_meta || {};
+    if (meta.resource_count || meta.size_kb || job.region) {
+        const chips = [];
+        if (job.region) chips.push(`<span class="activity-meta-chip">📍 ${escapeHtml(job.region)}</span>`);
+        if (meta.size_kb) chips.push(`<span class="activity-meta-chip">📄 ${meta.size_kb} KB</span>`);
+        if (meta.resource_count) chips.push(`<span class="activity-meta-chip">📦 ${meta.resource_count} resource(s)</span>`);
+        metaHtml = `<div class="activity-meta-chips">${chips.join('')}</div>`;
+    }
+
+    // Event log
+    let eventsHtml = '';
+    if (job.events && job.events.length > 0) {
+        const eventLines = job.events.map(e => {
+            let icon = '▸';
+            if (e.type === 'error') icon = '❌';
+            else if (e.type === 'done') icon = '✅';
+            else if (e.type === 'healing') icon = '🤖';
+            else if (e.phase === 'deploying') icon = '🚀';
+            else if (e.phase === 'what_if') icon = '🔍';
+            else if (e.phase === 'resource_check') icon = '🔎';
+            else if (e.phase === 'cleanup') icon = '🧹';
+            else if (e.phase === 'promoting') icon = '🏆';
+            const timeStr = e.time ? `<span class="activity-event-time">${_timeShort(e.time)}</span>` : '';
+            return `<div class="activity-event-line">${timeStr}${icon} ${escapeHtml(e.detail)}</div>`;
+        }).join('');
+        eventsHtml = `
+            <div class="activity-events-toggle" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.chevron').textContent = this.nextElementSibling.classList.contains('hidden') ? '▸' : '▾'">
+                <span class="chevron">▾</span> ${job.events.length} event${job.events.length !== 1 ? 's' : ''} — pipeline log
+            </div>
+            <div class="activity-events">${eventLines}</div>`;
+    }
+
+    const timeHtml = job.started_at ? `<span class="activity-time">Started ${_timeAgo(job.started_at)}</span>` : '';
+
+    return `
+    <div class="svc-status-card svc-status-running" id="validation-card">
+        <div class="svc-status-row">
+            <span class="svc-status-icon svc-status-spin">⟳</span>
+            <div class="svc-status-info">
+                <div class="svc-status-title">Onboarding In Progress</div>
+                <div class="svc-status-sub">Pipeline is running — live updates below. ${timeHtml}</div>
+            </div>
+        </div>
+        ${metaHtml}
+        ${pipelineHtml}
+        ${phaseHtml}
+        ${detailHtml}
+        ${progressHtml}
+        ${rgHtml}
+        ${eventsHtml}
+        <div class="validation-log" id="validation-log"></div>
+    </div>`;
+}
+
+function _startDrawerActivityPoll(serviceId) {
+    _stopDrawerActivityPoll();
+    _drawerActivityPollTimer = setInterval(() => _pollDrawerActivity(serviceId), 2500);
+}
+
+function _stopDrawerActivityPoll() {
+    if (_drawerActivityPollTimer) {
+        clearInterval(_drawerActivityPollTimer);
+        _drawerActivityPollTimer = null;
+    }
+}
+
+async function _pollDrawerActivity(serviceId) {
+    if (_openDrawerServiceId !== serviceId) { _stopDrawerActivityPoll(); return; }
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+        const job = (data.jobs || []).find(j => j.service_id === serviceId && j.is_running);
+
+        // Also update the catalog cache while we're at it
+        const newCache = {};
+        for (const j of (data.jobs || [])) {
+            if (j.is_running) newCache[j.service_id] = j;
+        }
+        _catalogActivityCache = newCache;
+
+        const card = document.getElementById('validation-card');
+        if (!card) return;
+
+        if (job) {
+            card.outerHTML = _renderDrawerPipelineCard(job);
+        } else {
+            // Pipeline finished — stop polling and refresh the drawer
+            _stopDrawerActivityPoll();
+            loadAllData();
+            setTimeout(() => showServiceDetail(serviceId), 500);
+        }
+    } catch (err) {
+        console.warn('[drawer-poll] failed:', err.message);
+    }
+}
+
 function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersionNum) {
     // API Version Update button — shown when a newer API version is available
     let updateBtn = '';
@@ -1871,6 +2207,13 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                    ⬆ Update API (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
         }
+    }
+
+    // ── Live pipeline running — show full pipeline card instead of static button ──
+    const liveJob = _catalogActivityCache[svc.id];
+    if (liveJob && liveJob.is_running) {
+        _startDrawerActivityPoll(svc.id);
+        return _renderDrawerPipelineCard(liveJob);
     }
 
     // ── Auto-approved stub (never went through real onboarding) ──
@@ -5049,7 +5392,9 @@ function _handleValidationEvent(event) {
     } else if (phase === 'deploy_failed') {
         const friendly = _friendlyError(detail);
         _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
-        _flowFinalize(logEl, 'deploy', 'failed');
+        // Don't finalize as failed — the heal loop may recover.
+        // Track it so healing events target this card.
+        logEl._flow._lastFailedKey = 'deploy';
     } else if (phase === 'resource_check') {
         _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
         if (detail) _flowDetail(logEl, 'resourceCheck', '▸', escapeHtml(detail));
@@ -5353,7 +5698,18 @@ function toggleReasoningVisibility() {
 
 function closeServiceDetail() {
     _openDrawerServiceId = null;
-    document.getElementById('service-detail-drawer').classList.add('hidden');
+    _stopDrawerActivityPoll();
+    const drawer = document.getElementById('service-detail-drawer');
+    drawer.classList.remove('detail-drawer-expanded');
+    drawer.classList.add('hidden');
+}
+
+function toggleDrawerExpand() {
+    const drawer = document.getElementById('service-detail-drawer');
+    const btn = document.getElementById('drawer-expand-btn');
+    drawer.classList.toggle('detail-drawer-expanded');
+    if (btn) btn.textContent = drawer.classList.contains('detail-drawer-expanded') ? '⛶' : '⛶';
+    if (btn) btn.title = drawer.classList.contains('detail-drawer-expanded') ? 'Collapse to side panel' : 'Expand to full screen';
 }
 
 // ── Template Catalog ────────────────────────────────────────
@@ -11481,6 +11837,7 @@ async function submitPromptCompose() {
     btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
+    let succeeded = false;
 
     try {
         // ── Step 1: Policy pre-check via a lightweight POST ──
@@ -11616,7 +11973,9 @@ async function submitPromptCompose() {
                 </div>
             </div>`;
 
-        textarea.value = '';
+        btn.disabled = true;
+        btn.textContent = '✅ Template Created';
+        succeeded = true;
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
         setTimeout(async () => {
@@ -11633,8 +11992,10 @@ async function submitPromptCompose() {
         resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
         showToast(`❌ Compose error: ${err.message}`, 'error');
     } finally {
-        btn.disabled = false;
-        btn.textContent = '🚀 Create Template';
+        if (!succeeded) {
+            btn.disabled = false;
+            btn.textContent = '🚀 Create Template';
+        }
     }
 }
 
