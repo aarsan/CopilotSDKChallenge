@@ -3957,10 +3957,6 @@ async def _seed_governance_and_services(backend, summary: dict, now: str) -> Non
          "name": "Azure AI Services (Cognitive Services)", "category": "ai",
          "status": "not_approved", "risk_tier": "high"},
 
-        # ── Other ──
-        {"id": "Microsoft.Blockchain/blockchainMembers",
-         "name": "Azure Blockchain Service", "category": "other",
-         "status": "not_approved", "risk_tier": "high"},
     ]
 
     for svc in services_data:
