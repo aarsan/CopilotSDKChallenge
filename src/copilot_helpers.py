@@ -15,11 +15,18 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Callable, Optional
 
-from copilot import CopilotClient, PermissionHandler
+from copilot import CopilotClient
+from copilot.types import PermissionRequest, PermissionRequestResult
 
 from src.model_router import Task, get_model_for_task  # re-export
 
 logger = logging.getLogger(__name__)
+
+
+def approve_all(request: PermissionRequest, context: dict[str, str]) -> PermissionRequestResult:
+    """Permission handler that approves every request."""
+    return {"kind": "approved"}
+
 
 _db_loaded = False  # True once we've loaded counters from DB
 
@@ -230,7 +237,7 @@ async def copilot_send(
         "streaming": True,
         "tools": [],
         "system_message": {"content": system_prompt},
-        "on_permission_request": PermissionHandler.approve_all,
+        "on_permission_request": approve_all,
     })
     unsub = None
     try:

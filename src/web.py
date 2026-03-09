@@ -26,7 +26,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from copilot import CopilotClient, PermissionHandler
+from copilot import CopilotClient
+
+from src.copilot_helpers import approve_all
 
 from src.config import (
     APP_NAME,
@@ -6351,7 +6353,7 @@ async def upgrade_analyst_chat(service_id: str, request: Request):
                 "streaming": True,
                 "tools": [],
                 "system_message": {"content": system_prompt},
-                "on_permission_request": PermissionHandler.approve_all,
+                "on_permission_request": approve_all,
             })
 
             response_chunks: list[str] = []
