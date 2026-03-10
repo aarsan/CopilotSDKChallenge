@@ -21,7 +21,8 @@ by hand.
 | Database     | Azure SQL Database (pyodbc + AAD)   |
 | AI Engine    | GitHub Copilot SDK (Python)         |
 | Auth         | Microsoft Entra ID (MSAL.js + MSAL Python) |
-| Identity IQ  | Work IQ (Microsoft Graph org data)  |
+| Identity     | Microsoft Graph (Entra ID org data)  |
+| M365 Intelligence | Microsoft Work IQ (MCP Server)  |
 | Analytics    | Fabric IQ (OneLake + Fabric Semantic Models) |
 | Frontend     | Vanilla JS SPA (no framework)       |
 | Deployment   | ARM SDK (azure-mgmt-resource)       |
@@ -628,9 +629,9 @@ Start-Sleep -Seconds 5
 | `INFRAFORGE_OUTPUT_DIR` | No | `./output` | Directory for saved files |
 | `INFRAFORGE_WEB_HOST` | No | `0.0.0.0` | Server bind host |
 | `INFRAFORGE_WEB_PORT` | No | `8080` | Server port |
-| `FABRIC_WORKSPACE_ID` | No | — | Fabric workspace ID (auto-provisioned by `setup.ps1` Step 6) |
-| `FABRIC_ONELAKE_DFS_ENDPOINT` | No | — | OneLake DFS endpoint (auto-provisioned by `setup.ps1` Step 6) |
-| `FABRIC_LAKEHOUSE_NAME` | No | — | OneLake lakehouse name (auto-provisioned by `setup.ps1` Step 6) |
+| `FABRIC_WORKSPACE_ID` | No | — | Microsoft Fabric workspace ID |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | No | — | OneLake DFS endpoint URL |
+| `FABRIC_LAKEHOUSE_NAME` | No | — | OneLake lakehouse name |
 
 ---
 
@@ -673,7 +674,7 @@ Registration automatically.
    │     acquire_token_by_authorization_code()         │
    │     → ID token + Access token                     │
    │                                                   │
-   │  5. Microsoft Graph API enrichment (Work IQ)      │
+   │  5. Microsoft Graph API enrichment (Identity)       │
    │     GET /me → job title, department, cost center  │
    │     GET /me/manager → manager display name        │
    │                                                   │
@@ -695,10 +696,9 @@ Registration automatically.
 | `POST /api/auth/logout` | Clears session |
 | `GET /api/auth/me` | Returns current user context |
 
-### Work IQ — Identity Intelligence
+### Identity Intelligence — Microsoft Graph Enrichment
 
-Entra ID provides the foundation for **Work IQ**, which enriches every user session
-with organizational context from Microsoft Graph:
+Entra ID enriches every user session with organizational context from Microsoft Graph:
 
 - **Identity-aware tagging** — Resources are automatically tagged with the user's
   email, department, cost center, and manager
@@ -723,11 +723,6 @@ with organizational context from Microsoft Graph:
 InfraForge integrates with Microsoft Fabric to provide cross-organization analytics
 via OneLake. The `src/fabric.py` module implements the sync engine, REST client,
 and analytics computations.
-
-The Fabric workspace and Lakehouse are **auto-provisioned** by `scripts/setup.ps1`
-(Step 6/9) via the Fabric REST API. The setup script creates a workspace named
-`InfraForge-Analytics` and a Lakehouse named `infraforge_lakehouse`, then populates
-the `FABRIC_*` environment variables. Use `-SkipFabric` if no Fabric capacity is available.
 
 ### Data Pipeline Architecture
 

@@ -9,7 +9,7 @@ Requires AZURE_SQL_CONNECTION_STRING to be set in the environment.
 Tables:
   user_sessions            — Auth sessions (persists across server restarts)
   chat_messages            — Conversation history
-  usage_logs               — Work IQ analytics
+  usage_logs               — Usage analytics
   approval_requests        — Service approval requests with lifecycle tracking
   projects                 — Infrastructure project proposals and phase tracking
   security_standards       — Machine-readable security rules (HTTPS, TLS, managed identity...)
@@ -1045,39 +1045,10 @@ async def init_db() -> None:
     except Exception as exc:
         logger.warning(f"template_api_version backfill skipped: {exc}")
 
-    # ── Reset auto-onboarded services that were never pipeline-validated ──
-    # Services auto-approved by the orchestrator have active_version set but
-    # their version was never validated (no validated_at).  Downgrade them to
-    # not_approved / auto_prepped so they require the full pipeline.
-    try:
-        rows = await backend.execute(
-            "SELECT s.id FROM services s "
-            "WHERE s.status = 'approved' AND s.active_version IS NOT NULL "
-            "  AND NOT EXISTS ("
-            "    SELECT 1 FROM service_versions sv "
-            "    WHERE sv.service_id = s.id AND sv.version = s.active_version "
-            "      AND sv.validated_at IS NOT NULL"
-            "  )",
-            (),
-        )
-        if rows:
-            now = datetime.now(timezone.utc).isoformat()
-            for row in rows:
-                sid = row["id"]
-                await backend.execute_write(
-                    "UPDATE services "
-                    "SET status = 'not_approved', active_version = NULL, "
-                    "    reviewed_by = 'auto_prepped', updated_at = ? "
-                    "WHERE id = ?",
-                    (now, sid),
-                )
-            logger.info(
-                f"Reset {len(rows)} auto-onboarded service(s) to not_approved: "
-                f"{', '.join(r['id'] for r in rows)}"
-            )
-            invalidate_service_cache()
-    except Exception as exc:
-        logger.warning(f"Auto-onboard reset migration skipped: {exc}")
+
+# ══════════════════════════════════════════════════════════════
+# USER SESSIONS
+# ══════════════════════════════════════════════════════════════
 
 async def save_session(
     session_token: str,
@@ -1218,11 +1189,11 @@ async def get_user_chat_history(email: str, limit: int = 50) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
-# USAGE LOGS (Work IQ Analytics)
+# USAGE LOGS (Usage Analytics)
 # ══════════════════════════════════════════════════════════════
 
 async def log_usage(record: dict) -> None:
-    """Log a usage record for Work IQ analytics.
+    """Log a usage record for analytics.
 
     When backed by Azure SQL, this data can be surfaced in:
     - Power BI dashboards for org-wide spend visibility
@@ -1251,7 +1222,7 @@ async def get_usage_stats(
     department: Optional[str] = None,
     since_timestamp: Optional[float] = None,
 ) -> dict:
-    """Aggregate usage statistics for the Work IQ analytics dashboard."""
+    """Aggregate usage statistics for the analytics dashboard."""
     backend = await get_backend()
 
     where_clauses: list[str] = []
@@ -3392,50 +3363,27 @@ async def get_compliance_assessment(assessment_id: str) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════
 
 async def seed_governance_data() -> dict:
-    """Populate governance tables with initial data if they are empty.
+    """Run migrations and seed orchestration processes on startup.
 
-    Seeds:
-    - Security standards (machine-readable security rules)
-    - Compliance frameworks and controls (SOC2, CIS Azure)
-    - Azure services catalog (the 20 services from the original YAML)
-    - Organization-wide governance policies (tag, region, encryption rules)
+    Services, security standards, compliance frameworks, and governance
+    policies are NOT pre-seeded.  All services come from Azure sync
+    (on-demand via the Sync button).
 
     Returns a summary of what was seeded.
     """
     backend = await get_backend()
     summary = {}
 
-    # ── Check if services already seeded ─────────────────────
-    rows = await backend.execute("SELECT COUNT(*) as cnt FROM services", ())
-    services_exist = rows and rows[0]["cnt"] > 0
+    # Always run CAF migration on existing governance policies
+    await _apply_governance_caf_fields(backend)
+    # Fix naming convention to include {region}
+    await _fix_naming_convention_region(backend)
+    # Disable seed policies so fresh installs don't block deployments
+    await _disable_seed_policies_by_default(backend)
 
-    # ── Check if templates already seeded ────────────────────
+    # ── Seed templates (no-op — templates require approved services) ──
     tmpl_rows = await backend.execute("SELECT COUNT(*) as cnt FROM catalog_templates", ())
     templates_exist = tmpl_rows and tmpl_rows[0]["cnt"] > 0
-
-    if services_exist and templates_exist:
-        # Still check if orchestration processes need seeding
-        proc_count = await seed_orchestration_processes()
-        if proc_count > 0:
-            logger.info(f"Seeded {proc_count} orchestration processes (services/templates already existed)")
-        else:
-            logger.info("Governance data already seeded — skipping.")
-        # Always run CAF migration on existing governance policies
-        await _apply_governance_caf_fields(backend)
-        # Fix naming convention to include {region}
-        await _fix_naming_convention_region(backend)
-        # Disable seed policies so fresh installs don't block deployments
-        await _disable_seed_policies_by_default(backend)
-        return {"status": "already_seeded", "orchestration_processes": proc_count}
-
-    logger.info("Seeding governance data into database...")
-    now = datetime.now(timezone.utc).isoformat()
-
-    # ── Seed services + governance (sections 1-4) if not already present ──
-    if not services_exist:
-        await _seed_governance_and_services(backend, summary, now)
-
-    # ── Seed templates (section 5) if not already present ──
     if not templates_exist:
         await _seed_templates(summary)
 
@@ -3443,10 +3391,7 @@ async def seed_governance_data() -> dict:
     proc_count = await seed_orchestration_processes()
     summary["orchestration_processes"] = proc_count
 
-    # Disable seed policies so fresh installs don't block deployments
-    await _disable_seed_policies_by_default(backend)
-
-    logger.info(f"Governance data seeded: {summary}")
+    logger.info(f"Startup seed complete: {summary}")
     return summary
 
 

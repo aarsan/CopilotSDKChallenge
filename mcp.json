@@ -4,6 +4,12 @@
       "type": "http",
       "url": "https://api.githubcopilot.com/mcp/",
       "description": "GitHub MCP server for repository, issue, and PR access"
+    },
+    "workiq": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@microsoft/workiq", "mcp"],
+      "description": "Microsoft Work IQ — query M365 data (emails, meetings, docs, Teams, people) via natural language"
     }
   }
 }

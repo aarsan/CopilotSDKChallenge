@@ -43,20 +43,25 @@ InfraForge is available as both a **CLI** (for developers and power users) and a
 (for business users and stakeholders). The web interface is authenticated via **Microsoft Entra ID**,
 providing corporate SSO and enabling identity-aware infrastructure provisioning.
 
-## Work IQ — Infrastructure Intelligence
+## Microsoft Work IQ — M365 Organizational Intelligence
 
-When users are authenticated, InfraForge becomes an **infrastructure intelligence platform**:
+InfraForge integrates with [Microsoft Work IQ](https://github.com/microsoft/work-iq) (`@microsoft/workiq`)
+to query M365 organizational data via natural language:
 
-- **Identity-aware tagging** — Resources are automatically tagged with the requesting user's
-  email, department, cost center, and manager chain
-- **Role-based access** — Platform team members get full catalog access and template registration;
-  standard users work with approved templates and can request new infrastructure
-- **Cost attribution** — Every infrastructure request is tracked by team/department, enabling
-  org-wide spend visibility and chargeback
-- **Usage analytics** — Track which teams provision what, template reuse rates, policy compliance
-  trends, and infrastructure consumption patterns across the organization
-- **Approval routing** — Design documents can be routed to the right manager based on
-  organizational hierarchy from Entra ID
+- **Organizational knowledge search** — Find prior architecture discussions, specs,
+  and decisions across emails, meetings, documents, and Teams messages
+- **Expert discovery** — Identify subject matter experts who have worked on similar
+  infrastructure patterns
+- **Document enrichment** — Supplement design documents with related organizational
+  context from SharePoint/OneDrive
+
+Work IQ runs as an MCP (Model Context Protocol) server and is exposed to the Copilot SDK
+agent as three tools: `search_org_knowledge`, `find_related_documents`, and
+`find_subject_matter_experts`.
+
+**Setup**: Requires Node.js 18+. Run `npx -y @microsoft/workiq accept-eula` and verify
+with `npx -y @microsoft/workiq ask -q "test query"`. Tenant admin consent is required
+for first-time access.
 
 ## Core Capabilities
 

@@ -41,6 +41,7 @@ class SyncManager:
         self._lock = asyncio.Lock()
         self.last_completed: Optional[dict] = None   # summary from last run
         self.last_completed_at: Optional[float] = None
+        self.total_azure_count: Optional[int] = None  # lightweight count from startup
 
     async def broadcast(self, event: dict):
         """Send a progress event to all subscribers and record in history."""
@@ -105,8 +106,12 @@ class SyncManager:
                 if self.last_completed_at else None
             ),
             "total_azure_resource_types": (
-                self.last_completed.get("resource_types_discovered")
-                if self.last_completed else None
+                self.total_azure_count
+                if self.total_azure_count is not None
+                else (
+                    self.last_completed.get("resource_types_discovered")
+                    if self.last_completed else None
+                )
             ),
         }
 
@@ -317,6 +322,69 @@ async def run_sync_managed() -> bool:
     return True
 
 
+async def fetch_azure_service_count() -> Optional[int]:
+    """Lightweight startup call: count Azure resource types without importing.
+
+    Authenticates to Azure, lists providers, applies the same skip filters,
+    and stores the total count on ``sync_manager.total_azure_count``.
+    Returns the count or None if Azure credentials are unavailable.
+    """
+    import os
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.mgmt.resource import ResourceManagementClient
+    except ImportError:
+        logger.warning("Azure SDK not installed — skipping service count fetch")
+        return None
+
+    sub_id = os.getenv("AZURE_SUBSCRIPTION_ID", "")
+    if not sub_id:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["az", "account", "show", "--query", "id", "-o", "tsv"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                sub_id = result.stdout.strip()
+        except Exception:
+            pass
+
+    if not sub_id:
+        logger.warning("No Azure subscription — skipping service count fetch")
+        return None
+
+    try:
+        credential = DefaultAzureCredential(
+            exclude_workload_identity_credential=True,
+            exclude_managed_identity_credential=True,
+        )
+        client = ResourceManagementClient(credential, sub_id)
+        loop = asyncio.get_event_loop()
+        providers = await loop.run_in_executor(
+            None, lambda: list(client.providers.list())
+        )
+
+        count = 0
+        for provider in providers:
+            namespace = provider.namespace or ""
+            if not namespace:
+                continue
+            for rt in (provider.resource_types or []):
+                type_name = rt.resource_type or ""
+                if not type_name:
+                    continue
+                if not _should_skip(namespace, type_name):
+                    count += 1
+
+        sync_manager.total_azure_count = count
+        logger.info(f"Azure service count fetched on startup: {count}")
+        return count
+    except Exception as e:
+        logger.warning(f"Failed to fetch Azure service count: {e}")
+        return None
+
+
 async def sync_azure_services(
     subscription_id: Optional[str] = None,
     on_progress: ProgressCallback = None,
@@ -490,6 +558,9 @@ async def sync_azure_services(
     ]
     api_updated = await bulk_update_api_versions(api_updates)
     logger.info(f"API versions updated for {api_updated} services")
+
+    # Update the startup count with the authoritative full-sync number
+    sync_manager.total_azure_count = len(discovered)
 
     summary = {
         "subscription_id": subscription_id,

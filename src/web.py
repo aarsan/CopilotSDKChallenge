@@ -652,6 +652,10 @@ async def lifespan(app: FastAPI):
 
     # Azure resource provider sync — runs on-demand via the Sync button.
     # Removed from startup to avoid blocking or crashing the server.
+    # We do a lightweight count-only fetch so the UI shows total available.
+    import asyncio as _aio
+    from src.azure_sync import fetch_azure_service_count
+    _aio.create_task(fetch_azure_service_count())
 
     logger.info("InfraForge web server ready")
     yield
@@ -5467,7 +5471,7 @@ async def validate_template(template_id: str, request: Request):
                 events_json=events_str,
             )
 
-            # Log usage for Work IQ analytics
+            # Log usage for analytics
             if final_status == "completed":
                 try:
                     await log_usage({
@@ -11253,7 +11257,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 _track(line)
                 yield line
 
-            # Log usage for Work IQ analytics
+            # Log usage for analytics
             try:
                 tracker = _active_validations.get(service_id, {})
                 if tracker.get("status") == "succeeded":

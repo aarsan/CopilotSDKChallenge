@@ -27,49 +27,6 @@ function _fabricTag() {
     return '<span class="uf-tech-tag uf-tech-tag-fabric">FABRIC IQ</span>';
 }
 
-// ── Work IQ — Identity-Aware Infrastructure Intelligence ────
-function _populateWorkIQ(user) {
-    // Identity context
-    const _set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '—'; };
-    _set('wiq-name', user.displayName);
-    _set('wiq-email', user.email);
-    _set('wiq-dept', user.department);
-    _set('wiq-cc', user.costCenter);
-    _set('wiq-mgr', user.manager || 'Via Graph API');
-    _set('wiq-access', user.isPlatformTeam ? 'Platform Team' : user.isAdmin ? 'Admin' : 'Standard');
-
-    // Auto-tagging preview
-    _set('wiq-tag-owner', user.email);
-    _set('wiq-tag-cc', user.costCenter || 'TBD');
-    _set('wiq-tag-dept', user.department || 'TBD');
-    _set('wiq-tag-name', user.displayName);
-
-    // Approval routing
-    _set('wiq-route-you', user.displayName.split(' ')[0] || 'You');
-    _set('wiq-route-mgr', user.manager || 'Manager');
-
-    // Usage analytics (async)
-    _loadWorkIQStats();
-}
-
-async function _loadWorkIQStats() {
-    try {
-        const token = localStorage.getItem('session_token');
-        if (!token) return;
-        const res = await fetch('/api/analytics/usage', {
-            headers: { 'Authorization': `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const _set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-        _set('wiq-total-requests', data.totalRequests || 0);
-        _set('wiq-catalog-rate', (data.catalogReuseRate || 0) + '%');
-        _set('wiq-est-cost', '$' + (data.totalEstimatedMonthlyCost || 0).toLocaleString());
-    } catch (e) {
-        // Non-critical — analytics loading failure is okay
-    }
-}
-
 // ── Workflow Pipeline Renderer ──────────────────────────────
 /**
  * Render a standardized dot-line workflow pipeline.
@@ -361,9 +318,6 @@ function showApp() {
             [currentUser.department, currentUser.costCenter].filter(Boolean).join(' · ');
         document.getElementById('user-context-hint').textContent =
             `Tagging as ${currentUser.email}`;
-
-        // Populate Work IQ dashboard
-        _populateWorkIQ(currentUser);
     }
 
     // Load all data, then show dashboard
@@ -910,16 +864,21 @@ async function loadServiceStats() {
 }
 
 function _renderStatsPanel(data) {
-    // Total Azure resource types (from last sync)
+    // Total Azure resource types (from startup count or last sync)
     const azureEl = document.getElementById('svc-stat-azure');
     if (azureEl) {
         azureEl.textContent = data.total_azure != null ? data.total_azure.toLocaleString() : '—';
     }
 
-    // Total cached in our system
+    // Synced: show "X / Y" when total_azure is known
     const cachedEl = document.getElementById('svc-stat-cached');
     if (cachedEl) {
-        cachedEl.textContent = data.total_cached != null ? data.total_cached.toLocaleString() : '—';
+        const cached = data.total_cached != null ? data.total_cached : 0;
+        if (data.total_azure != null) {
+            cachedEl.textContent = `${cached.toLocaleString()} / ${data.total_azure.toLocaleString()}`;
+        } else {
+            cachedEl.textContent = cached.toLocaleString();
+        }
     }
 
     // Total approved
@@ -1156,6 +1115,22 @@ function updateSyncProgress(data) {
     if (bar && typeof data.progress === 'number') {
         bar.style.width = `${Math.round(data.progress * 100)}%`;
     }
+
+    // Live-update the synced count in the stats panel during inserting phase
+    if (data.phase === 'inserting' && data.added != null) {
+        const cachedEl = document.getElementById('svc-stat-cached');
+        const azureEl = document.getElementById('svc-stat-azure');
+        if (cachedEl) {
+            const total = azureEl ? parseInt(azureEl.textContent.replace(/,/g, '')) : null;
+            const synced = data.added + (data.existing || 0);
+            if (total && !isNaN(total)) {
+                cachedEl.textContent = `${synced.toLocaleString()} / ${total.toLocaleString()}`;
+            } else {
+                cachedEl.textContent = synced.toLocaleString();
+            }
+        }
+    }
+
     if (data.phase === 'done') {
         bar?.classList.add('sync-bar-done');
     } else if (data.phase === 'error') {
