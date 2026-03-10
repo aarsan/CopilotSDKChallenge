@@ -877,7 +877,7 @@ async function loadAllData() {
 
         // Render tables
         _populateServiceUpdatesFromCache();
-        renderServiceTable(allServices);
+        applyServiceFilters();
         renderTemplateTable(allTemplates);
 
         // Render approval tracker
@@ -1083,7 +1083,7 @@ async function _refreshServicesOnly() {
         const res = await fetch('/api/catalog/services');
         const data = await res.json();
         allServices = data.services || [];
-        renderServiceTable(allServices);
+        applyServiceFilters();
         // Update the subtitle count
         const subtitle = document.getElementById('page-subtitle');
         if (subtitle && currentPage === 'services') {
