@@ -455,6 +455,8 @@ class HealingLoop:
                 f"Validation pass {attempt}/{self.max_attempts}",
                 progress=self.ctx.progress(att_base),
                 step=attempt,
+                attempt=attempt,
+                max_attempts=self.max_attempts,
             )
 
             restarted = False

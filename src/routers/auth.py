@@ -404,6 +404,8 @@ async def get_activity():
                 "rg_name": live.get("rg_name", "") if live else "",
                 "region": live.get("region", "") if live else "",
                 "subscription": live.get("subscription", "") if live else "",
+                "attempt": live.get("current_attempt", 1) if live else 1,
+                "max_attempts": live.get("max_attempts", 5) if live else 5,
                 "template_meta": live.get("template_meta", {}) if live else {},
                 "steps_completed": live.get("steps_completed", []) if live else [],
                 "events": live.get("events", [])[-50:] if live else [],  # last 50 events

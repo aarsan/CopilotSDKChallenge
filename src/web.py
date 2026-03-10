@@ -10085,6 +10085,8 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                 "rg_name": rg_name,
                 "events": [],
                 "error": "",
+                "current_attempt": 1,
+                "max_attempts": 5,
             }
             _active_validations[service_id] = tracker
         tracker["updated_at"] = now
@@ -10094,6 +10096,10 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             tracker["step"] = evt["step"]
         elif evt.get("attempt"):
             tracker["step"] = evt["attempt"]
+        if evt.get("attempt"):
+            tracker["current_attempt"] = evt["attempt"]
+        if evt.get("max_attempts"):
+            tracker["max_attempts"] = evt["max_attempts"]
         if evt.get("progress"):
             tracker["progress"] = evt["progress"]
         if evt.get("detail"):
@@ -10197,6 +10203,8 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
             "steps_completed": [],
             "events": [],
             "error": "",
+            "current_attempt": 1,
+            "max_attempts": 5,
         }
 
         # Emit a rich initialization event
@@ -11292,6 +11300,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 "rg_name": rg_name,
                 "events": [],
                 "error": "",
+                "current_attempt": 1,
+                "max_attempts": 5,
             }
             _active_validations[service_id] = tracker
         tracker["updated_at"] = now
@@ -11301,6 +11311,10 @@ async def onboard_service_endpoint(service_id: str, request: Request):
             tracker["step"] = evt["step"]
         elif evt.get("attempt"):
             tracker["step"] = evt["attempt"]
+        if evt.get("attempt"):
+            tracker["current_attempt"] = evt["attempt"]
+        if evt.get("max_attempts"):
+            tracker["max_attempts"] = evt["max_attempts"]
         if evt.get("progress"):
             tracker["progress"] = evt["progress"]
         if evt.get("detail"):

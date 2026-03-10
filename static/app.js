@@ -5350,6 +5350,12 @@ function _handleValidationEvent(event) {
         if (iconEl) { iconEl.textContent = '🧹'; }
     }
 
+    // Refresh pipeline runs list at key moments
+    if (type === 'iteration_start' || type === 'done' || type === 'error' || type === 'action_required' || type === 'policy_blocked') {
+        const _svcId = card?.dataset?.serviceId || _openDrawerServiceId;
+        if (_svcId) setTimeout(() => _loadPipelineRuns(_svcId), type === 'iteration_start' ? 2000 : 500);
+    }
+
     // Final states on outer card
     if (type === 'done' && card) {
         card.className = 'validation-card validation-succeeded';
@@ -14808,7 +14814,7 @@ function _renderActivityCard(job) {
     if (isRunning) {
         statusClass = 'activity-status-running';
         statusIcon = '⏳';
-        statusText = `Attempt ${job.attempt}/${job.max_attempts}`;
+        statusText = (job.attempt && job.max_attempts) ? `Attempt ${job.attempt}/${job.max_attempts}` : 'Running';
     } else if (status === 'approved') {
         statusClass = 'activity-status-approved';
         statusIcon = '✅';

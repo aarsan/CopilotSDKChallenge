@@ -5241,6 +5241,18 @@ tr:hover .svc-view-tpl-btn {
 }
 .run-item-running {
     border-left: 3px solid var(--accent-blue);
+    animation: run-item-pulse 2s ease-in-out infinite;
+}
+@keyframes run-item-pulse {
+    0%, 100% { background: var(--bg-tertiary); }
+    50% { background: rgba(56, 189, 248, 0.06); }
+}
+.run-item-running .run-item-status {
+    animation: spin 1.5s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 .run-item-header {
     display: flex;
