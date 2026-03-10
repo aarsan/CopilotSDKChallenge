@@ -2903,6 +2903,21 @@ async function triggerOnboarding(serviceId, opts = {}) {
             throw new Error(errMsg);
         }
 
+        // Mark the service as validating immediately so it appears in Active Services
+        const parentSvc = allServices.find(s => s.id === serviceId);
+        if (parentSvc) {
+            parentSvc.status = 'validating';
+        } else {
+            // Service doesn't exist in list yet — create stub entry
+            allServices.push({
+                id: serviceId,
+                name: svcName,
+                status: 'validating',
+                category: 'unknown',
+            });
+        }
+        applyServiceFilters();
+
         await readNDJSONStream(res, (event) => {
             _handleValidationEvent(event);
         });
@@ -5197,9 +5212,23 @@ function _handleValidationEvent(event) {
         _flowFinalizeActive(logEl, 'done');
         const text = detail || `Service approved — v${event.semver || event.version + '.0.0'}`;
         _flowResult(logEl, 'success', text);
+        // Update parent service status to approved
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'approved';
+            applyServiceFilters();
+        }
     } else if (type === 'policy_blocked') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'blocked', 'Policy review needed');
+        // Update parent service status to policy_blocked or failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'policy_blocked';
+            applyServiceFilters();
+        }
         if (event.violations) {
             const guidanceEl = document.createElement('div');
             guidanceEl.className = 'policy-blocked-guidance';
@@ -5245,6 +5274,13 @@ function _handleValidationEvent(event) {
             + `No deployment possible without additional quota.`
             + regionHtml
         );
+        // Update parent service status to failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (type === 'action_required') {
         _renderActionRequired(logEl, event);
     } else if (type === 'error') {
@@ -5257,6 +5293,13 @@ function _handleValidationEvent(event) {
                 : 'Pipeline encountered an unexpected error';
         }
         _flowResult(logEl, 'failed', errMsg);
+        // Update parent service status to failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
