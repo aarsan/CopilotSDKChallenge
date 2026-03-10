@@ -6433,11 +6433,16 @@ function toggleRunDetail(headerEl) {
     if (detail) detail.classList.toggle('hidden');
 }
 
-/** Scroll to the live fix-and-validate progress container */
+/** Scroll to the live validation progress container and highlight it */
 function scrollToLiveProgress() {
-    const liveDiv = document.getElementById('fix-validate-progress');
-    if (liveDiv) {
+    // fixAndValidateTemplate uses 'fix-validate-progress'; runTemplateValidation uses 'tmpl-validate-results'
+    const liveDiv = document.getElementById('fix-validate-progress')
+        || document.getElementById('tmpl-validate-results');
+    if (liveDiv && liveDiv.offsetParent !== null) {
         liveDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Pulse highlight so the user sees exactly where the live output is
+        liveDiv.classList.add('highlight-pulse');
+        setTimeout(() => liveDiv.classList.remove('highlight-pulse'), 1800);
     } else {
         showToast('No active validation running right now', 'info');
     }
@@ -9388,6 +9393,10 @@ async function submitRevision(templateId) {
         return;
     }
 
+    // Hide the input group immediately so the textarea disappears on submit
+    const inputGroup = textarea.closest('.tmpl-revision-input-group');
+    if (inputGroup) inputGroup.style.display = 'none';
+
     btn.disabled = true;
     btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
@@ -9465,6 +9474,7 @@ async function submitRevision(templateId) {
             }
             btn.disabled = false;
             btn.textContent = '✏️ Request Revision';
+            if (inputGroup) inputGroup.style.display = '';  // restore so user can revise
             return;
         } else if (policyData.verdict === 'warning') {
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';
@@ -9572,6 +9582,7 @@ async function submitRevision(templateId) {
         resultDiv.style.display = 'block';
         resultDiv.innerHTML += `<div class="tmpl-revision-error">${escapeHtml(err.message)}</div>`;
         showToast(`Revision: ${err.message}`, 'info');
+        if (inputGroup) inputGroup.style.display = '';  // restore so user can retry
     } finally {
         btn.disabled = false;
         btn.textContent = '✏️ Request Revision';
@@ -11079,6 +11090,8 @@ async function fixAndValidateTemplate(templateId) {
         delete _activeTemplateValidations[templateId];
         // Invalidate pipeline run cache so the next load picks up saved events
         delete _templatePipelineRunCache[templateId];
+        // Re-render the pipeline runs list so "Watch Live" becomes "View"
+        _loadTemplatePipelineRuns(templateId);
     }
 }
 
@@ -15207,12 +15220,15 @@ function _renderActivityCard(job) {
     const activeStep = phaseToStep[currentPhase] || currentPhase;
 
     let pipelineHtml = '';
-    if (isRunning || status === 'approved' || status === 'validation_failed') {
+    // Only mark allDone if the service actually went through the pipeline
+    // (has completed steps or a live tracker) — not for catalog-only approvals.
+    const trulyOnboarded = status === 'approved' && (completedSteps.length > 0 || isRunning);
+    if (isRunning || trulyOnboarded || status === 'validation_failed') {
         pipelineHtml = _wfPipeline(pipelineSteps, {
             activeKey: isRunning ? activeStep : undefined,
             completedKeys: completedSteps,
             failedKey: status === 'validation_failed' ? activeStep : undefined,
-            allDone: status === 'approved',
+            allDone: trulyOnboarded,
         });
     }
 
