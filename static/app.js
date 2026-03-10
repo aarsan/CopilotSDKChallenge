@@ -393,6 +393,7 @@ function navigateTo(page) {
 
     // Load observability data when switching to activity page
     if (page === 'activity') {
+        loadHealthStatus();
         loadDeploymentHistory();
         loadActivity(true);
         _startActivityPolling();
@@ -14144,6 +14145,63 @@ async function saveImportedStandards() {
 // ══════════════════════════════════════════════════════════════
 
 let _obsCurrentTab = 'deployments';
+
+// ── System Health Checks ─────────────────────────────────────
+
+async function loadHealthStatus() {
+    const checks = {
+        sql: { dot: null, detail: document.getElementById('health-detail-sql') },
+        backend_api: { dot: null, detail: document.getElementById('health-detail-api') },
+        entra_id: { dot: null, detail: document.getElementById('health-detail-entra') },
+        workiq: { dot: null, detail: document.getElementById('health-detail-workiq') },
+    };
+    // Grab dot elements from each health-check container
+    const sqlCard = document.getElementById('health-check-sql');
+    const apiCard = document.getElementById('health-check-api');
+    const entraCard = document.getElementById('health-check-entra');
+    const workiqCard = document.getElementById('health-check-workiq');
+    if (sqlCard) checks.sql.dot = sqlCard.querySelector('.health-dot');
+    if (apiCard) checks.backend_api.dot = apiCard.querySelector('.health-dot');
+    if (entraCard) checks.entra_id.dot = entraCard.querySelector('.health-dot');
+    if (workiqCard) checks.workiq.dot = workiqCard.querySelector('.health-dot');
+
+    // Reset to checking state
+    for (const c of Object.values(checks)) {
+        if (c.dot) c.dot.className = 'health-dot health-dot-unknown';
+        if (c.detail) c.detail.textContent = 'Checking…';
+    }
+    const overallIcon = document.getElementById('health-overall-icon');
+    if (overallIcon) overallIcon.textContent = '⏳';
+
+    try {
+        const res = await fetch('/api/health');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const statusIcon = { healthy: '✅', degraded: '⚠️', unhealthy: '❌' };
+        if (overallIcon) overallIcon.textContent = statusIcon[data.overall] || '❓';
+
+        for (const [key, info] of Object.entries(data.checks || {})) {
+            const c = checks[key];
+            if (!c) continue;
+            if (c.dot) c.dot.className = `health-dot health-dot-${info.status}`;
+            if (c.detail) {
+                if (info.status === 'healthy') {
+                    c.detail.textContent = info.latency_ms != null ? `${info.latency_ms}ms` : 'OK';
+                } else {
+                    c.detail.textContent = info.message || info.status;
+                    c.detail.title = info.message || '';
+                }
+            }
+        }
+    } catch (err) {
+        if (overallIcon) overallIcon.textContent = '❌';
+        for (const c of Object.values(checks)) {
+            if (c.dot) c.dot.className = 'health-dot health-dot-unhealthy';
+            if (c.detail) c.detail.textContent = 'Unreachable';
+        }
+    }
+}
 
 function switchObsTab(tab) {
     _obsCurrentTab = tab;
