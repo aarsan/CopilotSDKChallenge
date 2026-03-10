@@ -5163,10 +5163,36 @@ function _handleValidationEvent(event) {
             _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
         }
         if (detail) _flowDetail(logEl, 'depGate', '👶', escapeHtml(detail));
+        // Mark dependency service as validating so it appears in Active Services immediately
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) {
+                depSvc.status = 'validating';
+            } else {
+                // Dependency was just created — inject a stub so it's visible
+                allServices.push({
+                    id: event.dep_service,
+                    name: event.dep_name || event.dep_service.split('/').pop(),
+                    status: 'validating',
+                    category: 'unknown',
+                });
+            }
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_onboard_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✅', escapeHtml(detail), 'uf-text-success');
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) depSvc.status = 'approved';
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_onboard_failed') {
         if (detail) _flowDetail(logEl, 'depGate', '❌', escapeHtml(detail), 'uf-text-error');
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) depSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_gate_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'depGate', 'done', 'Dependencies OK');
