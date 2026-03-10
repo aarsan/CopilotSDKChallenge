@@ -1704,7 +1704,24 @@ tr:hover .svc-view-tpl-btn {
 }
 
 .svc-row-child {
-    opacity: 0.92;
+    opacity: 0.88;
+}
+
+.svc-row-child > td:first-child {
+    padding-left: 2rem;
+    position: relative;
+}
+
+.svc-row-child > td:first-child::before {
+    content: '';
+    position: absolute;
+    left: 0.75rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--accent-primary, #6366f1);
+    opacity: 0.25;
+    border-radius: 1px;
 }
 
 .catalog-loading {
