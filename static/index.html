@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=229">
+    <link rel="stylesheet" href="/static/styles.css?v=230">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -498,14 +498,15 @@
                         <div class="filter-group">
                             <span class="filter-label">Status</span>
                             <div class="catalog-filters" id="status-filters">
-                                <button class="filter-pill active" onclick="filterServicesByStatus('all')">All</button>
+                                <button class="filter-pill active" onclick="filterServicesByStatus('active')">🚀 Active Services</button>
+                                <button class="filter-pill" onclick="filterServicesByStatus('all')">All</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('approved')">✅ Approved</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('conditional')">⚠️ Conditional</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('under_review')">🔄 Under Review</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('validating')">🚀 Onboarding</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('validation_failed')">⛔ Failed</button>
-                                <button class="filter-pill" onclick="filterServicesByStatus('not_approved')">❌ Not Approved</button>
                                 <button class="filter-pill" onclick="filterServicesByStatus('offboarded')">📦 Offboarded</button>
+                                <button class="filter-pill" onclick="filterServicesByStatus('not_approved')">❌ Not Approved</button>
                             </div>
                         </div>
                     </div>

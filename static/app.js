@@ -170,7 +170,7 @@ let allTemplates = [];
 let _serviceUpdates = {};  // serviceId → update info from check-updates
 let _batchOnboardState = null;  // batch onboarding tracker state
 let currentCategoryFilter = 'all';
-let currentStatusFilter = 'all';
+let currentStatusFilter = 'active';
 let currentTemplateFilter = 'all';
 let currentTemplateTypeFilter = 'all';
 let serviceSearchQuery = '';
@@ -1430,7 +1430,10 @@ function applyServiceFilters() {
     }
 
     // Status filter
-    if (currentStatusFilter !== 'all') {
+    if (currentStatusFilter === 'active') {
+        // Active services: everything except not_approved
+        filtered = filtered.filter(s => s.status !== 'not_approved');
+    } else if (currentStatusFilter !== 'all') {
         filtered = filtered.filter(s => s.status === currentStatusFilter);
     }
 
