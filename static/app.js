@@ -5080,6 +5080,29 @@ function _handleValidationEvent(event) {
         const icon = event.status === 'complete' ? '✓' : event.status === 'error' ? '⚠️' : '▸';
         const cls = event.status === 'complete' ? 'uf-text-success' : event.status === 'error' ? 'uf-text-error' : '';
         if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+    } else if (phase === 'testing_coverage') {
+        if (!logEl._flow?.cards['infraTest']) _flowCard(logEl, 'infraTest', '🧪', 'Infrastructure Tests');
+        const covered = event.categories_covered || [];
+        const missing = event.categories_missing || [];
+        const gateway = event.gateway_tests || [];
+        const manifestChecks = event.manifest_checks || [];
+        // Gateway tests
+        if (gateway.length) {
+            _flowDetail(logEl, 'infraTest', '🔑', `Gateway: ${gateway.map(g => `<span class="uf-badge-success">${escapeHtml(g)}</span>`).join(' ')}`, 'uf-text-success');
+        }
+        // Covered categories as green badges
+        if (covered.length) {
+            _flowDetail(logEl, 'infraTest', '✓', `Checks: ${covered.map(c => `<span class="uf-badge-success">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-success');
+        }
+        // Manifest checks — detailed view
+        if (manifestChecks.length) {
+            const checkSummary = manifestChecks.slice(0, 8).map(c => escapeHtml(c.description || c.test)).join(' · ');
+            _flowDetail(logEl, 'infraTest', '🔍', checkSummary, 'uf-text-muted');
+        }
+        // Missing categories as yellow warnings
+        if (missing.length) {
+            _flowDetail(logEl, 'infraTest', '⚠️', `Not covered: ${missing.map(c => `<span class="uf-badge-warning">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-warning');
+        }
     } else if (phase === 'testing_execute') {
         if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
     } else if (phase === 'test_result') {
@@ -10296,6 +10319,37 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
+    if (phase === 'testing_coverage') {
+        _setActiveStage('test');
+        const covered = event.categories_covered || [];
+        const missing = event.categories_missing || [];
+        const untested = event.resources_untested || [];
+        const gateway = event.gateway_tests || [];
+        const manifestChecks = event.manifest_checks || [];
+        // Gateway test status
+        if (gateway.length) {
+            _addActivity('🔑', `Gateway checks: ${gateway.join(', ')}`, 'vf-activity-success');
+        }
+        // Coverage summary
+        if (covered.length) {
+            _addActivity('📋', `Validating: ${covered.join(', ')}`, 'vf-activity-success');
+        }
+        // Manifest checks (detailed what-is-tested)
+        if (manifestChecks.length) {
+            const checkSummary = manifestChecks.slice(0, 8).map(c => c.description || c.test).join(' · ');
+            _addActivity('🔍', checkSummary, 'vf-activity-info');
+        }
+        if (missing.length) {
+            _addActivity('⚠️', `Not covered: ${missing.join(', ')}`, 'vf-activity-issue');
+        }
+        if (untested.length) {
+            const short = untested.map(r => r.split('/').pop()).slice(0, 5);
+            _addActivity('ℹ️', `Resources without specific tests: ${short.join(', ')}`, 'vf-activity-info');
+        }
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
     if (phase === 'testing_execute') {
         _setActiveStage('test');
         _addActivity('🏃', escapeHtml(detail || 'Running tests…'), 'vf-activity-test');
@@ -11485,6 +11539,10 @@ async function submitPromptCompose() {
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
 
+    // Hide the prompt textarea once generation starts
+    const promptSection = textarea.closest('.compose-prompt-section');
+    if (promptSection) promptSection.style.display = 'none';
+
     try {
         // ── Step 1: Policy pre-check via a lightweight POST ──
         // We reuse the compose-from-prompt endpoint but show incremental feedback
@@ -11562,6 +11620,7 @@ async function submitPromptCompose() {
                 }
 
                 resultDiv.style.display = 'none';
+                if (promptSection) promptSection.style.display = '';
                 btn.disabled = false;
                 btn.textContent = '🚀 Create Infrastructure';
                 return;
@@ -11583,6 +11642,7 @@ async function submitPromptCompose() {
         }
 
         if (!res.ok) {
+            if (promptSection) promptSection.style.display = '';
             resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(data.detail || data.message || 'Compose failed')}</div>`;
             return;
         }
@@ -11632,6 +11692,7 @@ async function submitPromptCompose() {
         }, 1500);
 
     } catch (err) {
+        if (promptSection) promptSection.style.display = '';
         resultDiv.style.display = 'block';
         resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
         showToast(`❌ Compose error: ${err.message}`, 'error');
