@@ -33,20 +33,18 @@ async def auto_onboard_service(
     progress_callback=None,
     region: str = "",
 ) -> dict:
-    """Auto-onboard a missing Azure service into the approved catalog.
+    """Auto-prep a missing Azure service for the onboarding pipeline.
 
-    Follows the service_onboarding process:
-    1. Create service entry (under_review)
-    2. Generate ARM template (builtin skeleton or LLM)
-    3. Create service version (draft)
-    4. Approve + set active version (skip ARM validation for auto-onboard,
-       the parent composition will validate the composed result)
+    Creates the catalog entry and a draft ARM template so composition
+    can reference the service, but does NOT approve or set active_version.
+    The service must go through the full onboarding pipeline
+    (POST /api/services/{id}/onboard) before becoming approved.
 
-    Returns: {"status": "onboarded"|"failed", "service_id": ..., "version": ...}
+    Returns: {"status": "prepped"|"already_prepped"|"already_approved"|"failed", ...}
     """
     from src.database import (
         get_service, upsert_service, create_service_version,
-        set_active_service_version, get_process,
+        get_process,
     )
     from src.tools.arm_generator import (
         generate_arm_template, has_builtin_skeleton,
@@ -74,6 +72,9 @@ async def auto_onboard_service(
     if existing and existing.get("status") == "approved":
         await _emit(f"Already approved in catalog")
         return {"status": "already_approved", "service_id": resource_type}
+    if existing and existing.get("reviewed_by") == "auto_prepped":
+        await _emit(f"Already prepped (draft ready) — needs pipeline onboarding")
+        return {"status": "already_prepped", "service_id": resource_type}
 
     # ── Step 2: Create service entry ──────────────────────────
     short_name = resource_type.split("/")[-1]
@@ -96,11 +97,10 @@ async def auto_onboard_service(
         "id": resource_type,
         "name": display_name,
         "category": category,
-        "status": "approved",  # Auto-approve for auto-onboard
+        "status": "not_approved",  # Needs full pipeline before approval
         "risk_tier": risk_tier,
-        "review_notes": "Auto-onboarded by orchestrator during template composition",
-        "reviewed_by": "orchestrator",
-        "approved_date": datetime.now(timezone.utc).isoformat(),
+        "review_notes": "Auto-prepped by orchestrator — draft ARM template ready, needs full pipeline onboarding",
+        "reviewed_by": "auto_prepped",
     }
 
     if existing:
@@ -109,7 +109,7 @@ async def auto_onboard_service(
             if k != "id":
                 existing[k] = v
         await upsert_service(existing)
-        await _emit(f"Updated existing service → approved")
+        await _emit(f"Updated existing service → prepped (needs pipeline)")
     else:
         await upsert_service(svc_data)
         await _emit(f"Created service entry: {display_name} ({category})")
@@ -151,14 +151,10 @@ async def auto_onboard_service(
         created_by="orchestrator",
     )
     ver_num = version.get("version", 1)
-    await _emit(f"Created service version v{ver_num}")
-
-    # ── Step 5: Set as active version ─────────────────────────
-    await set_active_service_version(resource_type, ver_num)
-    await _emit(f"Set v{ver_num} as active version — onboarding complete ✅")
+    await _emit(f"Created draft v{ver_num} — service needs full pipeline onboarding")
 
     return {
-        "status": "onboarded",
+        "status": "prepped",
         "service_id": resource_type,
         "version": ver_num,
         "name": display_name,
@@ -205,6 +201,7 @@ async def resolve_composition_dependencies(
     }
     """
     from src.database import get_service, get_active_service_version, get_process
+    from src.database import get_latest_service_version
     from src.template_engine import RESOURCE_DEPENDENCIES
     from src.tools.arm_generator import has_builtin_skeleton
 
@@ -274,31 +271,57 @@ async def resolve_composition_dependencies(
                     await _emit(f"✅ {dep_type} approved with builtin skeleton — adding")
                     continue
 
-            # Not in catalog or not approved — auto-onboard
-            await _emit(f"🔧 {dep_type} not approved — auto-onboarding…")
+            # Check if already prepped (has draft ARM template, needs pipeline)
+            if svc and svc.get("reviewed_by") == "auto_prepped":
+                draft = await get_latest_service_version(dep_type)
+                if draft and draft.get("arm_template"):
+                    resolved.append({
+                        "service_id": dep_type,
+                        "reason": dep["reason"],
+                        "action": "added_prepped",
+                        "detail": f"Using prepped draft v{draft.get('version', '?')} (not yet validated)",
+                    })
+                    provides.add(dep_type)
+                    auto_added.append(dep_type)
+                    await _emit(f"⚠️ {dep_type} prepped (draft) — adding to composition (needs pipeline)")
+                    continue
+                elif has_builtin_skeleton(dep_type):
+                    resolved.append({
+                        "service_id": dep_type,
+                        "reason": dep["reason"],
+                        "action": "added_prepped",
+                        "detail": "Prepped with builtin skeleton (not yet validated)",
+                    })
+                    provides.add(dep_type)
+                    auto_added.append(dep_type)
+                    await _emit(f"⚠️ {dep_type} prepped with skeleton — adding to composition")
+                    continue
+
+            # Not in catalog or not approved — auto-prep
+            await _emit(f"🔧 {dep_type} not approved — auto-prepping…")
             result = await auto_onboard_service(
                 dep_type,
                 copilot_client=copilot_client,
                 progress_callback=progress_callback,
             )
 
-            if result["status"] in ("onboarded", "already_approved"):
+            if result["status"] in ("prepped", "already_prepped", "already_approved"):
                 resolved.append({
                     "service_id": dep_type,
                     "reason": dep["reason"],
-                    "action": "onboarded" if result["status"] == "onboarded" else "added",
-                    "detail": f"Auto-onboarded: {result.get('name', dep_type)}",
+                    "action": "prepped" if result["status"] != "already_approved" else "added",
+                    "detail": f"Auto-prepped: {result.get('name', dep_type)} (needs pipeline validation)",
                 })
                 provides.add(dep_type)
                 auto_added.append(dep_type)
-                await _emit(f"✅ {dep_type} onboarded and added to composition")
+                await _emit(f"✅ {dep_type} prepped and added to composition")
             else:
                 failed.append({
                     "service_id": dep_type,
                     "reason": dep["reason"],
-                    "error": result.get("reason", "onboarding failed"),
+                    "error": result.get("reason", "prep failed"),
                 })
-                await _emit(f"❌ {dep_type} onboarding failed: {result.get('reason')}")
+                await _emit(f"❌ {dep_type} prep failed: {result.get('reason')}")
 
     final_ids = list(selected_service_ids) + auto_added
     await _emit(
@@ -678,7 +701,7 @@ async def analyze_template_feedback(
         await _emit(f"Processing missing resource: {rtype.split('/')[-1]}")
 
         # Check if service exists in catalog
-        from src.database import get_service, get_active_service_version
+        from src.database import get_service, get_active_service_version, get_latest_service_version
 
         svc = await get_service(rtype)
         if svc and svc.get("status") == "approved":
@@ -694,23 +717,37 @@ async def analyze_template_feedback(
                 await _emit(f"✅ {rtype} found in catalog — will add to composition")
                 continue
 
-        # Not in catalog — auto-onboard
-        await _emit(f"🔧 {rtype} not in catalog — auto-onboarding…")
+        # Check if already prepped (has draft, needs pipeline)
+        if svc and svc.get("reviewed_by") == "auto_prepped":
+            draft = await get_latest_service_version(rtype)
+            if draft and draft.get("arm_template"):
+                new_service_ids.append(rtype)
+                actions_taken.append({
+                    "action": "already_prepped",
+                    "service_id": rtype,
+                    "detail": f"Already prepped with draft v{draft.get('version', '?')} (needs pipeline)",
+                    "explanation": explanations.get(rtype, ""),
+                })
+                await _emit(f"⚠️ {rtype} already prepped — will add to composition")
+                continue
+
+        # Not in catalog — auto-prep
+        await _emit(f"🔧 {rtype} not in catalog — auto-prepping…")
         result = await auto_onboard_service(
             rtype,
             copilot_client=copilot_client,
             progress_callback=progress_callback,
         )
 
-        if result["status"] in ("onboarded", "already_approved"):
+        if result["status"] in ("prepped", "already_prepped", "already_approved"):
             new_service_ids.append(rtype)
             actions_taken.append({
-                "action": "auto_onboarded",
+                "action": "auto_prepped",
                 "service_id": rtype,
-                "detail": f"Auto-onboarded: {result.get('name', rtype)}",
+                "detail": f"Auto-prepped: {result.get('name', rtype)} (needs pipeline)",
                 "explanation": explanations.get(rtype, ""),
             })
-            await _emit(f"✅ {rtype} onboarded — will add to composition")
+            await _emit(f"✅ {rtype} prepped — will add to composition")
         else:
             actions_taken.append({
                 "action": "onboard_failed",

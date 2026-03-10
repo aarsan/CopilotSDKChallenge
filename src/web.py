@@ -1070,6 +1070,18 @@ async def compose_template_from_services(request: Request):
                     }
                 except Exception:
                     pass
+            # Fallback: draft version from auto-prep (not yet pipeline-validated)
+            if not tpl_dict:
+                draft = await get_latest_service_version(sid)
+                if draft and draft.get("arm_template"):
+                    try:
+                        tpl_dict = _json.loads(draft["arm_template"])
+                        pinned_versions[sid] = {
+                            "version": draft.get("version"),
+                            "semver": draft.get("semver", "0.0.0-draft"),
+                        }
+                    except Exception:
+                        pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             if sid not in pinned_versions:
@@ -1121,6 +1133,18 @@ async def compose_template_from_services(request: Request):
                 }
             except Exception:
                 pass
+        # Fallback: draft version from auto-prep
+        if not dep_tpl:
+            dep_draft = await get_latest_service_version(dep_sid)
+            if dep_draft and dep_draft.get("arm_template"):
+                try:
+                    dep_tpl = _json.loads(dep_draft["arm_template"])
+                    pinned_versions[dep_sid] = {
+                        "version": dep_draft.get("version"),
+                        "semver": dep_draft.get("semver", "0.0.0-draft"),
+                    }
+                except Exception:
+                    pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
             dep_tpl = generate_arm_template(dep_sid)
             if dep_sid not in pinned_versions:
@@ -4161,6 +4185,21 @@ async def _recompose_with_pinned(
                     }
                 except Exception:
                     pass
+        # Fallback: draft version from auto-prep
+        if not tpl_dict:
+            draft = await get_latest_service_version(sid)
+            if draft and draft.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(draft["arm_template"])
+                    version_info["source"] = "draft"
+                    version_info["version"] = draft.get("version")
+                    version_info["semver"] = draft.get("semver", "0.0.0-draft")
+                    pinned_versions[sid] = {
+                        "version": draft.get("version"),
+                        "semver": draft.get("semver", "0.0.0-draft"),
+                    }
+                except Exception:
+                    pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             version_info["source"] = "builtin"
@@ -4201,6 +4240,18 @@ async def _recompose_with_pinned(
                 }
             except Exception:
                 pass
+        # Fallback: draft version from auto-prep
+        if not dep_tpl:
+            dep_draft = await get_latest_service_version(dep_sid)
+            if dep_draft and dep_draft.get("arm_template"):
+                try:
+                    dep_tpl = _json.loads(dep_draft["arm_template"])
+                    pinned_versions[dep_sid] = {
+                        "version": dep_draft.get("version"),
+                        "semver": dep_draft.get("semver", "0.0.0-draft"),
+                    }
+                except Exception:
+                    pass
         if not dep_tpl and has_builtin_skeleton(dep_sid):
             dep_tpl = generate_arm_template(dep_sid)
             if dep_sid not in pinned_versions:
@@ -8405,6 +8456,18 @@ async def template_feedback(template_id: str, request: Request):
                 }
             except Exception:
                 pass
+        # Fallback: draft version from auto-prep
+        if not tpl_dict:
+            draft = await get_latest_service_version(sid)
+            if draft and draft.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(draft["arm_template"])
+                    pinned_versions[sid] = {
+                        "version": draft.get("version"),
+                        "semver": draft.get("semver", "0.0.0-draft"),
+                    }
+                except Exception:
+                    pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             if sid not in pinned_versions:
@@ -8868,6 +8931,20 @@ async def revise_template(template_id: str, request: Request):
                                    f"● {svc.get('name', sid)} — loaded from catalog")
                     except Exception:
                         pass
+                # Fallback: draft version from auto-prep
+                if not tpl_dict:
+                    draft = await get_latest_service_version(sid)
+                    if draft and draft.get("arm_template"):
+                        try:
+                            tpl_dict = _json.loads(draft["arm_template"])
+                            pinned_versions[sid] = {
+                                "version": draft.get("version"),
+                                "semver": draft.get("semver", "0.0.0-draft"),
+                            }
+                            yield emit("log", "onboard", "running",
+                                       f"● {svc.get('name', sid)} — loaded draft from auto-prep")
+                        except Exception:
+                            pass
                 if not tpl_dict and has_builtin_skeleton(sid):
                     tpl_dict = generate_arm_template(sid)
                     if sid not in pinned_versions:
@@ -9159,6 +9236,18 @@ async def compose_template_from_prompt(request: Request):
                 }
             except Exception:
                 pass
+        # Fallback: draft version from auto-prep
+        if not tpl_dict:
+            draft = await get_latest_service_version(sid)
+            if draft and draft.get("arm_template"):
+                try:
+                    tpl_dict = _json.loads(draft["arm_template"])
+                    pinned_versions[sid] = {
+                        "version": draft.get("version"),
+                        "semver": draft.get("semver", "0.0.0-draft"),
+                    }
+                except Exception:
+                    pass
         if not tpl_dict and has_builtin_skeleton(sid):
             tpl_dict = generate_arm_template(sid)
             if sid not in pinned_versions:
@@ -10502,9 +10591,9 @@ async def validate_deployment_endpoint(service_id: str, request: Request):
                                 child_type,
                                 copilot_client=client,
                             )
-                            if child_result.get("status") in ("onboarded", "already_approved"):
+                            if child_result.get("status") in ("prepped", "already_prepped", "already_approved"):
                                 co_onboarded.append(child_type)
-                                logger.info(f"Co-onboarded child resource {child_type} with parent {service_id}")
+                                logger.info(f"Co-prepped child resource {child_type} with parent {service_id} (needs own pipeline)")
                             else:
                                 logger.warning(f"Co-onboard of {child_type} returned: {child_result.get('status')}")
                         except Exception as co_err:
