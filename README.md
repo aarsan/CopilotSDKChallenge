@@ -14,9 +14,14 @@ everything — no human IaC authoring required.
 **3) Template Composition** — Developers build reusable infrastructure templates from
 onboarded services: landing zones, web apps, multi-resource setups — without writing code.
 
+InfraForge also integrates **Microsoft Work IQ** to query your organization's M365 data
+(emails, meetings, SharePoint, OneDrive, Teams) via natural language — finding prior
+architecture discussions, related design documents, and subject matter experts to enrich
+infrastructure decisions with organizational context.
+
 AI writes the policies. AI writes the templates. AI tests them. Zero code required.
 
-Built with: Python · FastAPI · GitHub Copilot SDK · Azure SQL · Microsoft Entra ID
+Built with: Python · FastAPI · GitHub Copilot SDK · Azure SQL · Microsoft Entra ID · Microsoft Work IQ
 
 ---
 

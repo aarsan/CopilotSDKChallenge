@@ -10,11 +10,15 @@ The Work IQ CLI uses interactive browser-based auth. After first-time setup
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from src.config import WORKIQ_ENABLED, WORKIQ_TIMEOUT
 
 logger = logging.getLogger("infraforge.workiq")
+
+# Re-check availability every 60s so that auth changes are picked up
+_AVAILABILITY_TTL = 60
 
 
 class WorkIQClient:
@@ -22,14 +26,19 @@ class WorkIQClient:
 
     def __init__(self):
         self._available: Optional[bool] = None
+        self._checked_at: float = 0.0
 
     async def is_available(self) -> bool:
         """Check if Work IQ CLI is available and authenticated."""
-        if self._available is not None:
-            return self._available
         if not WORKIQ_ENABLED:
-            self._available = False
             return False
+        # Re-check if we haven't checked yet, or if the cached value is
+        # negative and the TTL has expired (allows recovery after auth).
+        now = time.monotonic()
+        if self._available is not None and (
+            self._available or (now - self._checked_at < _AVAILABILITY_TTL)
+        ):
+            return self._available
         try:
             proc = await asyncio.create_subprocess_exec(
                 "npx",
@@ -44,6 +53,7 @@ class WorkIQClient:
         except Exception as e:
             logger.debug(f"Work IQ not available: {e}")
             self._available = False
+        self._checked_at = now
         return self._available
 
     async def ask(self, query: str) -> Optional[str]:

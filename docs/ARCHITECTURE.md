@@ -426,7 +426,7 @@ Current cache version: **v66**.
 Tools are defined in `src/tools/` and registered via `src/tools/__init__.py`.
 Each tool uses `@define_tool` from the Copilot SDK with Pydantic input models.
 
-### Registered Tools (26 total)
+### Registered Tools (29 total)
 
 | Tool | File | Data Source |
 |------|------|-------------|
@@ -454,6 +454,9 @@ Each tool uses `@define_tool` from the Copilot SDK with Pydantic input models.
 | `validate_deployment` | deploy_engine.py | Azure ARM SDK |
 | `deploy_infrastructure` | deploy_engine.py | Azure ARM SDK |
 | `get_deployment_status` | deploy_engine.py | Azure ARM SDK + Database |
+| `search_org_knowledge` | workiq_tools.py | Microsoft Work IQ (M365) |
+| `find_related_documents` | workiq_tools.py | Microsoft Work IQ (M365) |
+| `find_subject_matter_experts` | workiq_tools.py | Microsoft Work IQ (M365) |
 
 ---
 
@@ -891,3 +894,80 @@ Fabric uses `DefaultAzureCredential` (the same credential used for Azure SQL)
 to authenticate to both the Fabric REST API and OneLake DFS endpoints. No additional
 app registration is required — the service principal or managed identity needs
 Fabric workspace Contributor access.
+
+---
+
+## 16. Microsoft Work IQ — M365 Organizational Intelligence
+
+InfraForge integrates with [Microsoft Work IQ](https://github.com/microsoft/work-iq)
+(`@microsoft/workiq`) to query M365 organizational data via natural language, enriching
+infrastructure decisions with context from emails, meetings, documents, Teams messages,
+and people.
+
+### Architecture
+
+```
+┌──────────────────────────┐       ┌──────────────────────────────────────┐
+│  InfraForge Agent        │       │     Microsoft Work IQ                │
+│  (Copilot SDK Session)   │       │     (@microsoft/workiq CLI)          │
+│                          │       │                                      │
+│  Tool: search_org_       │ npx   │  ┌────────────────────────────────┐  │
+│    knowledge       ──────│──────▶│  │ Natural Language → M365 Query  │  │
+│  Tool: find_related_     │ npx   │  │                                │  │
+│    documents       ──────│──────▶│  │ Emails · Meetings · SharePoint │  │
+│  Tool: find_subject_     │ npx   │  │ OneDrive · Teams · People      │  │
+│    matter_experts  ──────│──────▶│  │                                │  │
+│                          │       │  └────────────────────────────────┘  │
+└──────────────────────────┘       └──────────────────────────────────────┘
+         ▲                                        │
+         │  Copilot SDK tool results              │  Entra ID auth
+         │  (streamed to UI)                      │  (cached via MSAL/WAM)
+         ▼                                        ▼
+┌──────────────────────────┐       ┌──────────────────────────────────────┐
+│  Web UI                  │       │     Microsoft 365 Tenant             │
+│  - Sidebar shortcuts     │       │     (Exchange, SharePoint, Teams,    │
+│  - Chat suggestion chips │       │      OneDrive, Microsoft Graph)      │
+│  - Tool activity spinner │       │                                      │
+└──────────────────────────┘       └──────────────────────────────────────┘
+```
+
+### Components
+
+| File | Purpose |
+|------|---------|
+| `src/workiq_client.py` | Async singleton client — shells out to `npx -y @microsoft/workiq ask -q "..."` |
+| `src/tools/workiq_tools.py` | 3 Copilot SDK tools (`@define_tool` + Pydantic params) |
+| `src/config.py` | `WORKIQ_ENABLED` (default: true), `WORKIQ_TIMEOUT` (default: 30s) |
+| `mcp.json` | MCP stdio server declaration for `@microsoft/workiq mcp` |
+
+### Tools
+
+| Tool | Purpose | Client Method |
+|------|---------|---------------|
+| `search_org_knowledge` | General natural language search across all M365 data | `client.ask(query)` |
+| `find_related_documents` | Search SharePoint/OneDrive for docs related to a topic | `client.search_documents(topic)` |
+| `find_subject_matter_experts` | Find people with expertise in a domain | `client.find_experts(domain)` |
+
+### Agent Integration
+
+The main chat agent's system prompt (`src/agents.py`) instructs the LLM to:
+- Call `search_org_knowledge` before generating design documents
+- Use `find_related_documents` to discover existing architecture specs
+- Use `find_subject_matter_experts` to identify reviewers for approval chains
+- Gracefully continue if Work IQ is unavailable
+
+Tools are registered in `get_all_tools()` (main agent only — not governance or concierge).
+
+### UI Visibility
+
+- **Sidebar**: "Org Intelligence" section with shortcuts for all 3 tools
+- **Chat welcome**: WORK IQ badge, M365 connection note, and cyan-themed suggestion chips
+- **Tool activity**: Branded spinner messages (e.g., "Searching org knowledge via Work IQ")
+
+### Authentication
+
+Work IQ uses MSAL/WAM (Web Account Manager) browser-based authentication via Entra ID.
+First-time setup requires `npx -y @microsoft/workiq accept-eula` followed by an
+interactive login from a desktop terminal. Tokens are cached locally and reused by
+the server. The availability check retries every 60 seconds so that auth changes
+are picked up without a server restart.

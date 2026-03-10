@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=231">
+    <link rel="stylesheet" href="/static/styles.css?v=232">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -133,6 +133,17 @@
                 </button>
                 <button class="nav-btn" onclick="navigateToChat('Generate an architecture diagram for the infrastructure we discussed')">
                     <span class="nav-icon">📊</span> Architecture Diagram
+                </button>
+
+                <div class="nav-section-title" style="margin-top: 0.5rem">🏢 Org Intelligence</div>
+                <button class="nav-btn" onclick="navigateToChat('Search our organization\'s M365 data for prior architecture discussions and decisions')">
+                    <span class="nav-icon">🔍</span> Search Org Knowledge
+                </button>
+                <button class="nav-btn" onclick="navigateToChat('Find related design documents, runbooks, and architecture specs in SharePoint and OneDrive')">
+                    <span class="nav-icon">📄</span> Find Related Docs
+                </button>
+                <button class="nav-btn" onclick="navigateToChat('Who are the subject matter experts for cloud infrastructure in our organization?')">
+                    <span class="nav-icon">👥</span> Find Experts
                 </button>
 
                 <div class="nav-section-title" style="margin-top: 0.5rem">Documentation</div>
@@ -910,13 +921,18 @@
                     <!-- Chat Welcome -->
                     <div class="chat-welcome" id="chat-welcome">
                         <div class="chat-welcome-icon">⚒️</div>
-                        <h3>Infrastructure Designer <span class="tech-badge-copilot-lg">COPILOT SDK</span></h3>
+                        <h3>Infrastructure Designer <span class="tech-badge-copilot-lg">COPILOT SDK</span> <span class="tech-badge-workiq-lg">WORK IQ</span></h3>
                         <p>Describe what you need in plain English — I'll check governance, search templates, generate IaC, and produce architecture diagrams.</p>
                         <p class="chat-welcome-tech">Powered by <strong>GitHub Copilot SDK</strong> — multi-model AI with intelligent routing, streaming responses, and agentic tool orchestration.</p>
+                        <p class="chat-welcome-workiq-note">🏢 Connected to <strong>Microsoft Work IQ</strong> — searches your org's M365 data for architecture discussions, related docs, and subject matter experts.</p>
                         <div class="chat-suggestions">
                             <button class="chat-suggestion" onclick="sendQuickAction('I need a production web app with SQL database, Key Vault, and monitoring')">🏗️ Design a web app</button>
                             <button class="chat-suggestion" onclick="sendQuickAction('Generate a CI/CD pipeline with approval gates for my infrastructure')">🔄 Create a pipeline</button>
                             <button class="chat-suggestion" onclick="sendQuickAction('Check if App Service, SQL Database, and Key Vault are approved')">🔍 Check service approval</button>
+                            <div class="chat-suggestions-divider"></div>
+                            <button class="chat-suggestion chat-suggestion-workiq" onclick="sendQuickAction('Search our org for prior architecture discussions about microservices')">🏢 Find org discussions</button>
+                            <button class="chat-suggestion chat-suggestion-workiq" onclick="sendQuickAction('Who are the subject matter experts for Kubernetes and AKS in our organization?')">👥 Find org experts</button>
+                            <button class="chat-suggestion chat-suggestion-workiq" onclick="sendQuickAction('Find related design documents and architecture specs in our SharePoint and OneDrive')">📄 Find org docs</button>
                         </div>
                     </div>
                 </div>
@@ -1451,7 +1467,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=255"></script>
+    <script src="/static/app.js?v=257"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

@@ -153,6 +153,47 @@ When the pipeline finishes successfully:
 - **View the template** -- click "View Template" on the published version to see the generated ARM JSON
 - **Check governance** -- navigate to the Governance page (sidebar) to see the organization standards the pipeline validated against
 - **Try Infrastructure Designer** -- click "Infrastructure Designer" in the sidebar to chat with InfraForge's AI agent about generating infrastructure
+- **Try Org Intelligence** -- use the Work IQ sidebar shortcuts or chat suggestion chips to search your M365 tenant for architecture discussions, related docs, and subject matter experts
+
+---
+
+## Part 4: Work IQ — M365 Organizational Intelligence
+
+InfraForge connects to **Microsoft Work IQ** to query your organization's M365 data
+(emails, meetings, SharePoint, OneDrive, Teams) via natural language — directly from
+the Infrastructure Designer chat.
+
+### Step 12 -- Try the Sidebar Shortcuts
+
+1. In the left sidebar, find the **"🏢 Org Intelligence"** section (below "Review").
+2. Click **"🔍 Search Org Knowledge"**.
+3. This auto-navigates to the Infrastructure Designer chat and sends a prompt asking
+   the AI to search your organization's M365 data.
+4. Watch the **tool activity spinner** — it shows **"🏢 Searching org knowledge via Work IQ"**
+   while the agent queries your tenant.
+5. The agent returns real results from your M365 data: architecture discussions from
+   emails, meeting notes, SharePoint documents, and Teams messages.
+
+### Step 13 -- Find Subject Matter Experts
+
+1. In the chat, click the **cyan suggestion chip** labeled **"👥 Find org experts"**
+   (or use the sidebar shortcut **"👥 Find Experts"**).
+2. The agent calls `find_subject_matter_experts` to search across your M365 activity
+   for people who have worked on similar infrastructure topics.
+3. Results include names, roles, and context about their relevant experience — pulled
+   from emails, meetings, and document collaboration history.
+
+### Step 14 -- Find Related Documents
+
+1. Click the **"📄 Find org docs"** suggestion chip or sidebar shortcut.
+2. The agent searches SharePoint and OneDrive for architecture specs, runbooks, and
+   design documents related to the infrastructure topic.
+3. Results include document titles, locations, and summaries with links.
+
+> **Key takeaway:** Work IQ enriches infrastructure decisions with organizational
+> context — the agent finds prior art, identifies experts, and discovers related
+> documentation from your M365 tenant, all through natural language. No manual search
+> across SharePoint, Outlook, and Teams required.
 
 ---
 
@@ -165,3 +206,4 @@ When the pipeline finishes successfully:
 5. **Real Azure Deployment** -- Templates are actually deployed to Azure and tested against live resources
 6. **Policy Enforcement** -- Azure Policy is generated and tested alongside the template
 7. **Version Management** -- Approved templates are versioned and tracked in the catalog
+8. **M365 Org Intelligence** -- Work IQ searches your tenant's emails, meetings, docs, and Teams for prior architecture context, related documents, and subject matter experts

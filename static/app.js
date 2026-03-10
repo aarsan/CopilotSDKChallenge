@@ -647,6 +647,9 @@ function handleToolCall(toolName, status) {
         'estimate_azure_cost': '💰 Estimating Azure costs',
         'check_policy_compliance': '🛡️ Checking policy compliance',
         'save_output_to_file': '💾 Saving output to file',
+        'search_org_knowledge': '🏢 Searching org knowledge via Work IQ',
+        'find_related_documents': '📄 Finding related docs via Work IQ',
+        'find_subject_matter_experts': '👥 Identifying experts via Work IQ',
     };
 
     if (status === 'running') {
@@ -2481,6 +2484,8 @@ async function submitTemplateModification() {
 }
 
 // ── Pipeline Runs ──────────────────────────────────────────────
+let _servicePipelineRunCache = {};
+
 async function _loadPipelineRuns(serviceId) {
     const container = document.getElementById('pipeline-runs-container');
     if (!container) return;
@@ -2489,7 +2494,8 @@ async function _loadPipelineRuns(serviceId) {
         if (!res.ok) return;           // silently fail — not critical
         const runs = await res.json();
         if (!runs || runs.length === 0) return;   // nothing to show
-        container.innerHTML = _renderPipelineRuns(runs);
+        _servicePipelineRunCache[serviceId] = runs;
+        container.innerHTML = _renderPipelineRuns(runs, serviceId);
         container.style.display = '';
     } catch (_) { /* ignore */ }
 }
@@ -2597,7 +2603,7 @@ function _renderGovernanceReviews(reviews) {
     </div>`;
 }
 
-function _renderPipelineRuns(runs) {
+function _renderPipelineRuns(runs, serviceId) {
     const statusIcon = (s) => ({
         completed: '✅', failed: '❌', running: '🔄',
     })[s] || '⏳';
@@ -2622,11 +2628,12 @@ function _renderPipelineRuns(runs) {
         return s > 0 ? `${m}m ${s}s` : `${m}m`;
     };
 
-    const items = runs.map(r => {
+    const items = runs.map((r, idx) => {
         const started = (r.started_at || '').replace('T', ' ').substring(0, 19);
         const dur = formatDuration(r.duration_secs);
         const summary = r.summary || {};
         const healCount = r.heal_count || 0;
+        const hasEvents = Array.isArray(r.events) && r.events.length > 0;
 
         let detailRows = '';
         if (r.error_detail) {
@@ -2649,6 +2656,10 @@ function _renderPipelineRuns(runs) {
             detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
         }
 
+        const viewBtn = hasEvents
+            ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); openServicePipelineRun('${escapeHtml(serviceId)}', ${idx})" title="View pipeline flowchart">📊 View</button>`
+            : '';
+
         return `
         <div class="run-item run-item-${r.status || 'unknown'}" onclick="this.querySelector('.run-item-detail')?.classList.toggle('hidden')">
             <div class="run-item-header">
@@ -2656,6 +2667,7 @@ function _renderPipelineRuns(runs) {
                 <span class="run-item-pipeline">${pipelineLabel(r.pipeline_type)}</span>
                 <span class="run-item-duration">${dur}</span>
                 <span class="run-item-date">${started}</span>
+                ${viewBtn}
             </div>
             ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
         </div>`;
@@ -2669,6 +2681,26 @@ function _renderPipelineRuns(runs) {
         </div>
         <div class="version-list">${items}</div>
     </div>`;
+}
+
+function openServicePipelineRun(serviceId, runIndex) {
+    const runs = _servicePipelineRunCache[serviceId];
+    if (!runs || !runs[runIndex]) return;
+    const run = runs[runIndex];
+    const events = run.events || [];
+    if (!events.length) {
+        showToast('No event data saved for this run', 'info');
+        return;
+    }
+    const pLabel = { onboarding: 'Onboarding', api_version_update: 'API Version Update', infra_testing: 'Infrastructure Testing' }[run.pipeline_type] || run.pipeline_type;
+    const icon = { completed: '✅', failed: '❌', running: '🔄' }[run.status] || '🚀';
+    openPipelineOverlay(pLabel, icon, serviceId);
+    const canvas = document.getElementById('pipeline-canvas');
+    if (canvas) {
+        for (const event of events) {
+            _renderDeployProgress(canvas, event, 'validate');
+        }
+    }
 }
 
 function toggleVersionDetail(el) {
@@ -3844,13 +3876,22 @@ function reopenPipelineOverlay() {
     if (canvas) canvas.scrollTop = canvas.scrollHeight;
 }
 
-/** Get the active flow container — overlay canvas if open, else validation-log */
-function _getFlowTarget() {
+/** Get all active flow containers — both overlay canvas and drawer validation-log when both exist */
+function _getFlowTargets() {
+    const targets = [];
     if (_pipelineOverlayOpen) {
         const canvas = document.getElementById('pipeline-canvas');
-        if (canvas) return canvas;
+        if (canvas) targets.push(canvas);
     }
-    return document.getElementById('validation-log');
+    const drawerLog = document.getElementById('validation-log');
+    if (drawerLog && !targets.includes(drawerLog)) targets.push(drawerLog);
+    return targets;
+}
+
+/** Get the primary flow container (first available target) */
+function _getFlowTarget() {
+    const targets = _getFlowTargets();
+    return targets[0] || null;
 }
 
 /** Initialize flow state on a container */
@@ -4466,29 +4507,7 @@ function _flowDetailOnCard(logEl, key, icon, text, extraCls) {
 // UPDATE EVENT HANDLER (API Version Update Pipeline)
 // ══════════════════════════════════════════════════════════════
 
-function _handleUpdateEvent(event) {
-    const progressFill = document.getElementById('validation-progress-fill');
-    const detailEl = document.getElementById('validation-detail');
-    const badge = document.getElementById('validation-attempt-badge');
-    const modelBadge = document.getElementById('validation-model-badge');
-    const card = document.getElementById('validation-card');
-    const logEl = _getFlowTarget();
-
-    // Update the table badge with live status
-    _updateTableBadge(event);
-
-    // Progress bar + detail text
-    if (event.progress && progressFill) {
-        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
-    }
-    if (event.detail && detailEl) {
-        detailEl.textContent = event.detail;
-    }
-    if (event.phase === 'init_model' && event.model && modelBadge) {
-        modelBadge.textContent = `🤖 ${event.model.display || event.model.id || event.model}`;
-        modelBadge.classList.add('visible');
-    }
-
+function _handleUpdateFlowEvent(logEl, event, card) {
     if (!logEl) return;
     _flowInit(logEl);
 
@@ -4496,9 +4515,6 @@ function _handleUpdateEvent(event) {
     const type = event.type || '';
     const detail = event.detail || '';
 
-    // ── Phase → flow card mapping ──
-    // Cards are keyed by logical step — if the step recurs (healing loop),
-    // _flowCard reopens the existing card with an iteration separator.
     if (phase === 'init_model') {
         // Model routing — show as first card with pipeline setup info
         _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
@@ -4792,6 +4808,38 @@ function _handleUpdateEvent(event) {
         const activeKey = logEl._flow?.activeKey;
         if (activeKey) _flowDetail(logEl, activeKey, '▸', escapeHtml(detail));
     }
+}
+
+function _handleUpdateEvent(event) {
+    const progressFill = document.getElementById('validation-progress-fill');
+    const detailEl = document.getElementById('validation-detail');
+    const badge = document.getElementById('validation-attempt-badge');
+    const modelBadge = document.getElementById('validation-model-badge');
+    const card = document.getElementById('validation-card');
+
+    // Update the table badge with live status
+    _updateTableBadge(event);
+
+    // Progress bar + detail text
+    if (event.progress && progressFill) {
+        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
+    }
+    if (event.detail && detailEl) {
+        detailEl.textContent = event.detail;
+    }
+    if (event.phase === 'init_model' && event.model && modelBadge) {
+        modelBadge.textContent = `🤖 ${event.model.display || event.model.id || event.model}`;
+        modelBadge.classList.add('visible');
+    }
+
+    // Dispatch flow cards to all active targets (overlay + drawer)
+    for (const logEl of _getFlowTargets()) {
+        _handleUpdateFlowEvent(logEl, event, card);
+    }
+
+    const phase = event.phase || '';
+    const type = event.type || '';
+    const detail = event.detail || '';
 
     // ── Overlay header live update ──
     if (_pipelineOverlayOpen) {
@@ -4864,26 +4912,7 @@ function _handleUpdateEvent(event) {
 // VALIDATION EVENT HANDLER (Onboarding Pipeline)
 // ══════════════════════════════════════════════════════════════
 
-function _handleValidationEvent(event) {
-    const progressFill = document.getElementById('validation-progress-fill');
-    const detailEl = document.getElementById('validation-detail');
-    const badge = document.getElementById('validation-attempt-badge');
-    const modelBadge = document.getElementById('validation-model-badge');
-    const card = document.getElementById('validation-card');
-    const logEl = _getFlowTarget();
-
-    // Progress bar + detail text
-    if (event.progress && progressFill) {
-        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
-    }
-    if (event.detail && detailEl) {
-        detailEl.textContent = event.detail;
-    }
-    if (event.phase === 'init_model' && event.model && modelBadge) {
-        modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
-        modelBadge.classList.add('visible');
-    }
-
+function _handleValidationFlowEvent(logEl, event, card) {
     if (!logEl) return;
     _flowInit(logEl);
 
@@ -4892,8 +4921,6 @@ function _handleValidationEvent(event) {
     const detail = event.detail || '';
 
     // ── Forwarded events from dependency sub-pipelines ──
-    // Route to the depGate card and return early — don't let these
-    // trigger phase handlers or terminal done/error handlers.
     if (event.dep_service && phase !== 'dep_gate_check' && phase !== 'dep_gate_scanning'
         && phase !== 'dep_gate_onboarding' && phase !== 'dep_gate_complete'
         && phase !== 'dep_onboard_complete' && phase !== 'dep_onboard_failed'
@@ -4908,8 +4935,6 @@ function _handleValidationEvent(event) {
     }
 
     // ── Phase → flow card mapping ──
-    // Cards reuse their key across iterations — _flowCard reopens
-    // a finalized card and inserts an iteration separator inside it.
     if (phase === 'init_model') {
         _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
         if (event.model_routing) {
@@ -4926,11 +4951,7 @@ function _handleValidationEvent(event) {
         }
         _flowFinalize(logEl, 'setup', 'done', 'Ready');
     } else if (phase === 'init_complete') {
-        if (!logEl._flow?.cards['setup']) {
-            // Fallback if setup card wasn't created
-        } else {
-            _flowFinalize(logEl, 'setup', 'done', 'Ready');
-        }
+        if (logEl._flow?.cards['setup']) _flowFinalize(logEl, 'setup', 'done', 'Ready');
     } else if (phase === 'cleanup_drafts') {
         if (detail) _flowDetailOnCard(logEl, 'setup', '🧹', escapeHtml(detail));
     } else if (phase === 'standards_analysis') {
@@ -4961,8 +4982,6 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'policyGen', 'done');
     } else if (phase === 'policy_generation_warning') {
         if (detail) _flowDetail(logEl, 'policyGen', '⚠️', escapeHtml(detail));
-
-    // ── Governance review gate ───────────────────────────────
     } else if (phase === 'governance_review') {
         _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '▸', escapeHtml(detail));
@@ -4990,29 +5009,20 @@ function _handleValidationEvent(event) {
         _flowCard(logEl, 'governance', '🏛️', 'Governance Review ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'governance', '⚠️', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'governance', 'done', 'Skipped');
-
-    // ── Governance resolution events (update handler) ────────
     } else if (phase === 'governance_heal_start' || phase === 'governance_heal_strategy' || phase === 'governance_heal_complete') {
-        if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
-        }
+        if (!logEl._flow?.cards?.['gov-resolve']) _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         const icon = phase === 'governance_heal_complete' ? '✅' : phase === 'governance_heal_strategy' ? '📋' : '🤖';
         const cls = phase === 'governance_heal_complete' ? 'uf-text-success' : '';
         _flowDetail(logEl, 'gov-resolve', icon, escapeHtml(detail), cls);
-        if (phase === 'governance_heal_complete') {
-            _flowFinalize(logEl, 'gov-resolve', 'done', 'Healed');
-        }
+        if (phase === 'governance_heal_complete') _flowFinalize(logEl, 'gov-resolve', 'done', 'Healed');
     } else if (phase === 'governance_exception') {
         _flowCard(logEl, 'gov-resolve', '⚡', 'Governance Exception');
         _flowDetail(logEl, 'gov-resolve', '⚡', escapeHtml(detail), 'uf-text-warning');
         _flowFinalize(logEl, 'gov-resolve', 'done', 'Exception');
     } else if (phase === 'governance_heal_failed') {
-        if (!logEl._flow?.cards?.['gov-resolve']) {
-            _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
-        }
+        if (!logEl._flow?.cards?.['gov-resolve']) _flowCard(logEl, 'gov-resolve', '🔧', 'Governance Resolution ' + _copilotTag());
         _flowDetail(logEl, 'gov-resolve', '❌', escapeHtml(detail), 'uf-text-error');
         _flowFinalize(logEl, 'gov-resolve', 'failed', 'Failed');
-
     } else if (phase === 'static_policy_check') {
         _flowCard(logEl, 'staticPolicy', '📋', 'Static Policy Checks');
         if (detail) _flowDetail(logEl, 'staticPolicy', '▸', escapeHtml(detail));
@@ -5020,8 +5030,7 @@ function _handleValidationEvent(event) {
         if (detail) _flowDetail(logEl, 'staticPolicy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'staticPolicy', 'done');
     } else if (phase === 'static_policy_failed') {
-        const friendly = _friendlyError(detail);
-        _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowDetail(logEl, 'staticPolicy', '⚠️', escapeHtml(_friendlyError(detail)), 'uf-text-error');
         _flowFinalize(logEl, 'staticPolicy', 'failed');
     } else if (phase === 'what_if') {
         _flowCard(logEl, 'whatif', '🔍', 'ARM What-If Analysis');
@@ -5040,8 +5049,7 @@ function _handleValidationEvent(event) {
         if (detail) _flowDetail(logEl, 'deploy', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'deploy', 'done');
     } else if (phase === 'deploy_failed') {
-        const friendly = _friendlyError(detail);
-        _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(friendly), 'uf-text-error');
+        _flowDetail(logEl, 'deploy', '⚠️', escapeHtml(_friendlyError(detail)), 'uf-text-error');
         _flowFinalize(logEl, 'deploy', 'failed');
     } else if (phase === 'resource_check') {
         _flowCard(logEl, 'resourceCheck', '🔎', 'Checking Resources');
@@ -5060,8 +5068,6 @@ function _handleValidationEvent(event) {
         _flowFinalize(logEl, 'policyTest', 'failed');
     } else if (phase === 'policy_skip') {
         if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', 'ℹ️', escapeHtml(detail));
-
-    // ── Infrastructure Testing ──
     } else if (phase === 'testing_start') {
         _flowCard(logEl, 'infraTest', '🧪', 'Infrastructure Tests');
         if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
@@ -5076,33 +5082,17 @@ function _handleValidationEvent(event) {
         const missing = event.categories_missing || [];
         const gateway = event.gateway_tests || [];
         const manifestChecks = event.manifest_checks || [];
-        // Gateway tests
-        if (gateway.length) {
-            _flowDetail(logEl, 'infraTest', '🔑', `Gateway: ${gateway.map(g => `<span class="uf-badge-success">${escapeHtml(g)}</span>`).join(' ')}`, 'uf-text-success');
-        }
-        // Covered categories as green badges
-        if (covered.length) {
-            _flowDetail(logEl, 'infraTest', '✓', `Checks: ${covered.map(c => `<span class="uf-badge-success">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-success');
-        }
-        // Manifest checks — detailed view
-        if (manifestChecks.length) {
-            const checkSummary = manifestChecks.slice(0, 8).map(c => escapeHtml(c.description || c.test)).join(' · ');
-            _flowDetail(logEl, 'infraTest', '🔍', checkSummary, 'uf-text-muted');
-        }
-        // Missing categories as yellow warnings
-        if (missing.length) {
-            _flowDetail(logEl, 'infraTest', '⚠️', `Not covered: ${missing.map(c => `<span class="uf-badge-warning">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-warning');
-        }
+        if (gateway.length) _flowDetail(logEl, 'infraTest', '🔑', `Gateway: ${gateway.map(g => `<span class="uf-badge-success">${escapeHtml(g)}</span>`).join(' ')}`, 'uf-text-success');
+        if (covered.length) _flowDetail(logEl, 'infraTest', '✓', `Checks: ${covered.map(c => `<span class="uf-badge-success">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-success');
+        if (manifestChecks.length) { const checkSummary = manifestChecks.slice(0, 8).map(c => escapeHtml(c.description || c.test)).join(' · '); _flowDetail(logEl, 'infraTest', '🔍', checkSummary, 'uf-text-muted'); }
+        if (missing.length) _flowDetail(logEl, 'infraTest', '⚠️', `Not covered: ${missing.map(c => `<span class="uf-badge-warning">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-warning');
     } else if (phase === 'testing_execute') {
         if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
     } else if (phase === 'test_result') {
         const passed = event.status === 'passed';
-        const icon = passed ? '✅' : '❌';
-        const cls = passed ? 'uf-text-success' : 'uf-text-error';
-        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+        if (detail) _flowDetail(logEl, 'infraTest', passed ? '✅' : '❌', escapeHtml(detail), passed ? 'uf-text-success' : 'uf-text-error');
     } else if (phase === 'testing_analyze') {
-        const icon = event.status === 'complete' ? '🔍' : '▸';
-        if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail));
+        if (detail) _flowDetail(logEl, 'infraTest', event.status === 'complete' ? '🔍' : '▸', escapeHtml(detail));
     } else if (phase === 'testing_feedback') {
         if (detail) _flowDetail(logEl, 'infraTest', '💡', escapeHtml(detail), 'uf-text-warning');
     } else if (phase === 'testing_complete') {
@@ -5112,14 +5102,10 @@ function _handleValidationEvent(event) {
         const cls = allPassed ? 'uf-text-success' : skipped ? '' : 'uf-text-error';
         if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
         _flowFinalize(logEl, 'infraTest', allPassed || skipped ? 'done' : 'failed');
-
     } else if (phase === 'fixing_policy') {
-        // Policy fixing goes into the active card as detail
-        const k = logEl._flow.activeKey || 'policyTest';
-        if (detail) _flowDetail(logEl, k, '🔧', escapeHtml(detail));
+        if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', '🔧', escapeHtml(detail));
     } else if (phase === 'policy_fixed') {
-        const k = logEl._flow.activeKey || 'policyTest';
-        if (detail) _flowDetail(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
+        if (detail) _flowDetail(logEl, logEl._flow.activeKey || 'policyTest', '✓', escapeHtml(detail), 'uf-text-success');
     } else if (phase === 'policy_deploy') {
         _flowCard(logEl, 'policyDeploy', '📜', 'Deploying Policy');
         if (detail) _flowDetail(logEl, 'policyDeploy', '▸', escapeHtml(detail));
@@ -5135,71 +5121,34 @@ function _handleValidationEvent(event) {
     } else if (phase === 'promoting') {
         _flowCard(logEl, 'promoting', '🏆', 'Publishing Version');
         if (detail) _flowDetail(logEl, 'promoting', '▸', escapeHtml(detail));
-
-    // ── Dependency Validation Gate ──────────────────────────
     } else if (phase === 'dep_gate_check') {
         _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
         if (detail) _flowDetail(logEl, 'depGate', '▸', escapeHtml(detail));
     } else if (phase === 'dep_gate_scanning') {
         if (!logEl._flow?.cards['depGate']) _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
         const isValid = detail && detail.includes('fully validated');
-        const icon = isValid ? '✅' : '⚠️';
-        const cls = isValid ? 'uf-text-success' : 'uf-text-warning';
-        if (detail) _flowDetail(logEl, 'depGate', icon, escapeHtml(detail), cls);
+        if (detail) _flowDetail(logEl, 'depGate', isValid ? '✅' : '⚠️', escapeHtml(detail), isValid ? 'uf-text-success' : 'uf-text-warning');
     } else if (phase === 'dep_gate_onboarding') {
         if (detail) _flowDetail(logEl, 'depGate', '🔧', escapeHtml(detail));
     } else if (phase === 'co_onboarding') {
-        if (!logEl._flow?.cards['depGate']) {
-            _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
-        }
+        if (!logEl._flow?.cards['depGate']) _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
         if (detail) _flowDetail(logEl, 'depGate', '👶', escapeHtml(detail));
-        // Mark dependency service as validating so it appears in Active Services immediately
-        if (event.dep_service) {
-            const depSvc = allServices.find(s => s.id === event.dep_service);
-            if (depSvc) {
-                depSvc.status = 'validating';
-            } else {
-                // Dependency was just created — inject a stub so it's visible
-                allServices.push({
-                    id: event.dep_service,
-                    name: event.dep_name || event.dep_service.split('/').pop(),
-                    status: 'validating',
-                    category: 'unknown',
-                });
-            }
-            applyServiceFilters();
-        }
     } else if (phase === 'dep_onboard_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✅', escapeHtml(detail), 'uf-text-success');
-        if (event.dep_service) {
-            const depSvc = allServices.find(s => s.id === event.dep_service);
-            if (depSvc) depSvc.status = 'approved';
-            applyServiceFilters();
-        }
     } else if (phase === 'dep_onboard_failed') {
         if (detail) _flowDetail(logEl, 'depGate', '❌', escapeHtml(detail), 'uf-text-error');
-        if (event.dep_service) {
-            const depSvc = allServices.find(s => s.id === event.dep_service);
-            if (depSvc) depSvc.status = 'failed';
-            applyServiceFilters();
-        }
     } else if (phase === 'dep_gate_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'depGate', 'done', 'Dependencies OK');
-
     } else if (phase === 'infra_retry') {
-        // Transient Azure error — add as detail in the active or last failed card
         const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
         if (k && detail) _flowDetailOnCard(logEl, k, '🔄', escapeHtml(detail));
     } else if (type === 'healing') {
-        // Healing detail → goes into the LAST failed card (even though finalized)
         const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, k, '🤖', escapeHtml(detail));
     } else if (type === 'healing_done') {
         const k = logEl._flow._lastFailedKey || logEl._flow.activeKey || 'deploy';
         if (detail) _flowDetailOnCard(logEl, k, '✓', escapeHtml(detail), 'uf-text-success');
-
-    // ── Template Regeneration (re-plan + re-generate) ──────────
     } else if (phase === 'replanning') {
         _flowCard(logEl, 'regen', '🔄', 'Re-planning Architecture ' + _copilotTag());
         if (detail) _flowDetail(logEl, 'regen', '🧠', escapeHtml(detail));
@@ -5210,13 +5159,9 @@ function _handleValidationEvent(event) {
     } else if (type === 'regen_complete') {
         if (detail) _flowDetail(logEl, 'regen', '✅', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'regen', 'done');
-
     } else if (type === 'llm_reasoning') {
-        // Route init_model phase reasoning to setup card
         if (phase === 'init_model') {
-            if (logEl._flow?.cards['setup']) {
-                _flowDetailOnCard(logEl, 'setup', '🧠', escapeHtml(detail), 'uf-text-reasoning');
-            }
+            if (logEl._flow?.cards['setup']) _flowDetailOnCard(logEl, 'setup', '🧠', escapeHtml(detail), 'uf-text-reasoning');
         } else {
             const k = logEl._flow.activeKey || logEl._flow._lastFailedKey;
             if (k && detail) _flowDetailOnCard(logEl, k, '🧠', escapeHtml(detail), 'uf-text-reasoning');
@@ -5226,30 +5171,14 @@ function _handleValidationEvent(event) {
         if (k && detail) {
             const passed = event.compliant !== undefined ? event.compliant : event.passed;
             const icon = passed ? '✅' : ((event.severity === 'high' || event.severity === 'critical') ? '❌' : '⚠️');
-            const cls = passed ? 'uf-text-success' : 'uf-text-error';
-            _flowDetail(logEl, k, icon, escapeHtml(detail), cls);
+            _flowDetail(logEl, k, icon, escapeHtml(detail), passed ? 'uf-text-success' : 'uf-text-error');
         }
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
-        const text = detail || `Service approved — v${event.semver || event.version + '.0.0'}`;
-        _flowResult(logEl, 'success', text);
-        // Update parent service status to approved
-        const serviceId = card?.dataset?.serviceId;
-        if (serviceId) {
-            const parentSvc = allServices.find(s => s.id === serviceId);
-            if (parentSvc) parentSvc.status = 'approved';
-            applyServiceFilters();
-        }
+        _flowResult(logEl, 'success', detail || `Service approved — v${event.semver || event.version + '.0.0'}`);
     } else if (type === 'policy_blocked') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'blocked', 'Policy review needed');
-        // Update parent service status to policy_blocked or failed
-        const serviceId = card?.dataset?.serviceId;
-        if (serviceId) {
-            const parentSvc = allServices.find(s => s.id === serviceId);
-            if (parentSvc) parentSvc.status = 'policy_blocked';
-            applyServiceFilters();
-        }
         if (event.violations) {
             const guidanceEl = document.createElement('div');
             guidanceEl.className = 'policy-blocked-guidance';
@@ -5295,13 +5224,6 @@ function _handleValidationEvent(event) {
             + `No deployment possible without additional quota.`
             + regionHtml
         );
-        // Update parent service status to failed
-        const serviceId = card?.dataset?.serviceId;
-        if (serviceId) {
-            const parentSvc = allServices.find(s => s.id === serviceId);
-            if (parentSvc) parentSvc.status = 'failed';
-            applyServiceFilters();
-        }
     } else if (type === 'action_required') {
         _renderActionRequired(logEl, event);
     } else if (type === 'error') {
@@ -5309,21 +5231,72 @@ function _handleValidationEvent(event) {
         let errMsg = detail;
         if (!errMsg) {
             const readablePhase = phase ? phase.replace(/_/g, ' ') : '';
-            errMsg = readablePhase
-                ? `Pipeline failed during: ${readablePhase}`
-                : 'Pipeline encountered an unexpected error';
+            errMsg = readablePhase ? `Pipeline failed during: ${readablePhase}` : 'Pipeline encountered an unexpected error';
         }
         _flowResult(logEl, 'failed', errMsg);
-        // Update parent service status to failed
-        const serviceId = card?.dataset?.serviceId;
-        if (serviceId) {
-            const parentSvc = allServices.find(s => s.id === serviceId);
-            if (parentSvc) parentSvc.status = 'failed';
-            applyServiceFilters();
-        }
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
+    }
+}
+
+function _handleValidationEvent(event) {
+    const progressFill = document.getElementById('validation-progress-fill');
+    const detailEl = document.getElementById('validation-detail');
+    const badge = document.getElementById('validation-attempt-badge');
+    const modelBadge = document.getElementById('validation-model-badge');
+    const card = document.getElementById('validation-card');
+
+    // Progress bar + detail text
+    if (event.progress && progressFill) {
+        progressFill.style.width = `${Math.min(event.progress * 100, 100)}%`;
+    }
+    if (event.detail && detailEl) {
+        detailEl.textContent = event.detail;
+    }
+    if (event.phase === 'init_model' && event.model && modelBadge) {
+        modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
+        modelBadge.classList.add('visible');
+    }
+
+    // Dispatch flow cards to all active targets (overlay + drawer)
+    for (const logEl of _getFlowTargets()) {
+        _handleValidationFlowEvent(logEl, event, card);
+    }
+
+    const phase = event.phase || '';
+    const type = event.type || '';
+    const detail = event.detail || '';
+
+    // ── Side effects (service status updates — run once) ──
+    const serviceId = card?.dataset?.serviceId;
+    if (type === 'done' && serviceId) {
+        const parentSvc = allServices.find(s => s.id === serviceId);
+        if (parentSvc) parentSvc.status = 'approved';
+        applyServiceFilters();
+    } else if (type === 'policy_blocked' && serviceId) {
+        const parentSvc = allServices.find(s => s.id === serviceId);
+        if (parentSvc) parentSvc.status = 'policy_blocked';
+        applyServiceFilters();
+    } else if (type === 'error' && serviceId) {
+        const parentSvc = allServices.find(s => s.id === serviceId);
+        if (parentSvc) parentSvc.status = 'failed';
+        applyServiceFilters();
+    }
+    if (phase === 'co_onboarding' && event.dep_service) {
+        const depSvc = allServices.find(s => s.id === event.dep_service);
+        if (depSvc) { depSvc.status = 'validating'; } else {
+            allServices.push({ id: event.dep_service, name: event.dep_name || event.dep_service.split('/').pop(), status: 'validating', category: 'unknown' });
+        }
+        applyServiceFilters();
+    } else if (phase === 'dep_onboard_complete' && event.dep_service) {
+        const depSvc = allServices.find(s => s.id === event.dep_service);
+        if (depSvc) depSvc.status = 'approved';
+        applyServiceFilters();
+    } else if (phase === 'dep_onboard_failed' && event.dep_service) {
+        const depSvc = allServices.find(s => s.id === event.dep_service);
+        if (depSvc) depSvc.status = 'failed';
+        applyServiceFilters();
     }
 
     // ── Overlay header live update ──
@@ -5421,9 +5394,19 @@ function toggleReasoningVisibility() {
     });
 }
 
+function toggleDrawerExpand() {
+    const drawer = document.getElementById('service-detail-drawer');
+    if (!drawer) return;
+    drawer.classList.toggle('detail-drawer-expanded');
+    const btn = document.getElementById('drawer-expand-btn');
+    if (btn) btn.textContent = drawer.classList.contains('detail-drawer-expanded') ? '⛶' : '⛶';
+}
+
 function closeServiceDetail() {
     _openDrawerServiceId = null;
-    document.getElementById('service-detail-drawer').classList.add('hidden');
+    const drawer = document.getElementById('service-detail-drawer');
+    drawer.classList.remove('detail-drawer-expanded');
+    drawer.classList.add('hidden');
 }
 
 // ── Template Catalog ────────────────────────────────────────
