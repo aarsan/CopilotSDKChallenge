@@ -2134,6 +2134,97 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
         heal_count=issues_resolved,
     )
 
+    # ── Co-onboard always_include child resources ─────────────
+    # After promoting a parent, automatically onboard any tightly-coupled
+    # child resources (e.g. subnets for VNet) that aren't already validated.
+    from src.template_engine import get_required_co_onboard_types
+    from src.database import get_service, is_service_fully_validated
+
+    co_onboard_children = get_required_co_onboard_types(ctx.service_id)
+    if co_onboard_children:
+        onboarding_chain: set = ctx.extra.get("onboarding_chain", set())
+        onboarding_chain.add(ctx.service_id)
+
+        for child_info in co_onboard_children:
+            child_type = child_info["type"]
+            child_short = child_type.split("/")[-1]
+
+            if child_type in onboarding_chain:
+                continue
+
+            is_valid, _reason = await is_service_fully_validated(child_type)
+            if is_valid:
+                yield emit(
+                    "progress", "child_co_onboard",
+                    f"Child resource {child_short} already onboarded — skipping",
+                    1.0, child_service=child_type,
+                )
+                continue
+
+            yield emit(
+                "progress", "child_co_onboard",
+                f"Co-onboarding child resource: {child_short} ({child_info['reason']})",
+                1.0, child_service=child_type,
+            )
+
+            # Ensure service entry exists
+            child_svc = await get_service(child_type)
+            if not child_svc:
+                from src.orchestrator import auto_onboard_service
+                await auto_onboard_service(child_type, region=ctx.region)
+                child_svc = await get_service(child_type)
+
+            if not child_svc:
+                yield emit(
+                    "warning", "child_co_onboard",
+                    f"Could not create service entry for {child_short} — skipping",
+                    1.0, child_service=child_type,
+                )
+                continue
+
+            import uuid
+            child_run_id = uuid.uuid4().hex[:8]
+            child_rg = f"infraforge-val-{child_type.replace('/', '-').replace('.', '-').lower()}-{child_run_id}"[:90]
+
+            child_ctx = PipelineContext(
+                "service_onboarding",
+                run_id=child_run_id,
+                service_id=child_type,
+                region=ctx.region,
+                rg_name=child_rg,
+                svc=child_svc,
+                model_id=ctx.extra.get("model_id"),
+                onboarding_chain=onboarding_chain.copy(),
+            )
+
+            child_ok = False
+            try:
+                async for line in runner.execute(child_ctx):
+                    try:
+                        evt = json.loads(line)
+                        evt["child_service"] = child_type
+                        evt["child_name"] = child_short
+                        if evt.get("type") == "done":
+                            child_ok = True
+                        yield json.dumps(evt) + "\n"
+                    except (json.JSONDecodeError, ValueError):
+                        yield line
+            except Exception as e:
+                logger.warning(f"Child co-onboarding failed for {child_type}: {e}")
+
+            if child_ok:
+                yield emit(
+                    "progress", "child_co_onboard_complete",
+                    f"✅ Child resource {child_short} co-onboarded successfully",
+                    1.0, child_service=child_type,
+                )
+            else:
+                yield emit(
+                    "warning", "child_co_onboard_failed",
+                    f"⚠️ Child resource {child_short} co-onboarding did not complete — onboard manually",
+                    1.0, child_service=child_type,
+                )
+
 
 # ══════════════════════════════════════════════════════════════
 # FINALIZER — cleanup on abort/cancel
