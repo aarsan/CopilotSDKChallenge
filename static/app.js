@@ -1933,11 +1933,16 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
     const hasVersions = versions.length > 0;
     const latestVersion = versions.length > 0 ? versions[0] : null;
 
-    // Distinguish governance approval from full onboarding
-    const displayStatus = (status === 'approved' && !activeVersion)
-        ? 'approved_not_onboarded' : status;
-    const displayLabel = displayStatus === 'approved_not_onboarded'
-        ? '📋 Catalog Approved' : (statusLabels[status] || status);
+    // Distinguish governance/auto-prep from full onboarding
+    const isAutoPrepped = svc.reviewed_by === 'auto_prepped' || svc.reviewed_by === 'orchestrator';
+    const displayStatus = isAutoPrepped
+        ? 'auto_prepped'
+        : (status === 'approved' && !activeVersion)
+            ? 'approved_not_onboarded' : status;
+    const displayLabel = displayStatus === 'auto_prepped'
+        ? '📋 Needs Onboarding'
+        : displayStatus === 'approved_not_onboarded'
+            ? '📋 Catalog Approved' : (statusLabels[status] || status);
 
     body.innerHTML = `
         <div class="detail-meta">
@@ -2225,17 +2230,17 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
         return _renderDrawerPipelineCard(liveJob);
     }
 
-    // ── Auto-approved stub (never went through real onboarding) ──
-    const isStub = status === 'approved' && svc.reviewed_by === 'orchestrator';
+    // ── Auto-prepped service (never went through real onboarding pipeline) ──
+    const isStub = svc.reviewed_by === 'auto_prepped' || svc.reviewed_by === 'orchestrator';
     if (isStub) {
-        const stubVer = latestVersion ? ` (stub v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
+        const stubVer = latestVersion ? ` (draft v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
         return `
         <div class="svc-status-card svc-status-ready" id="validation-card">
             <div class="svc-status-row">
-                <span class="svc-status-icon">⚠️</span>
+                <span class="svc-status-icon">📋</span>
                 <div class="svc-status-info">
                     <div class="svc-status-title">Needs Full Onboarding${stubVer}</div>
-                    <div class="svc-status-sub">Auto-approved with a skeleton template — never validated through the pipeline. Run onboarding to generate, validate, and deploy a real ARM template.</div>
+                    <div class="svc-status-sub">Auto-prepped with a draft ARM template. Run the full onboarding pipeline to validate, deploy, and approve.</div>
                 </div>
             </div>
             <div class="svc-status-actions">
