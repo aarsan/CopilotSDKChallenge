@@ -411,6 +411,7 @@ function navigateTo(page) {
         activity: ['Observability', ''],
         analytics: ['Fabric Analytics', ''],
         chat: ['Infrastructure Designer', ''],
+        admin: ['Admin Settings', ''],
     };
     // Tech-branded subtitles (as HTML badges)
     const subtitleBadges = {
@@ -467,6 +468,11 @@ function navigateTo(page) {
         loadAnalyticsDashboard();
     }
 
+    // Load enforcement mode when switching to admin page
+    if (page === 'admin') {
+        loadEnforcementMode();
+    }
+
     currentPage = page;
 }
 
@@ -490,6 +496,9 @@ function updatePageActions(page) {
             break;
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
+            break;
+        case 'admin':
+            actions.innerHTML = '';
             break;
         default:
             actions.innerHTML = '';
@@ -3168,6 +3177,60 @@ async function triggerDraftValidation(serviceId, version, semver) {
 }
 
 // ── Model Selector ──────────────────────────────────────────
+
+// ── Governance Enforcement Mode (Admin Page) ────────────────
+
+async function loadEnforcementMode() {
+    try {
+        const res = await fetch('/api/settings/enforcement-mode');
+        if (!res.ok) return;
+        const data = await res.json();
+        _updateEnforcementModeUI(data.enforcement_mode);
+    } catch (e) {
+        console.warn('Could not load enforcement mode:', e);
+    }
+}
+
+function _updateEnforcementModeUI(mode) {
+    const btnEnforce = document.getElementById('btn-mode-enforce');
+    const btnAudit = document.getElementById('btn-mode-audit');
+    const status = document.getElementById('enforcement-mode-status');
+    if (!btnEnforce || !btnAudit) return;
+
+    if (mode === 'audit') {
+        btnEnforce.className = 'btn btn-secondary';
+        btnAudit.className = 'btn btn-accent';
+        status.innerHTML = '<strong>Audit Only</strong> — Governance checks run and report findings, but never block deployments.';
+    } else {
+        btnEnforce.className = 'btn btn-primary';
+        btnAudit.className = 'btn btn-secondary';
+        status.innerHTML = '<strong>Enforce</strong> — Governance policies actively block deployments when violations are found.';
+    }
+}
+
+async function setEnforcementMode(mode) {
+    try {
+        const res = await fetch('/api/settings/enforcement-mode', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (res.ok) {
+            _updateEnforcementModeUI(mode);
+            showToast(
+                mode === 'audit'
+                    ? 'Switched to Audit Only — policies will log but not block'
+                    : 'Switched to Enforce — policies will block violations',
+                'success'
+            );
+        } else {
+            const err = await res.json();
+            showToast('Failed: ' + err.detail, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to change mode: ' + e.message, 'error');
+    }
+}
 
 let availableModels = [];
 let activeModel = '';

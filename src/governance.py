@@ -258,6 +258,13 @@ async def run_governance_review(
         gate = "approved"
         reason = "Both CISO and CTO approved the template"
 
+    # Audit-only mode: downgrade blocking to conditional (never block deployments)
+    from src.config import get_enforcement_mode
+    if get_enforcement_mode() == "audit" and gate == "blocked":
+        logger.info("Audit-only mode active — downgrading gate from 'blocked' to 'conditional'")
+        gate = "conditional"
+        reason = f"[AUDIT MODE] {reason} (would have blocked in enforce mode)"
+
     return {
         "ciso": ciso_review,
         "cto": cto_review,
