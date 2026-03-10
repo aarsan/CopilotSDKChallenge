@@ -11973,19 +11973,28 @@ async function submitPromptCompose() {
                 </div>
             </div>`;
 
-        btn.disabled = true;
-        btn.textContent = '✅ Template Created';
         succeeded = true;
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
-        setTimeout(async () => {
+
+        // Make buttom a clickable "Done" button so the user isn't stuck
+        btn.disabled = false;
+        btn.textContent = '✅ Done — Close';
+        btn.onclick = async () => {
+            btn.disabled = true;
             await loadCatalog();
             closeModal('modal-template-onboard');
-            if (createdTemplateId) {
-                // Auto-trigger full validation (tests + ARM)
-                runFullValidation(createdTemplateId);
+            if (createdTemplateId) runFullValidation(createdTemplateId);
+        };
+
+        // Also auto-close after 2s if the user doesn't click
+        setTimeout(async () => {
+            if (!document.getElementById('modal-template-onboard')?.classList.contains('hidden')) {
+                await loadCatalog();
+                closeModal('modal-template-onboard');
+                if (createdTemplateId) runFullValidation(createdTemplateId);
             }
-        }, 1500);
+        }, 2000);
 
     } catch (err) {
         resultDiv.style.display = 'block';
