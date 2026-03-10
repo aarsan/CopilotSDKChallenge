@@ -196,12 +196,6 @@ async def get_user_context(session_token: str) -> Optional[UserContext]:
     if not session:
         return None
 
-    # Reject legacy demo sessions — demo mode has been removed
-    if session["user_id"] == "demo-user-001":
-        from src.database import delete_session
-        await delete_session(session_token)
-        return None
-
     return UserContext(
         user_id=session["user_id"],
         display_name=session["display_name"],

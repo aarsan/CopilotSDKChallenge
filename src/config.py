@@ -54,18 +54,16 @@ def set_active_model(model_id: str) -> bool:
     return True
 
 # ── Governance Enforcement Mode ──────────────────────────────
-# "enforce" = current behavior (block/warn as configured per policy)
-# "audit"   = all checks run & report findings, but nothing blocks
-_enforcement_mode: str = "audit"
+_enforcement_mode: str = os.getenv("INFRAFORGE_ENFORCEMENT_MODE", "audit").lower()
 
 
 def get_enforcement_mode() -> str:
-    """Return the current governance enforcement mode: 'enforce' or 'audit'."""
+    """Return the current governance enforcement mode ('enforce' or 'audit')."""
     return _enforcement_mode
 
 
 def set_enforcement_mode(mode: str) -> bool:
-    """Set the governance enforcement mode. Returns True if valid."""
+    """Set the enforcement mode. Returns True if valid, False otherwise."""
     global _enforcement_mode
     if mode not in ("enforce", "audit"):
         return False
@@ -81,8 +79,7 @@ WEB_PORT = int(os.getenv("INFRAFORGE_WEB_PORT", "8080"))
 SESSION_SECRET = os.getenv("INFRAFORGE_SESSION_SECRET", "infraforge-dev-secret-change-in-prod")
 
 # ── Entra ID (Azure AD) Authentication ───────────────────────
-# Configure these to enable corporate SSO. When not set, login is
-# disabled and users will see a configuration error.
+# Required for authentication. InfraForge requires Entra ID corporate SSO.
 ENTRA_CLIENT_ID = os.getenv("ENTRA_CLIENT_ID", "")
 ENTRA_TENANT_ID = os.getenv("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_SECRET = os.getenv("ENTRA_CLIENT_SECRET", "")

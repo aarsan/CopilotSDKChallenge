@@ -2,7 +2,7 @@
 InfraForge — Auth, Settings & Analytics Router
 
 Extracted from web.py. Contains:
-  - Auth Endpoints (root, version, login, callback, demo, logout, me)
+  - Auth Endpoints (root, version, login, callback, logout, me)
   - Model Settings API
   - Usage Analytics (Work IQ)
   - Activity Monitor API
@@ -87,9 +87,9 @@ async def auth_config():
 async def login():
     """Initiate the Entra ID login flow."""
     if not is_auth_configured():
-        return JSONResponse(
-            {"error": "Microsoft Entra ID is not configured. Set ENTRA_CLIENT_ID, ENTRA_TENANT_ID, and ENTRA_CLIENT_SECRET to enable SSO."},
+        raise HTTPException(
             status_code=503,
+            detail="Entra ID authentication is not configured. Set ENTRA_CLIENT_ID, ENTRA_TENANT_ID, and ENTRA_CLIENT_SECRET.",
         )
 
     auth_url, flow_id = create_auth_url()
@@ -384,15 +384,10 @@ async def get_activity():
         status = svc.get("status", "not_approved")
         svc_id = svc.get("id", "")
 
-        # Include services that are validating, validation_failed, recently approved,
-        # OR have a live pipeline running (status may still be not_approved early in pipeline).
-        # Exclude catalog-only approvals (no active_version) — they never went
-        # through the onboarding pipeline so showing them as "all stages done"
-        # is misleading.
-        live = _active_validations.get(svc_id)
-        if status == "approved" and not svc.get("active_version") and not live:
-            continue  # governance-only approval, skip
-        if status in ("validating", "validation_failed", "approved") or (live and live.get("status") == "running"):
+        # Include services that are validating, validation_failed, or recently approved
+        if status in ("validating", "validation_failed", "approved"):
+            # Check if there's a live tracker entry
+            live = _active_validations.get(svc_id)
 
             job = {
                 "service_id": svc_id,
