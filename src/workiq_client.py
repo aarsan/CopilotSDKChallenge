@@ -10,11 +10,15 @@ The Work IQ CLI uses interactive browser-based auth. After first-time setup
 
 import asyncio
 import logging
+import shutil
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from src.config import WORKIQ_ENABLED, WORKIQ_TIMEOUT
+
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger("infraforge.workiq")
 
@@ -37,6 +41,40 @@ class WorkIQClient:
         self._available: Optional[bool] = None
         self._checked_at: float = 0.0
         self._last_check_error: Optional[str] = None
+        self._npx_path: Optional[str] = None
+
+    def _resolve_npx(self) -> Optional[str]:
+        """Resolve the full path to npx. Cached after first lookup."""
+        if self._npx_path is None:
+            self._npx_path = shutil.which("npx") or ""
+        return self._npx_path or None
+
+    async def _run(self, *args: str, timeout: float = 15) -> tuple[int, bytes, bytes]:
+        """Run a CLI command, handling Windows .cmd scripts correctly.
+
+        On Windows, npx is a .cmd batch file which create_subprocess_exec
+        cannot launch directly — FileNotFoundError. We use
+        create_subprocess_shell instead.
+        """
+        npx = self._resolve_npx()
+        if not npx:
+            raise FileNotFoundError("npx not found in PATH")
+        if _IS_WINDOWS:
+            # Shell execution for .cmd/.ps1 wrappers on Windows
+            cmd = f'"{npx}" ' + " ".join(f'"{a}"' for a in args)
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                npx, *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode, stdout, stderr
 
     async def is_available(self) -> bool:
         """Check if Work IQ CLI is available and authenticated."""
@@ -51,19 +89,13 @@ class WorkIQClient:
         ):
             return self._available
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "npx",
-                "-y",
-                "@microsoft/workiq",
-                "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            returncode, stdout, stderr = await self._run(
+                "-y", "@microsoft/workiq", "--version", timeout=15
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-            self._available = proc.returncode == 0
+            self._available = returncode == 0
             if not self._available:
                 err = stderr.decode("utf-8", errors="replace").strip()
-                self._last_check_error = err or f"CLI exited with code {proc.returncode}"
+                self._last_check_error = err or f"CLI exited with code {returncode}"
             else:
                 self._last_check_error = None
         except FileNotFoundError:
@@ -93,20 +125,11 @@ class WorkIQClient:
         if not await self.is_available():
             return WorkIQResult(ok=False, error=self._last_check_error or "Work IQ CLI is not available")
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "npx",
-                "-y",
-                "@microsoft/workiq",
-                "ask",
-                "-q",
-                query,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            returncode, stdout, stderr = await self._run(
+                "-y", "@microsoft/workiq", "ask", "-q", query,
+                timeout=WORKIQ_TIMEOUT,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=WORKIQ_TIMEOUT
-            )
-            if proc.returncode == 0:
+            if returncode == 0:
                 return WorkIQResult(ok=True, text=stdout.decode("utf-8").strip())
             else:
                 err = stderr.decode("utf-8", errors="replace").strip()
@@ -117,7 +140,7 @@ class WorkIQClient:
                 elif any(kw in err_lower for kw in ("login", "authenticate", "token", "sign in", "auth")):
                     reason = f"Authentication required: {err[:300]}. Run `npx -y @microsoft/workiq accept-eula` to authenticate."
                 else:
-                    reason = f"Work IQ CLI error (exit {proc.returncode}): {err[:300]}"
+                    reason = f"Work IQ CLI error (exit {returncode}): {err[:300]}"
                 logger.warning(f"Work IQ query failed: {reason}")
                 return WorkIQResult(ok=False, error=reason)
         except asyncio.TimeoutError:
