@@ -67,7 +67,7 @@ function New-AppClientSecret {
     <#
     .SYNOPSIS
         Create a client secret with fallback for tenant credential lifetime policies.
-        Tries 1 year, 6 months, 3 months, 1 month in order.
+        Tries 1 year down to 1 week to accommodate restrictive policies.
     #>
     param([string]$AppObjectId, [string]$DisplayName = "InfraForge Setup")
 
@@ -75,7 +75,9 @@ function New-AppClientSecret {
         @{ Label = "1 year";   Date = (Get-Date).AddYears(1).ToString("yyyy-MM-dd") },
         @{ Label = "6 months"; Date = (Get-Date).AddMonths(6).ToString("yyyy-MM-dd") },
         @{ Label = "3 months"; Date = (Get-Date).AddMonths(3).ToString("yyyy-MM-dd") },
-        @{ Label = "1 month";  Date = (Get-Date).AddMonths(1).ToString("yyyy-MM-dd") }
+        @{ Label = "1 month";  Date = (Get-Date).AddMonths(1).ToString("yyyy-MM-dd") },
+        @{ Label = "2 weeks";  Date = (Get-Date).AddDays(14).ToString("yyyy-MM-dd") },
+        @{ Label = "1 week";   Date = (Get-Date).AddDays(7).ToString("yyyy-MM-dd") }
     )
 
     foreach ($attempt in $endDates) {
@@ -252,28 +254,12 @@ Write-Host "╚═════════════════════�
 Write-Step "Checking prerequisites"
 
 # Azure CLI
-# winget (required for auto-installing Python, ODBC Driver, and other dependencies)
-if (-not (Test-Command "winget")) {
-    Write-Err "winget (Windows Package Manager) not found."
-    Write-Host "  winget ships with Windows 10 1709+ and all Windows 11 editions." -ForegroundColor Gray
-    Write-Host "  Install: https://aka.ms/getwinget" -ForegroundColor Gray
+if (-not (Test-Command "az")) {
+    Write-Err "Azure CLI (az) not found."
+    Write-Host "  Install: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli" -ForegroundColor Gray
     exit 1
 }
-Write-Ok "winget found"
-
-# Azure CLI
-if (-not (Test-Command "az")) {
-    Write-Warn "Azure CLI (az) not found. Attempting to install via winget..."
-    winget install --id Microsoft.AzureCLI --accept-package-agreements --accept-source-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-    if (-not (Test-Command "az")) {
-        Write-Err "Azure CLI installation completed but 'az' still not on PATH. Please restart your terminal and re-run this script."
-        exit 1
-    }
-    Write-Ok "Azure CLI installed successfully"
-} else {
-    Write-Ok "Azure CLI found"
-}
+Write-Ok "Azure CLI found"
 
 # Check az login
 $account = ConvertFrom-AzJson (az account show 2>&1)
@@ -299,20 +285,8 @@ Write-Ok "User OID: $currentUserOid"
 
 # Python
 if (-not (Test-Command "python")) {
-    Write-Warn "Python not found. Attempting to install via winget..."
-    if (Test-Command "winget") {
-        winget install --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
-        # Refresh PATH so the current session sees the new install
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-        if (-not (Test-Command "python")) {
-            Write-Err "Python installation completed but 'python' still not on PATH. Please restart your terminal and re-run this script."
-            exit 1
-        }
-        Write-Ok "Python installed successfully"
-    } else {
-        Write-Err "Python not found and winget is not available. Please install Python 3.9+ manually from https://www.python.org/downloads/"
-        exit 1
-    }
+    Write-Err "Python not found. Install Python 3.9+."
+    exit 1
 }
 $pyVer = python --version 2>&1
 Write-Ok "Python: $pyVer"
@@ -322,16 +296,10 @@ $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" 
 if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
     Write-Ok "ODBC Driver 18 for SQL Server found"
 } else {
-    Write-Warn "ODBC Driver 18 for SQL Server not detected. Attempting to install via winget..."
-    if (Test-Command "winget") {
-        winget install --id Microsoft.msodbcsql18 --accept-package-agreements --accept-source-agreements
-        Write-Ok "ODBC Driver 18 installed (may require terminal restart)"
-    } else {
-        Write-Warn "winget not available. Please install ODBC Driver 18 manually:"
-        Write-Host "  Download: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server" -ForegroundColor Gray
-        $continue = Read-Host "  Continue anyway? (y/N)"
-        if ($continue -ne "y") { exit 1 }
-    }
+    Write-Warn "ODBC Driver 18 for SQL Server not detected."
+    Write-Host "  Download: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server" -ForegroundColor Gray
+    $continue = Read-Host "  Continue anyway? (y/N)"
+    if ($continue -ne "y") { exit 1 }
 }
 
 # Check existing .env - we'll merge if it exists (non-destructive)
@@ -830,24 +798,14 @@ if ($SkipEntraId) {
             --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope `
             -o none --only-show-errors 2>&1
 
-        Write-Ok "Permissions added"
-
-        # Create service principal immediately (needed for permission grant below)
-        Write-Host "  Creating service principal..."
-        az ad sp create --id $entraClientId -o none --only-show-errors 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Service principal created"
-        } else {
-            Write-Warn "Could not create service principal. Sign-in may fail."
-        }
-
-        # Grant User.Read permission (requires service principal to exist)
+        # Grant User.Read permission (User.Read is sufficient for /me and /me/manager)
         Write-Host "  Granting User.Read permission..."
         az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Permissions added and granted"
         } else {
-            Write-Ok "User.Read will be consent-prompted on first sign-in (no admin action needed)"
+            Write-Ok "Permissions added"
+            Write-Warn "Admin consent could not be auto-granted. Grant it manually in Azure Portal if required by your org."
         }
 
         # Create client secret
@@ -864,7 +822,7 @@ if ($SkipEntraId) {
 
     # ── Shared configuration (runs for both new and existing apps) ──
 
-    # Ensure service principal exists (may already exist from new-app path or prior run)
+    # Ensure service principal exists (needed for sign-in)
     Write-Host "  Ensuring service principal exists..."
     $existingSp = ConvertFrom-AzJson (az ad sp show --id $entraClientId -o json --only-show-errors 2>&1)
     if ($existingSp) {
@@ -878,13 +836,13 @@ if ($SkipEntraId) {
         }
     }
 
-    # Ensure User.Read permission is granted (idempotent — requires SP to exist)
+    # Ensure User.Read permission is granted (idempotent)
     Write-Host "  Ensuring User.Read permission is granted..."
     az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "User.Read permission granted"
     } else {
-        Write-Ok "User.Read will be consent-prompted on first sign-in (no admin action needed)"
+        Write-Warn "Could not auto-grant User.Read. Consent may be required on first sign-in."
     }
 
     # Configure optional ID token claims (email, upn, given_name, family_name)
