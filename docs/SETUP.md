@@ -7,18 +7,19 @@ Complete guide to running `scripts/setup.ps1` and provisioning InfraForge infras
 ## Overview
 
 The setup script (`scripts/setup.ps1`) is a PowerShell wizard that provisions all Azure
-infrastructure required to run InfraForge. It performs 8 steps:
+infrastructure required to run InfraForge. It performs 9 steps:
 
 | Step | Action | Creates / Configures |
 |------|--------|----------------------|
 | 1 | Resource Group | Azure Resource Group in the target region |
 | 2 | Azure SQL | SQL Server (Azure AD-only auth) + Database (Basic tier, ~$5/mo) + firewall rules |
 | 3 | Entra ID | App Registration with client secret, redirect URI, optional claims, group claims |
-| 4 | RBAC & Providers | Contributor role assignment + 11 resource provider registrations |
+| 4 | RBAC & Providers | Contributor role assignment + 12 resource provider registrations |
 | 5 | GitHub | Token + organization detection via `gh` CLI |
-| 6 | .env File | Generated configuration file with all values populated |
-| 7 | Python | Virtual environment + `pip install -r requirements.txt` |
-| 8 | Verify | SQL connectivity test via `DefaultAzureCredential` |
+| 6 | Fabric IQ | Fabric workspace + Lakehouse for OneLake analytics sync |
+| 7 | .env File | Generated configuration file with all values populated |
+| 8 | Python | Virtual environment + `pip install -r requirements.txt` |
+| 9 | Verify | SQL connectivity test via `DefaultAzureCredential` |
 
 Before provisioning, the script runs comprehensive preflight checks:
 
@@ -29,6 +30,7 @@ Before provisioning, the script runs comprehensive preflight checks:
 - **Region capacity** - Probes SQL Server availability across multiple fallback regions
 - **Existing resources** - Detects and offers to reuse existing resource groups, SQL servers, and app registrations
 - **GitHub CLI** - Checks for `gh` installation and authentication status
+- **Fabric capacity** - Checks for available Fabric capacities (F or P SKU) in the tenant
 
 ---
 
@@ -62,6 +64,7 @@ Before provisioning, the script runs comprehensive preflight checks:
 | `-WebPort` | int | `8080` | Port for the web server. Affects the redirect URI (`http://localhost:<port>/api/auth/callback`) |
 | `-SkipEntraId` | switch | `$false` | Skip Entra ID app registration. App runs in demo mode without SSO |
 | `-SkipSql` | switch | `$false` | Skip SQL Server provisioning. You must set `AZURE_SQL_CONNECTION_STRING` in `.env` manually |
+| `-SkipFabric` | switch | `$false` | Skip Fabric workspace provisioning. Fabric IQ analytics will be disabled |
 | `-Force` | switch | `$false` | Overwrite `.env` file instead of merging into the existing one |
 | `-Cleanup` | switch | `$false` | Tear down resources from a failed setup run (see [Cleanup](#cleanup)) |
 
@@ -152,6 +155,7 @@ The setup script validates all of the following **before** prompting you to proc
 | Python missing | **Hard fail** |
 | ODBC Driver 18 missing | **Warn + prompt** |
 | GitHub CLI missing or unauthenticated | **Warn** - GitHub integration skipped |
+| No Fabric capacity found | **Warn + prompt** - offers to continue without Fabric |
 
 The preflight summary shows both permission status and resource plan before asking you to confirm.
 
@@ -161,10 +165,13 @@ The preflight summary shows both permission status and resource plan before aski
 
 Running with `-Cleanup` tears down resources from a failed or unwanted setup:
 
-1. **Entra ID app registration** - Deletes the app registration matching `-AppName`
+1. **Entra ID app registration** - Deletes the app registration matching `-AppName` (also removes the service principal)
 2. **SQL servers** - Deletes all SQL servers matching `infraforge-sql-*` in the resource group
 3. **Resource group** - Prompts before deleting (removes ALL resources in the group)
 4. **Local `.env` file** - Removes the generated configuration file
+5. **GitHub integration** - Checks `gh auth status` and reminds you to run `gh auth logout` or revoke tokens
+6. **RBAC role assignment** - Notes that the Contributor role on your subscription was left in place, with the command to remove it manually
+7. **Fabric workspace** - Prompts before deleting the `InfraForge-Analytics` workspace (also removes the Lakehouse)
 
 ```powershell
 .\scripts\setup.ps1 -Cleanup
@@ -236,6 +243,24 @@ The ODBC driver is not installed or a different version is present.
 
 **Fix**: Download and install from [Microsoft ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
 
+### "No Fabric capacity found in this tenant"
+
+Your Azure tenant does not have a Microsoft Fabric capacity (F or P SKU).
+
+**Fix** (choose one):
+- Start a free Fabric trial at [app.fabric.microsoft.com](https://app.fabric.microsoft.com)
+- Ask your tenant admin to provision a Fabric capacity
+- Run with `-SkipFabric` to skip Fabric setup (Fabric IQ analytics will be disabled)
+
+### "Could not create Fabric workspace"
+
+The Fabric REST API returned an error when creating the workspace.
+
+**Fix**:
+- Ensure your account has permission to create Fabric workspaces
+- Verify Fabric capacity is active and not paused (check in the Fabric admin portal)
+- Create the workspace manually at [app.fabric.microsoft.com](https://app.fabric.microsoft.com) and set `FABRIC_WORKSPACE_ID` in `.env`
+
 ---
 
 ## After Setup
@@ -280,6 +305,9 @@ The setup script generates a `.env` file with these values:
 | `AZURE_SQL_SERVER` | Step 2 | SQL Server name |
 | `AZURE_RESOURCE_GROUP` | `-ResourceGroup` param | Resource group name |
 | `AZURE_SUBSCRIPTION_ID` | Azure login | Subscription ID |
+| `FABRIC_WORKSPACE_ID` | Step 6 | Fabric workspace GUID |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | Step 6 | OneLake DFS endpoint (`https://onelake.dfs.fabric.microsoft.com`) |
+| `FABRIC_LAKEHOUSE_NAME` | Step 6 | Lakehouse display name (`infraforge_lakehouse`) |
 
-When re-running setup with an existing `.env`, managed values are updated in-place while
-manual customizations (e.g., `FABRIC_*` settings) are preserved. Use `-Force` to overwrite entirely.
+When re-running setup with an existing `.env`, managed values (including `FABRIC_*` settings) are updated in-place while
+manual customizations are preserved. Use `-Force` to overwrite entirely.

@@ -319,8 +319,8 @@ It deploys ARM templates directly to Azure via the SDK — no `az`, `terraform`,
 2. **Configure Entra ID** for corporate SSO — requires an App Registration with
    client secret, redirect URI, and group claims (see `docs/SETUP.md` Step 3)
 3. **Set** `AZURE_SQL_CONNECTION_STRING` for Azure SQL Database
-4. **Configure Fabric IQ** (optional) — set `FABRIC_WORKSPACE_ID`,
-   `FABRIC_ONELAKE_DFS_ENDPOINT`, and `FABRIC_LAKEHOUSE_NAME` for OneLake analytics
+4. **Fabric IQ** is auto-provisioned by `scripts/setup.ps1` (Step 6) — creates a Fabric
+   workspace and Lakehouse for OneLake analytics. Use `-SkipFabric` if no capacity is available.
 5. **Launch** with `python web_start.py`
 
 Demo mode is available when Entra ID is not configured — the app falls back to a

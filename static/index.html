@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=226">
+    <link rel="stylesheet" href="/static/styles.css?v=229">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -109,6 +109,9 @@
                 <button class="nav-btn" id="nav-chat" onclick="navigateTo('chat')">
                     <span class="nav-icon">💬</span> Infrastructure Designer
                     <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span>
+                </button>
+                <button class="nav-btn" id="nav-admin" onclick="navigateTo('admin')">
+                    <span class="nav-icon">⚙️</span> Admin
                 </button>
 
                 <div class="nav-section-title" style="margin-top: 0.5rem">Quick Design</div>
@@ -970,6 +973,29 @@
                 </div>
             </div>
 
+            <!-- ═══ PAGE: Admin Settings ══════════════════════ -->
+            <div class="page page-scroll hidden" id="page-admin">
+                <div class="page-inner">
+                    <!-- Governance Enforcement Mode -->
+                    <div style="background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 1.5rem; margin-bottom: 1.5rem;">
+                        <h3 style="margin: 0 0 0.25rem 0; color: var(--text-primary);">Governance Enforcement Mode</h3>
+                        <p style="margin: 0 0 1rem 0; color: var(--text-secondary); font-size: 0.85rem;">
+                            Controls whether governance policies block deployments or only log findings.
+                            In <strong>Audit Only</strong> mode, all checks still run and report findings, but nothing prevents deployment.
+                        </p>
+                        <div id="enforcement-mode-toggle" style="display: flex; gap: 0.75rem;">
+                            <button class="btn btn-primary" id="btn-mode-enforce" onclick="setEnforcementMode('enforce')" style="flex:1; padding: 0.75rem;">
+                                Enforce
+                            </button>
+                            <button class="btn btn-secondary" id="btn-mode-audit" onclick="setEnforcementMode('audit')" style="flex:1; padding: 0.75rem;">
+                                Audit Only
+                            </button>
+                        </div>
+                        <div id="enforcement-mode-status" style="margin-top: 0.75rem; padding: 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); font-size: 0.85rem; color: var(--text-secondary);"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ═══ PAGE: Chat / Infrastructure Designer ═════ -->
             <div class="page page-chat hidden" id="page-chat">
                 <!-- Messages -->
@@ -1518,11 +1544,7 @@
         </div>
     </div>
 
-<<<<<<< HEAD
-    <script src="/static/app.js?v=237"></script>
-=======
-    <script src="/static/app.js?v=243"></script>
->>>>>>> 5dd6576bed4f2061f1efe083bbcbfdc7bd2a0bf9
+    <script src="/static/app.js?v=249"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

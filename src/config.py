@@ -53,6 +53,25 @@ def set_active_model(model_id: str) -> bool:
     _active_model = model_id
     return True
 
+# ── Governance Enforcement Mode ──────────────────────────────
+# "enforce" = current behavior (block/warn as configured per policy)
+# "audit"   = all checks run & report findings, but nothing blocks
+_enforcement_mode: str = "audit"
+
+
+def get_enforcement_mode() -> str:
+    """Return the current governance enforcement mode: 'enforce' or 'audit'."""
+    return _enforcement_mode
+
+
+def set_enforcement_mode(mode: str) -> bool:
+    """Set the governance enforcement mode. Returns True if valid."""
+    global _enforcement_mode
+    if mode not in ("enforce", "audit"):
+        return False
+    _enforcement_mode = mode
+    return True
+
 # ── Output Settings ──────────────────────────────────────────
 OUTPUT_DIR = os.getenv("INFRAFORGE_OUTPUT_DIR", "./output")
 

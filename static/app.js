@@ -411,6 +411,7 @@ function navigateTo(page) {
         activity: ['Observability', ''],
         analytics: ['Fabric Analytics', ''],
         chat: ['Infrastructure Designer', ''],
+        admin: ['Admin Settings', ''],
     };
     // Tech-branded subtitles (as HTML badges)
     const subtitleBadges = {
@@ -467,6 +468,11 @@ function navigateTo(page) {
         loadAnalyticsDashboard();
     }
 
+    // Load enforcement mode when switching to admin page
+    if (page === 'admin') {
+        loadEnforcementMode();
+    }
+
     currentPage = page;
 }
 
@@ -490,6 +496,9 @@ function updatePageActions(page) {
             break;
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
+            break;
+        case 'admin':
+            actions.innerHTML = '';
             break;
         default:
             actions.innerHTML = '';
@@ -1924,11 +1933,16 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
     const hasVersions = versions.length > 0;
     const latestVersion = versions.length > 0 ? versions[0] : null;
 
-    // Distinguish governance approval from full onboarding
-    const displayStatus = (status === 'approved' && !activeVersion)
-        ? 'approved_not_onboarded' : status;
-    const displayLabel = displayStatus === 'approved_not_onboarded'
-        ? '📋 Catalog Approved' : (statusLabels[status] || status);
+    // Distinguish governance/auto-prep from full onboarding
+    const isAutoPrepped = svc.reviewed_by === 'auto_prepped' || svc.reviewed_by === 'orchestrator';
+    const displayStatus = isAutoPrepped
+        ? 'auto_prepped'
+        : (status === 'approved' && !activeVersion)
+            ? 'approved_not_onboarded' : status;
+    const displayLabel = displayStatus === 'auto_prepped'
+        ? '📋 Needs Onboarding'
+        : displayStatus === 'approved_not_onboarded'
+            ? '📋 Catalog Approved' : (statusLabels[status] || status);
 
     body.innerHTML = `
         <div class="detail-meta">
@@ -2216,17 +2230,17 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
         return _renderDrawerPipelineCard(liveJob);
     }
 
-    // ── Auto-approved stub (never went through real onboarding) ──
-    const isStub = status === 'approved' && svc.reviewed_by === 'orchestrator';
+    // ── Auto-prepped service (never went through real onboarding pipeline) ──
+    const isStub = svc.reviewed_by === 'auto_prepped' || svc.reviewed_by === 'orchestrator';
     if (isStub) {
-        const stubVer = latestVersion ? ` (stub v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
+        const stubVer = latestVersion ? ` (draft v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
         return `
         <div class="svc-status-card svc-status-ready" id="validation-card">
             <div class="svc-status-row">
-                <span class="svc-status-icon">⚠️</span>
+                <span class="svc-status-icon">📋</span>
                 <div class="svc-status-info">
                     <div class="svc-status-title">Needs Full Onboarding${stubVer}</div>
-                    <div class="svc-status-sub">Auto-approved with a skeleton template — never validated through the pipeline. Run onboarding to generate, validate, and deploy a real ARM template.</div>
+                    <div class="svc-status-sub">Auto-prepped with a draft ARM template. Run the full onboarding pipeline to validate, deploy, and approve.</div>
                 </div>
             </div>
             <div class="svc-status-actions">
@@ -3168,6 +3182,60 @@ async function triggerDraftValidation(serviceId, version, semver) {
 }
 
 // ── Model Selector ──────────────────────────────────────────
+
+// ── Governance Enforcement Mode (Admin Page) ────────────────
+
+async function loadEnforcementMode() {
+    try {
+        const res = await fetch('/api/settings/enforcement-mode');
+        if (!res.ok) return;
+        const data = await res.json();
+        _updateEnforcementModeUI(data.enforcement_mode);
+    } catch (e) {
+        console.warn('Could not load enforcement mode:', e);
+    }
+}
+
+function _updateEnforcementModeUI(mode) {
+    const btnEnforce = document.getElementById('btn-mode-enforce');
+    const btnAudit = document.getElementById('btn-mode-audit');
+    const status = document.getElementById('enforcement-mode-status');
+    if (!btnEnforce || !btnAudit) return;
+
+    if (mode === 'audit') {
+        btnEnforce.className = 'btn btn-secondary';
+        btnAudit.className = 'btn btn-accent';
+        status.innerHTML = '<strong>Audit Only</strong> — Governance checks run and report findings, but never block deployments.';
+    } else {
+        btnEnforce.className = 'btn btn-primary';
+        btnAudit.className = 'btn btn-secondary';
+        status.innerHTML = '<strong>Enforce</strong> — Governance policies actively block deployments when violations are found.';
+    }
+}
+
+async function setEnforcementMode(mode) {
+    try {
+        const res = await fetch('/api/settings/enforcement-mode', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (res.ok) {
+            _updateEnforcementModeUI(mode);
+            showToast(
+                mode === 'audit'
+                    ? 'Switched to Audit Only — policies will log but not block'
+                    : 'Switched to Enforce — policies will block violations',
+                'success'
+            );
+        } else {
+            const err = await res.json();
+            showToast('Failed: ' + err.detail, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to change mode: ' + e.message, 'error');
+    }
+}
 
 let availableModels = [];
 let activeModel = '';
@@ -6370,11 +6438,16 @@ function toggleRunDetail(headerEl) {
     if (detail) detail.classList.toggle('hidden');
 }
 
-/** Scroll to the live fix-and-validate progress container */
+/** Scroll to the live validation progress container and highlight it */
 function scrollToLiveProgress() {
-    const liveDiv = document.getElementById('fix-validate-progress');
-    if (liveDiv) {
+    // fixAndValidateTemplate uses 'fix-validate-progress'; runTemplateValidation uses 'tmpl-validate-results'
+    const liveDiv = document.getElementById('fix-validate-progress')
+        || document.getElementById('tmpl-validate-results');
+    if (liveDiv && liveDiv.offsetParent !== null) {
         liveDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // Pulse highlight so the user sees exactly where the live output is
+        liveDiv.classList.add('highlight-pulse');
+        setTimeout(() => liveDiv.classList.remove('highlight-pulse'), 1800);
     } else {
         showToast('No active validation running right now', 'info');
     }
@@ -9325,6 +9398,10 @@ async function submitRevision(templateId) {
         return;
     }
 
+    // Hide the input group immediately so the textarea disappears on submit
+    const inputGroup = textarea.closest('.tmpl-revision-input-group');
+    if (inputGroup) inputGroup.style.display = 'none';
+
     btn.disabled = true;
     btn.textContent = '⏳ Copilot SDK checking policies…';
     policyDiv.style.display = 'none';
@@ -9402,6 +9479,7 @@ async function submitRevision(templateId) {
             }
             btn.disabled = false;
             btn.textContent = '✏️ Request Revision';
+            if (inputGroup) inputGroup.style.display = '';  // restore so user can revise
             return;
         } else if (policyData.verdict === 'warning') {
             policyDiv.className = 'tmpl-revision-policy tmpl-policy-warning';
@@ -9509,6 +9587,7 @@ async function submitRevision(templateId) {
         resultDiv.style.display = 'block';
         resultDiv.innerHTML += `<div class="tmpl-revision-error">${escapeHtml(err.message)}</div>`;
         showToast(`Revision: ${err.message}`, 'info');
+        if (inputGroup) inputGroup.style.display = '';  // restore so user can retry
     } finally {
         btn.disabled = false;
         btn.textContent = '✏️ Request Revision';
@@ -11016,6 +11095,8 @@ async function fixAndValidateTemplate(templateId) {
         delete _activeTemplateValidations[templateId];
         // Invalidate pipeline run cache so the next load picks up saved events
         delete _templatePipelineRunCache[templateId];
+        // Re-render the pipeline runs list so "Watch Live" becomes "View"
+        _loadTemplatePipelineRuns(templateId);
     }
 }
 
@@ -11973,19 +12054,36 @@ async function submitPromptCompose() {
                 </div>
             </div>`;
 
-        btn.disabled = true;
-        btn.textContent = '✅ Template Created';
         succeeded = true;
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
-        setTimeout(async () => {
+
+        // Hide the prompt input area and tabs — only results matter now
+        const promptSection = document.querySelector('#compose-panel-prompt .compose-prompt-section');
+        const tabSwitcher = document.querySelector('#modal-template-onboard .compose-tabs');
+        if (promptSection) promptSection.style.display = 'none';
+        if (tabSwitcher) tabSwitcher.style.display = 'none';
+
+        // Make button a clickable "Done" that closes the modal
+        btn.disabled = false;
+        btn.textContent = '✅ Done — Close';
+        const closeAndFinish = async () => {
+            btn.disabled = true;
+            // Restore hidden sections for next time the modal opens
+            if (promptSection) promptSection.style.display = '';
+            if (tabSwitcher) tabSwitcher.style.display = '';
             await loadCatalog();
             closeModal('modal-template-onboard');
-            if (createdTemplateId) {
-                // Auto-trigger full validation (tests + ARM)
-                runFullValidation(createdTemplateId);
+            if (createdTemplateId) runFullValidation(createdTemplateId);
+        };
+        btn.onclick = closeAndFinish;
+
+        // Also auto-close after 2s if the user doesn't click
+        setTimeout(async () => {
+            if (!document.getElementById('modal-template-onboard')?.classList.contains('hidden')) {
+                await closeAndFinish();
             }
-        }, 1500);
+        }, 2000);
 
     } catch (err) {
         resultDiv.style.display = 'block';
@@ -15127,12 +15225,15 @@ function _renderActivityCard(job) {
     const activeStep = phaseToStep[currentPhase] || currentPhase;
 
     let pipelineHtml = '';
-    if (isRunning || status === 'approved' || status === 'validation_failed') {
+    // Only mark allDone if the service actually went through the pipeline
+    // (has completed steps or a live tracker) — not for catalog-only approvals.
+    const trulyOnboarded = status === 'approved' && (completedSteps.length > 0 || isRunning);
+    if (isRunning || trulyOnboarded || status === 'validation_failed') {
         pipelineHtml = _wfPipeline(pipelineSteps, {
             activeKey: isRunning ? activeStep : undefined,
             completedKeys: completedSteps,
             failedKey: status === 'validation_failed' ? activeStep : undefined,
-            allDone: status === 'approved',
+            allDone: trulyOnboarded,
         });
     }
 

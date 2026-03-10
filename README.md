@@ -47,3 +47,9 @@ See **[Setup Guide](docs/SETUP.md)** for parameters and options.
 > **Already have infrastructure?** Create a `.env` file manually
 > ([template](docs/SETUP.md#env-file)), install dependencies with
 > `pip install -r requirements.txt`, and run `python web_start.py`.
+
+---
+
+> [!IMPORTANT]
+> ## 🧑‍⚖️ Judges — Start Here!
+> **📋 [Demo Guide](DEMO_GUIDE.md)** — Step-by-step walkthrough of every InfraForge feature, with screenshots and expected results.

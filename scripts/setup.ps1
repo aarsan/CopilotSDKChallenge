@@ -11,7 +11,8 @@
       5. RBAC role assignment (Contributor) for ARM deployments
       6. Resource provider registration (Microsoft.Web, Microsoft.Sql, etc.)
       7. GitHub integration (token + org via gh CLI)
-      8. Generates .env file with all values populated
+      8. Microsoft Fabric workspace + Lakehouse (Fabric IQ analytics)
+      9. Generates .env file with all values populated
 
     After running this script, just: python web_start.py
 
@@ -38,6 +39,7 @@ param(
     [int]$WebPort = 8080,
     [switch]$SkipEntraId,
     [switch]$SkipSql,
+    [switch]$SkipFabric,
     [switch]$Force,
     [switch]$Cleanup
 )
@@ -235,6 +237,58 @@ if ($Cleanup) {
         Write-Warn "No .env file found - skipping"
     }
 
+    # 5. GitHub token reminder
+    Write-Step "GitHub Integration"
+    $ghInstalled = Get-Command gh -ErrorAction SilentlyContinue
+    if ($ghInstalled) {
+        $ghStatus = gh auth status 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Warn "GitHub CLI is still authenticated. If you want to revoke access:"
+            Write-Host "    gh auth logout" -ForegroundColor DarkGray
+        } else {
+            Write-Ok "GitHub CLI is not authenticated - nothing to clean up"
+        }
+    } else {
+        Write-Ok "GitHub CLI not installed - nothing to clean up"
+    }
+    Write-Host "  If you created a personal access token for InfraForge, revoke it at:" -ForegroundColor Gray
+    Write-Host "    https://github.com/settings/tokens" -ForegroundColor DarkGray
+
+    # 6. RBAC note (Contributor role was assigned to the current user, not the app)
+    Write-Step "RBAC Role Assignment"
+    Write-Warn "The Contributor role on your subscription was left in place (it is your own role)."
+    Write-Host "  To remove it manually:" -ForegroundColor Gray
+    Write-Host "    az role assignment delete --role Contributor --assignee <your-oid> --scope /subscriptions/<sub-id>" -ForegroundColor DarkGray
+
+    # 7. Delete Fabric workspace
+    Write-Step "Removing Fabric workspace"
+    $fabricCleanupName = "InfraForge-Analytics"
+    $wsCleanupRaw = az rest --method GET `
+        --url "https://api.fabric.microsoft.com/v1/workspaces" `
+        -o json 2>&1
+    $wsCleanupResult = ConvertFrom-AzJson $wsCleanupRaw
+    $fabricWsToDelete = $null
+    if ($wsCleanupResult -and (Get-Member -InputObject $wsCleanupResult -Name "value" -ErrorAction SilentlyContinue)) {
+        $fabricWsToDelete = $wsCleanupResult.value | Where-Object { $_.displayName -eq $fabricCleanupName } | Select-Object -First 1
+    }
+    if ($fabricWsToDelete) {
+        $deleteFabric = Read-Host "  Delete Fabric workspace '$fabricCleanupName' ($($fabricWsToDelete.id))? (y/N)"
+        if ($deleteFabric -eq "y") {
+            az rest --method DELETE `
+                --url "https://api.fabric.microsoft.com/v1/workspaces/$($fabricWsToDelete.id)" `
+                -o none 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Deleted Fabric workspace '$fabricCleanupName'"
+            } else {
+                Write-Warn "Could not delete Fabric workspace (may require manual deletion)"
+            }
+        } else {
+            Write-Warn "Keeping Fabric workspace '$fabricCleanupName'"
+        }
+    } else {
+        Write-Warn "No Fabric workspace named '$fabricCleanupName' found - skipping"
+    }
+
     Write-Host ""
     Write-Host "  Cleanup complete. You can re-run setup with:" -ForegroundColor Green
     Write-Host "    .\scripts\setup.ps1" -ForegroundColor Cyan
@@ -416,6 +470,33 @@ if (Test-Command "gh") {
     Write-Host "  Install: https://cli.github.com/" -ForegroundColor Gray
 }
 
+# Fabric capacity check (informational)
+$fabricCapacityAvailable = $false
+$fabricWorkspaceName = "InfraForge-Analytics"
+$fabricLakehouseName = "infraforge_lakehouse"
+if (-not $SkipFabric) {
+    Write-Host "  Checking Fabric capacity..."
+    $fabricCapRaw = az rest --method GET `
+        --url "https://api.fabric.microsoft.com/v1/capacities" `
+        -o json 2>&1
+    $fabricCapResult = ConvertFrom-AzJson $fabricCapRaw
+    if ($fabricCapResult -and (Get-Member -InputObject $fabricCapResult -Name "value" -ErrorAction SilentlyContinue) -and $fabricCapResult.value.Count -gt 0) {
+        $fabricCapacityAvailable = $true
+        $capNames = ($fabricCapResult.value | ForEach-Object { $_.displayName }) -join ", "
+        Write-Ok "Fabric capacity available: $capNames"
+    } else {
+        Write-Warn "No Fabric capacity found in this tenant."
+        Write-Host "  Fabric IQ requires a Fabric capacity (F or P SKU)." -ForegroundColor Gray
+        Write-Host "  You can get a free Fabric trial at: https://app.fabric.microsoft.com" -ForegroundColor Gray
+        Write-Host "  Or skip with -SkipFabric" -ForegroundColor Gray
+        $continueFabric = Read-Host "  Continue without Fabric? (Y/n)"
+        if ($continueFabric -eq "n") { exit 1 }
+        $SkipFabric = [switch]::new($true)
+    }
+} else {
+    Write-Host "  Fabric: skipped (-SkipFabric)" -ForegroundColor Gray
+}
+
 # ─────────────────────────────────────────────────────────
 # Preflight: resource providers
 # ─────────────────────────────────────────────────────────
@@ -426,7 +507,8 @@ $allProviders = @(
     "Microsoft.Web", "Microsoft.Sql", "Microsoft.Storage",
     "Microsoft.KeyVault", "Microsoft.Network", "Microsoft.Compute",
     "Microsoft.ContainerService", "Microsoft.OperationalInsights",
-    "Microsoft.Insights", "Microsoft.ManagedIdentity", "Microsoft.Authorization"
+    "Microsoft.Insights", "Microsoft.ManagedIdentity", "Microsoft.Authorization",
+    "Microsoft.Fabric"
 )
 $criticalProviders = @("Microsoft.Sql", "Microsoft.Web")
 $unregisteredCritical = @()
@@ -601,6 +683,9 @@ if (-not $SkipEntraId) {
 $ghLabel = if ($ghAuthenticated) { "authenticated" } elseif ($ghAvailable) { "not authenticated" } else { "not installed" }
 $ghColor = if ($ghAuthenticated) { "Green" } else { "Yellow" }
 Write-Host "    GitHub CLI:        $ghLabel" -ForegroundColor $ghColor
+$fabricLabel = if ($SkipFabric) { "skipped" } elseif ($fabricCapacityAvailable) { "capacity available" } else { "no capacity" }
+$fabricColor = if ($fabricCapacityAvailable -and -not $SkipFabric) { "Green" } else { "Yellow" }
+Write-Host "    Fabric IQ:         $fabricLabel" -ForegroundColor $fabricColor
 
 Write-Host ""
 Write-Host "  Resources:" -ForegroundColor White
@@ -612,6 +697,10 @@ if (-not $SkipSql) {
 }
 if (-not $SkipEntraId) {
     Write-Host "    App Registration: $AppName $(if ($existingEntraApp) {'(exists)'} else {'(will create)'})" -ForegroundColor White
+}
+if (-not $SkipFabric) {
+    Write-Host "    Fabric Workspace: $fabricWorkspaceName (will create or reuse)" -ForegroundColor White
+    Write-Host "    Fabric Lakehouse: $fabricLakehouseName (will create or reuse)" -ForegroundColor White
 }
 Write-Host ""
 $proceed = Read-Host "  Proceed with setup? (Y/n)"
@@ -628,7 +717,7 @@ if ($proceed -eq "n") {
 # Step 1: Resource Group
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 1/8 - Resource Group"
+Write-Step "Step 1/9 - Resource Group"
 
 if ($rgExists -eq "true") {
     Write-Ok "Resource group '$ResourceGroup' already exists"
@@ -642,7 +731,7 @@ if ($rgExists -eq "true") {
 # Step 2: Azure SQL Server + Database
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 2/8 - Azure SQL Server + Database"
+Write-Step "Step 2/9 - Azure SQL Server + Database"
 
 if ($SkipSql) {
     Write-Warn "Skipping SQL setup (-SkipSql). You must set AZURE_SQL_CONNECTION_STRING manually."
@@ -728,7 +817,7 @@ if ($SkipSql) {
 # Step 3: Entra ID App Registration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 3/8 - Entra ID App Registration"
+Write-Step "Step 3/9 - Entra ID App Registration"
 
 $entraClientId = ""
 $entraClientSecret = ""
@@ -886,7 +975,7 @@ if ($SkipEntraId) {
 # Step 4: RBAC & Resource Providers
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 4/8 - RBAC & Resource Providers"
+Write-Step "Step 4/9 - RBAC & Resource Providers"
 
 # Assign Contributor role to current user (needed for ARM deployments)
 Write-Host "  Checking Contributor role assignment..."
@@ -923,7 +1012,8 @@ $providers = @(
     "Microsoft.OperationalInsights", # Log Analytics
     "Microsoft.Insights",       # Application Insights, Monitoring
     "Microsoft.ManagedIdentity", # Managed Identities
-    "Microsoft.Authorization"   # RBAC, Policies
+    "Microsoft.Authorization",  # RBAC, Policies
+    "Microsoft.Fabric"          # Microsoft Fabric (Fabric IQ)
 )
 
 Write-Host "  Registering resource providers (this may take a minute)..."
@@ -938,10 +1028,10 @@ foreach ($provider in $providers) {
 Write-Ok "Resource providers registered ($($providers.Count) providers)"
 
 # ─────────────────────────────────────────────────────────
-# Step 5/8: GitHub Integration
+# Step 5/9: GitHub Integration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 5/8 - GitHub Integration"
+Write-Step "Step 5/9 - GitHub Integration"
 
 $githubToken = ""
 $githubOrg = ""
@@ -1007,10 +1097,99 @@ if (Test-Command "gh") {
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 6/8: Generate .env file
+# Step 6/9: Microsoft Fabric (Fabric IQ)
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 6/8 - Generate .env file"
+Write-Step "Step 6/9 - Microsoft Fabric (Fabric IQ)"
+
+$fabricWorkspaceId = ""
+$fabricDfsEndpoint = "https://onelake.dfs.fabric.microsoft.com"
+
+if ($SkipFabric) {
+    Write-Warn "Skipping Fabric setup (-SkipFabric). Set FABRIC_WORKSPACE_ID manually in .env to enable."
+} else {
+    # Check for existing workspace
+    Write-Host "  Looking for existing Fabric workspace '$fabricWorkspaceName'..."
+    $wsListRaw = az rest --method GET `
+        --url "https://api.fabric.microsoft.com/v1/workspaces" `
+        -o json 2>&1
+    $wsListResult = ConvertFrom-AzJson $wsListRaw
+    $existingWs = $null
+    if ($wsListResult -and (Get-Member -InputObject $wsListResult -Name "value" -ErrorAction SilentlyContinue)) {
+        $existingWs = $wsListResult.value | Where-Object { $_.displayName -eq $fabricWorkspaceName } | Select-Object -First 1
+    }
+
+    if ($existingWs) {
+        $fabricWorkspaceId = $existingWs.id
+        Write-Ok "Found existing workspace '$fabricWorkspaceName' ($fabricWorkspaceId)"
+    } else {
+        # Create workspace
+        Write-Host "  Creating Fabric workspace '$fabricWorkspaceName'..."
+        $wsBody = @{ displayName = $fabricWorkspaceName } | ConvertTo-Json -Compress
+        $wsTmp = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $wsTmp -Value $wsBody -Encoding UTF8
+        $wsCreateRaw = az rest --method POST `
+            --url "https://api.fabric.microsoft.com/v1/workspaces" `
+            --headers "Content-Type=application/json" `
+            --body "@$wsTmp" `
+            -o json 2>&1
+        $wsCreateResult = ConvertFrom-AzJson $wsCreateRaw
+        Remove-Item $wsTmp -ErrorAction SilentlyContinue
+
+        if ($wsCreateResult -and (Get-Member -InputObject $wsCreateResult -Name "id" -ErrorAction SilentlyContinue)) {
+            $fabricWorkspaceId = $wsCreateResult.id
+            Write-Ok "Workspace created: $fabricWorkspaceName ($fabricWorkspaceId)"
+        } else {
+            Write-Warn "Could not create Fabric workspace: $wsCreateRaw"
+            Write-Host "  Fabric IQ will be disabled. You can configure it manually later." -ForegroundColor Gray
+        }
+    }
+
+    # Create Lakehouse (only if workspace was created/found)
+    if ($fabricWorkspaceId) {
+        # Check for existing lakehouse
+        Write-Host "  Looking for existing Lakehouse '$fabricLakehouseName'..."
+        $itemsRaw = az rest --method GET `
+            --url "https://api.fabric.microsoft.com/v1/workspaces/$fabricWorkspaceId/items?type=Lakehouse" `
+            -o json 2>&1
+        $itemsResult = ConvertFrom-AzJson $itemsRaw
+        $existingLh = $null
+        if ($itemsResult -and (Get-Member -InputObject $itemsResult -Name "value" -ErrorAction SilentlyContinue)) {
+            $existingLh = $itemsResult.value | Where-Object { $_.displayName -eq $fabricLakehouseName } | Select-Object -First 1
+        }
+
+        if ($existingLh) {
+            Write-Ok "Found existing Lakehouse '$fabricLakehouseName'"
+        } else {
+            Write-Host "  Creating Lakehouse '$fabricLakehouseName'..."
+            $lhBody = @{ displayName = $fabricLakehouseName; type = "Lakehouse" } | ConvertTo-Json -Compress
+            $lhTmp = [System.IO.Path]::GetTempFileName()
+            Set-Content -Path $lhTmp -Value $lhBody -Encoding UTF8
+            $lhCreateRaw = az rest --method POST `
+                --url "https://api.fabric.microsoft.com/v1/workspaces/$fabricWorkspaceId/items" `
+                --headers "Content-Type=application/json" `
+                --body "@$lhTmp" `
+                -o json 2>&1
+            $lhCreateResult = ConvertFrom-AzJson $lhCreateRaw
+            Remove-Item $lhTmp -ErrorAction SilentlyContinue
+
+            if ($lhCreateResult -and (Get-Member -InputObject $lhCreateResult -Name "id" -ErrorAction SilentlyContinue)) {
+                Write-Ok "Lakehouse created: $fabricLakehouseName"
+            } else {
+                Write-Warn "Could not create Lakehouse: $lhCreateRaw"
+                Write-Host "  OneLake sync will not be available until a Lakehouse is created." -ForegroundColor Gray
+            }
+        }
+
+        Write-Ok "Fabric IQ configured (workspace: $fabricWorkspaceId)"
+    }
+}
+
+# ─────────────────────────────────────────────────────────
+# Step 7/9: Generate .env file
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Step 7/9 - Generate .env file"
 
 # Build hashtable of managed key-value pairs
 $managedEnvValues = @{
@@ -1030,6 +1209,9 @@ $managedEnvValues = @{
     "AZURE_SQL_SERVER"            = $SqlServerName
     "AZURE_RESOURCE_GROUP"        = $ResourceGroup
     "AZURE_SUBSCRIPTION_ID"       = $subscriptionId
+    "FABRIC_WORKSPACE_ID"         = $fabricWorkspaceId
+    "FABRIC_ONELAKE_DFS_ENDPOINT" = if ($fabricWorkspaceId) { $fabricDfsEndpoint } else { "" }
+    "FABRIC_LAKEHOUSE_NAME"       = if ($fabricWorkspaceId) { $fabricLakehouseName } else { "" }
 }
 
 if ($envFileExists -and -not $Force) {
@@ -1071,9 +1253,9 @@ AZURE_RESOURCE_GROUP=$ResourceGroup
 AZURE_SUBSCRIPTION_ID=$subscriptionId
 
 # Microsoft Fabric Integration (Optional - leave blank to disable)
-FABRIC_WORKSPACE_ID=
-FABRIC_ONELAKE_DFS_ENDPOINT=
-FABRIC_LAKEHOUSE_NAME=
+FABRIC_WORKSPACE_ID=$fabricWorkspaceId
+FABRIC_ONELAKE_DFS_ENDPOINT=$(if ($fabricWorkspaceId) { $fabricDfsEndpoint } else { "" })
+FABRIC_LAKEHOUSE_NAME=$(if ($fabricWorkspaceId) { $fabricLakehouseName } else { "" })
 "@
 
     $envPath = Join-Path $PSScriptRoot ".." ".env"
@@ -1082,10 +1264,10 @@ FABRIC_LAKEHOUSE_NAME=
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 7/8: Install Python dependencies
+# Step 8/9: Install Python dependencies
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 7/8 - Python dependencies"
+Write-Step "Step 8/9 - Python dependencies"
 
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
@@ -1109,10 +1291,10 @@ Write-Host "  Installing dependencies..."
 Write-Ok "Dependencies installed"
 
 # ─────────────────────────────────────────────────────────
-# Step 8/8: Verify connectivity
+# Step 9/9: Verify connectivity
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 8/8 - Verify connectivity"
+Write-Step "Step 9/9 - Verify connectivity"
 
 if (-not $SkipSql -and $connectionString) {
     Write-Host "  Testing SQL connection..."
@@ -1170,16 +1352,26 @@ if (-not $SkipEntraId -and $entraClientId) {
 if ($githubOrg) {
     Write-Host "    GitHub:          $githubOrg (token from gh CLI)" -ForegroundColor Gray
 }
+if ($fabricWorkspaceId) {
+    Write-Host "    Fabric IQ:       $fabricWorkspaceName (workspace: $fabricWorkspaceId)" -ForegroundColor Gray
+    Write-Host "    Lakehouse:       $fabricLakehouseName" -ForegroundColor Gray
+} elseif (-not $SkipFabric) {
+    Write-Host "    Fabric IQ:       not configured (no capacity or creation failed)" -ForegroundColor Yellow
+}
 Write-Host "    .env file:       $((Resolve-Path $envFile -ErrorAction SilentlyContinue) ?? $envFile)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  RBAC & Providers:" -ForegroundColor White
 Write-Host "    Contributor:    assigned on subscription $subscriptionId" -ForegroundColor Gray
-Write-Host "    Providers:      11 resource providers registered" -ForegroundColor Gray
+Write-Host "    Providers:      12 resource providers registered" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Remaining manual steps:" -ForegroundColor Yellow
 if (-not $githubToken) {
     Write-Host "    • Set GITHUB_TOKEN and GITHUB_ORG in .env (optional - for GitHub publishing)" -ForegroundColor Gray
     Write-Host "      Or install GitHub CLI (gh) and run 'gh auth login', then re-run setup." -ForegroundColor DarkGray
+}
+if (-not $fabricWorkspaceId) {
+    Write-Host "    • Set FABRIC_WORKSPACE_ID, FABRIC_ONELAKE_DFS_ENDPOINT, FABRIC_LAKEHOUSE_NAME in .env (for Fabric IQ)" -ForegroundColor Gray
+    Write-Host "      Or get a Fabric trial at https://app.fabric.microsoft.com and re-run setup." -ForegroundColor DarkGray
 }
 Write-Host "    • If sign-in shows a consent prompt, approve 'User.Read' for the app" -ForegroundColor Gray
 Write-Host ""
