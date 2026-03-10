@@ -3363,50 +3363,27 @@ async def get_compliance_assessment(assessment_id: str) -> Optional[dict]:
 # ══════════════════════════════════════════════════════════════
 
 async def seed_governance_data() -> dict:
-    """Populate governance tables with initial data if they are empty.
+    """Run migrations and seed orchestration processes on startup.
 
-    Seeds:
-    - Security standards (machine-readable security rules)
-    - Compliance frameworks and controls (SOC2, CIS Azure)
-    - Azure services catalog (the 20 services from the original YAML)
-    - Organization-wide governance policies (tag, region, encryption rules)
+    Services, security standards, compliance frameworks, and governance
+    policies are NOT pre-seeded.  All services come from Azure sync
+    (on-demand via the Sync button).
 
     Returns a summary of what was seeded.
     """
     backend = await get_backend()
     summary = {}
 
-    # ── Check if services already seeded ─────────────────────
-    rows = await backend.execute("SELECT COUNT(*) as cnt FROM services", ())
-    services_exist = rows and rows[0]["cnt"] > 0
+    # Always run CAF migration on existing governance policies
+    await _apply_governance_caf_fields(backend)
+    # Fix naming convention to include {region}
+    await _fix_naming_convention_region(backend)
+    # Disable seed policies so fresh installs don't block deployments
+    await _disable_seed_policies_by_default(backend)
 
-    # ── Check if templates already seeded ────────────────────
+    # ── Seed templates (no-op — templates require approved services) ──
     tmpl_rows = await backend.execute("SELECT COUNT(*) as cnt FROM catalog_templates", ())
     templates_exist = tmpl_rows and tmpl_rows[0]["cnt"] > 0
-
-    if services_exist and templates_exist:
-        # Still check if orchestration processes need seeding
-        proc_count = await seed_orchestration_processes()
-        if proc_count > 0:
-            logger.info(f"Seeded {proc_count} orchestration processes (services/templates already existed)")
-        else:
-            logger.info("Governance data already seeded — skipping.")
-        # Always run CAF migration on existing governance policies
-        await _apply_governance_caf_fields(backend)
-        # Fix naming convention to include {region}
-        await _fix_naming_convention_region(backend)
-        # Disable seed policies so fresh installs don't block deployments
-        await _disable_seed_policies_by_default(backend)
-        return {"status": "already_seeded", "orchestration_processes": proc_count}
-
-    logger.info("Seeding governance data into database...")
-    now = datetime.now(timezone.utc).isoformat()
-
-    # ── Seed services + governance (sections 1-4) if not already present ──
-    if not services_exist:
-        await _seed_governance_and_services(backend, summary, now)
-
-    # ── Seed templates (section 5) if not already present ──
     if not templates_exist:
         await _seed_templates(summary)
 
@@ -3414,10 +3391,7 @@ async def seed_governance_data() -> dict:
     proc_count = await seed_orchestration_processes()
     summary["orchestration_processes"] = proc_count
 
-    # Disable seed policies so fresh installs don't block deployments
-    await _disable_seed_policies_by_default(backend)
-
-    logger.info(f"Governance data seeded: {summary}")
+    logger.info(f"Startup seed complete: {summary}")
     return summary
 
 

@@ -889,16 +889,21 @@ async function loadServiceStats() {
 }
 
 function _renderStatsPanel(data) {
-    // Total Azure resource types (from last sync)
+    // Total Azure resource types (from startup count or last sync)
     const azureEl = document.getElementById('svc-stat-azure');
     if (azureEl) {
         azureEl.textContent = data.total_azure != null ? data.total_azure.toLocaleString() : '—';
     }
 
-    // Total cached in our system
+    // Synced: show "X / Y" when total_azure is known
     const cachedEl = document.getElementById('svc-stat-cached');
     if (cachedEl) {
-        cachedEl.textContent = data.total_cached != null ? data.total_cached.toLocaleString() : '—';
+        const cached = data.total_cached != null ? data.total_cached : 0;
+        if (data.total_azure != null) {
+            cachedEl.textContent = `${cached.toLocaleString()} / ${data.total_azure.toLocaleString()}`;
+        } else {
+            cachedEl.textContent = cached.toLocaleString();
+        }
     }
 
     // Total approved
@@ -1142,6 +1147,22 @@ function updateSyncProgress(data) {
     if (bar && typeof data.progress === 'number') {
         bar.style.width = `${Math.round(data.progress * 100)}%`;
     }
+
+    // Live-update the synced count in the stats panel during inserting phase
+    if (data.phase === 'inserting' && data.added != null) {
+        const cachedEl = document.getElementById('svc-stat-cached');
+        const azureEl = document.getElementById('svc-stat-azure');
+        if (cachedEl) {
+            const total = azureEl ? parseInt(azureEl.textContent.replace(/,/g, '')) : null;
+            const synced = data.added + (data.existing || 0);
+            if (total && !isNaN(total)) {
+                cachedEl.textContent = `${synced.toLocaleString()} / ${total.toLocaleString()}`;
+            } else {
+                cachedEl.textContent = synced.toLocaleString();
+            }
+        }
+    }
+
     if (data.phase === 'done') {
         bar?.classList.add('sync-bar-done');
     } else if (data.phase === 'error') {

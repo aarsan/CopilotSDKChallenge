@@ -652,6 +652,10 @@ async def lifespan(app: FastAPI):
 
     # Azure resource provider sync — runs on-demand via the Sync button.
     # Removed from startup to avoid blocking or crashing the server.
+    # We do a lightweight count-only fetch so the UI shows total available.
+    import asyncio as _aio
+    from src.azure_sync import fetch_azure_service_count
+    _aio.create_task(fetch_azure_service_count())
 
     logger.info("InfraForge web server ready")
     yield
