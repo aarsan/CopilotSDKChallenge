@@ -7803,6 +7803,15 @@ tr:hover .svc-view-tpl-btn {
     margin-bottom: 1.25rem;
 }
 
+.health-status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
 .health-status-title {
     display: flex;
     align-items: center;
@@ -7810,10 +7819,26 @@ tr:hover .svc-view-tpl-btn {
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 0.6rem;
 }
 
 .health-status-icon { font-size: 1rem; }
+
+.health-status-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.health-timer {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+}
+
+.health-timer-sep {
+    color: var(--text-muted, var(--text-secondary));
+    font-size: 0.65rem;
+}
 
 .health-refresh-btn {
     background: none;
@@ -7823,7 +7848,6 @@ tr:hover .svc-view-tpl-btn {
     font-size: 0.85rem;
     cursor: pointer;
     padding: 0.1rem 0.4rem;
-    margin-left: auto;
     transition: color 0.2s, border-color 0.2s;
 }
 .health-refresh-btn:hover {
@@ -7831,50 +7855,89 @@ tr:hover .svc-view-tpl-btn {
     border-color: var(--accent-blue);
 }
 
-.health-checks {
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
+/* ── Health Table ───────────────────────────────────────────── */
+.health-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
 }
 
-.health-check {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: var(--surface-tertiary);
-    border: 1px solid var(--border-primary);
-    border-radius: 6px;
-    padding: 0.4rem 0.75rem;
-    min-width: 150px;
+.health-table thead th {
+    text-align: left;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 0.5rem 0.4rem;
+    border-bottom: 1px solid var(--border-primary);
+}
+
+.health-th-status { width: 32px; }
+.health-th-latency { width: 72px; text-align: right; }
+
+.health-table tbody tr {
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    transition: background 0.15s;
+}
+.health-table tbody tr:last-child { border-bottom: none; }
+.health-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+.health-table td {
+    padding: 0.45rem 0.5rem;
+    vertical-align: middle;
 }
 
 .health-dot {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
+    display: inline-block;
     flex-shrink: 0;
 }
 
 .health-dot-unknown { background: var(--text-secondary); }
-.health-dot-healthy { background: var(--accent-green); box-shadow: 0 0 6px rgba(63, 185, 80, 0.4); }
-.health-dot-degraded { background: var(--accent-orange); box-shadow: 0 0 6px rgba(210, 153, 34, 0.4); }
-.health-dot-unhealthy { background: var(--accent-red); box-shadow: 0 0 6px rgba(248, 81, 73, 0.4); }
+.health-dot-healthy {
+    background: var(--accent-green);
+    box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
+    animation: health-pulse 2s ease-in-out infinite;
+}
+.health-dot-degraded {
+    background: var(--accent-orange);
+    box-shadow: 0 0 6px rgba(210, 153, 34, 0.4);
+}
+.health-dot-unhealthy {
+    background: var(--accent-red);
+    box-shadow: 0 0 6px rgba(248, 81, 73, 0.4);
+}
+
+@keyframes health-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(63, 185, 80, 0.3); }
+    50%      { opacity: 0.55; box-shadow: 0 0 10px rgba(63, 185, 80, 0.6); }
+}
 
 .health-check-name {
-    font-size: 0.75rem;
+    font-size: 0.78rem;
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
 }
 
 .health-check-detail {
-    font-size: 0.65rem;
+    font-size: 0.72rem;
     color: var(--text-secondary);
-    margin-left: auto;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 140px;
+    max-width: 260px;
+}
+
+.health-check-latency {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+    text-align: right;
+    white-space: nowrap;
 }
 
 /* ── Summary Bar ────────────────────────────────────────────── */

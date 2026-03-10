@@ -403,6 +403,7 @@ function navigateTo(page) {
         _startActivityPolling();
     } else {
         _stopActivityPolling();
+        _stopHealthTimer();
     }
 
     // Load standards when switching to governance page
@@ -14199,27 +14200,61 @@ let _obsCurrentTab = 'deployments';
 
 // ── System Health Checks ─────────────────────────────────────
 
+const _HEALTH_INTERVAL_SEC = 30;
+let _healthLastChecked = null;
+let _healthTimerInterval = null;
+
+function _updateHealthTimers() {
+    const lastEl = document.getElementById('health-last-checked');
+    const nextEl = document.getElementById('health-next-check');
+    if (!lastEl || !nextEl) return;
+
+    if (!_healthLastChecked) {
+        lastEl.textContent = 'Last checked: —';
+        nextEl.textContent = 'Next check: —';
+        return;
+    }
+
+    const agoSec = Math.round((Date.now() - _healthLastChecked) / 1000);
+    lastEl.textContent = agoSec < 2 ? 'Last checked: just now' : `Last checked: ${agoSec}s ago`;
+
+    const untilSec = Math.max(0, _HEALTH_INTERVAL_SEC - agoSec);
+    nextEl.textContent = untilSec <= 0 ? 'Next check: now' : `Next check: ${untilSec}s`;
+}
+
+function _startHealthTimer() {
+    _stopHealthTimer();
+    _updateHealthTimers();
+    _healthTimerInterval = setInterval(() => {
+        _updateHealthTimers();
+        // Auto-refresh when timer reaches 0
+        if (_healthLastChecked && (Date.now() - _healthLastChecked) >= _HEALTH_INTERVAL_SEC * 1000) {
+            loadHealthStatus();
+        }
+    }, 1000);
+}
+
+function _stopHealthTimer() {
+    if (_healthTimerInterval) {
+        clearInterval(_healthTimerInterval);
+        _healthTimerInterval = null;
+    }
+}
+
 async function loadHealthStatus() {
-    const checks = {
-        sql: { dot: null, detail: document.getElementById('health-detail-sql') },
-        backend_api: { dot: null, detail: document.getElementById('health-detail-api') },
-        entra_id: { dot: null, detail: document.getElementById('health-detail-entra') },
-        workiq: { dot: null, detail: document.getElementById('health-detail-workiq') },
+    const keyMap = {
+        sql:         { row: 'health-check-sql',   detail: 'health-detail-sql',   latency: 'health-latency-sql' },
+        backend_api: { row: 'health-check-api',   detail: 'health-detail-api',   latency: 'health-latency-api' },
+        entra_id:    { row: 'health-check-entra', detail: 'health-detail-entra', latency: 'health-latency-entra' },
+        workiq:      { row: 'health-check-workiq',detail: 'health-detail-workiq',latency: 'health-latency-workiq' },
     };
-    // Grab dot elements from each health-check container
-    const sqlCard = document.getElementById('health-check-sql');
-    const apiCard = document.getElementById('health-check-api');
-    const entraCard = document.getElementById('health-check-entra');
-    const workiqCard = document.getElementById('health-check-workiq');
-    if (sqlCard) checks.sql.dot = sqlCard.querySelector('.health-dot');
-    if (apiCard) checks.backend_api.dot = apiCard.querySelector('.health-dot');
-    if (entraCard) checks.entra_id.dot = entraCard.querySelector('.health-dot');
-    if (workiqCard) checks.workiq.dot = workiqCard.querySelector('.health-dot');
 
     // Reset to checking state
-    for (const c of Object.values(checks)) {
-        if (c.dot) c.dot.className = 'health-dot health-dot-unknown';
-        if (c.detail) c.detail.textContent = 'Checking…';
+    for (const ids of Object.values(keyMap)) {
+        const row = document.getElementById(ids.row);
+        if (row) { const dot = row.querySelector('.health-dot'); if (dot) dot.className = 'health-dot health-dot-unknown'; }
+        const d = document.getElementById(ids.detail);  if (d) d.textContent = 'Checking…';
+        const l = document.getElementById(ids.latency); if (l) l.textContent = '—';
     }
     const overallIcon = document.getElementById('health-overall-icon');
     if (overallIcon) overallIcon.textContent = '⏳';
@@ -14229,27 +14264,41 @@ async function loadHealthStatus() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
+        _healthLastChecked = Date.now();
+        _updateHealthTimers();
+        _startHealthTimer();
+
         const statusIcon = { healthy: '✅', degraded: '⚠️', unhealthy: '❌' };
         if (overallIcon) overallIcon.textContent = statusIcon[data.overall] || '❓';
 
         for (const [key, info] of Object.entries(data.checks || {})) {
-            const c = checks[key];
-            if (!c) continue;
-            if (c.dot) c.dot.className = `health-dot health-dot-${info.status}`;
-            if (c.detail) {
-                if (info.status === 'healthy') {
-                    c.detail.textContent = info.latency_ms != null ? `${info.latency_ms}ms` : 'OK';
-                } else {
-                    c.detail.textContent = info.message || info.status;
-                    c.detail.title = info.message || '';
-                }
+            const ids = keyMap[key];
+            if (!ids) continue;
+
+            const row = document.getElementById(ids.row);
+            if (row) { const dot = row.querySelector('.health-dot'); if (dot) dot.className = `health-dot health-dot-${info.status}`; }
+
+            const detail = document.getElementById(ids.detail);
+            const latency = document.getElementById(ids.latency);
+
+            if (info.status === 'healthy') {
+                if (detail) detail.textContent = 'Connected';
+                if (latency) latency.textContent = info.latency_ms != null ? `${info.latency_ms}ms` : '—';
+            } else {
+                if (detail) { detail.textContent = info.message || info.status; detail.title = info.message || ''; }
+                if (latency) latency.textContent = '—';
             }
         }
     } catch (err) {
+        _healthLastChecked = Date.now();
+        _updateHealthTimers();
+        _startHealthTimer();
         if (overallIcon) overallIcon.textContent = '❌';
-        for (const c of Object.values(checks)) {
-            if (c.dot) c.dot.className = 'health-dot health-dot-unhealthy';
-            if (c.detail) c.detail.textContent = 'Unreachable';
+        for (const ids of Object.values(keyMap)) {
+            const row = document.getElementById(ids.row);
+            if (row) { const dot = row.querySelector('.health-dot'); if (dot) dot.className = 'health-dot health-dot-unhealthy'; }
+            const d = document.getElementById(ids.detail);  if (d) d.textContent = 'Unreachable';
+            const l = document.getElementById(ids.latency); if (l) l.textContent = '—';
         }
     }
 }

@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=240">
+    <link rel="stylesheet" href="/static/styles.css?v=241">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -550,33 +550,54 @@
                 <div class="page-inner">
                     <!-- System Health Status -->
                     <div class="health-status-bar" id="health-status-bar">
-                        <div class="health-status-title">
-                            <span class="health-status-icon" id="health-overall-icon">⏳</span>
-                            <span>System Health</span>
-                            <button class="health-refresh-btn" onclick="loadHealthStatus()" title="Refresh health checks">↻</button>
-                        </div>
-                        <div class="health-checks" id="health-checks">
-                            <div class="health-check" id="health-check-sql">
-                                <span class="health-dot health-dot-unknown"></span>
-                                <span class="health-check-name">SQL Database</span>
-                                <span class="health-check-detail" id="health-detail-sql">Checking…</span>
+                        <div class="health-status-header">
+                            <div class="health-status-title">
+                                <span class="health-status-icon" id="health-overall-icon">⏳</span>
+                                <span>System Health</span>
                             </div>
-                            <div class="health-check" id="health-check-api">
-                                <span class="health-dot health-dot-unknown"></span>
-                                <span class="health-check-name">Backend API</span>
-                                <span class="health-check-detail" id="health-detail-api">Checking…</span>
-                            </div>
-                            <div class="health-check" id="health-check-entra">
-                                <span class="health-dot health-dot-unknown"></span>
-                                <span class="health-check-name">Entra ID</span>
-                                <span class="health-check-detail" id="health-detail-entra">Checking…</span>
-                            </div>
-                            <div class="health-check" id="health-check-workiq">
-                                <span class="health-dot health-dot-unknown"></span>
-                                <span class="health-check-name">Work IQ</span>
-                                <span class="health-check-detail" id="health-detail-workiq">Checking…</span>
+                            <div class="health-status-meta">
+                                <span class="health-timer" id="health-last-checked">Last checked: —</span>
+                                <span class="health-timer-sep">·</span>
+                                <span class="health-timer" id="health-next-check">Next check: —</span>
+                                <button class="health-refresh-btn" onclick="loadHealthStatus()" title="Refresh health checks">↻</button>
                             </div>
                         </div>
+                        <table class="health-table" id="health-checks">
+                            <thead>
+                                <tr>
+                                    <th class="health-th-status">Status</th>
+                                    <th class="health-th-service">Service</th>
+                                    <th class="health-th-detail">Detail</th>
+                                    <th class="health-th-latency">Latency</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr id="health-check-sql">
+                                    <td><span class="health-dot health-dot-unknown"></span></td>
+                                    <td class="health-check-name">SQL Database</td>
+                                    <td class="health-check-detail" id="health-detail-sql">Checking…</td>
+                                    <td class="health-check-latency" id="health-latency-sql">—</td>
+                                </tr>
+                                <tr id="health-check-api">
+                                    <td><span class="health-dot health-dot-unknown"></span></td>
+                                    <td class="health-check-name">Backend API</td>
+                                    <td class="health-check-detail" id="health-detail-api">Checking…</td>
+                                    <td class="health-check-latency" id="health-latency-api">—</td>
+                                </tr>
+                                <tr id="health-check-entra">
+                                    <td><span class="health-dot health-dot-unknown"></span></td>
+                                    <td class="health-check-name">Entra ID</td>
+                                    <td class="health-check-detail" id="health-detail-entra">Checking…</td>
+                                    <td class="health-check-latency" id="health-latency-entra">—</td>
+                                </tr>
+                                <tr id="health-check-workiq">
+                                    <td><span class="health-dot health-dot-unknown"></span></td>
+                                    <td class="health-check-name">Work IQ</td>
+                                    <td class="health-check-detail" id="health-detail-workiq">Checking…</td>
+                                    <td class="health-check-latency" id="health-latency-workiq">—</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
 
                     <!-- Observability Summary Bar -->
@@ -1499,7 +1520,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=265"></script>
+    <script src="/static/app.js?v=266"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
