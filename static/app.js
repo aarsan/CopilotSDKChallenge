@@ -1621,6 +1621,10 @@ function _initRunningCardForTableUpdate(targetVersion, serviceId) {
         <div class="validation-detail" id="validation-detail">Initializing API version update pipeline…</div>
         <div class="validation-log" id="validation-log"></div>
     `;
+
+    // Seed immediate progress so the log area isn't empty
+    const svc = serviceId ? allServices.find(s => s.id === serviceId) : null;
+    _seedPipelineProgress(svc ? svc.name : 'service');
 }
 
 async function showServiceDetail(serviceId) {
@@ -2812,6 +2816,8 @@ async function triggerDraftValidation(serviceId, version, semver) {
         `;
     }
 
+    _seedPipelineProgress(svcName);
+
     try {
         const body = { use_version: version };
 
@@ -2947,6 +2953,9 @@ async function triggerOnboarding(serviceId, opts = {}) {
             <div class="validation-log" id="validation-log"></div>
         `;
     }
+
+    // Seed immediate progress messages so the user sees activity right away
+    _seedPipelineProgress(svcName);
 
     try {
         const body = {};
@@ -3903,6 +3912,8 @@ async function triggerApiVersionUpdate(serviceId, targetVersion) {
         `;
     }
 
+    _seedPipelineProgress(svcName);
+
     try {
         const body = {};
         if (targetVersion) body.target_version = targetVersion;
@@ -4717,7 +4728,16 @@ function _handleUpdateFlowEvent(logEl, event, card) {
     const type = event.type || '';
     const detail = event.detail || '';
 
-    if (phase === 'init_model') {
+    if (phase === 'pipeline_start') {
+        if (logEl._flow?.cards['connecting']) {
+            _flowDetail(logEl, 'connecting', '✓', 'Connected to pipeline server', 'uf-text-success');
+            _flowFinalize(logEl, 'connecting', 'done', 'Connected');
+        }
+    } else if (phase === 'init_model') {
+        if (logEl._flow?.cards['connecting'] && logEl._flow.cards['connecting'].classList.contains('uf-action-active')) {
+            _flowDetail(logEl, 'connecting', '✓', 'Connected to pipeline server', 'uf-text-success');
+            _flowFinalize(logEl, 'connecting', 'done', 'Connected');
+        }
         // Model routing — show as first card with pipeline setup info
         _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
         if (event.model_routing) {
@@ -5137,7 +5157,21 @@ function _handleValidationFlowEvent(logEl, event, card) {
     }
 
     // ── Phase → flow card mapping ──
-    if (phase === 'init_model') {
+    if (phase === 'pipeline_start') {
+        // First real event from the server — finalize the connecting card
+        if (logEl._flow?.cards['connecting']) {
+            _flowDetail(logEl, 'connecting', '✓', 'Connected to pipeline server', 'uf-text-success');
+            _flowFinalize(logEl, 'connecting', 'done', 'Connected');
+        }
+        if (detail) {
+            // Don't create a separate card — just mark connection done
+        }
+    } else if (phase === 'init_model') {
+        // Finalize connecting card if it wasn't already
+        if (logEl._flow?.cards['connecting'] && logEl._flow.cards['connecting'].classList.contains('uf-action-active')) {
+            _flowDetail(logEl, 'connecting', '✓', 'Connected to pipeline server', 'uf-text-success');
+            _flowFinalize(logEl, 'connecting', 'done', 'Connected');
+        }
         _flowCard(logEl, 'setup', '⚙️', 'Pipeline Setup ' + _copilotTag());
         if (event.model_routing) {
             for (const [taskKey, info] of Object.entries(event.model_routing)) {
@@ -5439,6 +5473,19 @@ function _handleValidationFlowEvent(logEl, event, card) {
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
+    }
+}
+
+/**
+ * Seed the pipeline log with immediate progress messages so the user
+ * sees activity before the first real NDJSON event arrives from the server.
+ */
+function _seedPipelineProgress(svcName) {
+    for (const logEl of _getFlowTargets()) {
+        _flowInit(logEl);
+        _flowCard(logEl, 'connecting', '🔌', 'Connecting to Pipeline');
+        _flowDetail(logEl, 'connecting', '▸', `Requesting onboarding for <strong>${escapeHtml(svcName || 'service')}</strong>…`);
+        _flowDetail(logEl, 'connecting', '▸', 'Preparing runtime for Azure deployment…');
     }
 }
 

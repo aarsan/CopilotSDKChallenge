@@ -6278,7 +6278,7 @@ tr:hover .svc-view-tpl-btn {
 }
 
 .validation-log:empty::before {
-    content: 'Waiting for deployment events…';
+    content: 'Connecting to pipeline…';
     color: rgba(255, 255, 255, 0.25);
     font-style: italic;
 }
