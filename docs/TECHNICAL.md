@@ -344,6 +344,11 @@ analytics — the foundation of **Work IQ**.
 InfraForge integrates with Microsoft Fabric to provide enterprise analytics
 through OneLake. The `src/fabric.py` module implements the full ETL pipeline.
 
+The Fabric workspace and Lakehouse are **auto-provisioned** by `scripts/setup.ps1`
+(Step 6/9). The script creates a workspace (`InfraForge-Analytics`) and Lakehouse
+(`infraforge_lakehouse`) via the Fabric REST API, populating the three `FABRIC_*`
+environment variables automatically. Use `-SkipFabric` to skip if no capacity exists.
+
 ### Architecture
 
 ```
@@ -384,9 +389,9 @@ through OneLake. The `src/fabric.py` module implements the full ETL pipeline.
 
 | Variable | Purpose |
 |----------|---------|
-| `FABRIC_WORKSPACE_ID` | Target Fabric workspace |
-| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint URL |
-| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name |
+| `FABRIC_WORKSPACE_ID` | Target Fabric workspace (auto-provisioned by `setup.ps1` Step 6) |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint URL (auto-provisioned by `setup.ps1` Step 6) |
+| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name (auto-provisioned by `setup.ps1` Step 6) |
 
 ### Analytics Provided
 
@@ -410,6 +415,6 @@ API scope and OneLake DFS scope.
 | `ENTRA_TENANT_ID` | Azure AD tenant ID |
 | `ENTRA_CLIENT_SECRET` | Entra ID client secret |
 | `ENTRA_REDIRECT_URI` | Auth callback URL |
-| `FABRIC_WORKSPACE_ID` | Microsoft Fabric workspace ID |
-| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint URL |
-| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name |
+| `FABRIC_WORKSPACE_ID` | Fabric workspace ID (auto-provisioned by `setup.ps1`) |
+| `FABRIC_ONELAKE_DFS_ENDPOINT` | OneLake DFS endpoint (auto-provisioned by `setup.ps1`) |
+| `FABRIC_LAKEHOUSE_NAME` | OneLake lakehouse name (auto-provisioned by `setup.ps1`) |

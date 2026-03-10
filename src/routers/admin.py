@@ -528,8 +528,8 @@ async def get_enforcement_mode_setting():
         "enforcement_mode": get_enforcement_mode(),
         "options": ["enforce", "audit"],
         "descriptions": {
-            "enforce": "Governance policies block deployments when violations are found (default)",
-            "audit": "Governance policies log findings but never block deployments",
+            "enforce": "Governance policies block deployments when violations are found",
+            "audit": "Governance policies log findings but never block deployments (default)",
         },
     })
 

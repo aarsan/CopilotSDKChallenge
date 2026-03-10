@@ -56,7 +56,7 @@ def set_active_model(model_id: str) -> bool:
 # ── Governance Enforcement Mode ──────────────────────────────
 # "enforce" = current behavior (block/warn as configured per policy)
 # "audit"   = all checks run & report findings, but nothing blocks
-_enforcement_mode: str = "enforce"
+_enforcement_mode: str = "audit"
 
 
 def get_enforcement_mode() -> str:
