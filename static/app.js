@@ -3866,6 +3866,26 @@ function closePipelineOverlay() {
     _pipelineOverlayOpen = false;
 }
 
+/** Toggle all pipeline cards expanded/collapsed */
+function toggleAllPipelineCards() {
+    const canvas = document.getElementById('pipeline-canvas');
+    if (!canvas) return;
+    const bodies = canvas.querySelectorAll('.uf-action-body');
+    const btn = document.getElementById('pipeline-toggle-all');
+    // If any are open, collapse all; otherwise expand all
+    const anyOpen = Array.from(bodies).some(b => b.classList.contains('uf-body-open'));
+    bodies.forEach(b => {
+        if (anyOpen) {
+            b.classList.remove('uf-body-open');
+        } else {
+            b.classList.add('uf-body-open');
+        }
+        const chev = b.closest('.uf-action')?.querySelector('.uf-action-chevron');
+        if (chev) chev.textContent = anyOpen ? '▸' : '▾';
+    });
+    if (btn) btn.textContent = anyOpen ? 'Expand All' : 'Collapse All';
+}
+
 /** Reopen the overlay (preserves existing canvas content) */
 function reopenPipelineOverlay() {
     const overlay = document.getElementById('pipeline-overlay');
@@ -4356,6 +4376,7 @@ function _flowCard(logEl, key, icon, title) {
             <div class="uf-action-badge uf-badge-active">
                 <span class="uf-badge-dot"></span>
             </div>
+            <div class="uf-action-chevron">▾</div>
         </div>
         <div class="uf-action-body uf-body-open"></div>
     `;
@@ -4363,8 +4384,10 @@ function _flowCard(logEl, key, icon, title) {
     const head = card.querySelector('.uf-action-head');
     head.addEventListener('click', () => {
         const body = card.querySelector('.uf-action-body');
-        if (!body || !body.children.length) return;
+        if (!body) return;
         body.classList.toggle('uf-body-open');
+        const chev = card.querySelector('.uf-action-chevron');
+        if (chev) chev.textContent = body.classList.contains('uf-body-open') ? '▾' : '▸';
     });
     logEl.appendChild(card);
     flow.cards[key] = card;
@@ -4411,10 +4434,13 @@ function _flowFinalize(logEl, key, status, label) {
         const iterLabel = iter > 1 ? ` (${iter} iterations)` : '';
         badge.innerHTML = status === 'failed' ? '✗ Failed' : (label || '✓') + iterLabel;
     }
-    // Auto-collapse body of done cards
+    // Update chevron to reflect current body state
     const body = card.querySelector('.uf-action-body');
-    if (body && status !== 'failed') {
-        body.classList.remove('uf-body-open');
+    const chev = card.querySelector('.uf-action-chevron');
+    if (body) {
+        // Keep body open so users can see what happened
+        // (click to collapse manually)
+        if (chev) chev.textContent = body.classList.contains('uf-body-open') ? '▾' : '▸';
     }
     // Update preceding connector
     const prev = card.previousElementSibling;

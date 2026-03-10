@@ -6806,6 +6806,21 @@ tr:hover .svc-view-tpl-btn {
     font-size: 0.72rem;
     padding: 0.25rem 0.6rem;
 }
+.pipeline-overlay-toggle {
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.pipeline-overlay-toggle:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
 .pipeline-overlay-close {
     width: 32px; height: 32px;
     border: 1px solid var(--border-default);
@@ -6878,10 +6893,9 @@ tr:hover .svc-view-tpl-btn {
     box-shadow: 0 0 0 1px rgba(59,130,246,0.10), 0 4px 16px rgba(0,0,0,0.22);
 }
 .uf-action-done {
-    border-color: var(--border-subtle);
-    opacity: 0.92;
+    border-color: var(--border-default);
+    opacity: 1;
 }
-.uf-action-done:hover { opacity: 1; }
 .uf-action-failed {
     border-color: #f85149;
     box-shadow: 0 0 0 1px rgba(248,81,73,0.10), 0 2px 8px rgba(248,81,73,0.08);
@@ -6904,7 +6918,7 @@ tr:hover .svc-view-tpl-btn {
     transition: background 0.15s;
 }
 .uf-action-head:hover { background: var(--bg-tertiary); }
-.uf-action-done .uf-action-head { border-bottom-color: transparent; }
+.uf-action-done .uf-action-head { border-bottom-color: var(--border-subtle); }
 
 /* Icon container — resembles Logic Apps node icon */
 .uf-action-icon {
@@ -6927,7 +6941,7 @@ tr:hover .svc-view-tpl-btn {
     min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.uf-action-done .uf-action-name { color: var(--text-secondary); }
+.uf-action-done .uf-action-name { color: var(--text-primary); }
 
 /* Status badge */
 .uf-action-badge {
@@ -6981,13 +6995,13 @@ tr:hover .svc-view-tpl-btn {
 
 /* Expand/collapse chevron */
 .uf-action-chevron {
-    font-size: 0.6rem;
-    color: var(--text-muted);
-    transition: transform 0.2s;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    transition: color 0.15s;
     flex-shrink: 0;
+    margin-left: 0.25rem;
 }
-.uf-body-open ~ .uf-action-head .uf-action-chevron,
-.uf-action-head[data-open="true"] .uf-action-chevron { transform: rotate(180deg); }
+.uf-action-head:hover .uf-action-chevron { color: var(--text-primary); }
 
 /* ── Action Body — collapsible detail ────────────────────── */
 .uf-action-body {

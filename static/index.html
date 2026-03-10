@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=233">
+    <link rel="stylesheet" href="/static/styles.css?v=234">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -992,6 +992,7 @@
             </div>
             <div class="pipeline-overlay-meta" id="pipeline-overlay-meta"></div>
             <div class="pipeline-overlay-right">
+                <button class="pipeline-overlay-toggle" id="pipeline-toggle-all" onclick="toggleAllPipelineCards()" title="Expand or collapse all steps">Collapse All</button>
                 <button class="log-toggle-reasoning pipeline-overlay-reasoning" id="pipeline-reasoning-btn" onclick="toggleReasoningVisibility()" title="Show/hide AI reasoning">🧠 AI Thinking</button>
                 <button class="pipeline-overlay-close" onclick="closePipelineOverlay()">×</button>
             </div>
@@ -1467,7 +1468,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=258"></script>
+    <script src="/static/app.js?v=259"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
