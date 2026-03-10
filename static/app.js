@@ -3021,6 +3021,133 @@ async function triggerOnboarding(serviceId, opts = {}) {
     }
 }
 
+// ── Create Template — unified onboard + validate + publish ──
+
+/** Single-click Create flow for composite templates.
+ *  Onboards non-onboarded deps, then auto-triggers validation pipeline. */
+async function createTemplate(templateId) {
+    // Fetch composition to find non-onboarded services
+    let notOnboarded = [];
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`);
+        if (res.ok) {
+            const data = await res.json();
+            notOnboarded = (data.components || []).filter(c => c.fully_onboarded === false);
+        }
+    } catch (err) {
+        showToast(`Failed to check composition: ${err.message}`, 'error');
+        return;
+    }
+
+    if (notOnboarded.length === 0) {
+        // All deps already onboarded — go straight to validation
+        runFullValidation(templateId);
+        return;
+    }
+
+    // Update CTA banner to show "awaiting" message
+    const cta = document.getElementById('tmpl-create-cta');
+    if (cta) {
+        cta.innerHTML = `
+            <div class="tmpl-test-banner tmpl-test-awaiting">
+                <span class="tmpl-awaiting-spinner"></span>
+                <strong>Awaiting services to onboard</strong> — Will validate and publish template when all dependent services are onboarded.
+            </div>`;
+    }
+
+    // Initialize batch state with auto-validate flag
+    const serviceIds = notOnboarded.map(c => c.service_id);
+    const serviceNames = {};
+    for (const c of notOnboarded) {
+        serviceNames[c.service_id] = c.name || c.service_id.split('/').pop();
+    }
+    const statuses = {};
+    for (const id of serviceIds) {
+        statuses[id] = { phase: '', progress: 0, detail: 'Queued…', status: 'pending', error: '' };
+    }
+
+    _batchOnboardState = {
+        templateId,
+        serviceIds,
+        serviceNames,
+        pollTimer: null,
+        startedAt: Date.now(),
+        statuses,
+        autoValidate: true,
+    };
+
+    // Mark hero nodes as onboarding
+    for (const id of serviceIds) _setHeroNodeOnboarding(id);
+
+    // Hide the not-onboarded banner (the batch panel replaces it)
+    const banner = document.querySelector('.comp-hero-not-onboarded-banner');
+    if (banner) banner.style.display = 'none';
+
+    // Render batch tracker panel
+    _renderBatchOnboardPanel();
+
+    // Fire onboarding requests concurrently
+    for (const id of serviceIds) {
+        _fireOnboardRequest(id);
+    }
+
+    // Start polling
+    _startBatchPoll();
+}
+
+// ── Hero Node Visual Helpers for Batch Onboarding ───────────
+
+function _setHeroNodeOnboarding(serviceId) {
+    const node = document.querySelector(`.hero-node[data-sid="${CSS.escape(serviceId)}"]`);
+    if (!node) return;
+    node.classList.add('hero-node-onboarding');
+    node.classList.remove('hero-node-not-onboarded');
+    const badge = node.querySelector('.hero-node-not-onboarded-badge');
+    if (badge) {
+        badge.className = 'hero-node-onboarding-badge';
+        badge.innerHTML = '🔄 onboarding';
+    }
+    const btn = node.querySelector('.hero-node-onboard-btn');
+    if (btn) btn.style.display = 'none';
+}
+
+function _setHeroNodeOnboarded(serviceId) {
+    const node = document.querySelector(`.hero-node[data-sid="${CSS.escape(serviceId)}"]`);
+    if (!node) return;
+    node.classList.remove('hero-node-onboarding', 'hero-node-not-onboarded');
+    node.classList.add('hero-node-onboarded');
+    const badge = node.querySelector('.hero-node-onboarding-badge') || node.querySelector('.hero-node-not-onboarded-badge');
+    if (badge) {
+        badge.className = 'hero-node-onboarded-badge';
+        badge.innerHTML = '✅ onboarded';
+    }
+    const btn = node.querySelector('.hero-node-onboard-btn');
+    if (btn) btn.style.display = 'none';
+}
+
+function _setHeroNodeFailed(serviceId) {
+    const node = document.querySelector(`.hero-node[data-sid="${CSS.escape(serviceId)}"]`);
+    if (!node) return;
+    node.classList.remove('hero-node-onboarding');
+    node.classList.add('hero-node-onboard-failed');
+    const badge = node.querySelector('.hero-node-onboarding-badge') || node.querySelector('.hero-node-not-onboarded-badge');
+    if (badge) {
+        badge.className = 'hero-node-failed-badge';
+        badge.innerHTML = '❌ failed';
+    }
+}
+
+/** Sync hero node visuals with current batch onboarding state */
+function _syncHeroNodesWithBatch() {
+    if (!_batchOnboardState) return;
+    for (const id of _batchOnboardState.serviceIds) {
+        const st = _batchOnboardState.statuses[id];
+        if (st.status === 'succeeded') _setHeroNodeOnboarded(id);
+        else if (st.status === 'failed') _setHeroNodeFailed(id);
+        else _setHeroNodeOnboarding(id);
+    }
+}
+
 /** Batch-onboard multiple services with an inline progress tracker.
  *  Fires all onboard requests in parallel, polls /api/activity for status,
  *  and renders per-service mini-cards with live progress. */
@@ -3180,9 +3307,44 @@ async function _pollBatchActivity() {
 
         _renderBatchOnboardPanel();
 
+        // Update hero node visuals to match current statuses
+        _syncHeroNodesWithBatch();
+
         if (!anyActive) {
             _stopBatchPoll();
-            await loadAllData();
+
+            const autoValidate = _batchOnboardState && _batchOnboardState.autoValidate;
+            const tplId = _batchOnboardState ? _batchOnboardState.templateId : null;
+            const allSucceeded = _batchOnboardState &&
+                Object.values(_batchOnboardState.statuses).every(s => s.status === 'succeeded');
+
+            if (autoValidate && tplId) {
+                // Auto-continue: dismiss batch panel and proceed
+                _batchOnboardState = null;
+                const panel = document.getElementById('batch-onboard-panel');
+                if (panel) panel.remove();
+
+                await loadAllData();
+
+                if (allSucceeded) {
+                    // Update CTA to show validation-in-progress message
+                    const cta = document.getElementById('tmpl-create-cta');
+                    if (cta) {
+                        cta.innerHTML = `
+                            <div class="tmpl-test-banner tmpl-test-validating">
+                                <span class="tmpl-awaiting-spinner"></span>
+                                <strong>All services onboarded</strong> — Running template validation pipeline…
+                            </div>`;
+                    }
+                    showToast('✅ All services onboarded — starting template validation…', 'success');
+                    runFullValidation(tplId);
+                } else {
+                    showToast('⚠️ Some services failed to onboard. Fix the issues and try again.', 'warning');
+                    showTemplateDetail(tplId);
+                }
+            } else {
+                await loadAllData();
+            }
         }
     } catch (err) {
         console.warn('[batch-onboard] Poll failed:', err.message);
@@ -5732,16 +5894,29 @@ function showTemplateDetail(templateId) {
 
     // ── Status-aware CTA ──
     let ctaHtml = '';
+    const _isComposite = ttype === 'composite' || tmpl.is_blueprint || (tmpl.service_ids && tmpl.service_ids.length > 1);
     if (status === 'draft') {
-        ctaHtml = `
-        <div class="detail-section tmpl-test-cta">
-            <div class="tmpl-test-banner tmpl-test-pending">
-                📝 <strong>New Template</strong> — I haven't tested this yet. Let me run validation to check if everything's set up correctly.
-            </div>
-            <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
-                🧪 Validate
-            </button>
-        </div>`;
+        if (_isComposite) {
+            ctaHtml = `
+            <div class="detail-section tmpl-test-cta" id="tmpl-create-cta">
+                <div class="tmpl-test-banner tmpl-test-pending">
+                    📝 <strong>New Template</strong> — Click Create to onboard any pending services, validate, and publish this template automatically.
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="createTemplate('${escapeHtml(tmpl.id)}')">
+                    🚀 Create
+                </button>
+            </div>`;
+        } else {
+            ctaHtml = `
+            <div class="detail-section tmpl-test-cta">
+                <div class="tmpl-test-banner tmpl-test-pending">
+                    📝 <strong>New Template</strong> — I haven't tested this yet. Let me run validation to check if everything's set up correctly.
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="runFullValidation('${escapeHtml(tmpl.id)}')">
+                    🧪 Validate
+                </button>
+            </div>`;
+        }
     } else if (status === 'passed') {
         ctaHtml = `
         <div class="detail-section tmpl-test-cta">
@@ -6404,11 +6579,22 @@ async function _loadTemplateComposition(templateId) {
         } else if (anyNotOnboarded) {
             const notOnboardedIds = components.filter(c => c.fully_onboarded === false).map(c => c.service_id);
             const idsAttr = escapeHtml(JSON.stringify(notOnboardedIds));
-            html += `<div class="comp-hero-not-onboarded-banner">
-                <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
-                — their ARM templates have not been deployment-validated.</div>
-                <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids), '${escapeHtml(templateId)}')" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
-            </div>`;
+            // For draft composites, the "Create" button in the CTA handles onboarding — just show info
+            const tmplObj = allTemplates.find(t => t.id === templateId);
+            const isDraftComposite = tmplObj && tmplObj.status === 'draft' &&
+                (tmplObj.template_type === 'composite' || tmplObj.is_blueprint || (tmplObj.service_ids && tmplObj.service_ids.length > 1));
+            if (isDraftComposite) {
+                html += `<div class="comp-hero-not-onboarded-banner">
+                    <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not yet onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                    — click <strong>Create</strong> above to onboard all services and validate the template.</div>
+                </div>`;
+            } else {
+                html += `<div class="comp-hero-not-onboarded-banner">
+                    <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                    — their ARM templates have not been deployment-validated.</div>
+                    <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids), '${escapeHtml(templateId)}')" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
+                </div>`;
+            }
         }
 
         // Recompose all / check for updates row
@@ -6424,9 +6610,10 @@ async function _loadTemplateComposition(templateId) {
 
         container.innerHTML = html;
 
-        // If batch onboarding is active, render the tracker panel into the anchor
+        // If batch onboarding is active, render the tracker panel and sync hero nodes
         if (_batchOnboardState && _batchOnboardState.templateId === templateId) {
             _renderBatchOnboardPanel();
+            _syncHeroNodesWithBatch();
         }
 
         // Update the template version display with semver from the API
