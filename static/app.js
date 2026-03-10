@@ -1290,10 +1290,19 @@ function renderServiceTable(services) {
             azureApiHtml = `<span class="azure-api-badge azure-api-none" title="Run Check for Updates to populate">—</span>`;
         }
 
-        return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')">
+        // Detect child resource (3+ segments in resource type)
+        const idParts = svc.id.split('/');
+        const isChildResource = idParts.length >= 3;
+        const parentShortName = isChildResource ? idParts[1] : null;
+        const childTag = isChildResource
+            ? `<span class="svc-child-tag" title="Child resource of ${escapeHtml(idParts.slice(0, 2).join('/'))}">↳ child of ${escapeHtml(parentShortName)}</span>`
+            : '';
+
+        return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${isChildResource ? ' class="svc-row-child"' : ''}>
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
+                ${childTag}
             </td>
             <td><span class="category-badge">${escapeHtml(svc.category)}</span></td>
             <td>${svc.latest_semver ? `<span class="version-badge version-semver">${escapeHtml(svc.latest_semver)}</span>` : (svc.active_version ? `<span class="version-badge version-semver-int">v${svc.active_version}</span>` : '<span class="version-badge version-none">—</span>')}</td>
@@ -6482,13 +6491,31 @@ async function _loadTemplateComposition(templateId) {
         const notOnboardedNames = components.filter(c => c.fully_onboarded === false).map(c => c.name || c.service_id.split('/').pop());
         const providesList = data.provides || [];
 
+        // Build parent→children map for visual grouping
+        const childrenByParent = {};
+        const childIds = new Set();
+        const component_ids = new Set(components.map(c => c.service_id));
+        for (const c of components) {
+            if (c.parent_service_id && component_ids.has(c.parent_service_id)) {
+                if (!childrenByParent[c.parent_service_id]) childrenByParent[c.parent_service_id] = [];
+                childrenByParent[c.parent_service_id].push(c);
+                childIds.add(c.service_id);
+            }
+        }
+
         let html = '<div class="comp-hero-graph-inner">';
 
         // Layers (top = dependents, bottom = foundations)
         for (let li = 0; li < layers.length; li++) {
             const layer = layers[li];
+            // Filter out children that will be rendered inside their parent
+            const layerFiltered = layer.filter(c => !childIds.has(c.service_id));
+            if (!layerFiltered.length) {
+                // Entire layer is children — skip the layer and connector
+                continue;
+            }
             html += '<div class="comp-hero-layer">';
-            for (const c of layer) {
+            for (const c of layerFiltered) {
                 const shortName = c.name || c.service_id.split('/').pop();
                 const verDisplay = c.version_known === false ? '?' : (c.current_semver || '—');
                 const statusCls = c.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
@@ -6542,6 +6569,35 @@ async function _loadTemplateComposition(templateId) {
                             ${depIconsHtml}
                         </div>
                     </div>`;
+
+                // Render child resources nested under this parent
+                const myChildren = childrenByParent[c.service_id];
+                if (myChildren && myChildren.length) {
+                    html += `<div class="hero-children-strip" data-parent="${escapeHtml(c.service_id)}">`;
+                    for (const child of myChildren) {
+                        const childName = child.name || child.service_id.split('/').pop();
+                        const childVer = child.version_known === false ? '?' : (child.current_semver || '—');
+                        const childOnboarded = child.fully_onboarded === false;
+                        const childStatusCls = child.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
+                        html += `
+                        <div class="hero-node hero-node-child ${childStatusCls}${childOnboarded ? ' hero-node-not-onboarded' : ''}" data-sid="${escapeHtml(child.service_id)}" title="${escapeHtml(child.service_id)}">
+                            <div class="hero-node-icon">${_azureIcon(child.service_id, 20)}</div>
+                            <div class="hero-node-body">
+                                <div class="hero-node-name">${escapeHtml(childName)} <span class="hero-child-tag">child</span></div>
+                                <div class="hero-node-ver-row">
+                                    <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}', this)" title="Click to change pinned version">v${childVer}</span>
+                                    ${child.version_known === false
+                                        ? `<span class="hero-node-unknown">⚠ untracked</span>`
+                                        : child.upgrade_available
+                                            ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}','${escapeHtml(child.latest_semver)}',${child.latest_version})">⬆ ${child.latest_semver}</button>`
+                                            : '<span class="hero-node-latest">✓ latest</span>'}
+                                </div>
+                                ${childOnboarded ? `<div class="hero-node-not-onboarded-badge">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(child.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(child.service_id)}'), 300)">🚀 Onboard</button>` : ''}
+                            </div>
+                        </div>`;
+                    }
+                    html += '</div>';
+                }
             }
             html += '</div>';
 

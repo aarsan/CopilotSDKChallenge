@@ -1695,6 +1695,18 @@ tr:hover .svc-view-tpl-btn {
     font-family: var(--font-mono);
 }
 
+.svc-child-tag {
+    display: inline-block;
+    font-size: 0.62rem;
+    color: var(--accent-primary, #6366f1);
+    opacity: 0.8;
+    margin-top: 1px;
+}
+
+.svc-row-child {
+    opacity: 0.92;
+}
+
 .catalog-loading {
     text-align: center;
     color: var(--text-muted);
@@ -2265,6 +2277,57 @@ tr:hover .svc-view-tpl-btn {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
+}
+
+/* ── Child Resource Strip (nested under parent) ── */
+.hero-children-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: -0.15rem;
+    margin-left: 1.5rem;
+    padding: 0.35rem 0.5rem;
+    border-left: 2px solid var(--border-muted);
+    position: relative;
+}
+.hero-children-strip::before {
+    content: '└';
+    position: absolute;
+    left: -0.75rem;
+    top: 0.4rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    opacity: 0.5;
+}
+.hero-node.hero-node-child {
+    min-width: 140px;
+    max-width: 200px;
+    padding: 0.45rem 0.65rem;
+    font-size: 0.82rem;
+    border-radius: 7px;
+    background: var(--bg-tertiary);
+    border-width: 1px;
+    border-left-width: 3px;
+}
+.hero-node.hero-node-child .hero-node-name {
+    font-size: 0.78rem;
+}
+.hero-node.hero-node-child .hero-node-ver {
+    font-size: 0.68rem;
+}
+.hero-child-tag {
+    display: inline-block;
+    font-size: 0.58rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border-muted);
+    border-radius: 3px;
+    padding: 0 3px;
+    vertical-align: middle;
+    margin-left: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
 }
 
 /* ── Not-onboarded Warning Banner ───────── */

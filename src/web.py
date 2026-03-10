@@ -4854,7 +4854,7 @@ async def get_template_composition(template_id: str):
     Azure SQL round-trips.
     """
     import asyncio
-    from src.template_engine import RESOURCE_DEPENDENCIES
+    from src.template_engine import RESOURCE_DEPENDENCIES, get_parent_resource_type
 
     tmpl = await _require_template(template_id)
 
@@ -4890,6 +4890,7 @@ async def get_template_composition(template_id: str):
                 "name": sid.split("/")[-1],
                 "category": "",
                 "status": "unknown",
+                "parent_service_id": get_parent_resource_type(sid),
                 "current_version": None,
                 "current_semver": None,
                 "latest_version": None,
@@ -4924,6 +4925,7 @@ async def get_template_composition(template_id: str):
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
             "fully_onboarded": svc.get("reviewed_by") == "Deployment Validated",
+            "parent_service_id": get_parent_resource_type(sid),
             "current_version": pinned_int,
             "current_semver": pinned_semver or (f"{pinned_int}.0.0" if pinned_int else None),
             "latest_version": active_int,
