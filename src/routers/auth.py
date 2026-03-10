@@ -385,8 +385,13 @@ async def get_activity():
         svc_id = svc.get("id", "")
 
         # Include services that are validating, validation_failed, recently approved,
-        # OR have a live pipeline running (status may still be not_approved early in pipeline)
+        # OR have a live pipeline running (status may still be not_approved early in pipeline).
+        # Exclude catalog-only approvals (no active_version) — they never went
+        # through the onboarding pipeline so showing them as "all stages done"
+        # is misleading.
         live = _active_validations.get(svc_id)
+        if status == "approved" and not svc.get("active_version") and not live:
+            continue  # governance-only approval, skip
         if status in ("validating", "validation_failed", "approved") or (live and live.get("status") == "running"):
 
             job = {
