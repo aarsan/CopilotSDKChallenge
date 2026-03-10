@@ -361,6 +361,10 @@ def validate_template_against_standards(
         scope = std.get("scope", "*")
         severity = std.get("severity", "high")
         enforcement = "block" if severity in ("critical", "high") else "warn"
+        # Audit-only mode: downgrade all enforcement to warnings (never block)
+        from src.config import get_enforcement_mode
+        if get_enforcement_mode() == "audit":
+            enforcement = "warn"
         remediation = rule.get("remediation", "")
 
         if rule_type in ("property", "property_check"):

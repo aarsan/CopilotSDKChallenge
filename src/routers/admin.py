@@ -16,6 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 
+from src.config import get_enforcement_mode, set_enforcement_mode
 from src.database import get_approval_requests, update_approval_request
 
 logger = logging.getLogger("infraforge.web")
@@ -516,3 +517,37 @@ async def get_fabric_status():
             "tables": list(SYNC_TABLES.keys()),
         },
     })
+
+
+# ── Governance Enforcement Mode ───────────────────────────────
+
+@router.get("/api/settings/enforcement-mode")
+async def get_enforcement_mode_setting():
+    """Return the current governance enforcement mode."""
+    return JSONResponse({
+        "enforcement_mode": get_enforcement_mode(),
+        "options": ["enforce", "audit"],
+        "descriptions": {
+            "enforce": "Governance policies block deployments when violations are found (default)",
+            "audit": "Governance policies log findings but never block deployments",
+        },
+    })
+
+
+@router.put("/api/settings/enforcement-mode")
+async def update_enforcement_mode_setting(request: Request):
+    """Change the governance enforcement mode at runtime."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    mode = body.get("mode", "").strip().lower()
+    if not set_enforcement_mode(mode):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{mode}'. Valid modes: enforce, audit",
+        )
+
+    logger.info(f"Governance enforcement mode changed to: {mode}")
+    return JSONResponse({"enforcement_mode": mode, "status": "updated"})

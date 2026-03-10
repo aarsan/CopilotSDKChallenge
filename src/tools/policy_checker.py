@@ -258,6 +258,19 @@ async def check_policy_compliance(params: CheckPolicyParams) -> str:
         })
         all_findings_flat.extend(resource_findings)
 
+    # ── Audit-only mode: downgrade FAILs to WARNs (never block) ──
+    from src.config import get_enforcement_mode
+    if get_enforcement_mode() == "audit":
+        for item in findings:
+            for f in item["findings"]:
+                if f["severity"] == "FAIL":
+                    f["severity"] = "WARN"
+        for f in all_findings_flat:
+            if f["severity"] == "FAIL":
+                f["severity"] = "WARN"
+        warnings = warnings + failures
+        failures = 0
+
     # ── Calculate score ──────────────────────────────────────
     total_checks = passed + warnings + failures
     score = (passed / total_checks * 100) if total_checks > 0 else 0.0
