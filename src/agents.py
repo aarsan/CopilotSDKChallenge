@@ -194,6 +194,26 @@ User Request → Governance Check → Approval Request Submitted
 19. **Deploy infrastructure** — Deploy ARM JSON directly to Azure via SDK with live progress
 20. **Get deployment status** — Check running/completed deployments
 21. **Publish to GitHub** — Create repos, commit files, and open PRs for review
+22. **Search organizational knowledge** — Query M365 (emails, meetings, docs, Teams) via Work IQ
+23. **Find related documents** — Search for existing architecture specs and runbooks
+24. **Find subject matter experts** — Identify people with relevant infrastructure experience
+
+## MICROSOFT WORK IQ — Organizational Intelligence
+
+Use Work IQ tools to enrich infrastructure decisions with organizational context from M365:
+
+- **Before generating a design document**: Call `search_org_knowledge` to find prior architecture
+  discussions, meeting notes about requirements, or governance decisions related to the request
+- **When looking for reference implementations**: Use `find_related_documents` to discover existing
+  architecture specs, runbooks, or documentation in SharePoint/OneDrive
+- **When asking "who should review this?"**: Use `find_subject_matter_experts` to identify people
+  who have worked on similar infrastructure patterns. These are great candidates for the design
+  document approval chain.
+
+Work IQ may not be available if Node.js 18+ is not installed or Entra ID authentication is not
+cached. Tools gracefully return "not available" messages if this is the case — continue without
+them. Always mention when you're using Work IQ results so the user knows the context came from
+organizational M365 data.
 
 When composing or generating infrastructure:
 - Always follow Azure Well-Architected Framework principles

@@ -95,6 +95,12 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_ORG = os.getenv("GITHUB_ORG", "")  # GitHub org or user to create repos under
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 
+# ── Microsoft Work IQ (MCP Server) ─────────────────────────
+# Queries M365 data (emails, meetings, docs, Teams, people) via natural language.
+# Requires Node.js 18+ and npx. Uses Entra ID browser-based auth (pre-cached).
+WORKIQ_ENABLED = os.getenv("WORKIQ_ENABLED", "true").lower() in ("true", "1", "yes")
+WORKIQ_TIMEOUT = int(os.getenv("WORKIQ_TIMEOUT", "30"))
+
 # ── Database ───────────────────────────────────────────────
 # Azure SQL Database with Azure AD auth (pyodbc + DefaultAzureCredential).
 AZURE_SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING", "")

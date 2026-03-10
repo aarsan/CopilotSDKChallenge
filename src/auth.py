@@ -227,8 +227,8 @@ def _build_user_context(claims: dict, access_token: Optional[str] = None) -> Use
     - Department and job title (if not in token claims)
     - Cost center from directory extensions
 
-    This is the Work IQ integration point — organizational knowledge
-    from Microsoft Graph enriches every agent interaction.
+    Organizational context from Microsoft Graph enriches every
+    agent interaction with identity-aware tagging and routing.
     """
     # Standard claims from the ID token
     ctx = UserContext(
@@ -256,7 +256,7 @@ def _build_user_context(claims: dict, access_token: Optional[str] = None) -> Use
     # Try to extract cost center from custom claims (configured in Entra ID)
     ctx.cost_center = claims.get("extension_costCenter", claims.get("costCenter", ""))
 
-    # ── Microsoft Graph API enrichment (Work IQ) ──────────────
+    # ── Microsoft Graph API enrichment ─────────────────────────
     # Fetch manager chain, department, and additional profile data
     # from the organizational knowledge graph.
     if access_token:
@@ -270,7 +270,7 @@ def _build_user_context(claims: dict, access_token: Optional[str] = None) -> Use
                     ctx.department = graph_data["department"]
                 if graph_data.get("officeLocation"):
                     ctx.team = graph_data["officeLocation"]
-                # Manager from Graph (the key Work IQ feature)
+                # Manager from Graph (for approval routing)
                 if graph_data.get("manager_name"):
                     ctx.manager = graph_data["manager_name"]
         except Exception as e:
@@ -284,7 +284,7 @@ def _fetch_graph_profile(access_token: str) -> Optional[dict]:
     """Fetch user profile and manager from Microsoft Graph.
 
     Uses the /me endpoint and /me/manager to get organizational data
-    for Work IQ integration — identity-aware infrastructure intelligence.
+    for identity-aware infrastructure intelligence.
 
     Returns a dict with profile fields and manager_name, or None on failure.
     """

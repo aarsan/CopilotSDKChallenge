@@ -36,7 +36,7 @@ Azure SQL Database for all persistent data, and the GitHub Copilot SDK for AI-dr
 │  ─ REST endpoints    ─ WebSocket chat                     │
 │  ─ Auth (Entra ID)   ─ Standards API router               │
 │  ─ Static files      ─ Deployment orchestration           │
-│  ─ Fabric sync       ─ Work IQ analytics                  │
+│  ─ Fabric sync       ─ Usage analytics                    │
 ├──────────┬────────────┬──────────────┬───────────────────┤
 │ Copilot  │ ARM Gen    │ Standards    │ Policy Validator   │
 │ SDK      │ Engine     │ Engine       │                    │
@@ -72,7 +72,7 @@ Authentication uses Azure AD tokens via `DefaultAzureCredential`.
 |-------|---------|
 | `user_sessions` | Auth sessions with Entra ID claims |
 | `chat_messages` | Conversation history per session |
-| `usage_logs` | Work IQ analytics — cost attribution, department tracking |
+| `usage_logs` | Usage analytics — cost attribution, department tracking |
 | `services` | Azure service catalog (approval status, risk tier, active version) |
 | `service_versions` | Versioned ARM templates per service (v1, v2, ...) |
 | `service_artifacts` | Approval gate artifacts (policy, template) |
@@ -312,7 +312,7 @@ The setup script (`scripts/setup.ps1` Step 3) creates the App Registration with:
 └───────────────────────┘
 ```
 
-### Work IQ — Identity-Aware Intelligence
+### Identity Intelligence — Microsoft Graph Enrichment
 
 When authenticated via Entra ID, InfraForge enriches the user context through
 Microsoft Graph API calls (`src/auth.py::_fetch_graph_profile`):
@@ -328,7 +328,7 @@ Microsoft Graph API calls (`src/auth.py::_fetch_graph_profile`):
 
 This profile data is stored in the `user_sessions` table and attached to all
 `usage_logs` entries, enabling per-department cost attribution and organizational
-analytics — the foundation of **Work IQ**.
+analytics — the foundation of InfraForge's identity-aware provisioning.
 
 ### Required Entra ID Permissions
 

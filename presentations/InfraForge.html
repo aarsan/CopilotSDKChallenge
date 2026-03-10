@@ -96,7 +96,7 @@
                      <span class="diagram-accent">│</span>  App Registration     <span class="diagram-accent">│</span>
                      <span class="diagram-accent">│</span>  + OAuth2 + Groups    <span class="diagram-accent">│</span>
                      <span class="diagram-accent">└──────────┬────────────┘</span>
-                        Tokens │ Graph API (Work IQ)
+                        Tokens │ Graph API (Identity)
 <span class="diagram-label">┌─────────────────────────────────────────────────────────┐</span>
 <span class="diagram-label">│</span>                    <span class="diagram-highlight">User (Web UI / CLI)</span>                   <span class="diagram-label">│</span>
 <span class="diagram-label">│</span>         "I need a web app with SQL and Key Vault"       <span class="diagram-label">│</span>
@@ -123,7 +123,7 @@
      <span class="diagram-accent">│</span>  Azure SQL   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> Azure  <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> MS Fabric    <span class="diagram-accent">│</span>
      <span class="diagram-accent">│</span>  (Catalog,   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  ARM   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> (Fabric IQ)  <span class="diagram-accent">│</span>
      <span class="diagram-accent">│</span>  Governance, <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>  SDK   <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> OneLake ETL  <span class="diagram-accent">│</span>
-     <span class="diagram-accent">│</span>  Work IQ)    <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>        <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> → Power BI   <span class="diagram-accent">│</span>
+     <span class="diagram-accent">│</span>  Analytics)  <span class="diagram-accent">│</span> <span class="diagram-accent">│</span>        <span class="diagram-accent">│</span> <span class="diagram-accent">│</span> → Power BI   <span class="diagram-accent">│</span>
      <span class="diagram-accent">└──────────────┘</span> <span class="diagram-accent">└────────┘</span> <span class="diagram-accent">└──────────────┘</span></pre>
 
   <h2>Tech Stack</h2>
@@ -139,7 +139,7 @@
     <div class="col">
       <ul>
         <li><strong>Auth:</strong> Entra ID App Registration (OAuth2 + MSAL)</li>
-        <li><strong>Identity:</strong> Work IQ (Graph API org enrichment)</li>
+        <li><strong>Identity:</strong> Microsoft Work IQ (MCP server — M365 org intelligence)</li>
         <li><strong>Deploy:</strong> ARM SDK (no az/terraform/bicep CLI needed)</li>
         <li><strong>Frontend:</strong> Vanilla JS SPA with WebSocket streaming</li>
       </ul>
@@ -151,7 +151,7 @@
     <span class="tag tag-green">Python + FastAPI</span>
     <span class="tag tag-orange">Azure SQL</span>
     <span class="tag tag-purple">Microsoft Entra ID</span>
-    <span class="tag tag-blue">Work IQ</span>
+    <span class="tag tag-blue">Microsoft Work IQ</span>
     <span class="tag tag-green">Fabric IQ</span>
   </div>
 

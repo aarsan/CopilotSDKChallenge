@@ -4,7 +4,7 @@ InfraForge — Auth, Settings & Analytics Router
 Extracted from web.py. Contains:
   - Auth Endpoints (root, version, login, callback, logout, me)
   - Model Settings API
-  - Usage Analytics (Work IQ)
+  - Usage Analytics
   - Activity Monitor API
 """
 
@@ -340,11 +340,11 @@ async def update_model_settings(request: Request):
     return JSONResponse({"active_model": model_id, "status": "updated"})
 
 
-# ── Usage Analytics (Work IQ) ────────────────────────────────
+# ── Usage Analytics ────────────────────────────────
 
 @router.get("/api/analytics/usage")
 async def get_usage_analytics(request: Request):
-    """Return usage analytics for the Work IQ dashboard.
+    """Return usage analytics for the dashboard.
 
     Shows who's provisioning what, team-level spend, template reuse rates,
     and policy compliance trends.
@@ -384,10 +384,10 @@ async def get_activity():
         status = svc.get("status", "not_approved")
         svc_id = svc.get("id", "")
 
-        # Include services that are validating, validation_failed, or recently approved
-        if status in ("validating", "validation_failed", "approved"):
-            # Check if there's a live tracker entry
-            live = _active_validations.get(svc_id)
+        # Include services that are validating, validation_failed, recently approved,
+        # OR have a live pipeline running (status may still be not_approved early in pipeline)
+        live = _active_validations.get(svc_id)
+        if status in ("validating", "validation_failed", "approved") or (live and live.get("status") == "running"):
 
             job = {
                 "service_id": svc_id,

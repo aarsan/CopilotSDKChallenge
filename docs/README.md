@@ -92,7 +92,7 @@ python -m src.main
                      │  └────────┬────────┘  │
                      └───────────┼───────────┘
                         Tokens   │   Graph API
-                       (MSAL)    │  (Work IQ: dept,
+                       (MSAL)    │  (Identity: dept,
                                  │   manager, cost center)
 ┌──────────────────────────────────────────────────────────────┐
 │                         User (Web UI / CLI)                   │
@@ -157,7 +157,7 @@ python -m src.main
   │  Azure SQL   │ │ Azure  │ │ Microsoft Fabric         │
   │  (Catalog,   │ │  ARM   │ │ (Fabric IQ)              │
   │  Governance, │ │  SDK   │ │ ┌──────────────────────┐ │
-  │  Work IQ     │ │        │ │ │ OneLake Lakehouse    │ │
+  │  Usage       │ │        │ │ │ OneLake Lakehouse    │ │
   │  Analytics)  │ │        │ │ │ → Power BI Dashboards│ │
   └──────────────┘ └────────┘ │ └──────────────────────┘ │
                               └──────────────────────────┘

@@ -38,6 +38,11 @@ from src.tools.service_details import get_service_details
 from src.tools.template_browser import browse_template_catalog
 from src.tools.deployment_history import list_deployments
 from src.tools.platform_overview import get_platform_overview
+from src.tools.workiq_tools import (
+    search_org_knowledge,
+    find_related_documents,
+    find_subject_matter_experts,
+)
 
 
 def get_all_tools() -> list:
@@ -89,6 +94,10 @@ def get_all_tools() -> list:
         teardown_deployment,
         # Platform analytics
         get_platform_overview,
+        # Microsoft Work IQ (M365 organizational intelligence)
+        search_org_knowledge,
+        find_related_documents,
+        find_subject_matter_experts,
         # Output
         save_output_to_file,
         # Publishing
