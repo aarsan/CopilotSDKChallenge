@@ -383,12 +383,16 @@ function navigateTo(page) {
     // Update page-specific action buttons in header
     updatePageActions(page);
 
-    // Focus chat input when switching to chat
+    // Focus chat input when switching to chat; hide concierge FAB (it overlaps send button)
+    const fab = document.getElementById('concierge-fab');
     if (page === 'chat') {
+        if (fab) fab.style.display = 'none';
         setTimeout(() => {
             const input = document.getElementById('user-input');
             if (input) input.focus();
         }, 100);
+    } else {
+        if (fab) fab.style.display = '';
     }
 
     // Load observability data when switching to activity page
