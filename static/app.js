@@ -1431,8 +1431,8 @@ function applyServiceFilters() {
 
     // Status filter
     if (currentStatusFilter === 'active') {
-        // Active services: everything except not_approved
-        filtered = filtered.filter(s => s.status !== 'not_approved');
+        // Active services: anything ever onboarded, excluding offboarded and not_approved
+        filtered = filtered.filter(s => s.status !== 'not_approved' && s.status !== 'offboarded');
     } else if (currentStatusFilter !== 'all') {
         filtered = filtered.filter(s => s.status === currentStatusFilter);
     }
