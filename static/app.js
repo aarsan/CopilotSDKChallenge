@@ -11977,22 +11977,30 @@ async function submitPromptCompose() {
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
 
-        // Make buttom a clickable "Done" button so the user isn't stuck
+        // Hide the prompt input area and tabs — only results matter now
+        const promptSection = document.querySelector('#compose-panel-prompt .compose-prompt-section');
+        const tabSwitcher = document.querySelector('#modal-template-onboard .compose-tabs');
+        if (promptSection) promptSection.style.display = 'none';
+        if (tabSwitcher) tabSwitcher.style.display = 'none';
+
+        // Make button a clickable "Done" that closes the modal
         btn.disabled = false;
         btn.textContent = '✅ Done — Close';
-        btn.onclick = async () => {
+        const closeAndFinish = async () => {
             btn.disabled = true;
+            // Restore hidden sections for next time the modal opens
+            if (promptSection) promptSection.style.display = '';
+            if (tabSwitcher) tabSwitcher.style.display = '';
             await loadCatalog();
             closeModal('modal-template-onboard');
             if (createdTemplateId) runFullValidation(createdTemplateId);
         };
+        btn.onclick = closeAndFinish;
 
         // Also auto-close after 2s if the user doesn't click
         setTimeout(async () => {
             if (!document.getElementById('modal-template-onboard')?.classList.contains('hidden')) {
-                await loadCatalog();
-                closeModal('modal-template-onboard');
-                if (createdTemplateId) runFullValidation(createdTemplateId);
+                await closeAndFinish();
             }
         }, 2000);
 
