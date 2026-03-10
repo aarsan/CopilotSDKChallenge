@@ -1045,10 +1045,39 @@ async def init_db() -> None:
     except Exception as exc:
         logger.warning(f"template_api_version backfill skipped: {exc}")
 
-
-# ══════════════════════════════════════════════════════════════
-# USER SESSIONS
-# ══════════════════════════════════════════════════════════════
+    # ── Reset auto-onboarded services that were never pipeline-validated ──
+    # Services auto-approved by the orchestrator have active_version set but
+    # their version was never validated (no validated_at).  Downgrade them to
+    # not_approved / auto_prepped so they require the full pipeline.
+    try:
+        rows = await backend.execute(
+            "SELECT s.id FROM services s "
+            "WHERE s.status = 'approved' AND s.active_version IS NOT NULL "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM service_versions sv "
+            "    WHERE sv.service_id = s.id AND sv.version = s.active_version "
+            "      AND sv.validated_at IS NOT NULL"
+            "  )",
+            (),
+        )
+        if rows:
+            now = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                sid = row["id"]
+                await backend.execute_write(
+                    "UPDATE services "
+                    "SET status = 'not_approved', active_version = NULL, "
+                    "    reviewed_by = 'auto_prepped', updated_at = ? "
+                    "WHERE id = ?",
+                    (now, sid),
+                )
+            logger.info(
+                f"Reset {len(rows)} auto-onboarded service(s) to not_approved: "
+                f"{', '.join(r['id'] for r in rows)}"
+            )
+            invalidate_service_cache()
+    except Exception as exc:
+        logger.warning(f"Auto-onboard reset migration skipped: {exc}")
 
 async def save_session(
     session_token: str,
