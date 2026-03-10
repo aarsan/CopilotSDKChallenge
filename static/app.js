@@ -11741,14 +11741,20 @@ async function submitPromptCompose() {
         textarea.value = '';
         showToast('✅ Template created — starting validation…', 'success');
         const createdTemplateId = data.template?.id || data.id;
-        setTimeout(async () => {
-            await loadCatalog();
-            closeModal('modal-template-onboard');
-            if (createdTemplateId) {
-                // Auto-trigger full validation (tests + ARM)
-                runFullValidation(createdTemplateId);
-            }
-        }, 1500);
+
+        // Replace modal footer with "View Template" button immediately
+        const footer = btn.closest('.modal-footer');
+        if (footer) {
+            footer.innerHTML = createdTemplateId
+                ? `<button class="btn btn-primary" onclick="_navigateToCreatedTemplate('${createdTemplateId}')">View Template →</button>`
+                : `<button class="btn btn-secondary" onclick="closeModal('modal-template-onboard')">Close</button>`;
+        }
+
+        // Auto-navigate after a short delay so the user can see the result
+        if (createdTemplateId) {
+            setTimeout(() => _navigateToCreatedTemplate(createdTemplateId), 1200);
+        }
+        return; // skip finally re-enable
 
     } catch (err) {
         if (promptSection) promptSection.style.display = '';
@@ -11759,6 +11765,14 @@ async function submitPromptCompose() {
         btn.disabled = false;
         btn.textContent = '🚀 Create Template';
     }
+}
+
+/** After prompt-driven creation, close modal and navigate to the new template. */
+async function _navigateToCreatedTemplate(templateId) {
+    closeModal('modal-template-onboard');
+    try { await loadCatalog(); } catch (_) { /* best-effort refresh */ }
+    showTemplateDetail(templateId);
+    runFullValidation(templateId);
 }
 
 async function submitTemplateOnboarding(event) {
