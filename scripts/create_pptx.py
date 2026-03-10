@@ -182,7 +182,7 @@ tech_h = Inches(0.7)
 add_shape(slide1, Inches(0.5), tech_top, Inches(12.333), tech_h, BG_CARD, BORDER_COLOR, 0.02)
 
 tb_tech = add_text_box(slide1, Inches(0.8), tech_top + Inches(0.1), Inches(12), tech_h - Inches(0.2))
-set_text(tb_tech.text_frame, "Built With:  GitHub Copilot SDK  •  Microsoft Entra ID  •  Azure SQL  •  Azure ARM SDK  •  FastAPI  •  Work IQ  •  Microsoft Fabric  •  Claude (Anthropic)",
+set_text(tb_tech.text_frame, "Built With:  GitHub Copilot SDK  •  Microsoft Entra ID  •  Azure SQL  •  Azure ARM SDK  •  FastAPI  •  Microsoft Work IQ  •  Microsoft Fabric  •  Claude (Anthropic)",
          size=13, color=TEXT_SECONDARY, alignment=PP_ALIGN.CENTER)
 
 # ── Footer ──
@@ -362,7 +362,7 @@ bonus_top = diag_top + Inches(5.7)
 bonus_w = Inches(12.333)
 add_shape(slide2, Inches(0.4), bonus_top, bonus_w, Inches(0.55), BG_CARD, BORDER_COLOR, 0.02)
 tb_bonus = add_text_box(slide2, Inches(0.7), bonus_top + Inches(0.08), bonus_w - Inches(0.6), Inches(0.4))
-set_text(tb_bonus.text_frame, "Bonus:   Work IQ (+15 pts) — identity-aware tagging from Entra ID org hierarchy   •   Fabric IQ (+15 pts) — usage analytics synced to Fabric",
+set_text(tb_bonus.text_frame, "Bonus:   Microsoft Work IQ (+15 pts) — M365 org intelligence via MCP (emails, meetings, docs, Teams, people)   •   Fabric IQ (+15 pts) — usage analytics synced to Fabric",
          size=12, color=TEXT_SECONDARY, alignment=PP_ALIGN.CENTER)
 
 # ── Footer ──

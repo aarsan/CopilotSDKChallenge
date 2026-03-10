@@ -5467,7 +5467,7 @@ async def validate_template(template_id: str, request: Request):
                 events_json=events_str,
             )
 
-            # Log usage for Work IQ analytics
+            # Log usage for analytics
             if final_status == "completed":
                 try:
                     await log_usage({
@@ -11253,7 +11253,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                 _track(line)
                 yield line
 
-            # Log usage for Work IQ analytics
+            # Log usage for analytics
             try:
                 tracker = _active_validations.get(service_id, {})
                 if tracker.get("status") == "succeeded":

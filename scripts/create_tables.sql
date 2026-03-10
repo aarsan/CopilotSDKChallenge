@@ -54,7 +54,7 @@ IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_chat_session')
 CREATE INDEX idx_chat_session ON chat_messages(session_token);
 GO
 
--- ── Usage Logs (Work IQ) ────────────────────────────────────
+-- ── Usage Logs ────────────────────────────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'usage_logs')
 CREATE TABLE usage_logs (
