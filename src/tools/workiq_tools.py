@@ -13,6 +13,17 @@ from copilot import define_tool
 from src.workiq_client import get_workiq_client
 
 
+def _format_error(result, action: str) -> str:
+    """Format a WorkIQResult error into a helpful tool response."""
+    err = result.error or "Unknown error"
+    return (
+        f"Work IQ error while {action}: {err}\n\n"
+        "If this is a permission or authentication issue, run:\n"
+        "  npx -y @microsoft/workiq accept-eula\n"
+        "Then retry the query. Proceeding without organizational context."
+    )
+
+
 class SearchOrgKnowledgeParams(BaseModel):
     query: str = Field(
         description=(
@@ -37,13 +48,9 @@ async def search_org_knowledge(params: SearchOrgKnowledgeParams) -> str:
     """Search M365 data via Work IQ."""
     client = get_workiq_client()
     result = await client.ask(params.query)
-    if result is None:
-        return (
-            "Work IQ is currently unavailable. Microsoft Work IQ requires Node.js 18+ "
-            "and prior authentication via `npx -y @microsoft/workiq accept-eula`. "
-            "Proceeding without organizational context."
-        )
-    return f"## Work IQ Results\n\n{result}"
+    if not result.ok:
+        return _format_error(result, "searching organizational knowledge")
+    return f"## Work IQ Results\n\n{result.text}"
 
 
 class FindRelatedDocsParams(BaseModel):
@@ -68,9 +75,9 @@ async def find_related_documents(params: FindRelatedDocsParams) -> str:
     """Find related M365 documents via Work IQ."""
     client = get_workiq_client()
     result = await client.search_documents(params.topic)
-    if result is None:
-        return "Work IQ is currently unavailable. Cannot search for related documents."
-    return f"## Related Documents\n\n{result}"
+    if not result.ok:
+        return _format_error(result, "searching for related documents")
+    return f"## Related Documents\n\n{result.text}"
 
 
 class FindExpertsParams(BaseModel):
@@ -97,6 +104,6 @@ async def find_subject_matter_experts(params: FindExpertsParams) -> str:
     """Find SMEs via Work IQ."""
     client = get_workiq_client()
     result = await client.find_experts(params.domain)
-    if result is None:
-        return "Work IQ is currently unavailable. Cannot search for subject matter experts."
-    return f"## Subject Matter Experts\n\n{result}"
+    if not result.ok:
+        return _format_error(result, "searching for subject matter experts")
+    return f"## Subject Matter Experts\n\n{result.text}"

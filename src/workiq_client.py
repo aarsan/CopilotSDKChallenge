@@ -11,6 +11,7 @@ The Work IQ CLI uses interactive browser-based auth. After first-time setup
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from src.config import WORKIQ_ENABLED, WORKIQ_TIMEOUT
@@ -21,16 +22,26 @@ logger = logging.getLogger("infraforge.workiq")
 _AVAILABILITY_TTL = 60
 
 
+@dataclass
+class WorkIQResult:
+    """Result of a Work IQ query — either success with text or failure with reason."""
+    ok: bool
+    text: Optional[str] = None
+    error: Optional[str] = None
+
+
 class WorkIQClient:
     """Client for querying Microsoft Work IQ."""
 
     def __init__(self):
         self._available: Optional[bool] = None
         self._checked_at: float = 0.0
+        self._last_check_error: Optional[str] = None
 
     async def is_available(self) -> bool:
         """Check if Work IQ CLI is available and authenticated."""
         if not WORKIQ_ENABLED:
+            self._last_check_error = "Work IQ is disabled (WORKIQ_ENABLED=false)"
             return False
         # Re-check if we haven't checked yet, or if the cached value is
         # negative and the TTL has expired (allows recovery after auth).
@@ -48,21 +59,39 @@ class WorkIQClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await asyncio.wait_for(proc.wait(), timeout=15)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
             self._available = proc.returncode == 0
+            if not self._available:
+                err = stderr.decode("utf-8", errors="replace").strip()
+                self._last_check_error = err or f"CLI exited with code {proc.returncode}"
+            else:
+                self._last_check_error = None
+        except FileNotFoundError:
+            logger.debug("Work IQ not available: npx not found in PATH")
+            self._available = False
+            self._last_check_error = "npx not found in PATH. Install Node.js 18+ and ensure npx is on your PATH."
+        except asyncio.TimeoutError:
+            logger.debug("Work IQ availability check timed out")
+            self._available = False
+            self._last_check_error = "Work IQ CLI version check timed out (15s)"
         except Exception as e:
             logger.debug(f"Work IQ not available: {e}")
             self._available = False
+            self._last_check_error = str(e)
         self._checked_at = now
         return self._available
 
-    async def ask(self, query: str) -> Optional[str]:
+    def get_last_error(self) -> Optional[str]:
+        """Return the last error from availability check or query."""
+        return self._last_check_error
+
+    async def ask(self, query: str) -> WorkIQResult:
         """Query Work IQ with a natural language question.
 
-        Returns the response text, or None if Work IQ is unavailable or errors.
+        Returns a WorkIQResult with either the response text or the error reason.
         """
         if not await self.is_available():
-            return None
+            return WorkIQResult(ok=False, error=self._last_check_error or "Work IQ CLI is not available")
         try:
             proc = await asyncio.create_subprocess_exec(
                 "npx",
@@ -78,39 +107,47 @@ class WorkIQClient:
                 proc.communicate(), timeout=WORKIQ_TIMEOUT
             )
             if proc.returncode == 0:
-                return stdout.decode("utf-8").strip()
+                return WorkIQResult(ok=True, text=stdout.decode("utf-8").strip())
             else:
-                logger.warning(f"Work IQ query failed: {stderr.decode()[:200]}")
-                return None
+                err = stderr.decode("utf-8", errors="replace").strip()
+                # Check for common permission / auth patterns
+                err_lower = err.lower()
+                if any(kw in err_lower for kw in ("permission", "unauthorized", "forbidden", "consent", "access denied", "403")):
+                    reason = f"Permission error from Work IQ CLI: {err[:300]}"
+                elif any(kw in err_lower for kw in ("login", "authenticate", "token", "sign in", "auth")):
+                    reason = f"Authentication required: {err[:300]}. Run `npx -y @microsoft/workiq accept-eula` to authenticate."
+                else:
+                    reason = f"Work IQ CLI error (exit {proc.returncode}): {err[:300]}"
+                logger.warning(f"Work IQ query failed: {reason}")
+                return WorkIQResult(ok=False, error=reason)
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Work IQ query timed out after {WORKIQ_TIMEOUT}s: {query[:50]}"
-            )
-            return None
+            msg = f"Work IQ query timed out after {WORKIQ_TIMEOUT}s"
+            logger.warning(f"{msg}: {query[:50]}")
+            return WorkIQResult(ok=False, error=msg)
         except Exception as e:
             logger.error(f"Work IQ query error: {e}")
-            return None
+            return WorkIQResult(ok=False, error=str(e))
 
-    async def search_documents(self, topic: str) -> Optional[str]:
+    async def search_documents(self, topic: str) -> WorkIQResult:
         """Search for M365 documents related to a topic."""
         return await self.ask(
             f"Find SharePoint and OneDrive documents related to: {topic}"
         )
 
-    async def find_experts(self, domain: str) -> Optional[str]:
+    async def find_experts(self, domain: str) -> WorkIQResult:
         """Find people with expertise in a specific domain."""
         return await self.ask(
             f"Who are the subject matter experts or people who have "
             f"worked on or discussed: {domain}"
         )
 
-    async def search_meetings(self, topic: str) -> Optional[str]:
+    async def search_meetings(self, topic: str) -> WorkIQResult:
         """Search meeting notes and calendar events related to a topic."""
         return await self.ask(
             f"Find meetings, meeting notes, and calendar events about: {topic}"
         )
 
-    async def search_communications(self, topic: str) -> Optional[str]:
+    async def search_communications(self, topic: str) -> WorkIQResult:
         """Search emails and Teams messages about a topic."""
         return await self.ask(f"Find emails and Teams messages discussing: {topic}")
 

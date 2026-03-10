@@ -661,7 +661,7 @@ if ($proceed -eq "n") {
 # Step 1: Resource Group
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 1/8 - Resource Group"
+Write-Step "Step 1/9 - Resource Group"
 
 if ($rgExists -eq "true") {
     Write-Ok "Resource group '$ResourceGroup' already exists"
@@ -675,7 +675,7 @@ if ($rgExists -eq "true") {
 # Step 2: Azure SQL Server + Database
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 2/8 - Azure SQL Server + Database"
+Write-Step "Step 2/9 - Azure SQL Server + Database"
 
 if ($SkipSql) {
     Write-Warn "Skipping SQL setup (-SkipSql). You must set AZURE_SQL_CONNECTION_STRING manually."
@@ -761,7 +761,7 @@ if ($SkipSql) {
 # Step 3: Entra ID App Registration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 3/8 - Entra ID App Registration"
+Write-Step "Step 3/9 - Entra ID App Registration"
 
 $entraClientId = ""
 $entraClientSecret = ""
@@ -919,7 +919,7 @@ if ($SkipEntraId) {
 # Step 4: RBAC & Resource Providers
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 4/8 - RBAC & Resource Providers"
+Write-Step "Step 4/9 - RBAC & Resource Providers"
 
 # Assign Contributor role to current user (needed for ARM deployments)
 Write-Host "  Checking Contributor role assignment..."
@@ -971,10 +971,10 @@ foreach ($provider in $providers) {
 Write-Ok "Resource providers registered ($($providers.Count) providers)"
 
 # ─────────────────────────────────────────────────────────
-# Step 5/8: GitHub Integration
+# Step 5/9: GitHub Integration
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 5/8 - GitHub Integration"
+Write-Step "Step 5/9 - GitHub Integration"
 
 $githubToken = ""
 $githubOrg = ""
@@ -1040,10 +1040,10 @@ if (Test-Command "gh") {
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 6/8: Generate .env file
+# Step 6/9: Generate .env file
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 6/8 - Generate .env file"
+Write-Step "Step 6/9 - Generate .env file"
 
 # Build hashtable of managed key-value pairs
 $managedEnvValues = @{
@@ -1063,6 +1063,8 @@ $managedEnvValues = @{
     "AZURE_SQL_SERVER"            = $SqlServerName
     "AZURE_RESOURCE_GROUP"        = $ResourceGroup
     "AZURE_SUBSCRIPTION_ID"       = $subscriptionId
+    "WORKIQ_ENABLED"               = "true"
+    "WORKIQ_TIMEOUT"               = "30"
 }
 
 if ($envFileExists -and -not $Force) {
@@ -1102,6 +1104,10 @@ AZURE_SQL_CONNECTION_STRING=$connectionString
 AZURE_SQL_SERVER=$SqlServerName
 AZURE_RESOURCE_GROUP=$ResourceGroup
 AZURE_SUBSCRIPTION_ID=$subscriptionId
+
+# Microsoft Work IQ (M365 organizational intelligence)
+WORKIQ_ENABLED=true
+WORKIQ_TIMEOUT=30
 "@
 
     $envPath = Join-Path $PSScriptRoot ".." ".env"
@@ -1110,10 +1116,10 @@ AZURE_SUBSCRIPTION_ID=$subscriptionId
 }
 
 # ─────────────────────────────────────────────────────────
-# Step 7/8: Install Python dependencies
+# Step 7/9: Install Python dependencies
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 7/8 - Python dependencies"
+Write-Step "Step 7/9 - Python dependencies"
 
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
@@ -1137,10 +1143,83 @@ Write-Host "  Installing dependencies..."
 Write-Ok "Dependencies installed"
 
 # ─────────────────────────────────────────────────────────
-# Step 8/8: Verify connectivity
+# ─────────────────────────────────────────────────────────
+# Step 8/9: Microsoft Work IQ (M365 organizational intelligence)
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 8/8 - Verify connectivity"
+Write-Step "Step 8/9 - Microsoft Work IQ"
+
+$workiqReady = $false
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmd) {
+    $nodeVer = (node --version 2>&1).ToString().TrimStart('v')
+    $nodeMajor = [int]($nodeVer.Split('.')[0])
+    if ($nodeMajor -ge 18) {
+        Write-Ok "Node.js v$nodeVer (>= 18 required)"
+
+        # Check if npx is available
+        $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
+        if ($npxCmd) {
+            Write-Ok "npx available"
+
+            # Check if Work IQ CLI is already authorised
+            Write-Host "  Checking Work IQ CLI..."
+            $wiqVersion = npx -y @microsoft/workiq --version 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Ok "Work IQ CLI: $wiqVersion"
+
+                # Try a test query to verify permissions
+                Write-Host "  Verifying M365 permissions..."
+                $testResult = npx -y @microsoft/workiq ask -q "test" 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "Work IQ: M365 permissions verified"
+                    $workiqReady = $true
+                } else {
+                    Write-Warn "Work IQ: M365 query failed. Running EULA acceptance / auth flow..."
+                    npx -y @microsoft/workiq accept-eula 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Ok "Work IQ: EULA accepted / authentication complete"
+                        $workiqReady = $true
+                    } else {
+                        Write-Warn "Work IQ: EULA/auth flow did not complete. You can run this later:"
+                        Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+                    }
+                }
+            } else {
+                Write-Host "  Work IQ CLI not yet authorised. Running EULA acceptance..."
+                npx -y @microsoft/workiq accept-eula 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "Work IQ: EULA accepted / authentication complete"
+                    $workiqReady = $true
+                } else {
+                    Write-Warn "Work IQ: EULA acceptance did not complete. You can run this later:"
+                    Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+                }
+            }
+        } else {
+            Write-Warn "npx not found. Work IQ requires npx (comes with Node.js)."
+        }
+    } else {
+        Write-Warn "Node.js v$nodeVer is too old. Work IQ requires Node.js 18+."
+        Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
+    }
+} else {
+    Write-Warn "Node.js not found. Work IQ (M365 integration) will be disabled."
+    Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
+    Write-Host "    Work IQ searches emails, meetings, docs, and Teams for organizational context." -ForegroundColor Gray
+}
+
+if (-not $workiqReady) {
+    Write-Host "  Work IQ is optional — InfraForge works fine without it." -ForegroundColor Gray
+    Write-Host "  To enable later: install Node.js 18+, then run:" -ForegroundColor Gray
+    Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+}
+
+# ─────────────────────────────────────────────────────────
+# Step 9/9: Verify connectivity
+# ─────────────────────────────────────────────────────────
+
+Write-Step "Step 9/9 - Verify connectivity"
 
 if (-not $SkipSql -and $connectionString) {
     Write-Host "  Testing SQL connection..."
@@ -1203,6 +1282,14 @@ Write-Host ""
 Write-Host "  RBAC & Providers:" -ForegroundColor White
 Write-Host "    Contributor:    assigned on subscription $subscriptionId" -ForegroundColor Gray
 Write-Host "    Providers:      11 resource providers registered" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Work IQ (M365 integration):" -ForegroundColor White
+if ($workiqReady) {
+    Write-Host "    Status:         Ready (authenticated)" -ForegroundColor Green
+} else {
+    Write-Host "    Status:         Not configured (optional)" -ForegroundColor Yellow
+    Write-Host "    To enable:      npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+}
 Write-Host ""
 Write-Host "  Remaining manual steps:" -ForegroundColor Yellow
 if (-not $githubToken) {
