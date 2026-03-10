@@ -10382,7 +10382,7 @@ tr:hover .svc-view-tpl-btn {
 
 .template-cards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(340px, 480px));
     gap: 1rem;
 }
 .tmpl-card {
@@ -10596,7 +10596,7 @@ tr:hover .svc-view-tpl-btn {
 }
 .tmpl-drafts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(340px, 480px));
     gap: 0.75rem;
     padding: 0 1rem 1rem;
 }
