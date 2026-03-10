@@ -42,6 +42,69 @@ logger = logging.getLogger("infraforge.pipeline.testing")
 
 
 # ══════════════════════════════════════════════════════════════
+# TEST MANIFEST EXTRACTION
+# ══════════════════════════════════════════════════════════════
+
+def _extract_test_manifest(script: str) -> dict | None:
+    """Extract the TEST_MANIFEST dict from a generated test script.
+
+    The agent is instructed to define TEST_MANIFEST = {...} near the top
+    of the script.  We find the assignment and use ast.literal_eval to
+    safely parse it.
+
+    Returns the manifest dict, or None if not found / unparseable.
+    """
+    # Find the start of the TEST_MANIFEST assignment
+    marker = "TEST_MANIFEST"
+    idx = script.find(marker)
+    if idx == -1:
+        return None
+
+    # Find the opening brace
+    eq_idx = script.find("=", idx + len(marker))
+    if eq_idx == -1:
+        return None
+    brace_start = script.find("{", eq_idx)
+    if brace_start == -1:
+        return None
+
+    # Count braces to find the matching closing brace
+    depth = 0
+    i = brace_start
+    while i < len(script):
+        ch = script[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                raw = script[brace_start:i + 1]
+                try:
+                    import ast
+                    manifest = ast.literal_eval(raw)
+                    if isinstance(manifest, dict):
+                        return manifest
+                except (ValueError, SyntaxError):
+                    pass
+                return None
+        # Skip string literals to avoid counting braces inside strings
+        elif ch in ('"', "'"):
+            # Check for triple-quote
+            triple = script[i:i + 3]
+            if triple in ('"""', "'''"):
+                end = script.find(triple, i + 3)
+                i = end + 3 if end != -1 else len(script)
+                continue
+            else:
+                end = script.find(ch, i + 1)
+                i = end + 1 if end != -1 else len(script)
+                continue
+        i += 1
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════
 # TEST GENERATION
 # ══════════════════════════════════════════════════════════════
 
@@ -163,6 +226,113 @@ async def generate_test_script(
 def _extract_test_functions(script: str) -> list[str]:
     """Extract the names of all test_* functions from a Python script."""
     return re.findall(r'^def (test_\w+)\s*\(', script, re.MULTILINE)
+
+
+def _extract_test_manifest(script: str) -> Optional[dict]:
+    """Extract the TEST_MANIFEST dict from a generated test script.
+
+    The LLM is instructed to include a TEST_MANIFEST = {...} in the script.
+    This function tries to parse it for richer reporting.  Falls back to
+    None if the manifest is missing or malformed.
+    """
+    match = re.search(
+        r'^TEST_MANIFEST\s*=\s*(\{.*?\n\})',
+        script,
+        re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return None
+
+    try:
+        import ast
+        manifest = ast.literal_eval(match.group(1))
+        if isinstance(manifest, dict):
+            return manifest
+    except (ValueError, SyntaxError):
+        pass
+
+    return None
+
+
+# ── Test categories for coverage analysis ──
+_TEST_CATEGORIES = {
+    "auth":               {"keywords": ["login", "auth", "credential", "token"], "label": "Azure Authentication"},
+    "provisioning_state": {"keywords": ["provisioning_state", "provisioning", "exists", "has_resources", "resource_group"], "label": "Provisioning State"},
+    "api_version":        {"keywords": ["api_version", "apiversion"], "label": "API Version Validation"},
+    "endpoint":           {"keywords": ["endpoint", "reachable", "health", "http", "url"], "label": "Endpoint Health"},
+    "security":           {"keywords": ["security", "tls", "https", "identity", "managed_identity", "encryption"], "label": "Security Config"},
+    "network":            {"keywords": ["network", "nsg", "firewall", "private_endpoint", "vnet", "subnet"], "label": "Network Config"},
+    "tags":               {"keywords": ["tag", "tags", "compliance"], "label": "Tag Compliance"},
+    "config":             {"keywords": ["config", "sku", "tier", "settings", "plan"], "label": "Resource Config"},
+    "monitoring":         {"keywords": ["monitoring", "diagnostic", "log_analytics", "logs"], "label": "Monitoring"},
+}
+
+
+def _analyze_test_coverage(
+    script: str,
+    test_names: list[str],
+    template_resources: list[dict],
+) -> dict:
+    """Analyze what the generated tests cover vs. what was deployed.
+
+    Returns a dict with:
+      - categories_covered: list of test category labels found
+      - categories_missing: list of test category labels NOT found
+      - resources_tested: list of resource types with at least one test
+      - resources_untested: resource types with no matching test
+      - test_map: mapping of test name -> inferred category
+    """
+    script_lower = script.lower()
+    test_names_lower = [t.lower() for t in test_names]
+
+    # Detect which categories are covered
+    categories_covered = []
+    categories_missing = []
+    test_map = {}
+
+    for cat_id, cat_info in _TEST_CATEGORIES.items():
+        found = False
+        for kw in cat_info["keywords"]:
+            if any(kw in tn for tn in test_names_lower):
+                found = True
+                # Map specific tests to this category
+                for tn_lower, tn_orig in zip(test_names_lower, test_names):
+                    if kw in tn_lower:
+                        test_map[tn_orig] = cat_info["label"]
+                break
+        if found:
+            categories_covered.append(cat_info["label"])
+        else:
+            categories_missing.append(cat_info["label"])
+
+    # Detect which resource types have at least one test
+    template_resource_types = list({
+        r.get("type", "unknown") for r in template_resources
+    })
+    resources_tested = []
+    resources_untested = []
+
+    for rtype in template_resource_types:
+        # Extract short name: "Microsoft.Web/sites" -> "sites", "web"
+        parts = rtype.lower().replace("microsoft.", "").split("/")
+        short_names = [p for p in parts if p]
+
+        has_test = any(
+            any(sn in tn for sn in short_names)
+            for tn in test_names_lower
+        )
+        if has_test:
+            resources_tested.append(rtype)
+        else:
+            resources_untested.append(rtype)
+
+    return {
+        "categories_covered": categories_covered,
+        "categories_missing": categories_missing,
+        "resources_tested": resources_tested,
+        "resources_untested": resources_untested,
+        "test_map": test_map,
+    }
 
 
 # Packages guaranteed to be installed — everything else under azure.mgmt.* is forbidden.
@@ -537,14 +707,51 @@ async def stream_infra_testing(
         return
 
     test_names = _extract_test_functions(test_script)
-    yield json.dumps({
+
+    # Extract the TEST_MANIFEST if the agent included one
+    manifest = _extract_test_manifest(test_script)
+
+    # Log generated script for debugging visibility
+    logger.info(f"Generated {len(test_names)} test functions for {len(deployed_resources)} resources")
+    for tn in test_names:
+        logger.info(f"  Test function: {tn}")
+    if manifest:
+        logger.info(f"  Manifest categories: {manifest.get('categories_covered', [])}")
+        logger.info(f"  Manifest resources: {manifest.get('resources_tested', [])}")
+    else:
+        logger.info("  No TEST_MANIFEST found in generated script — using heuristic classification")
+
+    # Save full test script for debug / audit visibility
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "output")
+        os.makedirs(log_dir, exist_ok=True)
+        script_log_path = os.path.join(log_dir, f"last_test_script_{resource_group}.py")
+        with open(script_log_path, "w", encoding="utf-8") as f:
+            f.write(f"# Generated test script for resource group: {resource_group}\n")
+            f.write(f"# Region: {region}\n")
+            f.write(f"# Resource types: {resource_types}\n")
+            f.write(f"# Test functions: {test_names}\n\n")
+            f.write(test_script)
+        logger.info(f"Test script saved to {script_log_path}")
+    except Exception as log_err:
+        logger.debug(f"Could not save test script log: {log_err}")
+
+    # Build the generation complete event with manifest data if available
+    gen_event = {
         "phase": "testing_generate",
         "detail": f"Generated {len(test_names)} test{'s' if len(test_names) != 1 else ''}: {', '.join(test_names[:8])}{'…' if len(test_names) > 8 else ''}",
         "status": "complete",
         "test_count": len(test_names),
         "test_names": test_names,
         "script_preview": test_script[:2000],
-    }) + "\n"
+    }
+    if manifest:
+        gen_event["manifest"] = {
+            "resources_tested": manifest.get("resources_tested", []),
+            "categories_covered": manifest.get("categories_covered", []),
+            "checks": manifest.get("checks", [])[:20],
+        }
+    yield json.dumps(gen_event) + "\n"
 
     if not test_names:
         yield json.dumps({
@@ -555,6 +762,53 @@ async def stream_infra_testing(
             "tests_failed": 0,
         }) + "\n"
         return
+
+    # ── Coverage analysis: what does this test script actually validate? ──
+    template_resources = arm_template.get("resources", [])
+    coverage = _analyze_test_coverage(test_script, test_names, template_resources + deployed_resources)
+
+    covered = coverage["categories_covered"]
+    missing = coverage["categories_missing"]
+    res_tested = coverage["resources_tested"]
+    res_untested = coverage["resources_untested"]
+
+    coverage_detail_parts = []
+    if covered:
+        coverage_detail_parts.append(f"Validating: {', '.join(covered)}")
+    if missing:
+        coverage_detail_parts.append(f"Not covered: {', '.join(missing)}")
+    if res_untested:
+        short_untested = [r.split("/")[-1] for r in res_untested[:5]]
+        coverage_detail_parts.append(f"Resources without specific tests: {', '.join(short_untested)}")
+
+    coverage_detail = " | ".join(coverage_detail_parts) if coverage_detail_parts else "Coverage analysis complete"
+
+    # Check for mandatory gateway tests (auth + resource group checks)
+    gateway_tests = [n for n in test_names if any(
+        kw in n.lower() for kw in ("azure_login", "auth", "resource_group_exists", "resource_group_has")
+    )]
+    has_gateway_tests = len(gateway_tests) > 0
+
+    logger.info(f"Test coverage — categories: {covered}, missing: {missing}")
+    logger.info(f"Test coverage — resources tested: {res_tested}, untested: {res_untested}")
+    logger.info(f"Test coverage — gateway tests: {gateway_tests} (present: {has_gateway_tests})")
+
+    coverage_event = {
+        "phase": "testing_coverage",
+        "detail": coverage_detail,
+        "categories_covered": covered,
+        "categories_missing": missing,
+        "resources_tested": res_tested,
+        "resources_untested": res_untested,
+        "test_map": coverage.get("test_map", {}),
+        "has_gateway_tests": has_gateway_tests,
+        "gateway_tests": gateway_tests,
+    }
+    # Merge manifest-declared checks if available
+    if manifest and manifest.get("checks"):
+        coverage_event["manifest_checks"] = manifest["checks"][:20]
+
+    yield json.dumps(coverage_event) + "\n"
 
     # ── Pre-flight: syntax check the generated script ──
     try:

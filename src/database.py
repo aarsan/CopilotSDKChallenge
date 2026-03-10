@@ -1654,6 +1654,17 @@ def invalidate_service_cache():
     _svc_cache.clear()
 
 
+async def update_service_status(service_id: str, status: str) -> bool:
+    """Update the top-level status of a service and invalidate the cache."""
+    backend = await get_backend()
+    count = await backend.execute_write(
+        "UPDATE services SET status = ? WHERE id = ?",
+        (status, service_id),
+    )
+    invalidate_service_cache()
+    return count > 0
+
+
 async def get_all_services(
     category: Optional[str] = None,
     status: Optional[str] = None,
@@ -2616,6 +2627,7 @@ async def promote_service_after_validation(
         (now, notes, service_id),
     )
     logger.info(f"Service {service_id} promoted to 'approved' after deployment validation")
+    invalidate_service_cache()
     return True
 
 
@@ -2664,6 +2676,7 @@ async def fail_service_validation(
             (notes, service_id),
         )
         logger.info(f"Service {service_id} failed deployment validation: {error}")
+    invalidate_service_cache()
     return True
 
 
@@ -3002,6 +3015,7 @@ async def set_active_service_version(service_id: str, version: int) -> bool:
         (version, now, template_api, service_id),
     )
     logger.info(f"Service {service_id} active_version set to v{version} (template API: {template_api})")
+    invalidate_service_cache()
     return count > 0
 
 

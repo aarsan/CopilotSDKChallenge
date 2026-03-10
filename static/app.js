@@ -831,7 +831,7 @@ async function loadAllData() {
 
         // Render tables
         _populateServiceUpdatesFromCache();
-        renderServiceTable(allServices);
+        applyServiceFilters();
         renderTemplateTable(allTemplates);
 
         // Render approval tracker
@@ -1042,7 +1042,7 @@ async function _refreshServicesOnly() {
         const res = await fetch('/api/catalog/services');
         const data = await res.json();
         allServices = data.services || [];
-        renderServiceTable(allServices);
+        applyServiceFilters();
         // Update the subtitle count
         const subtitle = document.getElementById('page-subtitle');
         if (subtitle && currentPage === 'services') {
@@ -1406,8 +1406,8 @@ function applyServiceFilters() {
 
     // Status filter
     if (currentStatusFilter === 'active') {
-        // Active services: everything except not_approved
-        filtered = filtered.filter(s => s.status !== 'not_approved');
+        // Active services: anything ever onboarded, excluding offboarded and not_approved
+        filtered = filtered.filter(s => s.status !== 'not_approved' && s.status !== 'offboarded');
     } else if (currentStatusFilter !== 'all') {
         filtered = filtered.filter(s => s.status === currentStatusFilter);
     }
@@ -2923,6 +2923,21 @@ async function triggerOnboarding(serviceId, opts = {}) {
             }
             throw new Error(errMsg);
         }
+
+        // Mark the service as validating immediately so it appears in Active Services
+        const parentSvc = allServices.find(s => s.id === serviceId);
+        if (parentSvc) {
+            parentSvc.status = 'validating';
+        } else {
+            // Service doesn't exist in list yet — create stub entry
+            allServices.push({
+                id: serviceId,
+                name: svcName,
+                status: 'validating',
+                category: 'unknown',
+            });
+        }
+        applyServiceFilters();
 
         await readNDJSONStream(res, (event) => {
             _handleValidationEvent(event);
@@ -5055,6 +5070,29 @@ function _handleValidationEvent(event) {
         const icon = event.status === 'complete' ? '✓' : event.status === 'error' ? '⚠️' : '▸';
         const cls = event.status === 'complete' ? 'uf-text-success' : event.status === 'error' ? 'uf-text-error' : '';
         if (detail) _flowDetail(logEl, 'infraTest', icon, escapeHtml(detail), cls);
+    } else if (phase === 'testing_coverage') {
+        if (!logEl._flow?.cards['infraTest']) _flowCard(logEl, 'infraTest', '🧪', 'Infrastructure Tests');
+        const covered = event.categories_covered || [];
+        const missing = event.categories_missing || [];
+        const gateway = event.gateway_tests || [];
+        const manifestChecks = event.manifest_checks || [];
+        // Gateway tests
+        if (gateway.length) {
+            _flowDetail(logEl, 'infraTest', '🔑', `Gateway: ${gateway.map(g => `<span class="uf-badge-success">${escapeHtml(g)}</span>`).join(' ')}`, 'uf-text-success');
+        }
+        // Covered categories as green badges
+        if (covered.length) {
+            _flowDetail(logEl, 'infraTest', '✓', `Checks: ${covered.map(c => `<span class="uf-badge-success">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-success');
+        }
+        // Manifest checks — detailed view
+        if (manifestChecks.length) {
+            const checkSummary = manifestChecks.slice(0, 8).map(c => escapeHtml(c.description || c.test)).join(' · ');
+            _flowDetail(logEl, 'infraTest', '🔍', checkSummary, 'uf-text-muted');
+        }
+        // Missing categories as yellow warnings
+        if (missing.length) {
+            _flowDetail(logEl, 'infraTest', '⚠️', `Not covered: ${missing.map(c => `<span class="uf-badge-warning">${escapeHtml(c)}</span>`).join(' ')}`, 'uf-text-warning');
+        }
     } else if (phase === 'testing_execute') {
         if (detail) _flowDetail(logEl, 'infraTest', '▸', escapeHtml(detail));
     } else if (phase === 'test_result') {
@@ -5115,10 +5153,36 @@ function _handleValidationEvent(event) {
             _flowCard(logEl, 'depGate', '🔗', 'Dependency Validation Gate');
         }
         if (detail) _flowDetail(logEl, 'depGate', '👶', escapeHtml(detail));
+        // Mark dependency service as validating so it appears in Active Services immediately
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) {
+                depSvc.status = 'validating';
+            } else {
+                // Dependency was just created — inject a stub so it's visible
+                allServices.push({
+                    id: event.dep_service,
+                    name: event.dep_name || event.dep_service.split('/').pop(),
+                    status: 'validating',
+                    category: 'unknown',
+                });
+            }
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_onboard_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✅', escapeHtml(detail), 'uf-text-success');
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) depSvc.status = 'approved';
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_onboard_failed') {
         if (detail) _flowDetail(logEl, 'depGate', '❌', escapeHtml(detail), 'uf-text-error');
+        if (event.dep_service) {
+            const depSvc = allServices.find(s => s.id === event.dep_service);
+            if (depSvc) depSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (phase === 'dep_gate_complete') {
         if (detail) _flowDetail(logEl, 'depGate', '✓', escapeHtml(detail), 'uf-text-success');
         _flowFinalize(logEl, 'depGate', 'done', 'Dependencies OK');
@@ -5169,9 +5233,23 @@ function _handleValidationEvent(event) {
         _flowFinalizeActive(logEl, 'done');
         const text = detail || `Service approved — v${event.semver || event.version + '.0.0'}`;
         _flowResult(logEl, 'success', text);
+        // Update parent service status to approved
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'approved';
+            applyServiceFilters();
+        }
     } else if (type === 'policy_blocked') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'blocked', 'Policy review needed');
+        // Update parent service status to policy_blocked or failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'policy_blocked';
+            applyServiceFilters();
+        }
         if (event.violations) {
             const guidanceEl = document.createElement('div');
             guidanceEl.className = 'policy-blocked-guidance';
@@ -5217,6 +5295,13 @@ function _handleValidationEvent(event) {
             + `No deployment possible without additional quota.`
             + regionHtml
         );
+        // Update parent service status to failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (type === 'action_required') {
         _renderActionRequired(logEl, event);
     } else if (type === 'error') {
@@ -5229,6 +5314,13 @@ function _handleValidationEvent(event) {
                 : 'Pipeline encountered an unexpected error';
         }
         _flowResult(logEl, 'failed', errMsg);
+        // Update parent service status to failed
+        const serviceId = card?.dataset?.serviceId;
+        if (serviceId) {
+            const parentSvc = allServices.find(s => s.id === serviceId);
+            if (parentSvc) parentSvc.status = 'failed';
+            applyServiceFilters();
+        }
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
@@ -10271,6 +10363,37 @@ function _renderDeployProgress(container, event, ctx) {
         return;
     }
 
+    if (phase === 'testing_coverage') {
+        _setActiveStage('test');
+        const covered = event.categories_covered || [];
+        const missing = event.categories_missing || [];
+        const untested = event.resources_untested || [];
+        const gateway = event.gateway_tests || [];
+        const manifestChecks = event.manifest_checks || [];
+        // Gateway test status
+        if (gateway.length) {
+            _addActivity('🔑', `Gateway checks: ${gateway.join(', ')}`, 'vf-activity-success');
+        }
+        // Coverage summary
+        if (covered.length) {
+            _addActivity('📋', `Validating: ${covered.join(', ')}`, 'vf-activity-success');
+        }
+        // Manifest checks (detailed what-is-tested)
+        if (manifestChecks.length) {
+            const checkSummary = manifestChecks.slice(0, 8).map(c => c.description || c.test).join(' · ');
+            _addActivity('🔍', checkSummary, 'vf-activity-info');
+        }
+        if (missing.length) {
+            _addActivity('⚠️', `Not covered: ${missing.join(', ')}`, 'vf-activity-issue');
+        }
+        if (untested.length) {
+            const short = untested.map(r => r.split('/').pop()).slice(0, 5);
+            _addActivity('ℹ️', `Resources without specific tests: ${short.join(', ')}`, 'vf-activity-info');
+        }
+        canvas.scrollTop = canvas.scrollHeight;
+        return;
+    }
+
     if (phase === 'testing_execute') {
         _setActiveStage('test');
         _addActivity('🏃', escapeHtml(detail || 'Running tests…'), 'vf-activity-test');
@@ -11460,6 +11583,10 @@ async function submitPromptCompose() {
     policyDiv.style.display = 'none';
     resultDiv.style.display = 'none';
 
+    // Hide the prompt textarea once generation starts
+    const promptSection = textarea.closest('.compose-prompt-section');
+    if (promptSection) promptSection.style.display = 'none';
+
     try {
         // ── Step 1: Policy pre-check via a lightweight POST ──
         // We reuse the compose-from-prompt endpoint but show incremental feedback
@@ -11537,6 +11664,7 @@ async function submitPromptCompose() {
                 }
 
                 resultDiv.style.display = 'none';
+                if (promptSection) promptSection.style.display = '';
                 btn.disabled = false;
                 btn.textContent = '🚀 Create Infrastructure';
                 return;
@@ -11558,6 +11686,7 @@ async function submitPromptCompose() {
         }
 
         if (!res.ok) {
+            if (promptSection) promptSection.style.display = '';
             resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(data.detail || data.message || 'Compose failed')}</div>`;
             return;
         }
@@ -11607,6 +11736,7 @@ async function submitPromptCompose() {
         }, 1500);
 
     } catch (err) {
+        if (promptSection) promptSection.style.display = '';
         resultDiv.style.display = 'block';
         resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(err.message)}</div>`;
         showToast(`❌ Compose error: ${err.message}`, 'error');

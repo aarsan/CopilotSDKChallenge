@@ -341,7 +341,10 @@ async def _regenerate_template(
 @runner.step("initialize")
 async def step_initialize(ctx: PipelineContext, step: StepDef):
     """Phase 0: model routing table + cleanup stale drafts."""
-    from src.database import delete_service_versions_by_status, create_pipeline_run
+    from src.database import delete_service_versions_by_status, create_pipeline_run, update_service_status
+
+    # Mark the service as validating immediately so it appears in Active Services
+    await update_service_status(ctx.service_id, "validating")
 
     # Record this pipeline run for history tracking
     await create_pipeline_run(
@@ -2141,7 +2144,7 @@ async def finalizer_cleanup(ctx: PipelineContext):
     """Ensure temp RG and policy artifacts are cleaned up on any exit."""
     # Mark pipeline run as failed if it wasn't completed successfully
     try:
-        from src.database import complete_pipeline_run
+        from src.database import complete_pipeline_run, fail_service_validation
         from src.database import get_backend
         backend = await get_backend()
         rows = await backend.execute(
@@ -2152,6 +2155,10 @@ async def finalizer_cleanup(ctx: PipelineContext):
                 ctx.run_id, "failed",
                 error_detail="Pipeline did not complete — aborted or encountered an unrecoverable error",
                 heal_count=len(ctx.heal_history),
+            )
+            await fail_service_validation(
+                ctx.service_id,
+                "Pipeline did not complete — aborted or encountered an unrecoverable error",
             )
     except Exception:
         pass
