@@ -1157,47 +1157,44 @@ if ($nodeCmd) {
     if ($nodeMajor -ge 18) {
         Write-Ok "Node.js v$nodeVer (>= 18 required)"
 
-        # Check if npx is available
-        $npxCmd = Get-Command npx -ErrorAction SilentlyContinue
-        if ($npxCmd) {
-            Write-Ok "npx available"
-
-            # Check if Work IQ CLI is already authorised
-            Write-Host "  Checking Work IQ CLI..."
-            $wiqVersion = npx -y @microsoft/workiq --version 2>&1
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+        if ($npmCmd) {
+            # Install @microsoft/workiq globally so it persists across sessions
+            Write-Host "  Installing @microsoft/workiq globally..."
+            $installOutput = npm install -g @microsoft/workiq 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Write-Ok "Work IQ CLI: $wiqVersion"
+                $wiqVersion = npx @microsoft/workiq --version 2>&1
+                Write-Ok "Work IQ CLI installed: $wiqVersion"
 
-                # Try a test query to verify permissions
+                # Accept EULA / authenticate
+                Write-Host "  Running EULA acceptance / authentication..."
+                npx @microsoft/workiq accept-eula 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "Work IQ: EULA accepted / authentication complete"
+                } else {
+                    Write-Warn "Work IQ: EULA/auth flow did not complete automatically."
+                    Write-Host "    You can run this later: npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+                }
+
+                # Try a test query to verify M365 permissions
                 Write-Host "  Verifying M365 permissions..."
-                $testResult = npx -y @microsoft/workiq ask -q "test" 2>&1
+                $testResult = npx @microsoft/workiq ask -q "test" 2>&1
                 if ($LASTEXITCODE -eq 0) {
                     Write-Ok "Work IQ: M365 permissions verified"
                     $workiqReady = $true
                 } else {
-                    Write-Warn "Work IQ: M365 query failed. Running EULA acceptance / auth flow..."
-                    npx -y @microsoft/workiq accept-eula 2>&1
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Ok "Work IQ: EULA accepted / authentication complete"
-                        $workiqReady = $true
-                    } else {
-                        Write-Warn "Work IQ: EULA/auth flow did not complete. You can run this later:"
-                        Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
-                    }
+                    Write-Warn "Work IQ: M365 query failed — tenant admin consent may be required."
+                    Write-Host "    The Work IQ CLI is installed, but M365 permissions are not yet granted." -ForegroundColor Gray
+                    Write-Host "    Ask your tenant admin to grant consent, then re-run:" -ForegroundColor Gray
+                    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
                 }
             } else {
-                Write-Host "  Work IQ CLI not yet authorised. Running EULA acceptance..."
-                npx -y @microsoft/workiq accept-eula 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Ok "Work IQ: EULA accepted / authentication complete"
-                    $workiqReady = $true
-                } else {
-                    Write-Warn "Work IQ: EULA acceptance did not complete. You can run this later:"
-                    Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
-                }
+                Write-Warn "npm install -g @microsoft/workiq failed:"
+                Write-Host "    $installOutput" -ForegroundColor DarkGray
+                Write-Host "    Try running manually: npm install -g @microsoft/workiq" -ForegroundColor DarkGray
             }
         } else {
-            Write-Warn "npx not found. Work IQ requires npx (comes with Node.js)."
+            Write-Warn "npm not found. Work IQ requires npm (comes with Node.js)."
         }
     } else {
         Write-Warn "Node.js v$nodeVer is too old. Work IQ requires Node.js 18+."
@@ -1212,7 +1209,8 @@ if ($nodeCmd) {
 if (-not $workiqReady) {
     Write-Host "  Work IQ is optional — InfraForge works fine without it." -ForegroundColor Gray
     Write-Host "  To enable later: install Node.js 18+, then run:" -ForegroundColor Gray
-    Write-Host "    npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+    Write-Host "    npm install -g @microsoft/workiq" -ForegroundColor DarkGray
+    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
 }
 
 # ─────────────────────────────────────────────────────────
@@ -1288,7 +1286,7 @@ if ($workiqReady) {
     Write-Host "    Status:         Ready (authenticated)" -ForegroundColor Green
 } else {
     Write-Host "    Status:         Not configured (optional)" -ForegroundColor Yellow
-    Write-Host "    To enable:      npx -y @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+    Write-Host "    To enable:      npm install -g @microsoft/workiq && npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
 }
 Write-Host ""
 Write-Host "  Remaining manual steps:" -ForegroundColor Yellow
