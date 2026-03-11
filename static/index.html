@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=243">
+    <link rel="stylesheet" href="/static/styles.css?v=244">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -555,20 +555,18 @@
                                 <span class="health-status-icon" id="health-overall-icon">⏳</span>
                                 <span>System Health</span>
                             </div>
-                            <div class="health-status-meta">
-                                <span class="health-timer" id="health-last-checked">Last checked: —</span>
-                                <span class="health-timer-sep">·</span>
-                                <span class="health-timer" id="health-next-check">Next check: —</span>
-                                <button class="health-refresh-btn" onclick="loadHealthStatus()" title="Refresh health checks">↻</button>
-                            </div>
+                            <button class="health-refresh-btn" onclick="loadHealthStatus()" title="Refresh all health checks">↻</button>
                         </div>
                         <table class="health-table" id="health-checks">
                             <thead>
                                 <tr>
                                     <th class="health-th-status">Status</th>
-                                    <th class="health-th-service">Service</th>
-                                    <th class="health-th-detail">Detail</th>
+                                    <th>Service</th>
+                                    <th>Detail</th>
                                     <th class="health-th-latency">Latency</th>
+                                    <th class="health-th-checked">Last Checked</th>
+                                    <th class="health-th-next">Next Check</th>
+                                    <th class="health-th-action"></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -577,24 +575,36 @@
                                     <td class="health-check-name">SQL Database</td>
                                     <td class="health-check-detail" id="health-detail-sql">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-sql">—</td>
+                                    <td class="health-check-timer" id="health-checked-sql">—</td>
+                                    <td class="health-check-timer" id="health-next-sql">—</td>
+                                    <td class="health-check-action"><button class="health-row-refresh" onclick="checkServiceHealth('sql')" title="Refresh">↻</button></td>
                                 </tr>
                                 <tr id="health-check-api">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Backend API</td>
                                     <td class="health-check-detail" id="health-detail-api">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-api">—</td>
+                                    <td class="health-check-timer" id="health-checked-api">—</td>
+                                    <td class="health-check-timer" id="health-next-api">—</td>
+                                    <td class="health-check-action"><button class="health-row-refresh" onclick="checkServiceHealth('backend_api')" title="Refresh">↻</button></td>
                                 </tr>
                                 <tr id="health-check-entra">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Entra ID</td>
                                     <td class="health-check-detail" id="health-detail-entra">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-entra">—</td>
+                                    <td class="health-check-timer" id="health-checked-entra">—</td>
+                                    <td class="health-check-timer" id="health-next-entra">—</td>
+                                    <td class="health-check-action"><button class="health-row-refresh" onclick="checkServiceHealth('entra_id')" title="Refresh">↻</button></td>
                                 </tr>
                                 <tr id="health-check-workiq">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Work IQ</td>
                                     <td class="health-check-detail" id="health-detail-workiq">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-workiq">—</td>
+                                    <td class="health-check-timer" id="health-checked-workiq">—</td>
+                                    <td class="health-check-timer" id="health-next-workiq">—</td>
+                                    <td class="health-check-action"><button class="health-row-refresh" onclick="checkServiceHealth('workiq')" title="Refresh">↻</button></td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1520,7 +1530,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=268"></script>
+    <script src="/static/app.js?v=269"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

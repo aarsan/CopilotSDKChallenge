@@ -7875,6 +7875,8 @@ tr:hover .svc-view-tpl-btn {
 
 .health-th-status { width: 32px; }
 .health-th-latency { width: 72px; text-align: right; }
+.health-th-checked, .health-th-next { width: 90px; text-align: right; }
+.health-th-action { width: 28px; }
 
 .health-table tbody tr {
     border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -7942,6 +7944,35 @@ tr:hover .svc-view-tpl-btn {
     font-family: var(--font-mono, monospace);
     text-align: right;
     white-space: nowrap;
+}
+
+.health-check-timer {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono, monospace);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.health-check-action {
+    text-align: center;
+    padding: 0 0.25rem !important;
+}
+
+.health-row-refresh {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    cursor: pointer;
+    padding: 0.1rem 0.25rem;
+    border-radius: 3px;
+    transition: color 0.2s, background 0.2s;
+    line-height: 1;
+}
+.health-row-refresh:hover {
+    color: var(--accent-blue);
+    background: rgba(255,255,255,0.05);
 }
 
 /* ── Summary Bar ────────────────────────────────────────────── */

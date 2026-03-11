@@ -439,16 +439,8 @@ async def get_activity():
 
 # ── System Health API ─────────────────────────────────────────
 
-@router.get("/api/health")
-async def get_system_health():
-    """Return connectivity health for SQL, backend API, Entra ID, and Work IQ."""
+async def _check_sql():
     import time as _time
-    results = {}
-
-    # 1. Backend API — always healthy if this endpoint responds
-    results["backend_api"] = {"status": "healthy", "latency_ms": 0}
-
-    # 2. SQL Database connectivity
     try:
         from src.database import get_backend
         t0 = _time.monotonic()
@@ -456,38 +448,39 @@ async def get_system_health():
         rows = await db.execute("SELECT 1 AS ok")
         latency = round((_time.monotonic() - t0) * 1000, 1)
         if rows and rows[0].get("ok") == 1:
-            results["sql"] = {"status": "healthy", "latency_ms": latency}
-        else:
-            results["sql"] = {"status": "degraded", "message": "Unexpected query result"}
+            return {"status": "healthy", "latency_ms": latency}
+        return {"status": "degraded", "message": "Unexpected query result"}
     except Exception as e:
-        results["sql"] = {"status": "unhealthy", "message": str(e)[:300]}
+        return {"status": "unhealthy", "message": str(e)[:300]}
 
-    # 3. Entra ID connectivity
+async def _check_backend_api():
+    return {"status": "healthy", "latency_ms": 0}
+
+async def _check_entra_id():
+    import time as _time
     try:
         configured = is_auth_configured()
         if not configured:
-            results["entra_id"] = {
+            return {
                 "status": "unhealthy",
                 "message": "Entra ID not configured (missing ENTRA_CLIENT_ID, ENTRA_TENANT_ID, or ENTRA_CLIENT_SECRET)",
             }
-        else:
-            # Try to reach the Entra discovery endpoint
-            import urllib.request
-            from src.config import ENTRA_AUTHORITY
-            t0 = _time.monotonic()
-            url = f"{ENTRA_AUTHORITY}/v2.0/.well-known/openid-configuration"
-            req = urllib.request.Request(url, method="GET")
-            req.add_header("User-Agent", "InfraForge-HealthCheck/1.0")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                latency = round((_time.monotonic() - t0) * 1000, 1)
-                if resp.status == 200:
-                    results["entra_id"] = {"status": "healthy", "latency_ms": latency}
-                else:
-                    results["entra_id"] = {"status": "degraded", "message": f"HTTP {resp.status}"}
+        import urllib.request
+        from src.config import ENTRA_AUTHORITY
+        t0 = _time.monotonic()
+        url = f"{ENTRA_AUTHORITY}/v2.0/.well-known/openid-configuration"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "InfraForge-HealthCheck/1.0")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            latency = round((_time.monotonic() - t0) * 1000, 1)
+            if resp.status == 200:
+                return {"status": "healthy", "latency_ms": latency}
+            return {"status": "degraded", "message": f"HTTP {resp.status}"}
     except Exception as e:
-        results["entra_id"] = {"status": "unhealthy", "message": str(e)[:300]}
+        return {"status": "unhealthy", "message": str(e)[:300]}
 
-    # 4. Work IQ connectivity
+async def _check_workiq():
+    import time as _time
     try:
         from src.workiq_client import get_workiq_client
         client = get_workiq_client()
@@ -495,14 +488,33 @@ async def get_system_health():
         available = await client.is_available()
         latency = round((_time.monotonic() - t0) * 1000, 1)
         if available:
-            results["workiq"] = {"status": "healthy", "latency_ms": latency}
-        else:
-            err = client.get_last_error() or "Work IQ CLI not available"
-            results["workiq"] = {"status": "unhealthy", "message": err}
+            return {"status": "healthy", "latency_ms": latency}
+        err = client.get_last_error() or "Work IQ CLI not available"
+        return {"status": "unhealthy", "message": err}
     except Exception as e:
-        results["workiq"] = {"status": "unhealthy", "message": str(e)[:300]}
+        return {"status": "unhealthy", "message": str(e)[:300]}
 
-    # Overall status
+_HEALTH_CHECKERS = {
+    "sql": _check_sql,
+    "backend_api": _check_backend_api,
+    "entra_id": _check_entra_id,
+    "workiq": _check_workiq,
+}
+
+@router.get("/api/health")
+async def get_system_health(check: str = None):
+    """Return connectivity health. Use ?check=sql|backend_api|entra_id|workiq for a single service."""
+    if check:
+        checker = _HEALTH_CHECKERS.get(check)
+        if not checker:
+            return JSONResponse({"error": f"Unknown service: {check}"}, status_code=400)
+        result = await checker()
+        return JSONResponse({"check": check, "result": result})
+
+    results = {}
+    for key, fn in _HEALTH_CHECKERS.items():
+        results[key] = await fn()
+
     statuses = [v["status"] for v in results.values()]
     if all(s == "healthy" for s in statuses):
         overall = "healthy"
