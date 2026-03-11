@@ -48,7 +48,7 @@ All other tools are **auto-installed via winget** from pinned versions in `scrip
 |------|---------------|-----------|----------|
 | **Azure CLI** (`az`) | 2.77.0 | `Microsoft.AzureCLI` | Yes |
 | **Python** | 3.13.12 | `Python.Python.3.13` | Yes |
-| **ODBC Driver 18 for SQL Server** | 18.3.3.1 | `Microsoft.msodbcsql.18` | Yes |
+| **ODBC Driver 18 for SQL Server** | 18.4.1.1 | `Microsoft.msodbcsql.18` | Yes |
 | **GitHub CLI** (`gh`) | 2.81.0 | `GitHub.cli` | No (GitHub publishing only) |
 
 > **Updating versions:** Edit `scripts/prerequisites.json` to change pinned versions.

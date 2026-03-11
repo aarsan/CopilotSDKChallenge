@@ -25,7 +25,7 @@
     },
     "odbc18": {
       "wingetId": "Microsoft.msodbcsql.18",
-      "version": "18.3.3.1",
+      "version": "18.4.1.1",
       "command": null,
       "registryCheck": "HKLM:\\SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Driver 18 for SQL Server",
       "required": true,
