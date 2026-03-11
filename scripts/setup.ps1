@@ -406,11 +406,27 @@ if (-not $currentUserOid -or $currentUserOid -match "ERROR") {
 Write-Ok "User OID: $currentUserOid"
 
 # ── Python ──
+# Windows ships a python.exe stub in WindowsApps that just opens the
+# Microsoft Store. Test-Command finds it, so we must also verify that
+# `python --version` actually returns a real version string.
 $pySpec = $prereqs.python
-if (-not (Test-Command "python")) {
-    Install-Prerequisite -DisplayName "Python" -WingetId $pySpec.wingetId -Version $pySpec.version -Command $pySpec.command -Required $pySpec.required
+$pythonReal = $false
+if (Test-Command "python") {
+    $pyProbe = python --version 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -and $pyProbe -match "^Python \d+\.\d+") {
+        $pythonReal = $true
+    }
 }
-$pyVer = python --version 2>&1
+if (-not $pythonReal) {
+    Install-Prerequisite -DisplayName "Python" -WingetId $pySpec.wingetId -Version $pySpec.version -Command $pySpec.command -Required $pySpec.required
+    # Re-probe after install
+    $pyProbe = python --version 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0 -or $pyProbe -notmatch "^Python \d+\.\d+") {
+        Write-Err "Python is still not functional after install. You may need to restart your terminal."
+        exit 1
+    }
+}
+$pyVer = ($pyProbe -split "`n")[0].Trim()
 Write-Ok "Python: $pyVer (pinned: $($pySpec.version))"
 
 # ── ODBC Driver 18 for SQL Server ──
