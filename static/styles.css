@@ -8041,6 +8041,13 @@ tr:hover .svc-view-tpl-btn {
     white-space: nowrap;
 }
 
+.health-check-provider,
+.health-check-location {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 .health-check-detail {
     font-size: 0.72rem;
     color: var(--text-secondary);
