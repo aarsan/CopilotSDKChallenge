@@ -10949,6 +10949,10 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
             })
         parent_type = get_parent_resource_type(service_id)
 
+        # Parent-child co-validation staleness check
+        from src.database import check_parent_child_staleness
+        staleness = await check_parent_child_staleness(service_id)
+
         return JSONResponse({
             "service_id": service_id,
             "active_version": svc.get("active_version"),
@@ -10956,6 +10960,7 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
             "api_version_status": api_version_status,
             "child_resources": child_resources,
             "parent_resource": parent_type,
+            "parent_staleness": staleness,
         })
     except HTTPException:
         raise

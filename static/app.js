@@ -1670,7 +1670,7 @@ async function showServiceDetail(serviceId) {
         }
         const data = await versionsRes.json();
         _currentVersions = data.versions || [];
-        _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status, data.child_resources, data.parent_resource);
+        _renderVersionedWorkflow(svc, _currentVersions, data.active_version, data.api_version_status, data.child_resources, data.parent_resource, data.parent_staleness);
         // Populate model selector AFTER the DOM element exists
         _populateModelSelector();
 
@@ -1760,7 +1760,27 @@ function _renderApiVersionAdvisory(status) {
         </div>`;
 }
 
-function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus, childResources, parentResource) {
+function _renderParentStalenessAdvisory(staleness) {
+    if (!staleness || !staleness.stale) return '';
+    const apiNote = staleness.parent_api_changed
+        ? ' <strong>Parent API version also changed</strong> — re-validation recommended.'
+        : ' Parent API version unchanged — low risk.';
+    return `
+        <div class="parent-staleness-advisory">
+            <div class="parent-staleness-icon">⚠️</div>
+            <div class="parent-staleness-body">
+                <div class="parent-staleness-title">Co-validation may be stale</div>
+                <div class="parent-staleness-detail">
+                    ${escapeHtml(staleness.message)}.${apiNote}
+                </div>
+                <div class="parent-staleness-hint">
+                    Re-onboard this service to co-validate against the current parent version.
+                </div>
+            </div>
+        </div>`;
+}
+
+function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus, childResources, parentResource, parentStaleness) {
     const body = document.getElementById('detail-service-body');
     const status = svc.status || 'not_approved';
     const hasVersions = versions.length > 0;
@@ -1779,6 +1799,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
             <span class="category-badge">${escapeHtml(svc.category)}</span>
             ${svc.risk_tier ? `<span class="category-badge risk-${svc.risk_tier}">${svc.risk_tier} risk</span>` : ''}
         </div>
+
+        ${_renderParentStalenessAdvisory(parentStaleness)}
 
         ${_renderOnboardButton(svc, status, latestVersion, apiVersionStatus, versions, activeVersion)}
 

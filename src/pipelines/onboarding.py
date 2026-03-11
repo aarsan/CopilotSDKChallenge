@@ -1390,6 +1390,94 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             failure_context={"quota": _quota_primary, "alternative_regions": _alt_names},
         )
 
+    # ── Parent-child co-validation ─────────────────────────────
+    # If this service is a child (e.g. subnets), merge the parent's
+    # active ARM template so ARM validates both together.
+    # If this is a parent with always_include children already validated,
+    # include them to verify the parent doesn't break existing children.
+    # Each resource keeps its own apiVersion — no forced alignment.
+    from src.template_engine import get_co_validation_context, build_composite_validation_template
+    from src.database import get_active_service_version as _get_active_ver, get_service as _get_svc
+
+    co_val = get_co_validation_context(ctx.service_id)
+    _co_validation_parent_info = None  # set when child co-validates with parent
+
+    if co_val and co_val["mode"] == "child":
+        parent_type = co_val["parent_type"]
+        parent_ver = await _get_active_ver(parent_type)
+        if parent_ver and parent_ver.get("arm_template"):
+            try:
+                parent_arm = json.loads(parent_ver["arm_template"])
+                child_arm = json.loads(ctx.template)
+                composite = build_composite_validation_template(parent_arm, child_arm)
+                ctx.extra["_standalone_template"] = ctx.template  # preserve original
+                ctx.template = json.dumps(composite, indent=2)
+                tmpl_meta = extract_meta(ctx.template)
+
+                parent_svc = await _get_svc(parent_type)
+                parent_api = parent_svc.get("template_api_version") if parent_svc else None
+                _co_validation_parent_info = {
+                    "parent_service_id": parent_type,
+                    "parent_version": parent_ver["version"],
+                    "parent_api_version": parent_api,
+                }
+
+                yield emit(
+                    "progress", "co_validation",
+                    f"🔗 Co-validating with parent {parent_type.split('/')[-1]} "
+                    f"v{parent_ver.get('semver', parent_ver['version'])} "
+                    f"(API {parent_api or 'unknown'}) — deploying composite template",
+                    ctx.progress(0.01),
+                )
+            except Exception as e:
+                logger.warning(f"Co-validation composite build failed: {e} — validating standalone")
+                yield emit(
+                    "warning", "co_validation",
+                    f"Could not build composite with parent — validating standalone: {e}",
+                    ctx.progress(0.01),
+                )
+        else:
+            yield emit(
+                "progress", "co_validation",
+                f"Parent {parent_type.split('/')[-1]} has no active version — validating standalone",
+                ctx.progress(0.01),
+            )
+
+    elif co_val and co_val["mode"] == "parent":
+        # Include already-validated children to ensure the parent update
+        # doesn't break them
+        from src.database import is_service_fully_validated as _is_valid
+        included_children = []
+        for child_type in co_val["children"]:
+            is_valid, _ = await _is_valid(child_type)
+            if not is_valid:
+                continue
+            child_ver = await _get_active_ver(child_type)
+            if not child_ver or not child_ver.get("arm_template"):
+                continue
+            try:
+                parent_arm = json.loads(ctx.template)
+                child_arm = json.loads(child_ver["arm_template"])
+                composite = build_composite_validation_template(parent_arm, child_arm)
+                ctx.extra["_standalone_template"] = ctx.template
+                ctx.template = json.dumps(composite, indent=2)
+                tmpl_meta = extract_meta(ctx.template)
+                included_children.append(child_type.split("/")[-1])
+            except Exception as e:
+                logger.warning(f"Could not include child {child_type} in composite: {e}")
+
+        if included_children:
+            yield emit(
+                "progress", "co_validation",
+                f"🔗 Co-validating with {len(included_children)} child resource(s): "
+                f"{', '.join(included_children)}",
+                ctx.progress(0.01),
+            )
+
+    # After co-validation deploys, we'll restore the standalone template
+    # so the service version stores only its own template (not the composite).
+    ctx.extra["_co_validation_parent_info"] = _co_validation_parent_info
+
     attempt = 0
     while attempt < MAX_HEAL:
         attempt += 1
@@ -1885,6 +1973,19 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
         ctx.artifacts["policy_results"] = policy_results
         ctx.artifacts["all_policy_compliant"] = all_policy_compliant
         ctx.artifacts["deploy_name"] = _deploy_name
+
+        # Restore standalone template after composite co-validation
+        # so the service version stores only its own template.
+        standalone = ctx.extra.get("_standalone_template")
+        if standalone:
+            ctx.template = standalone
+            del ctx.extra["_standalone_template"]
+            yield emit(
+                "progress", "co_validation_done",
+                "🔗 Composite validation passed — storing standalone template for this service",
+                ctx.progress(1.0),
+            )
+
         return  # ✅ validation passed
 
 
@@ -2093,6 +2194,18 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
         policy_check=report.to_dict() if report else {},
     )
     await set_active_service_version(ctx.service_id, ctx.version_num)
+
+    # Record parent-child co-validation provenance
+    co_parent = ctx.extra.get("_co_validation_parent_info")
+    if co_parent:
+        from src.database import set_validated_with_parent
+        await set_validated_with_parent(
+            ctx.service_id,
+            ctx.version_num,
+            co_parent["parent_service_id"],
+            co_parent["parent_version"],
+            co_parent.get("parent_api_version"),
+        )
 
     issues_resolved = len(ctx.heal_history)
     heal_msg = f" Resolved {issues_resolved} issue{'s' if issues_resolved != 1 else ''} automatically." if issues_resolved > 0 else ""

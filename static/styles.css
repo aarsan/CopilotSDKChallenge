@@ -4994,6 +4994,45 @@ tr:hover .svc-view-tpl-btn {
     font-style: italic;
 }
 
+/* ── Parent-Child Co-Validation Staleness Advisory ────────── */
+
+.parent-staleness-advisory {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.7rem 1rem;
+    margin-bottom: 1rem;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.parent-staleness-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+.parent-staleness-body {
+    flex: 1;
+    min-width: 0;
+}
+.parent-staleness-title {
+    font-weight: 600;
+    color: var(--accent-yellow, #fbbf24);
+    margin-bottom: 0.2rem;
+    font-size: 0.8rem;
+}
+.parent-staleness-detail {
+    line-height: 1.45;
+}
+.parent-staleness-hint {
+    margin-top: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 
 
 /* ── Child Resources (Parent-Child Relationships) ─────────── */
