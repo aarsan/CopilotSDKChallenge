@@ -351,8 +351,8 @@ function navigateTo(page) {
         services: ['Service Catalog', ''],
         templates: ['Template Catalog', ''],
         governance: ['Governance Standards', ''],
+        runs: ['Pipeline Runs', ''],
         activity: ['Observability', ''],
-
         chat: ['Infrastructure Designer', ''],
         admin: ['Admin Settings', ''],
     };
@@ -361,6 +361,7 @@ function navigateTo(page) {
         services: _copilotBadge(true),
         templates: _copilotBadge(true),
         governance: _copilotBadge(true),
+        runs: _copilotBadge(true),
         activity: _copilotBadge(false),
         chat: _copilotBadge(true),
     };
@@ -388,14 +389,20 @@ function navigateTo(page) {
         if (fab) fab.style.display = '';
     }
 
+    // Load pipeline runs data when switching to runs page
+    if (page === 'runs') {
+        loadRunsDeploymentHistory();
+        loadRunsActivity(true);
+        _startRunsPolling();
+    } else {
+        _stopRunsPolling();
+    }
+
     // Load observability data when switching to activity page
     if (page === 'activity') {
         loadHealthStatus();
-        loadDeploymentHistory();
-        loadActivity(true);
-        _startActivityPolling();
+        loadAgentActivity();
     } else {
-        _stopActivityPolling();
         _stopHealthTimer();
     }
 
@@ -425,8 +432,11 @@ function updatePageActions(page) {
         case 'governance':
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button> <button class="btn btn-sm btn-secondary" onclick="openImportStandardsModal()">📥 Import Standards</button>';
             break;
+        case 'runs':
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadRunsDeploymentHistory(); loadRunsActivity(true)" title="Refresh">⟳ Refresh</button>';
+            break;
         case 'activity':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadDeploymentHistory(); loadActivity(true)" title="Refresh">⟳ Refresh</button>';
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadHealthStatus()" title="Refresh">⟳ Refresh</button>';
             break;
 
         case 'chat':
@@ -2636,74 +2646,72 @@ function _renderGovernanceReviews(reviews) {
     </div>`;
 }
 
-function _renderPipelineRuns(runs, serviceId) {
-    const statusIcon = (s) => ({
-        completed: '✅', failed: '❌', running: '🔄',
-    })[s] || '⏳';
+function _pipelineRunToActivityJob(run, serviceId) {
+    // Map pipeline run data to the shape expected by _renderActivityCard
+    const svc = allServices.find(s => s.id === serviceId);
+    const statusMap = { completed: 'approved', failed: 'validation_failed', running: 'validating' };
+    const events = Array.isArray(run.events) ? run.events : [];
 
-    const statusClass = (s) => ({
-        completed: 'run-status-completed',
-        failed: 'run-status-failed',
-        running: 'run-status-running',
-    })[s] || 'run-status-unknown';
-
-    const pipelineLabel = (t) => ({
-        onboarding: 'Onboarding',
-        api_version_update: 'API Version Update',
-        infra_testing: 'Infrastructure Testing',
-    })[t] || t;
-
-    const formatDuration = (secs) => {
-        if (!secs && secs !== 0) return '—';
-        if (secs < 60) return `${Math.round(secs)}s`;
-        const m = Math.floor(secs / 60);
-        const s = Math.round(secs % 60);
-        return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    // Derive steps_completed and phase from events
+    const stepsCompleted = [];
+    let lastPhase = '';
+    const phaseStepMap = {
+        starting: 'parsing', what_if: 'what_if', what_if_complete: 'what_if',
+        deploying: 'deploying', deploy_complete: 'deploying', deploy_failed: 'deploying',
+        resource_check: 'resource_check', resource_check_complete: 'resource_check',
+        policy_testing: 'policy_testing', policy_failed: 'policy_testing',
+        policy_deploy: 'policy_deploy', policy_deploy_complete: 'policy_deploy',
+        cleanup: 'cleanup', cleanup_complete: 'cleanup',
+        promoting: 'promoting',
     };
+    const donePhases = new Set(['what_if_complete', 'deploy_complete', 'resource_check_complete',
+        'policy_deploy_complete', 'cleanup_complete']);
+    for (const ev of events) {
+        const p = ev.phase || '';
+        if (p) lastPhase = p;
+        const step = phaseStepMap[p];
+        if (step && donePhases.has(p) && !stepsCompleted.includes(step)) {
+            stepsCompleted.push(step);
+        }
+    }
 
-    const items = runs.map((r, idx) => {
-        const started = (r.started_at || '').replace('T', ' ').substring(0, 19);
-        const dur = formatDuration(r.duration_secs);
-        const summary = r.summary || {};
-        const healCount = r.heal_count || 0;
+    return {
+        service_id: serviceId,
+        service_name: svc?.name || serviceId.split('/').pop(),
+        status: statusMap[run.status] || run.status,
+        is_running: run.status === 'running',
+        phase: lastPhase,
+        steps_completed: stepsCompleted,
+        progress: run.status === 'completed' ? 1 : (run.status === 'failed' ? 0.5 : 0.3),
+        events: events,
+        error: run.error_detail || null,
+        started_at: run.started_at,
+        template_meta: {},
+        region: '',
+        rg_name: '',
+        detail: run.summary?.changelog || '',
+        attempt: null,
+        max_attempts: null,
+        pipeline_type: run.pipeline_type || null,
+    };
+}
+
+function _renderPipelineRuns(runs, serviceId) {
+    if (!runs || runs.length === 0) return '';
+
+    const cards = runs.map((r, idx) => {
+        const job = _pipelineRunToActivityJob(r, serviceId);
         const hasEvents = Array.isArray(r.events) && r.events.length > 0;
 
-        let detailRows = '';
-        if (r.error_detail) {
-            detailRows += `<div class="run-detail-row run-detail-error"><strong>Error:</strong> ${escapeHtml(r.error_detail)}</div>`;
-        }
-        if (summary.changelog) {
-            detailRows += `<div class="run-detail-row"><strong>Change:</strong> ${escapeHtml(summary.changelog)}</div>`;
-        }
-        if (summary.policy_check) {
-            detailRows += `<div class="run-detail-row"><strong>Policy:</strong> ${escapeHtml(summary.policy_check)}</div>`;
-        }
-        if (healCount > 0) {
-            detailRows += `<div class="run-detail-row"><strong>Heal cycles:</strong> ${healCount}</div>`;
-        }
-        if (r.version_num) {
-            const ver = r.semver || `v${r.version_num}`;
-            detailRows += `<div class="run-detail-row"><strong>Version:</strong> ${escapeHtml(ver)}</div>`;
-        }
-        if (r.run_id) {
-            detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
+        let cardHtml = _renderActivityCard(job);
+
+        // Add "Open Flow View" button for runs with events
+        if (hasEvents) {
+            const viewBtn = `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); openServicePipelineRun('${escapeHtml(serviceId)}', ${idx})" title="View pipeline flowchart">📊 Open Flow View</button>`;
+            cardHtml = cardHtml.replace('<div class="activity-card-actions">', `<div class="activity-card-actions">${viewBtn} `);
         }
 
-        const viewBtn = hasEvents
-            ? `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); openServicePipelineRun('${escapeHtml(serviceId)}', ${idx})" title="View pipeline flowchart">📊 View</button>`
-            : '';
-
-        return `
-        <div class="run-item run-item-${r.status || 'unknown'}" onclick="this.querySelector('.run-item-detail')?.classList.toggle('hidden')">
-            <div class="run-item-header">
-                <span class="run-item-status ${statusClass(r.status)}">${statusIcon(r.status)}</span>
-                <span class="run-item-pipeline">${pipelineLabel(r.pipeline_type)}</span>
-                <span class="run-item-duration">${dur}</span>
-                <span class="run-item-date">${started}</span>
-                ${viewBtn}
-            </div>
-            ${detailRows ? `<div class="run-item-detail hidden">${detailRows}</div>` : ''}
-        </div>`;
+        return cardHtml;
     }).join('');
 
     return `
@@ -2712,7 +2720,7 @@ function _renderPipelineRuns(runs, serviceId) {
             <span>📊 Recent Pipeline Runs</span>
             <span class="version-count">${runs.length} run${runs.length === 1 ? '' : 's'}</span>
         </div>
-        <div class="version-list">${items}</div>
+        <div class="pipeline-runs-feed">${cards}</div>
     </div>`;
 }
 
@@ -14407,7 +14415,7 @@ async function saveImportedStandards() {
 // OBSERVABILITY — Deployments & Service Validation
 // ══════════════════════════════════════════════════════════════
 
-let _obsCurrentTab = 'deployments';
+let _obsCurrentTab = 'agents';
 
 // ── System Health Checks ─────────────────────────────────────
 
@@ -14516,8 +14524,8 @@ async function loadHealthStatus() {
 
 function switchObsTab(tab) {
     _obsCurrentTab = tab;
-    document.querySelectorAll('.obs-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.obs-tab-content').forEach(c => c.classList.add('hidden'));
+    document.querySelectorAll('#page-activity .obs-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#page-activity .obs-tab-content').forEach(c => c.classList.add('hidden'));
     const tabBtn = document.getElementById(`obs-tab-${tab}`);
     const content = document.getElementById(`obs-content-${tab}`);
     if (tabBtn) tabBtn.classList.add('active');
@@ -14528,42 +14536,11 @@ function switchObsTab(tab) {
 }
 
 async function loadDeploymentHistory() {
-    try {
-        const res = await fetch('/api/deployments');
-        if (!res.ok) throw new Error('Failed');
-        const data = await res.json();
-        const deployments = data.deployments || [];
-        _renderDeploymentFeed(deployments);
-    } catch (err) {
-        console.warn('Deployment history load failed:', err);
-    }
+    return loadRunsDeploymentHistory();
 }
 
 function _renderDeploymentFeed(deployments) {
-    const feed = document.getElementById('obs-deploy-feed');
-    if (!feed) return;
-
-    // Update summary counters
-    const total = deployments.length;
-    const succeeded = deployments.filter(d => d.status === 'succeeded').length;
-    const failed = deployments.filter(d => d.status === 'failed').length;
-    const tornDown = deployments.filter(d => d.status === 'torn_down').length;
-    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-    el('obs-deployments-total', total);
-    el('obs-deployments-succeeded', succeeded);
-    el('obs-deployments-failed', failed);
-    el('obs-deployments-torn-down', tornDown);
-
-    if (deployments.length === 0) {
-        feed.innerHTML = `
-            <div class="activity-empty">
-                <span class="activity-empty-icon">🚀</span>
-                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
-            </div>`;
-        return;
-    }
-
-    feed.innerHTML = deployments.map(d => _renderDeploymentRunCard(d)).join('');
+    _renderRunsDeploymentFeed(deployments);
 }
 
 function _renderDeploymentRunCard(dep) {
@@ -15146,39 +15123,50 @@ async function restoreFromServerFile(filepath) {
     }
 }
 
-// ── Service Validation Activity (existing) ──────────────────
+// ── Pipeline Runs Page (unified run view) ───────────────────
 
-let _activityPollTimer = null;
+let _runsCurrentTab = 'validations';
+let _runsPollTimer = null;
 
-function _startActivityPolling() {
-    _stopActivityPolling();
-    _activityPollTimer = setInterval(() => {
-        loadActivity(true);
-        if (_obsCurrentTab === 'deployments') loadDeploymentHistory();
+function switchRunsTab(tab) {
+    _runsCurrentTab = tab;
+    document.querySelectorAll('#page-runs .obs-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#page-runs .obs-tab-content').forEach(c => c.classList.add('hidden'));
+    const tabBtn = document.getElementById(`runs-tab-${tab}`);
+    const content = document.getElementById(`runs-content-${tab}`);
+    if (tabBtn) tabBtn.classList.add('active');
+    if (content) content.classList.remove('hidden');
+}
+
+function _startRunsPolling() {
+    _stopRunsPolling();
+    _runsPollTimer = setInterval(() => {
+        loadRunsActivity(true);
+        if (_runsCurrentTab === 'deployments') loadRunsDeploymentHistory();
     }, 5000);
 }
 
-function _stopActivityPolling() {
-    if (_activityPollTimer) {
-        clearInterval(_activityPollTimer);
-        _activityPollTimer = null;
+function _stopRunsPolling() {
+    if (_runsPollTimer) {
+        clearInterval(_runsPollTimer);
+        _runsPollTimer = null;
     }
 }
 
-async function loadActivity(silent = false) {
+async function loadRunsActivity(silent = false) {
     try {
         const res = await fetch('/api/activity');
         if (!res.ok) throw new Error('Failed to load activity');
         const data = await res.json();
-        renderActivityFeed(data);
-        updateActivityBadge(data.summary);
+        _renderRunsActivityFeed(data);
+        _updateRunsBadge(data.summary);
     } catch (err) {
-        if (!silent) console.warn('Activity load failed:', err);
+        if (!silent) console.warn('Runs activity load failed:', err);
     }
 }
 
-function updateActivityBadge(summary) {
-    const badge = document.getElementById('nav-activity-badge');
+function _updateRunsBadge(summary) {
+    const badge = document.getElementById('nav-runs-badge');
     if (!badge) return;
     const running = summary.running || 0;
     if (running > 0) {
@@ -15188,30 +15176,25 @@ function updateActivityBadge(summary) {
     } else {
         badge.style.display = 'none';
     }
-
-    // Also update dashboard stats if present
-    const statValidating = document.getElementById('stat-review');
-    if (statValidating && summary.validating > 0) {
-        // keep existing value
-    }
 }
 
-function renderActivityFeed(data) {
-    const feed = document.getElementById('activity-feed');
+function _renderRunsActivityFeed(data) {
+    const feed = document.getElementById('runs-activity-feed');
     const summary = data.summary || {};
     const jobs = data.jobs || [];
 
-    // Update summary counters
-    const runEl = document.getElementById('activity-running');
-    const valEl = document.getElementById('activity-validating');
-    const appEl = document.getElementById('activity-approved');
-    const failEl = document.getElementById('activity-failed');
-    if (runEl) runEl.textContent = summary.running || 0;
-    if (valEl) valEl.textContent = summary.validating || 0;
-    if (appEl) appEl.textContent = summary.approved || 0;
-    if (failEl) failEl.textContent = summary.failed || 0;
+    // Update runs page summary counters
+    const _el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    _el('runs-running', summary.running || 0);
+    _el('runs-validating', summary.validating || 0);
+    _el('runs-approved', summary.approved || 0);
+    _el('runs-val-failed', summary.failed || 0);
+    // Also feed into the top-level summary
+    _el('runs-failed', summary.failed || 0);
+    _el('runs-succeeded', summary.approved || 0);
 
     // Pulse animation for running count
+    const runEl = document.getElementById('runs-running');
     if (runEl) {
         if (summary.running > 0) runEl.classList.add('activity-pulse');
         else runEl.classList.remove('activity-pulse');
@@ -15222,8 +15205,8 @@ function renderActivityFeed(data) {
     if (jobs.length === 0) {
         feed.innerHTML = `
             <div class="activity-empty">
-                <span class="activity-empty-icon">📡</span>
-                <p>No deployment activity yet. Approve both gates on a service to trigger validation.</p>
+                <span class="activity-empty-icon">🔬</span>
+                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
             </div>`;
         return;
     }
@@ -15238,6 +15221,64 @@ function renderActivityFeed(data) {
         }
     }
 }
+
+async function loadRunsDeploymentHistory() {
+    try {
+        const res = await fetch('/api/deployments');
+        if (!res.ok) throw new Error('Failed');
+        const data = await res.json();
+        const deployments = data.deployments || [];
+        _renderRunsDeploymentFeed(deployments);
+    } catch (err) {
+        console.warn('Runs deployment history load failed:', err);
+    }
+}
+
+function _renderRunsDeploymentFeed(deployments) {
+    const feed = document.getElementById('runs-deploy-feed');
+    if (!feed) return;
+
+    // Update summary counters on the runs page
+    const total = deployments.length;
+    const succeeded = deployments.filter(d => d.status === 'succeeded').length;
+    const failed = deployments.filter(d => d.status === 'failed').length;
+    const tornDown = deployments.filter(d => d.status === 'torn_down').length;
+    const _el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    _el('runs-torn-down', tornDown);
+
+    if (deployments.length === 0) {
+        feed.innerHTML = `
+            <div class="activity-empty">
+                <span class="activity-empty-icon">🚀</span>
+                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
+            </div>`;
+        return;
+    }
+
+    feed.innerHTML = deployments.map(d => _renderDeploymentRunCard(d)).join('');
+}
+
+
+// ── Service Validation Activity (existing) ──────────────────
+
+let _activityPollTimer = null;
+
+function _startActivityPolling() { _startRunsPolling(); }
+function _stopActivityPolling() { _stopRunsPolling(); }
+
+async function loadActivity(silent = false) {
+    return loadRunsActivity(silent);
+}
+
+function updateActivityBadge(summary) {
+    _updateRunsBadge(summary);
+}
+
+function renderActivityFeed(data) {
+    _renderRunsActivityFeed(data);
+}
+
+// Legacy updateActivityBadge/renderActivityFeed wrappers (kept for call-site compatibility)
 
 /**
  * Parse a raw validation error (string or JSON) into a structured object
@@ -15671,6 +15712,7 @@ function _renderActivityCard(job) {
                 </div>
             </div>
             <div class="activity-card-meta">
+                ${job.pipeline_type ? `<span class="activity-pipeline-type">${escapeHtml(({onboarding:'Onboarding',api_version_update:'API Version Update',infra_testing:'Infrastructure Testing'})[job.pipeline_type] || job.pipeline_type)}</span>` : ''}
                 <span class="activity-badge ${statusClass}">${statusText}</span>
                 ${timeHtml}
             </div>
