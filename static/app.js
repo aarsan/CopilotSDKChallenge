@@ -6695,11 +6695,17 @@ async function _loadTemplateComposition(templateId) {
                     depNames.length ? `Depends on: ${depNames.join(', ')}` : '',
                 ].filter(Boolean).join('\n');
 
+                // Check if this node has children — if so, wrap both in a group
+                const myChildren = childrenByParent[c.service_id];
+                const hasChildren = myChildren && myChildren.length > 0;
+
+                if (hasChildren) html += `<div class="hero-parent-group">`;
+
                 html += `
-                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
+                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}${hasChildren ? ' hero-node-has-children' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
                         <div class="hero-node-icon">${_azureIcon(c.service_id, 28)}</div>
                         <div class="hero-node-body">
-                            <div class="hero-node-name">${escapeHtml(shortName)}</div>
+                            <div class="hero-node-name">${escapeHtml(shortName)}${hasChildren ? ' <span class="hero-parent-tag">parent</span>' : ''}</div>
                             ${catLabel ? `<div class="hero-node-cat">${escapeHtml(catLabel)}</div>` : ''}
                             <div class="hero-node-ver-row">
                                 <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">v${verDisplay}</span>
@@ -6714,9 +6720,9 @@ async function _loadTemplateComposition(templateId) {
                         </div>
                     </div>`;
 
-                // Render child resources nested under this parent
-                const myChildren = childrenByParent[c.service_id];
-                if (myChildren && myChildren.length) {
+                // Render child resources inside the group
+                if (hasChildren) {
+                    html += `<div class="hero-group-connector"><span class="hero-group-line"></span></div>`;
                     html += `<div class="hero-children-strip" data-parent="${escapeHtml(c.service_id)}">`;
                     for (const child of myChildren) {
                         const childName = child.name || child.service_id.split('/').pop();
@@ -6740,7 +6746,8 @@ async function _loadTemplateComposition(templateId) {
                             </div>
                         </div>`;
                     }
-                    html += '</div>';
+                    html += '</div>';  // close hero-children-strip
+                    html += '</div>';  // close hero-parent-group
                 }
             }
             html += '</div>';

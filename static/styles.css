@@ -2296,32 +2296,66 @@ tr:hover .svc-view-tpl-btn {
     transform: none;
 }
 
-/* ── Child Resource Strip (nested under parent) ── */
+/* ── Parent-Child Group (wraps parent + children) ── */
+.hero-parent-group {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    background: rgba(99, 102, 241, 0.04);
+    border: 1.5px solid rgba(99, 102, 241, 0.18);
+    border-radius: 14px;
+    padding: 0.5rem;
+    gap: 0;
+    min-width: 190px;
+    max-width: 280px;
+    flex: 1 1 190px;
+    position: relative;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.hero-parent-group:hover {
+    border-color: rgba(99, 102, 241, 0.35);
+    box-shadow: 0 2px 16px rgba(99, 102, 241, 0.10);
+}
+.hero-parent-group .hero-node.hero-node-has-children {
+    max-width: none;
+    border-radius: 10px 10px 4px 4px;
+    flex: none;
+}
+
+/* Vertical connector line from parent to children */
+.hero-group-connector {
+    display: flex;
+    justify-content: center;
+    padding: 0;
+    height: 12px;
+    position: relative;
+}
+.hero-group-line {
+    display: block;
+    width: 2px;
+    height: 100%;
+    background: rgba(99, 102, 241, 0.25);
+    border-radius: 1px;
+}
+
+/* ── Child Resource Strip (nested under parent in group) ── */
 .hero-children-strip {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem;
-    margin-top: -0.15rem;
-    margin-left: 1.5rem;
-    padding: 0.35rem 0.5rem;
-    border-left: 2px solid var(--border-muted);
+    padding: 0.35rem 0.25rem 0.25rem;
     position: relative;
 }
 .hero-children-strip::before {
-    content: '└';
-    position: absolute;
-    left: -0.75rem;
-    top: 0.4rem;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    opacity: 0.5;
+    display: none;
 }
 .hero-node.hero-node-child {
-    min-width: 140px;
-    max-width: 200px;
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 auto;
     padding: 0.45rem 0.65rem;
     font-size: 0.82rem;
-    border-radius: 7px;
+    border-radius: 4px 4px 8px 8px;
     background: var(--bg-tertiary);
     border-width: 1px;
     border-left-width: 3px;
@@ -2339,6 +2373,20 @@ tr:hover .svc-view-tpl-btn {
     color: var(--text-muted);
     background: rgba(255,255,255,0.06);
     border: 1px solid var(--border-muted);
+    border-radius: 3px;
+    padding: 0 3px;
+    vertical-align: middle;
+    margin-left: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.hero-parent-tag {
+    display: inline-block;
+    font-size: 0.58rem;
+    font-weight: 600;
+    color: rgba(99, 102, 241, 0.7);
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.20);
     border-radius: 3px;
     padding: 0 3px;
     vertical-align: middle;
