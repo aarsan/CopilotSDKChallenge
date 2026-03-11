@@ -2351,20 +2351,79 @@ tr:hover .svc-view-tpl-btn {
 .comp-hero-onboarding-banner {
     background: color-mix(in srgb, var(--accent-blue, #58a6ff) 10%, transparent);
     border: 1px solid var(--accent-blue, #58a6ff);
-    border-radius: var(--radius-sm, 6px);
-    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md, 8px);
+    padding: 0.75rem 1rem;
     margin: 0.75rem 0 0.25rem;
-    font-size: 0.78rem;
+    font-size: 0.82rem;
     color: var(--text-primary);
     line-height: 1.4;
 }
-.comp-hero-onboarding-text {
+.comp-hero-onboarding-header {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    margin-bottom: 0.5rem;
 }
-.comp-hero-onboarding-text .tmpl-awaiting-spinner {
+.comp-hero-onboarding-header .tmpl-awaiting-spinner {
     flex-shrink: 0;
+}
+.comp-hero-onboarding-pct {
+    margin-left: auto;
+    font-weight: 700;
+    font-size: 0.92rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-blue, #58a6ff);
+}
+/* Progress bar track */
+.comp-hero-onboarding-progress {
+    height: 6px;
+    background: color-mix(in srgb, var(--accent-blue, #58a6ff) 18%, transparent);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+.comp-hero-onboarding-bar {
+    height: 100%;
+    background: var(--accent-blue, #58a6ff);
+    border-radius: 3px;
+    transition: width 0.6s ease;
+    min-width: 0;
+}
+/* Per-service detail rows */
+.comp-hero-onboarding-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 0.4rem;
+}
+.comp-hero-onboarding-svc {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.comp-hero-onboarding-svc-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 120px;
+}
+.comp-hero-onboarding-svc-phase {
+    flex: 1;
+    font-style: italic;
+    opacity: 0.8;
+}
+.comp-hero-onboarding-svc-pct {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--accent-blue, #58a6ff);
+    min-width: 32px;
+    text-align: right;
+}
+.comp-hero-onboarding-note {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    opacity: 0.7;
 }
 
 /* ── Batch Onboarding Panel ──────────────── */

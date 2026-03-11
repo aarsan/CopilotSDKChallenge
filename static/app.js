@@ -3349,9 +3349,13 @@ function _startCompOnboardPoll(templateId) {
     _stopCompOnboardPoll();
     _compOnboardPoll = setInterval(async () => {
         try {
-            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`);
-            if (!res.ok) return;
-            const data = await res.json();
+            // Fetch composition status and live progress in parallel
+            const [compRes] = await Promise.all([
+                fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`),
+                _fetchOnboardingProgress(),
+            ]);
+            if (!compRes.ok) return;
+            const data = await compRes.json();
             const components = data.components || [];
             const stillOnboarding = components.some(c => c.status === 'validating');
             if (!stillOnboarding) {
@@ -3360,7 +3364,45 @@ function _startCompOnboardPoll(templateId) {
                 showTemplateDetail(templateId);
             }
         } catch (_) { /* ignore transient failures */ }
-    }, 4000);
+    }, 3000);
+}
+
+/** Fetch /api/activity and update the onboarding progress bar + per-service details. */
+async function _fetchOnboardingProgress() {
+    try {
+        const banner = document.querySelector('.comp-hero-onboarding-banner');
+        if (!banner) return;
+        const ids = JSON.parse(banner.dataset.onboardingIds || '[]');
+        if (!ids.length) return;
+
+        const res = await fetch('/api/activity');
+        if (!res.ok) return;
+        const actData = await res.json();
+        const jobs = actData.jobs || actData;
+
+        let totalProg = 0;
+        let count = 0;
+        for (const sid of ids) {
+            const job = (Array.isArray(jobs) ? jobs : []).find(j => j.service_id === sid);
+            const pct = job ? Math.round((job.progress || 0) * 100) : 0;
+            const phase = job ? (job.phase || '').replace(/_/g, ' ') : 'queued';
+            totalProg += pct;
+            count++;
+            // Update per-service row
+            const row = banner.querySelector(`[data-svc-id="${CSS.escape(sid)}"]`);
+            if (row) {
+                const phaseEl = row.querySelector('.comp-hero-onboarding-svc-phase');
+                const pctEl = row.querySelector('.comp-hero-onboarding-svc-pct');
+                if (phaseEl) phaseEl.textContent = phase || 'starting…';
+                if (pctEl) pctEl.textContent = pct + '%';
+            }
+        }
+        const avgPct = count > 0 ? Math.round(totalProg / count) : 0;
+        const barEl = document.getElementById('comp-onboard-bar');
+        const pctEl = document.getElementById('comp-onboard-pct');
+        if (barEl) barEl.style.width = avgPct + '%';
+        if (pctEl) pctEl.textContent = avgPct + '%';
+    } catch (_) { /* ignore */ }
 }
 
 function _stopCompOnboardPoll() {
@@ -6812,13 +6854,30 @@ async function _loadTemplateComposition(templateId) {
         } else if (anyOnboarding || anyNotOnboarded) {
             // Show onboarding-in-progress banner if any service is currently onboarding
             if (anyOnboarding) {
-                html += `<div class="comp-hero-onboarding-banner">
-                    <div class="comp-hero-onboarding-text">
+                const onboardingSvcIds = components.filter(c => c.status === 'validating').map(c => c.service_id);
+                html += `<div class="comp-hero-onboarding-banner" data-onboarding-ids='${escapeHtml(JSON.stringify(onboardingSvcIds))}'>
+                    <div class="comp-hero-onboarding-header">
                         <span class="tmpl-awaiting-spinner"></span>
-                        <strong>${onboardingNames.length} service(s) currently onboarding:</strong> ${escapeHtml(onboardingNames.join(', '))}
-                        — waiting for pipeline to finish. The template cannot be validated until all services are onboarded.
+                        <strong>${onboardingNames.length} service(s) currently onboarding</strong>
+                        <span class="comp-hero-onboarding-pct" id="comp-onboard-pct">0%</span>
                     </div>
+                    <div class="comp-hero-onboarding-progress">
+                        <div class="comp-hero-onboarding-bar" id="comp-onboard-bar" style="width:0%"></div>
+                    </div>
+                    <div class="comp-hero-onboarding-details" id="comp-onboard-details">
+                        ${onboardingSvcIds.map(sid => {
+                            const name = components.find(c => c.service_id === sid)?.name || sid.split('/').pop();
+                            return `<div class="comp-hero-onboarding-svc" data-svc-id="${escapeHtml(sid)}">
+                                <span class="comp-hero-onboarding-svc-name">${escapeHtml(name)}</span>
+                                <span class="comp-hero-onboarding-svc-phase">starting…</span>
+                                <span class="comp-hero-onboarding-svc-pct">0%</span>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                    <div class="comp-hero-onboarding-note">Template cannot be validated until all services are onboarded.</div>
                 </div>`;
+                // Kick off an immediate activity fetch to populate progress
+                _fetchOnboardingProgress();
             }
             // Show not-onboarded banner for remaining idle services
             if (anyNotOnboarded) {
