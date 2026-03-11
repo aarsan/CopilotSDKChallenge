@@ -4886,6 +4886,15 @@ async def get_template_composition(template_id: str):
     version_map = await get_version_summary_batch(service_ids)
     template_semver = await get_latest_semver(template_id)
 
+    # Check which pinned versions still exist in the DB
+    from src.database import check_versions_exist
+    pinned_pairs = [
+        (sid, pinned_versions[sid]["version"])
+        for sid in service_ids
+        if sid in pinned_versions and pinned_versions[sid].get("version") is not None
+    ]
+    pinned_exists_map = await check_versions_exist(pinned_pairs) if pinned_pairs else {}
+
     # ── Assemble components using batch data ──
     components = []
     for sid in service_ids:
@@ -4915,6 +4924,11 @@ async def get_template_composition(template_id: str):
         latest_int = ver_info.get("latest_version") or active_int
         latest_semver = ver_info.get("latest_semver") or active_semver
 
+        # Check if the pinned version still exists in service_versions
+        pinned_missing = False
+        if pinned_int is not None:
+            pinned_missing = not pinned_exists_map.get((sid, pinned_int), False)
+
         # If no pinned version recorded, we DON'T know what version is
         # actually baked into the composed template. Show "unknown" rather
         # than lying by pretending it's the latest.
@@ -4923,6 +4937,10 @@ async def get_template_composition(template_id: str):
             upgrade_available = active_int > pinned_int
         elif pinned_int is None and active_int is not None:
             # No pin = we don't know → flag as "needs recompose" 
+            upgrade_available = True
+
+        # If the pinned version was deleted (phantom), always flag upgrade
+        if pinned_missing and active_int is not None:
             upgrade_available = True
 
         components.append({
@@ -4938,6 +4956,7 @@ async def get_template_composition(template_id: str):
             "latest_semver": active_semver or (f"{active_int}.0.0" if active_int else None),
             "upgrade_available": upgrade_available,
             "version_known": pinned_int is not None,
+            "pinned_version_missing": pinned_missing,
             "latest_api_version": svc.get("latest_api_version"),
             "template_api_version": svc.get("template_api_version"),
         })

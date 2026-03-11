@@ -3155,6 +3155,39 @@ async def get_version_summary_batch(service_ids: list[str]) -> dict[str, dict]:
     return result
 
 
+async def check_versions_exist(pairs: list[tuple[str, int]]) -> dict[tuple[str, int], bool]:
+    """Check which (service_id, version) pairs still exist in service_versions.
+
+    Returns a dict mapping each pair to True/False.  Used to detect
+    phantom pinned versions in composed templates.
+    """
+    if not pairs:
+        return {}
+    backend = await get_backend()
+    # Build a UNION of value-rows so we can do a single LEFT JOIN check
+    # Each pair becomes: SELECT ? AS sid, ? AS ver
+    union_parts = " UNION ALL ".join(["SELECT ? AS sid, ? AS ver"] * len(pairs))
+    flat_params: list = []
+    for sid, ver in pairs:
+        flat_params.extend([sid, ver])
+
+    rows = await backend.execute(
+        f"""SELECT p.sid, p.ver,
+                   CASE WHEN sv.version IS NOT NULL THEN 1 ELSE 0 END AS exists_flag
+            FROM ({union_parts}) p
+            LEFT JOIN service_versions sv
+              ON sv.service_id = p.sid AND sv.version = p.ver""",
+        tuple(flat_params),
+    )
+
+    result: dict[tuple[str, int], bool] = {pair: False for pair in pairs}
+    for r in rows:
+        key = (r["sid"], r["ver"])
+        if key in result:
+            result[key] = bool(r["exists_flag"])
+    return result
+
+
 # ══════════════════════════════════════════════════════════════
 # PARENT-CHILD CO-VALIDATION
 # ══════════════════════════════════════════════════════════════
