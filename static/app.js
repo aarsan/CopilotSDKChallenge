@@ -361,6 +361,7 @@ function navigateTo(page) {
         activity: ['Observability', ''],
         analytics: ['Fabric Analytics', ''],
         chat: ['Infrastructure Designer', ''],
+        admin: ['Admin Settings', ''],
     };
     // Tech-branded subtitles (as HTML badges)
     const subtitleBadges = {
@@ -414,6 +415,11 @@ function navigateTo(page) {
     // Load analytics when switching to analytics page
     if (page === 'analytics') {
         loadAnalyticsDashboard();
+    }
+
+    // Load enforcement mode when switching to admin page
+    if (page === 'admin') {
+        loadEnforcementMode();
     }
 
     currentPage = page;
@@ -2895,6 +2901,69 @@ function _populateModelSelector() {
         .catch(() => {
             container.innerHTML = '<span class="model-routing-chip">Could not load routing</span>';
         });
+}
+
+// ── Governance Enforcement Mode ────────────────────────────────
+
+async function loadEnforcementMode() {
+    try {
+        const res = await fetch('/api/settings/enforcement-mode');
+        if (!res.ok) return;
+        const data = await res.json();
+        _applyEnforcementModeUI(data.enforcement_mode);
+    } catch (e) {
+        console.warn('Could not load enforcement mode:', e);
+    }
+}
+
+async function setEnforcementMode(mode) {
+    const btnEnforce = document.getElementById('btn-mode-enforce');
+    const btnAudit = document.getElementById('btn-mode-audit');
+    const statusEl = document.getElementById('enforcement-mode-status');
+    if (btnEnforce) btnEnforce.disabled = true;
+    if (btnAudit) btnAudit.disabled = true;
+    try {
+        const res = await fetch('/api/settings/enforcement-mode', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            showToast(`Failed to change enforcement mode: ${err.detail || res.statusText}`, 'error');
+            return;
+        }
+        const data = await res.json();
+        _applyEnforcementModeUI(data.enforcement_mode);
+        showToast(`Enforcement mode changed to ${data.enforcement_mode}`, 'success');
+    } catch (e) {
+        showToast(`Failed to change enforcement mode: ${e.message}`, 'error');
+    } finally {
+        if (btnEnforce) btnEnforce.disabled = false;
+        if (btnAudit) btnAudit.disabled = false;
+    }
+}
+
+function _applyEnforcementModeUI(mode) {
+    const btnEnforce = document.getElementById('btn-mode-enforce');
+    const btnAudit = document.getElementById('btn-mode-audit');
+    const statusEl = document.getElementById('enforcement-mode-status');
+    if (btnEnforce && btnAudit) {
+        if (mode === 'enforce') {
+            btnEnforce.className = 'btn btn-primary';
+            btnAudit.className = 'btn btn-ghost';
+        } else {
+            btnEnforce.className = 'btn btn-ghost';
+            btnAudit.className = 'btn btn-primary';
+        }
+    }
+    if (statusEl) {
+        if (mode === 'audit') {
+            statusEl.innerHTML = '🟢 <strong>Audit Only</strong> — Governance policies log findings but never block deployments.';
+        } else {
+            statusEl.innerHTML = '🔴 <strong>Enforce</strong> — Governance policies will block deployments when violations are found.';
+        }
+    }
 }
 
 async function changeGlobalModel(modelId) {
