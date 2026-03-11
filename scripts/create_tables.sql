@@ -507,6 +507,15 @@ IF NOT EXISTS (
 ALTER TABLE service_versions ADD semver NVARCHAR(20) DEFAULT NULL;
 GO
 
+-- Migration: parent-child co-validation tracking on service_versions
+-- JSON: {"parent_service_id": "...", "parent_version": N, "parent_api_version": "..."}
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('service_versions') AND name = 'validated_with_parent'
+)
+ALTER TABLE service_versions ADD validated_with_parent NVARCHAR(MAX) DEFAULT NULL;
+GO
+
 -- ── Template Catalog ────────────────────────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')

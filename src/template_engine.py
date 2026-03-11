@@ -506,6 +506,107 @@ def _make_param_name(resource_type: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
+# PARENT-CHILD COMPOSITE TEMPLATE BUILDER
+# ══════════════════════════════════════════════════════════════
+
+def build_composite_validation_template(
+    parent_arm: dict,
+    child_arm: dict,
+) -> dict:
+    """Merge a parent and child ARM template into one deployable composite.
+
+    Used during validation (step 8) to co-deploy a parent and its child
+    resource so ARM validates them together.  Each resource keeps its own
+    ``apiVersion`` — no forced alignment.
+
+    The composite uses the union of parameters, variables, and outputs
+    from both templates, with child prefixed to avoid collisions.
+
+    Returns a new ARM template dict (does not mutate inputs).
+    """
+    import copy
+
+    composite: dict = {
+        "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+        "contentVersion": "1.0.0.0",
+        "metadata": {
+            "_generator": "InfraForge-CoValidation",
+            "description": "Composite template for parent-child co-validation",
+        },
+        "parameters": {},
+        "variables": {},
+        "resources": [],
+        "outputs": {},
+    }
+
+    # Merge parameters — child params get a "child_" prefix if they collide
+    for name, pdef in parent_arm.get("parameters", {}).items():
+        composite["parameters"][name] = copy.deepcopy(pdef)
+
+    for name, pdef in child_arm.get("parameters", {}).items():
+        key = name if name not in composite["parameters"] else f"child_{name}"
+        composite["parameters"][key] = copy.deepcopy(pdef)
+
+    # Merge variables
+    for name, vdef in parent_arm.get("variables", {}).items():
+        composite["variables"][name] = copy.deepcopy(vdef)
+
+    for name, vdef in child_arm.get("variables", {}).items():
+        key = name if name not in composite["variables"] else f"child_{name}"
+        composite["variables"][key] = copy.deepcopy(vdef)
+
+    # Parent resources go first — child resources get a dependsOn to the parent
+    parent_resources = copy.deepcopy(parent_arm.get("resources", []))
+    child_resources = copy.deepcopy(child_arm.get("resources", []))
+
+    # Build parent resource IDs for dependsOn injection
+    parent_ids = []
+    for r in parent_resources:
+        rtype = r.get("type", "")
+        rname = r.get("name", "")
+        if rtype and rname:
+            parent_ids.append(f"[resourceId('{rtype}', {rname})]"
+                              if rname.startswith("[") else
+                              f"[resourceId('{rtype}', '{rname}')]")
+
+    # Add dependency from child resources to parent resources
+    for r in child_resources:
+        existing_deps = r.get("dependsOn", [])
+        r["dependsOn"] = existing_deps + parent_ids
+
+    composite["resources"] = parent_resources + child_resources
+
+    # Merge outputs — child outputs get "child_" prefix if they collide
+    for name, odef in parent_arm.get("outputs", {}).items():
+        composite["outputs"][name] = copy.deepcopy(odef)
+
+    for name, odef in child_arm.get("outputs", {}).items():
+        key = name if name not in composite["outputs"] else f"child_{name}"
+        composite["outputs"][key] = copy.deepcopy(odef)
+
+    return composite
+
+
+def get_co_validation_context(service_id: str) -> dict | None:
+    """Return co-validation metadata if a service needs composite validation.
+
+    Returns:
+        {"mode": "child", "parent_type": "..."} if this is a child resource
+        {"mode": "parent", "children": [...]} if this parent has always_include children
+        None if standalone validation is fine
+    """
+    parent = get_parent_resource_type(service_id)
+    if parent:
+        return {"mode": "child", "parent_type": parent}
+
+    children = get_required_co_onboard_types(service_id)
+    if children:
+        return {"mode": "parent", "children": [c["type"] for c in children]}
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════
 # AZURE RESOURCE GRAPH DISCOVERY (DEPLOY-TIME)
 # ══════════════════════════════════════════════════════════════
 

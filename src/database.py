@@ -656,6 +656,15 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE service_versions ADD semver NVARCHAR(20) DEFAULT NULL
     """,
+    # ── Parent-child co-validation tracking ──
+    # JSON: {"parent_service_id": "...", "parent_version": N, "parent_api_version": "..."}
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'validated_with_parent'
+    )
+    ALTER TABLE service_versions ADD validated_with_parent NVARCHAR(MAX) DEFAULT NULL
+    """,
     # ── Template Catalog ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')
@@ -3144,6 +3153,86 @@ async def get_version_summary_batch(service_ids: list[str]) -> dict[str, dict]:
             result[sid]["latest_semver"] = r["semver"]
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════
+# PARENT-CHILD CO-VALIDATION
+# ══════════════════════════════════════════════════════════════
+
+async def set_validated_with_parent(
+    service_id: str,
+    version: int,
+    parent_service_id: str,
+    parent_version: int,
+    parent_api_version: str | None,
+) -> None:
+    """Record which parent version a child was co-validated against."""
+    backend = await get_backend()
+    payload = json.dumps({
+        "parent_service_id": parent_service_id,
+        "parent_version": parent_version,
+        "parent_api_version": parent_api_version,
+    })
+    await backend.execute_write(
+        "UPDATE service_versions SET validated_with_parent = ? WHERE service_id = ? AND version = ?",
+        (payload, service_id, version),
+    )
+    logger.info(
+        f"Recorded co-validation: {service_id} v{version} validated with "
+        f"{parent_service_id} v{parent_version} (API {parent_api_version})"
+    )
+
+
+async def check_parent_child_staleness(service_id: str) -> dict | None:
+    """Check if a child service was validated against a now-outdated parent version.
+
+    Returns a staleness dict if stale, or None if fresh/not applicable.
+    """
+    from src.template_engine import get_parent_resource_type
+
+    parent_type = get_parent_resource_type(service_id)
+    if not parent_type:
+        return None
+
+    child_version = await get_active_service_version(service_id)
+    if not child_version:
+        return None
+
+    validated_raw = child_version.get("validated_with_parent")
+    if not validated_raw:
+        return None
+
+    try:
+        validated_with = json.loads(validated_raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not validated_with.get("parent_service_id"):
+        return None
+
+    parent_svc = await get_service(parent_type)
+    if not parent_svc or not parent_svc.get("active_version"):
+        return None
+
+    parent_active = parent_svc["active_version"]
+    parent_api = parent_svc.get("template_api_version")
+
+    if parent_active == validated_with.get("parent_version"):
+        return None  # Still validated against the current parent version
+
+    return {
+        "stale": True,
+        "child_service_id": service_id,
+        "validated_parent_version": validated_with["parent_version"],
+        "validated_parent_api": validated_with.get("parent_api_version"),
+        "current_parent_version": parent_active,
+        "current_parent_api": parent_api,
+        "parent_api_changed": parent_api != validated_with.get("parent_api_version"),
+        "message": (
+            f"Validated with {parent_type.split('/')[-1]} v{validated_with['parent_version']}, "
+            f"but parent is now at v{parent_active}"
+        ),
+    }
 
 
 # ══════════════════════════════════════════════════════════════
