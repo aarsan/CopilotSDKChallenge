@@ -32,7 +32,7 @@ deployment, architecture, and Responsible AI notes
 
 🤖 **[Agent Instructions](AGENTS.md)** — Custom agent behavior and tool definitions
 
-🎬 **[Demo Video](#)** — 3-minute walkthrough *(update link after recording)*
+🎬 **[Demo Video](https://youtu.be/SQXZkymY7oo)** — 3-minute walkthrough
 
 📊 **[Presentation Deck](presentations/InfraForge.html)** — Business value and architecture
 
