@@ -1329,30 +1329,51 @@ Write-Step "Step 7/9 - Python dependencies"
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
 $requirementsPath = Join-Path $projectRoot "requirements.txt"
+$venvPython = Join-Path $venvPath "Scripts" "python.exe"
 
-if (-not (Test-Path $venvPath)) {
-    Write-Host "  Creating virtual environment..."
-    & $script:PythonExe -m venv $venvPath
-    Write-Ok "Virtual environment created at .venv/"
-
-    # Disable Windows Store python stubs (App Execution Aliases) that shadow
-    # the real Python. These stubs just open the Microsoft Store and cause
-    # confusing "Python was not found" errors.
-    $aliasDir = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
-    foreach ($stub in @("python.exe", "python3.exe")) {
-        $stubPath = Join-Path $aliasDir $stub
-        if (Test-Path $stubPath) {
-            $target = (Get-Item $stubPath -ErrorAction SilentlyContinue).Target
-            # Only remove if it's an app execution alias (zero-byte or AppInstaller stub)
-            $size = (Get-Item $stubPath -ErrorAction SilentlyContinue).Length
-            if ($null -eq $target -or $size -eq 0) {
-                Remove-Item $stubPath -Force -ErrorAction SilentlyContinue
-                Write-Info "Removed Windows Store stub: $stub"
-            }
+# Validate existing venv — it may have been created with the Windows Store
+# stub, in which case its python.exe is a broken symlink.
+$venvValid = $false
+if (Test-Path $venvPath) {
+    if (Test-Path $venvPython) {
+        $probe = & $venvPython --version 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
+            $venvValid = $true
+            Write-Ok "Virtual environment verified (.venv/Scripts/python.exe works)"
         }
     }
-} else {
-    Write-Ok "Virtual environment already exists"
+    if (-not $venvValid) {
+        Write-Info "Existing .venv is broken (likely created with Windows Store stub). Recreating..."
+        Remove-Item $venvPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if (-not $venvValid) {
+    Write-Host "  Creating virtual environment (using $($script:PythonExe))..."
+    # Use --copies so python.exe is a real copy, not a symlink that breaks
+    # if the source location changes or the Store stub is removed.
+    & $script:PythonExe -m venv --copies $venvPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
+        Write-Err "Failed to create virtual environment."
+        exit 1
+    }
+    Write-Ok "Virtual environment created at .venv/"
+}
+
+# Disable Windows Store python stubs (App Execution Aliases) that shadow
+# the real Python. These stubs just open the Microsoft Store and cause
+# confusing "Python was not found" errors. Safe to remove now that the
+# venv has its own copy of python.exe.
+$aliasDir = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
+foreach ($stub in @("python.exe", "python3.exe")) {
+    $stubPath = Join-Path $aliasDir $stub
+    if (Test-Path $stubPath) {
+        $size = (Get-Item $stubPath -ErrorAction SilentlyContinue).Length
+        if ($null -eq $size -or $size -eq 0) {
+            Remove-Item $stubPath -Force -ErrorAction SilentlyContinue
+            Write-Info "Removed Windows Store stub: $stub"
+        }
+    }
 }
 
 $pipPath = Join-Path $venvPath "Scripts" "pip.exe"
