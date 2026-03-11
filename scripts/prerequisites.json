@@ -24,6 +24,13 @@
       "registryCheck": "HKLM:\\SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Driver 18 for SQL Server",
       "required": true,
       "purpose": "SQL Server database connectivity"
+    },
+    "node": {
+      "wingetId": "OpenJS.NodeJS.22",
+      "version": "22.22.0",
+      "command": "node",
+      "required": true,
+      "purpose": "Microsoft Work IQ MCP server (M365 organizational intelligence)"
     }
   }
 }

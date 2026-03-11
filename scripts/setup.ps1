@@ -498,7 +498,14 @@ if ($hasOdbc18) {
     }
 }
 
-# ── GitHub CLI (optional) ──
+# ── Node.js (required for Work IQ MCP server) ──
+$nodeSpec = $prereqs.node
+if (-not (Test-Command "node")) {
+    Install-Prerequisite -DisplayName "Node.js" -WingetId $nodeSpec.wingetId -Version $nodeSpec.version -Command $nodeSpec.command -Required $nodeSpec.required
+}
+$nodeVer = (node --version 2>&1).ToString().TrimStart('v')
+Write-Ok "Node.js: v$nodeVer (pinned: $($nodeSpec.version))"
+
 # ── GitHub CLI (optional dev convenience, not a prerequisite) ──
 # gh is NOT required for InfraForge. At runtime, GitHub publishing uses
 # GITHUB_TOKEN directly via the REST API. The gh CLI is only used here
@@ -1390,70 +1397,68 @@ Write-Ok "Dependencies installed"
 # Step 8/9: Microsoft Work IQ (M365 organizational intelligence)
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 8/9 - Microsoft Work IQ"
+Write-Step "Step 8/9 - Microsoft Work IQ (M365 organizational intelligence)"
 
+# Node.js is guaranteed by the preflight prerequisite check.
+# Install @microsoft/workiq globally so the MCP server is available at runtime.
 $workiqReady = $false
-$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-if ($nodeCmd) {
-    $nodeVer = (node --version 2>&1).ToString().TrimStart('v')
-    $nodeMajor = [int]($nodeVer.Split('.')[0])
-    if ($nodeMajor -ge 18) {
-        Write-Ok "Node.js v$nodeVer (>= 18 required)"
+Write-Host "  Installing @microsoft/workiq globally..."
+$savedEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $installOutput = npm install -g @microsoft/workiq 2>&1 | Out-String
+    $npmExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $savedEAP
+}
 
-        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
-        if ($npmCmd) {
-            # Install @microsoft/workiq globally so it persists across sessions
-            Write-Host "  Installing @microsoft/workiq globally..."
-            $installOutput = npm install -g @microsoft/workiq 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $wiqVersion = npx @microsoft/workiq --version 2>&1
-                Write-Ok "Work IQ CLI installed: $wiqVersion"
+if ($npmExit -eq 0) {
+    $wiqVersion = (npx @microsoft/workiq --version 2>&1 | Out-String).Trim()
+    Write-Ok "Work IQ MCP server installed: $wiqVersion"
 
-                # Accept EULA / authenticate
-                Write-Host "  Running EULA acceptance / authentication..."
-                npx @microsoft/workiq accept-eula 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Ok "Work IQ: EULA accepted / authentication complete"
-                } else {
-                    Write-Warn "Work IQ: EULA/auth flow did not complete automatically."
-                    Write-Host "    You can run this later: npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
-                }
-
-                # Try a test query to verify M365 permissions
-                Write-Host "  Verifying M365 permissions..."
-                $testResult = npx @microsoft/workiq ask -q "test" 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Ok "Work IQ: M365 permissions verified"
-                    $workiqReady = $true
-                } else {
-                    Write-Warn "Work IQ: M365 query failed — tenant admin consent may be required."
-                    Write-Host "    The Work IQ CLI is installed, but M365 permissions are not yet granted." -ForegroundColor Gray
-                    Write-Host "    Ask your tenant admin to grant consent, then re-run:" -ForegroundColor Gray
-                    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
-                }
-            } else {
-                Write-Warn "npm install -g @microsoft/workiq failed:"
-                Write-Host "    $installOutput" -ForegroundColor DarkGray
-                Write-Host "    Try running manually: npm install -g @microsoft/workiq" -ForegroundColor DarkGray
-            }
-        } else {
-            Write-Warn "npm not found. Work IQ requires npm (comes with Node.js)."
-        }
+    # Accept EULA / authenticate
+    Write-Host "  Running EULA acceptance / authentication..."
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        npx @microsoft/workiq accept-eula 2>&1 | Out-Null
+        $eulaExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+    if ($eulaExit -eq 0) {
+        Write-Ok "Work IQ: EULA accepted / authentication complete"
     } else {
-        Write-Warn "Node.js v$nodeVer is too old. Work IQ requires Node.js 18+."
-        Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
+        Write-Info "Work IQ: EULA acceptance requires interactive browser sign-in."
+        Write-Host "    Run after setup: npx @microsoft/workiq accept-eula" -ForegroundColor Gray
+    }
+
+    # Try a test query to verify M365 permissions
+    Write-Host "  Verifying M365 permissions..."
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $testResult = npx @microsoft/workiq ask -q "test" 2>&1 | Out-String
+        $testExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+    if ($testExit -eq 0) {
+        Write-Ok "Work IQ: M365 permissions verified"
+        $workiqReady = $true
+    } else {
+        Write-Info "Work IQ: M365 permissions not yet granted — tenant admin consent may be required."
+        Write-Host "    The MCP server is installed and ready. On first use, InfraForge will" -ForegroundColor Gray
+        Write-Host "    prompt for M365 consent if needed." -ForegroundColor Gray
     }
 } else {
-    Write-Warn "Node.js not found. Work IQ (M365 integration) will be disabled."
-    Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
-    Write-Host "    Work IQ searches emails, meetings, docs, and Teams for organizational context." -ForegroundColor Gray
+    Write-Warn "npm install -g @microsoft/workiq failed. Work IQ will be unavailable."
+    Write-Host "    Try running manually: npm install -g @microsoft/workiq" -ForegroundColor DarkGray
 }
 
 if (-not $workiqReady) {
-    Write-Host "  Work IQ is optional — InfraForge works fine without it." -ForegroundColor Gray
-    Write-Host "  To enable later: install Node.js 18+, then run:" -ForegroundColor Gray
-    Write-Host "    npm install -g @microsoft/workiq" -ForegroundColor DarkGray
-    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+    Write-Host "  Work IQ enables searching emails, meetings, docs, and Teams for organizational context." -ForegroundColor Gray
+    Write-Host "  To complete setup later: npx @microsoft/workiq accept-eula" -ForegroundColor Gray
 }
 
 # ─────────────────────────────────────────────────────────

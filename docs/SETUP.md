@@ -49,6 +49,7 @@ All other tools are **auto-installed via winget** from pinned versions in `scrip
 | **Azure CLI** (`az`) | 2.77.0 | `Microsoft.AzureCLI` | Yes |
 | **Python** | 3.13.12 | `Python.Python.3.13` | Yes |
 | **ODBC Driver 18 for SQL Server** | 18.4.1.1 | `Microsoft.msodbcsql.18` | Yes |
+| **Node.js** | 22.22.0 | `OpenJS.NodeJS.22` | Yes (Work IQ MCP server) |
 
 > **Note:** The GitHub CLI (`gh`) is **not** a prerequisite. If it's installed and
 > authenticated, setup will use it to extract a `GITHUB_TOKEN` automatically. Otherwise,
