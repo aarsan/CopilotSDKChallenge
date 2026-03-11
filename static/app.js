@@ -6701,18 +6701,22 @@ async function _loadTemplateComposition(templateId) {
 
                 if (hasChildren) html += `<div class="hero-parent-group">`;
 
+                const phantomPin = c.pinned_version_missing === true;
+
                 html += `
-                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}${hasChildren ? ' hero-node-has-children' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
+                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}${hasChildren ? ' hero-node-has-children' : ''}${phantomPin ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
                         <div class="hero-node-icon">${_azureIcon(c.service_id, 28)}</div>
                         <div class="hero-node-body">
                             <div class="hero-node-name">${escapeHtml(shortName)}${hasChildren ? ' <span class="hero-parent-tag">parent</span>' : ''}</div>
                             ${catLabel ? `<div class="hero-node-cat">${escapeHtml(catLabel)}</div>` : ''}
                             <div class="hero-node-ver-row">
-                                <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">v${verDisplay}</span>
+                                ${phantomPin
+                                    ? `<span class="hero-node-ver hero-ver-phantom" title="Pinned version v${verDisplay} no longer exists — it was removed during re-onboarding. Recompose to update.">v${verDisplay}</span><span class="hero-phantom-badge" title="This version was deleted — recompose to use current">removed</span>`
+                                    : `<span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}', this)" title="Click to change pinned version">v${verDisplay}</span>`}
                                 ${c.version_known === false
                                     ? `<span class="hero-node-unknown" title="Version not tracked — recompose to lock versions">⚠ untracked</span>`
                                     : c.upgrade_available
-                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="Upgrade to ${c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
+                                        ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="${phantomPin ? 'Pinned version removed — upgrade to current' : 'Upgrade to ' + c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
                             ${notOnboarded ? `<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(c.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(c.service_id)}'), 300)" title="Run the onboarding pipeline for this service">🚀 Onboard</button>` : ''}
@@ -6729,17 +6733,20 @@ async function _loadTemplateComposition(templateId) {
                         const childVer = child.version_known === false ? '?' : (child.current_semver || '—');
                         const childOnboarded = child.fully_onboarded === false;
                         const childStatusCls = child.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
+                        const childPhantom = child.pinned_version_missing === true;
                         html += `
-                        <div class="hero-node hero-node-child ${childStatusCls}${childOnboarded ? ' hero-node-not-onboarded' : ''}" data-sid="${escapeHtml(child.service_id)}" title="${escapeHtml(child.service_id)}">
+                        <div class="hero-node hero-node-child ${childStatusCls}${childOnboarded ? ' hero-node-not-onboarded' : ''}${childPhantom ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(child.service_id)}" title="${escapeHtml(child.service_id)}">
                             <div class="hero-node-icon">${_azureIcon(child.service_id, 20)}</div>
                             <div class="hero-node-body">
                                 <div class="hero-node-name">${escapeHtml(childName)} <span class="hero-child-tag">child</span></div>
                                 <div class="hero-node-ver-row">
-                                    <span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}', this)" title="Click to change pinned version">v${childVer}</span>
+                                    ${childPhantom
+                                        ? `<span class="hero-node-ver hero-ver-phantom" title="Pinned version v${childVer} no longer exists">v${childVer}</span><span class="hero-phantom-badge">removed</span>`
+                                        : `<span class="hero-node-ver hero-node-ver-clickable" onclick="event.stopPropagation(); showVersionPicker('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}', this)" title="Click to change pinned version">v${childVer}</span>`}
                                     ${child.version_known === false
                                         ? `<span class="hero-node-unknown">⚠ untracked</span>`
                                         : child.upgrade_available
-                                            ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}','${escapeHtml(child.latest_semver)}',${child.latest_version})">⬆ ${child.latest_semver}</button>`
+                                            ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}','${escapeHtml(child.latest_semver)}',${child.latest_version})">${childPhantom ? '⬆ ' : '⬆ '}${child.latest_semver}</button>`
                                             : '<span class="hero-node-latest">✓ latest</span>'}
                                 </div>
                                 ${childOnboarded ? `<div class="hero-node-not-onboarded-badge">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(child.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(child.service_id)}'), 300)">🚀 Onboard</button>` : ''}

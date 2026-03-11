@@ -2160,6 +2160,31 @@ tr:hover .svc-view-tpl-btn {
     font-weight: 600;
     margin-top: 2px;
 }
+
+/* ── Phantom Pinned Version (version deleted) ─── */
+.hero-node-phantom {
+    border-color: rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.04);
+}
+.hero-ver-phantom {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+.hero-phantom-badge {
+    display: inline-block;
+    font-size: 0.56rem;
+    font-weight: 700;
+    color: var(--accent-red, #f85149);
+    background: rgba(239, 68, 68, 0.10);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 3px;
+    padding: 0 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    vertical-align: middle;
+    margin-left: 2px;
+}
+
 .hero-node-onboard-btn {
     margin-top: 4px;
     font-size: 0.62rem;
