@@ -14282,10 +14282,10 @@ async function loadHealthStatus() {
             const latency = document.getElementById(ids.latency);
 
             if (info.status === 'healthy') {
-                if (detail) detail.textContent = 'Connected';
+                if (detail) { detail.textContent = 'Connected'; detail.classList.add('health-detail-connected'); }
                 if (latency) latency.textContent = info.latency_ms != null ? `${info.latency_ms}ms` : '—';
             } else {
-                if (detail) { detail.textContent = info.message || info.status; detail.title = info.message || ''; }
+                if (detail) { detail.textContent = info.message || info.status; detail.title = info.message || ''; detail.classList.remove('health-detail-connected'); }
                 if (latency) latency.textContent = '—';
             }
         }
