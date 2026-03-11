@@ -145,6 +145,49 @@ function Get-RandomSuffix {
     -join ((97..122) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
 }
 
+function Find-RealPython {
+    <#
+    .SYNOPSIS
+        Find a real python.exe, skipping the Windows Store stub in WindowsApps.
+        Returns the full path to the executable, or $null if not found.
+    #>
+
+    # 1. Check every python.exe on PATH, skip the Store stub
+    $cmds = Get-Command python -All -ErrorAction SilentlyContinue
+    foreach ($cmd in $cmds) {
+        $src = $cmd.Source
+        if ($src -match 'WindowsApps') { continue }
+        # Verify it actually runs
+        $probe = & $src --version 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
+            return $src
+        }
+    }
+
+    # 2. Search common winget/installer locations
+    $candidates = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:ProgramFiles\Python313\python.exe",
+        "$env:ProgramFiles\Python312\python.exe",
+        "$env:ProgramFiles\Python311\python.exe",
+        "C:\Python313\python.exe",
+        "C:\Python312\python.exe",
+        "C:\Python311\python.exe"
+    )
+    foreach ($path in $candidates) {
+        if (Test-Path $path) {
+            $probe = & $path --version 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
+                return $path
+            }
+        }
+    }
+
+    return $null
+}
+
 function New-AppClientSecret {
     <#
     .SYNOPSIS
@@ -419,27 +462,22 @@ Write-Ok "User OID: $currentUserOid"
 
 # ── Python ──
 # Windows ships a python.exe stub in WindowsApps that just opens the
-# Microsoft Store. Test-Command finds it, so we must also verify that
-# `python --version` actually returns a real version string.
+# Microsoft Store. We must find a real python.exe and track its full path
+# for use throughout setup (venv creation, pip install, verification).
 $pySpec = $prereqs.python
-$pythonReal = $false
-if (Test-Command "python") {
-    $pyProbe = python --version 2>&1 | Out-String
-    if ($LASTEXITCODE -eq 0 -and $pyProbe -match "^Python \d+\.\d+") {
-        $pythonReal = $true
-    }
-}
-if (-not $pythonReal) {
+$script:PythonExe = Find-RealPython
+if (-not $script:PythonExe) {
     Install-Prerequisite -DisplayName "Python" -WingetId $pySpec.wingetId -Version $pySpec.version -Command $pySpec.command -Required $pySpec.required
-    # Re-probe after install
-    $pyProbe = python --version 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0 -or $pyProbe -notmatch "^Python \d+\.\d+") {
-        Write-Err "Python is still not functional after install. You may need to restart your terminal."
+    # Re-search after install (PATH was already refreshed by Install-Prerequisite)
+    $script:PythonExe = Find-RealPython
+    if (-not $script:PythonExe) {
+        Write-Err "Python was installed but could not be found. You may need to restart your terminal and re-run setup."
         exit 1
     }
 }
-$pyVer = ($pyProbe -split "`n")[0].Trim()
+$pyVer = (& $script:PythonExe --version 2>&1 | Out-String).Trim()
 Write-Ok "Python: $pyVer (pinned: $($pySpec.version))"
+Write-Ok "Python path: $($script:PythonExe)"
 
 # ── ODBC Driver 18 for SQL Server ──
 $odbcSpec = $prereqs.odbc18
@@ -1282,7 +1320,7 @@ $requirementsPath = Join-Path $projectRoot "requirements.txt"
 
 if (-not (Test-Path $venvPath)) {
     Write-Host "  Creating virtual environment..."
-    python -m venv $venvPath
+    & $script:PythonExe -m venv $venvPath
     Write-Ok "Virtual environment created at .venv/"
 } else {
     Write-Ok "Virtual environment already exists"
