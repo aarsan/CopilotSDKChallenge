@@ -96,7 +96,26 @@ function Install-Prerequisite {
     }
 
     Write-Host "  Installing $DisplayName $Version ..." -ForegroundColor Cyan
-    winget install --id $WingetId --version $Version --exact --source winget --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+
+    # Temporarily relax ErrorActionPreference — winget writes progress and
+    # warnings to stderr. With "Stop", the 2>&1 redirect turns those into
+    # terminating ErrorRecord objects and kills the script mid-install.
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        winget install --id $WingetId --version $Version --exact --source winget `
+            --accept-package-agreements --accept-source-agreements 2>&1 |
+            ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $wingetExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedEAP
+    }
+
+    if ($wingetExit -ne 0) {
+        Write-Err "winget install failed for $DisplayName (exit code $wingetExit)."
+        if ($Required) { exit 1 }
+        return $false
+    }
 
     # Refresh PATH so newly installed tools are found in this session
     $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
