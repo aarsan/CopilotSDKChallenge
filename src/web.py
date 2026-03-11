@@ -4925,8 +4925,11 @@ async def get_template_composition(template_id: str):
         latest_semver = ver_info.get("latest_semver") or active_semver
 
         # Check if the pinned version still exists in service_versions
+        # Version 0 with "builtin" semver is an in-memory sentinel, not a real
+        # DB row — it should never be flagged as "removed".
         pinned_missing = False
-        if pinned_int is not None:
+        is_builtin_pin = pinned_int == 0 and pinned_semver and "builtin" in pinned_semver
+        if pinned_int is not None and not is_builtin_pin:
             pinned_missing = not pinned_exists_map.get((sid, pinned_int), False)
 
         # If no pinned version recorded, we DON'T know what version is
@@ -5891,6 +5894,7 @@ async def delete_service_endpoint(service_id: str):
     await backend.execute_write("DELETE FROM service_approved_skus WHERE service_id = ?", (service_id,))
     await backend.execute_write("DELETE FROM service_approved_regions WHERE service_id = ?", (service_id,))
     await backend.execute_write("DELETE FROM service_policies WHERE service_id = ?", (service_id,))
+    await backend.execute_write("DELETE FROM service_versions WHERE service_id = ?", (service_id,))
     await backend.execute_write("DELETE FROM services WHERE id = ?", (service_id,))
     return JSONResponse({"status": "ok", "deleted": service_id})
 
@@ -6817,21 +6821,16 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton, generate_arm_template_with_copilot
                     from src.pipeline_helpers import sanitize_template, inject_standard_tags
 
-                    # Clear active version so delete_service_versions_by_status can purge all
+                    # Clean up only draft/failed versions — approved versions
+                    # must be preserved so blueprints pinned to them don't break.
                     backend = await get_backend()
-                    await backend.execute_write(
-                        "UPDATE services SET active_version = NULL WHERE id = ?",
-                        (service_id,),
-                    )
-
-                    # Delete all corrupt versions
                     _purged = await delete_service_versions_by_status(
-                        service_id, ["approved", "draft", "failed", "deprecated", "validating"],
+                        service_id, ["draft", "failed"],
                     )
                     if _purged:
                         yield json.dumps({
                             "type": "llm_reasoning", "phase": "checkout_recovery",
-                            "detail": f"🧹 Purged {_purged} corrupt version(s)",
+                            "detail": f"🧹 Purged {_purged} stale draft/failed version(s)",
                             "progress": 0.05,
                         }) + "\n"
 
@@ -6878,20 +6877,27 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                     _regen_tpl = sanitize_template(_regen_tpl)
                     _regen_tpl = await inject_standard_tags(_regen_tpl, service_id)
 
-                    _new_ver = 1  # Start fresh
-                    _new_semver = "1.0.0"
+                    # Use create_service_version with auto-increment (version=None)
+                    # so we get the next available version instead of clobbering v1.
+                    # Save first to get the allocated version number, then stamp.
+                    ver_row = await create_service_version(
+                        service_id=service_id, arm_template=_regen_tpl,
+                        status="approved",
+                        changelog="Auto-recovery: regenerated correct ARM template",
+                        created_by=_regen_source,
+                    )
+                    _new_ver = ver_row["version"]
+                    _new_semver = ver_row.get("semver") or f"{_new_ver}.0.0"
+                    # Re-stamp with correct version metadata
                     _regen_tpl = _stamp_template_metadata(
                         _regen_tpl, service_id=service_id,
                         version_int=_new_ver, semver=_new_semver,
                         gen_source=_regen_source, region=region,
                     )
-
-                    # Save as approved + set active
-                    ver_row = await create_service_version(
-                        service_id=service_id, arm_template=_regen_tpl,
-                        version=_new_ver, semver=_new_semver, status="approved",
-                        changelog="Auto-recovery: regenerated correct ARM template",
-                        created_by=_regen_source,
+                    # Update the stored template with stamped metadata
+                    await backend.execute_write(
+                        "UPDATE service_versions SET arm_template = ?, semver = ? WHERE service_id = ? AND version = ?",
+                        (_regen_tpl, _new_semver, service_id, _new_ver),
                     )
                     backend = await get_backend()
                     await backend.execute_write(
