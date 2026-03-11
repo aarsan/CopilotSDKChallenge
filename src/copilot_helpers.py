@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def approve_all(request: PermissionRequest, context: dict[str, str]) -> PermissionRequestResult:
     """Permission handler that approves every request."""
-    return {"kind": "approved"}
+    return PermissionRequestResult(kind="approved")
 
 
 _db_loaded = False  # True once we've loaded counters from DB
