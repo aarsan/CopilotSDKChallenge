@@ -416,13 +416,15 @@ Write-Ok "Python: $pyVer (pinned: $($pySpec.version))"
 # ── ODBC Driver 18 for SQL Server ──
 $odbcSpec = $prereqs.odbc18
 $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
-if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
+$hasOdbc18 = $odbcDrivers -and ($odbcDrivers.PSObject.Properties.Name -contains "ODBC Driver 18 for SQL Server")
+if ($hasOdbc18) {
     Write-Ok "ODBC Driver 18 for SQL Server found (pinned: $($odbcSpec.version))"
 } else {
     Install-Prerequisite -DisplayName "ODBC Driver 18 for SQL Server" -WingetId $odbcSpec.wingetId -Version $odbcSpec.version -Command $null -Required $odbcSpec.required
     # Re-check registry after install
     $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
-    if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
+    $hasOdbc18 = $odbcDrivers -and ($odbcDrivers.PSObject.Properties.Name -contains "ODBC Driver 18 for SQL Server")
+    if ($hasOdbc18) {
         Write-Ok "ODBC Driver 18 for SQL Server installed"
     } else {
         Write-Warn "ODBC Driver 18 may require a terminal restart to detect."
