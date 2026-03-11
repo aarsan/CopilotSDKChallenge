@@ -13,7 +13,7 @@
       7. GitHub integration (token + org via gh CLI)
       8. Generates .env file with all values populated
 
-    After running this script, just: python web_start.py
+    After running this script, just: .\.venv\Scripts\python.exe web_start.py
 
 .NOTES
     Prerequisites:
@@ -1334,6 +1334,23 @@ if (-not (Test-Path $venvPath)) {
     Write-Host "  Creating virtual environment..."
     & $script:PythonExe -m venv $venvPath
     Write-Ok "Virtual environment created at .venv/"
+
+    # Disable Windows Store python stubs (App Execution Aliases) that shadow
+    # the real Python. These stubs just open the Microsoft Store and cause
+    # confusing "Python was not found" errors.
+    $aliasDir = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
+    foreach ($stub in @("python.exe", "python3.exe")) {
+        $stubPath = Join-Path $aliasDir $stub
+        if (Test-Path $stubPath) {
+            $target = (Get-Item $stubPath -ErrorAction SilentlyContinue).Target
+            # Only remove if it's an app execution alias (zero-byte or AppInstaller stub)
+            $size = (Get-Item $stubPath -ErrorAction SilentlyContinue).Length
+            if ($null -eq $target -or $size -eq 0) {
+                Remove-Item $stubPath -Force -ErrorAction SilentlyContinue
+                Write-Info "Removed Windows Store stub: $stub"
+            }
+        }
+    }
 } else {
     Write-Ok "Virtual environment already exists"
 }
@@ -1502,8 +1519,7 @@ if (-not $githubToken) {
 Write-Host "    • If sign-in shows a consent prompt, approve 'User.Read' for the app" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Start InfraForge:" -ForegroundColor White
-Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
-Write-Host "    python web_start.py" -ForegroundColor Cyan
+Write-Host "    .\.venv\Scripts\python.exe web_start.py" -ForegroundColor Cyan
 Write-Host "    # Open http://localhost:${WebPort}" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  On first launch, InfraForge will automatically:" -ForegroundColor White
