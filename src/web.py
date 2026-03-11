@@ -675,6 +675,12 @@ async def lifespan(app: FastAPI):
             await _ws.copilot_client.stop()
         except Exception:
             pass
+    # Close Work IQ MCP session
+    from src.workiq_client import get_workiq_client
+    try:
+        await get_workiq_client().close()
+    except Exception:
+        pass
     logger.info("Shutdown complete")
 
 

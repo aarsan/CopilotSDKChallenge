@@ -10,7 +10,11 @@ organizational context.
 from pydantic import BaseModel, Field
 from copilot import define_tool
 
+import logging
+
 from src.workiq_client import get_workiq_client
+
+logger = logging.getLogger("infraforge.workiq")
 
 
 def _format_error(result, action: str) -> str:
@@ -52,8 +56,10 @@ class SearchOrgKnowledgeParams(BaseModel):
 )
 async def search_org_knowledge(params: SearchOrgKnowledgeParams) -> str:
     """Search M365 data via Work IQ."""
+    logger.info(f"search_org_knowledge called with query: {params.query[:100]}")
     client = get_workiq_client()
     result = await client.ask(params.query)
+    logger.info(f"search_org_knowledge result: ok={result.ok}, error={result.error}")
     if not result.ok:
         return _format_error(result, "searching organizational knowledge")
     return f"## Work IQ Results\n\n{result.text}"
@@ -79,8 +85,10 @@ class FindRelatedDocsParams(BaseModel):
 )
 async def find_related_documents(params: FindRelatedDocsParams) -> str:
     """Find related M365 documents via Work IQ."""
+    logger.info(f"find_related_documents called with topic: {params.topic[:100]}")
     client = get_workiq_client()
     result = await client.search_documents(params.topic)
+    logger.info(f"find_related_documents result: ok={result.ok}, error={result.error}")
     if not result.ok:
         return _format_error(result, "searching for related documents")
     return f"## Related Documents\n\n{result.text}"
@@ -108,8 +116,10 @@ class FindExpertsParams(BaseModel):
 )
 async def find_subject_matter_experts(params: FindExpertsParams) -> str:
     """Find SMEs via Work IQ."""
+    logger.info(f"find_subject_matter_experts called with domain: {params.domain[:100]}")
     client = get_workiq_client()
     result = await client.find_experts(params.domain)
+    logger.info(f"find_subject_matter_experts result: ok={result.ok}, error={result.error}")
     if not result.ok:
         return _format_error(result, "searching for subject matter experts")
     return f"## Subject Matter Experts\n\n{result.text}"

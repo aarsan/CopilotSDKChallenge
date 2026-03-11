@@ -1,24 +1,26 @@
 """
 InfraForge — Microsoft Work IQ MCP Client
 
-Bridges the Node.js Work IQ MCP server with InfraForge's Python backend.
-Uses asyncio to call `workiq ask -q "..."` for simple natural language queries.
+Connects to the Work IQ MCP server over stdio using the Python MCP SDK.
+The MCP server exposes an `ask_work_iq` tool that queries M365 data
+(emails, meetings, documents, Teams messages, people) via natural language.
 
-The Work IQ CLI uses interactive browser-based auth. After first-time setup
-(`workiq accept-eula`), tokens are cached and subsequent calls work server-side.
+Requires `@microsoft/workiq` installed globally (`npm install -g @microsoft/workiq`)
+and EULA accepted (`workiq accept-eula`).
 """
 
 import asyncio
+import json
 import logging
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-from src.config import WORKIQ_ENABLED, WORKIQ_TIMEOUT
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
-_IS_WINDOWS = sys.platform == "win32"
+from src.config import WORKIQ_ENABLED, WORKIQ_TIMEOUT
 
 logger = logging.getLogger("infraforge.workiq")
 
@@ -34,82 +36,102 @@ class WorkIQResult:
     error: Optional[str] = None
 
 
+def _resolve_workiq_command() -> tuple[str, list[str]]:
+    """Resolve the Work IQ MCP server command.
+
+    Prefers globally installed `workiq` binary. Falls back to `npx`.
+    Returns (command, args) for StdioServerParameters.
+    """
+    if shutil.which("workiq"):
+        return ("workiq", ["mcp"])
+    if shutil.which("npx"):
+        return ("npx", ["-y", "@microsoft/workiq", "mcp"])
+    raise FileNotFoundError(
+        "workiq not found. Run: npm install -g @microsoft/workiq"
+    )
+
+
 class WorkIQClient:
-    """Client for querying Microsoft Work IQ."""
+    """MCP client for querying Microsoft Work IQ."""
 
     def __init__(self):
         self._available: Optional[bool] = None
         self._checked_at: float = 0.0
         self._last_check_error: Optional[str] = None
-        self._npx_path: Optional[str] = None
+        self._session: Optional[ClientSession] = None
+        self._cm_stack = None  # context manager stack for cleanup
 
-    def _resolve_npx(self) -> Optional[str]:
-        """Resolve the full path to npx. Cached after first lookup."""
-        if self._npx_path is None:
-            self._npx_path = shutil.which("npx") or ""
-        return self._npx_path or None
+    async def _ensure_session(self) -> ClientSession:
+        """Lazily connect to the Work IQ MCP server.
 
-    async def _run(self, *args: str, timeout: float = 15) -> tuple[int, bytes, bytes]:
-        """Run a CLI command, handling Windows .cmd scripts correctly.
-
-        On Windows, npx is a .cmd batch file which create_subprocess_exec
-        cannot launch directly — FileNotFoundError. We use
-        create_subprocess_shell instead.
+        Keeps a persistent stdio session alive so we don't pay startup
+        cost on every query.
         """
-        npx = self._resolve_npx()
-        if not npx:
-            raise FileNotFoundError("npx not found in PATH")
-        if _IS_WINDOWS:
-            # Shell execution for .cmd/.ps1 wrappers on Windows
-            cmd = f'"{npx}" ' + " ".join(f'"{a}"' for a in args)
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                npx, *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return proc.returncode, stdout, stderr
+        if self._session is not None:
+            return self._session
+
+        cmd, args = _resolve_workiq_command()
+        server_params = StdioServerParameters(command=cmd, args=args)
+
+        # stdio_client and ClientSession are async context managers.
+        # We enter them manually and store for cleanup on shutdown.
+        self._stdio_cm = stdio_client(server_params)
+        read, write = await self._stdio_cm.__aenter__()
+
+        self._session_cm = ClientSession(read, write)
+        self._session = await self._session_cm.__aenter__()
+        await self._session.initialize()
+
+        logger.info("Work IQ MCP session established")
+        return self._session
+
+    async def close(self):
+        """Shut down the MCP session (call on server shutdown)."""
+        if self._session is not None:
+            try:
+                await self._session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                await self._stdio_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._session = None
+            logger.info("Work IQ MCP session closed")
 
     async def is_available(self) -> bool:
-        """Check if Work IQ CLI is available and authenticated."""
+        """Check if Work IQ MCP server is available."""
         if not WORKIQ_ENABLED:
             self._last_check_error = "Work IQ is disabled (WORKIQ_ENABLED=false)"
             return False
-        # Re-check if we haven't checked yet, or if the cached value is
-        # negative and the TTL has expired (allows recovery after auth).
+
         now = time.monotonic()
         if self._available is not None and (
             self._available or (now - self._checked_at < _AVAILABILITY_TTL)
         ):
             return self._available
+
         try:
-            returncode, stdout, stderr = await self._run(
-                "-y", "@microsoft/workiq", "--version", timeout=15
-            )
-            self._available = returncode == 0
-            if not self._available:
-                err = stderr.decode("utf-8", errors="replace").strip()
-                self._last_check_error = err or f"CLI exited with code {returncode}"
-            else:
+            session = await asyncio.wait_for(self._ensure_session(), timeout=20)
+            tools = await asyncio.wait_for(session.list_tools(), timeout=10)
+            tool_names = [t.name for t in tools.tools]
+            if "ask_work_iq" in tool_names:
+                self._available = True
                 self._last_check_error = None
+            else:
+                self._available = False
+                self._last_check_error = f"Work IQ MCP server missing ask_work_iq tool. Found: {tool_names}"
         except FileNotFoundError:
-            logger.debug("Work IQ not available: npx not found in PATH")
             self._available = False
-            self._last_check_error = "npx not found in PATH. Install Node.js 18+ and ensure npx is on your PATH."
+            self._last_check_error = "workiq not found. Run: npm install -g @microsoft/workiq"
         except asyncio.TimeoutError:
-            logger.debug("Work IQ availability check timed out")
             self._available = False
-            self._last_check_error = "Work IQ CLI version check timed out (15s)"
+            self._last_check_error = "Work IQ MCP server startup timed out"
         except Exception as e:
-            logger.debug(f"Work IQ not available: {e}")
             self._available = False
-            self._last_check_error = str(e)
+            self._last_check_error = f"Work IQ MCP connection failed: {e}"
+            # Reset session so next attempt reconnects
+            self._session = None
         self._checked_at = now
         return self._available
 
@@ -118,37 +140,54 @@ class WorkIQClient:
         return self._last_check_error
 
     async def ask(self, query: str) -> WorkIQResult:
-        """Query Work IQ with a natural language question.
-
-        Returns a WorkIQResult with either the response text or the error reason.
-        """
+        """Query Work IQ with a natural language question via MCP."""
         if not await self.is_available():
-            return WorkIQResult(ok=False, error=self._last_check_error or "Work IQ CLI is not available")
+            return WorkIQResult(
+                ok=False,
+                error=self._last_check_error or "Work IQ is not available",
+            )
         try:
-            returncode, stdout, stderr = await self._run(
-                "-y", "@microsoft/workiq", "ask", "-q", query,
+            session = self._session
+            result = await asyncio.wait_for(
+                session.call_tool("ask_work_iq", {"question": query}),
                 timeout=WORKIQ_TIMEOUT,
             )
-            if returncode == 0:
-                return WorkIQResult(ok=True, text=stdout.decode("utf-8").strip())
-            else:
-                err = stderr.decode("utf-8", errors="replace").strip()
-                # Check for common permission / auth patterns
-                err_lower = err.lower()
+            if result.isError:
+                err_text = ""
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        err_text += item.text
+                err_lower = err_text.lower()
                 if any(kw in err_lower for kw in ("permission", "unauthorized", "forbidden", "consent", "access denied", "403")):
-                    reason = f"Permission error from Work IQ CLI: {err[:300]}"
-                elif any(kw in err_lower for kw in ("login", "authenticate", "token", "sign in", "auth")):
-                    reason = f"Authentication required: {err[:300]}. Run `npx -y @microsoft/workiq accept-eula` to authenticate."
+                    reason = f"Permission error: {err_text[:300]}"
+                elif any(kw in err_lower for kw in ("login", "authenticate", "token", "sign in", "auth", "eula")):
+                    reason = f"Authentication required: {err_text[:300]}. Run: workiq accept-eula"
                 else:
-                    reason = f"Work IQ CLI error (exit {returncode}): {err[:300]}"
+                    reason = f"Work IQ error: {err_text[:300]}"
                 logger.warning(f"Work IQ query failed: {reason}")
                 return WorkIQResult(ok=False, error=reason)
+
+            # Extract text from response content
+            text_parts = []
+            for item in result.content:
+                if hasattr(item, "text"):
+                    raw = item.text
+                    # Work IQ MCP returns JSON with a "response" field
+                    try:
+                        parsed = json.loads(raw)
+                        text_parts.append(parsed.get("response", raw))
+                    except (json.JSONDecodeError, TypeError):
+                        text_parts.append(raw)
+            return WorkIQResult(ok=True, text="\n".join(text_parts))
+
         except asyncio.TimeoutError:
             msg = f"Work IQ query timed out after {WORKIQ_TIMEOUT}s"
-            logger.warning(f"{msg}: {query[:50]}")
+            logger.warning(f"{msg}: {query[:80]}")
             return WorkIQResult(ok=False, error=msg)
         except Exception as e:
-            logger.error(f"Work IQ query error: {e}")
+            logger.error(f"Work IQ MCP call failed: {e}")
+            # Reset session to force reconnect on next attempt
+            self._session = None
             return WorkIQResult(ok=False, error=str(e))
 
     async def search_documents(self, topic: str) -> WorkIQResult:
