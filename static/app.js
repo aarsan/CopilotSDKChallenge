@@ -12,20 +12,12 @@ function _copilotBadge(full) {
         : '<span class="tech-badge-copilot">✦ Copilot SDK</span>';
 }
 
-function _fabricBadge(full) {
-    return full
-        ? '<span class="tech-badge-fabric tech-badge-fabric-lg">◆ Microsoft Fabric</span>'
-        : '<span class="tech-badge-fabric">◆ Fabric IQ</span>';
-}
 
 // Inline tag for flow card headers
 function _copilotTag() {
     return '<span class="uf-tech-tag uf-tech-tag-copilot">COPILOT SDK</span>';
 }
 
-function _fabricTag() {
-    return '<span class="uf-tech-tag uf-tech-tag-fabric">FABRIC IQ</span>';
-}
 
 // ── Workflow Pipeline Renderer ──────────────────────────────
 /**
@@ -359,7 +351,7 @@ function navigateTo(page) {
         templates: ['Template Catalog', ''],
         governance: ['Governance Standards', ''],
         activity: ['Observability', ''],
-        analytics: ['Fabric Analytics', ''],
+
         chat: ['Infrastructure Designer', ''],
         admin: ['Admin Settings', ''],
     };
@@ -368,8 +360,7 @@ function navigateTo(page) {
         services: _copilotBadge(true),
         templates: _copilotBadge(true),
         governance: _copilotBadge(true),
-        activity: _copilotBadge(false) + ' ' + _fabricBadge(false),
-        analytics: _fabricBadge(true),
+        activity: _copilotBadge(false),
         chat: _copilotBadge(true),
     };
     const [title, subtitle] = titles[page] || ['InfraForge', ''];
@@ -412,10 +403,6 @@ function navigateTo(page) {
         loadStandards();
     }
 
-    // Load analytics when switching to analytics page
-    if (page === 'analytics') {
-        loadAnalyticsDashboard();
-    }
 
     // Load enforcement mode when switching to admin page
     if (page === 'admin') {
@@ -440,9 +427,7 @@ function updatePageActions(page) {
         case 'activity':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadDeploymentHistory(); loadActivity(true)" title="Refresh">⟳ Refresh</button>';
             break;
-        case 'analytics':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadAnalyticsDashboard()" title="Refresh">⟳ Refresh</button>';
-            break;
+
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
             break;
@@ -15592,342 +15577,6 @@ function _timeAgo(isoStr) {
     return `${Math.floor(diff / 86400)}d ago`;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ██  FABRIC ANALYTICS DASHBOARD
-// ═══════════════════════════════════════════════════════════════
-
-let _analyticsData = null;
-
-async function loadAnalyticsDashboard() {
-    // Load Fabric status + dashboard data in parallel
-    const [statusRes, dashRes] = await Promise.allSettled([
-        fetch('/api/fabric/status'),
-        fetch('/api/analytics/dashboard'),
-    ]);
-
-    // Update Fabric banner
-    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
-        const status = await statusRes.value.json();
-        _updateFabricBanner(status);
-    } else {
-        _updateFabricBanner(null);
-    }
-
-    // Update dashboard charts
-    if (dashRes.status === 'fulfilled' && dashRes.value.ok) {
-        _analyticsData = await dashRes.value.json();
-        _renderAnalyticsCharts(_analyticsData);
-    } else {
-        console.error('Failed to load analytics dashboard');
-    }
-}
-
-function _updateFabricBanner(status) {
-    const icon = document.getElementById('analytics-fabric-icon');
-    const text = document.getElementById('analytics-fabric-status');
-    const syncBtn = document.getElementById('analytics-sync-btn');
-    const banner = document.getElementById('analytics-fabric-banner');
-
-    if (!status || !status.configured) {
-        icon.textContent = '⚠️';
-        text.textContent = 'Not configured — set FABRIC_WORKSPACE_ID in .env';
-        banner.className = 'analytics-status-banner analytics-status-warn';
-        syncBtn.disabled = true;
-        return;
-    }
-
-    const ws = status.health?.workspace;
-    const ol = status.health?.onelake;
-
-    if (ws?.status === 'connected' && ol?.status === 'connected') {
-        icon.textContent = '🟢';
-        text.innerHTML = `Connected to <strong>${ws.name || 'workspace'}</strong> · OneLake DFS active · Region: ${ws.region || 'unknown'}`;
-        banner.className = 'analytics-status-banner analytics-status-ok';
-        syncBtn.disabled = false;
-    } else if (ws?.status === 'connected') {
-        icon.textContent = '🟡';
-        text.textContent = `Workspace connected · OneLake: ${ol?.status || 'unknown'}`;
-        banner.className = 'analytics-status-banner analytics-status-warn';
-        syncBtn.disabled = false;
-    } else {
-        icon.textContent = '🔴';
-        text.textContent = `Connection error: ${ws?.error || ol?.error || 'unknown'}`;
-        banner.className = 'analytics-status-banner analytics-status-error';
-        syncBtn.disabled = true;
-    }
-
-    // Update sync history
-    if (status.sync?.history?.length) {
-        _renderSyncHistory(status.sync.history);
-    }
-}
-
-async function triggerFabricSync() {
-    const btn = document.getElementById('analytics-sync-btn');
-    btn.disabled = true;
-    btn.textContent = '⏳ Syncing…';
-
-    try {
-        const r = await fetch('/api/fabric/sync', { method: 'POST' });
-        const result = await r.json();
-        if (r.ok) {
-            btn.textContent = `✅ Synced ${result.total_rows || 0} rows`;
-            setTimeout(() => { btn.textContent = '🔄 Sync to OneLake'; btn.disabled = false; }, 3000);
-            // Refresh status to update sync history
-            const statusRes = await fetch('/api/fabric/status');
-            if (statusRes.ok) _updateFabricBanner(await statusRes.json());
-        } else {
-            btn.textContent = '❌ Sync failed';
-            setTimeout(() => { btn.textContent = '🔄 Sync to OneLake'; btn.disabled = false; }, 3000);
-        }
-    } catch (e) {
-        btn.textContent = '❌ Error';
-        setTimeout(() => { btn.textContent = '🔄 Sync to OneLake'; btn.disabled = false; }, 3000);
-    }
-}
-
-// ── Chart Rendering (pure CSS/HTML — no external chart libs) ──
-
-const CHART_COLORS = [
-    '#4f8cff', '#34d399', '#f59e42', '#ef4444', '#a78bfa',
-    '#f472b6', '#38bdf8', '#facc15', '#6ee7b7', '#fb923c',
-];
-
-function _renderAnalyticsCharts(data) {
-    // KPIs
-    const p = data.pipeline || {};
-    const d = data.deployments?.totals || {};
-    const s = data.services?.totals || {};
-    const c = data.compliance?.totals || {};
-    const g = data.governance || {};
-
-    _setText('kpi-total-pipelines', _fmtNum(p.total_runs));
-    _setText('kpi-pipeline-rate', p.success_rate != null ? `${p.success_rate}% success` : '—');
-    _setText('kpi-total-deployments', _fmtNum(d.total_deployments));
-    _setText('kpi-deployment-rate', d.succeeded != null ? `${_fmtNum(d.succeeded)} succeeded` : '—');
-    _setText('kpi-total-services', _fmtNum(s.total_services));
-    _setText('kpi-approved-services', s.approved_services != null ? `${_fmtNum(s.approved_services)} approved` : '—');
-    _setText('kpi-compliance-score', c.avg_score != null ? Math.round(c.avg_score) : '—');
-    _setText('kpi-compliance-pass', c.passed != null ? `${_fmtNum(c.passed)} passed` : '—');
-
-    // Gov KPI
-    const cisoTotal = (g.ciso_verdicts || []).reduce((a, v) => a + (v.count || 0), 0);
-    const cisoApproved = (g.ciso_verdicts || []).find(v => v.verdict === 'approved')?.count || 0;
-    _setText('kpi-gov-reviews', _fmtNum(cisoTotal));
-    _setText('kpi-gov-approved', cisoTotal ? `${Math.round(cisoApproved / cisoTotal * 100)}% approved` : '—');
-
-    // Pipeline trend (bar chart)
-    _renderBarChart('chart-pipeline-trend', (p.trend || []).map(t => ({
-        label: _shortDate(t.date),
-        values: [{ value: t.succeeded || 0, color: '#34d399', label: 'Succeeded' },
-                 { value: t.failed || 0, color: '#ef4444', label: 'Failed' }],
-    })));
-
-    // Pipeline by type (horizontal bars)
-    _renderHorizontalBars('chart-pipeline-type', (p.by_type || []).map((t, i) => ({
-        label: t.pipeline_type || 'unknown',
-        value: t.runs || 0,
-        color: CHART_COLORS[i % CHART_COLORS.length],
-    })));
-
-    // Governance verdicts (donut)
-    _renderDonutChart('chart-gov-verdicts', [
-        ...(g.ciso_verdicts || []).map(v => ({
-            label: `CISO: ${v.verdict}`,
-            value: v.count || 0,
-            color: v.verdict === 'approved' ? '#34d399' : v.verdict === 'blocked' ? '#ef4444' : '#f59e42',
-        })),
-        ...(g.cto_verdicts || []).map(v => ({
-            label: `CTO: ${v.verdict}`,
-            value: v.count || 0,
-            color: v.verdict === 'approved' ? '#6ee7b7' : v.verdict === 'blocked' ? '#fb923c' : '#facc15',
-        })),
-    ]);
-
-    // Deploy by region
-    _renderHorizontalBars('chart-deploy-region', (data.deployments?.by_region || []).map((r, i) => ({
-        label: r.region || 'unknown',
-        value: r.count || 0,
-        color: CHART_COLORS[i % CHART_COLORS.length],
-    })));
-
-    // Service by category
-    _renderHorizontalBars('chart-service-category', (data.services?.by_category || []).map((c, i) => ({
-        label: c.category || 'unknown',
-        value: c.count || 0,
-        color: CHART_COLORS[i % CHART_COLORS.length],
-    })));
-
-    // Security posture
-    const postureColors = { strong: '#34d399', moderate: '#f59e42', weak: '#ef4444', 'not assessed': '#94a3b8' };
-    _renderDonutChart('chart-security-posture', (g.security_postures || []).map(p => ({
-        label: p.security_posture || 'unknown',
-        value: p.count || 0,
-        color: postureColors[p.security_posture?.toLowerCase()] || '#94a3b8',
-    })));
-
-    // Compliance score distribution
-    const gradeColors = { 'A (90-100)': '#34d399', 'B (80-89)': '#6ee7b7', 'C (70-79)': '#f59e42', 'D (60-69)': '#fb923c', 'F (<60)': '#ef4444' };
-    _renderHorizontalBars('chart-compliance-dist', (data.compliance?.score_distribution || []).map(d => ({
-        label: d.grade,
-        value: d.count || 0,
-        color: gradeColors[d.grade] || '#94a3b8',
-    })));
-
-    // Gov trends
-    _renderBarChart('chart-gov-trend', _groupGovTrend(g.trend || []));
-
-    // Top templates
-    _renderHorizontalBars('chart-top-templates', (data.deployments?.by_template || []).map((t, i) => ({
-        label: _truncate(t.template_name || 'unknown', 25),
-        value: t.deployment_count || 0,
-        color: CHART_COLORS[i % CHART_COLORS.length],
-    })));
-}
-
-function _groupGovTrend(trend) {
-    // Group by date, stacking CISO approved/blocked and CTO approved/blocked
-    const byDate = {};
-    for (const t of trend) {
-        if (!byDate[t.date]) byDate[t.date] = { approved: 0, blocked: 0, other: 0 };
-        byDate[t.date].approved += t.approved || 0;
-        byDate[t.date].blocked += t.blocked || 0;
-        byDate[t.date].other += Math.max(0, (t.reviews || 0) - (t.approved || 0) - (t.blocked || 0));
-    }
-    return Object.entries(byDate).map(([date, v]) => ({
-        label: _shortDate(date),
-        values: [
-            { value: v.approved, color: '#34d399', label: 'Approved' },
-            { value: v.blocked, color: '#ef4444', label: 'Blocked' },
-            { value: v.other, color: '#f59e42', label: 'Other' },
-        ],
-    }));
-}
-
-// ── Pure CSS Chart Primitives ───────────────────────────────
-
-function _renderBarChart(containerId, bars) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-
-    if (!bars.length) {
-        el.innerHTML = '<div class="analytics-chart-empty">No data available</div>';
-        return;
-    }
-
-    const maxVal = Math.max(1, ...bars.map(b => b.values.reduce((a, v) => a + v.value, 0)));
-    const barWidth = Math.max(12, Math.min(40, Math.floor(600 / bars.length)));
-
-    let legendItems = {};
-    bars.forEach(b => b.values.forEach(v => { legendItems[v.label] = v.color; }));
-
-    const legendHtml = Object.entries(legendItems).map(([label, color]) =>
-        `<span class="analytics-legend-item"><span class="analytics-legend-dot" style="background:${color}"></span>${label}</span>`
-    ).join('');
-
-    const barsHtml = bars.map(b => {
-        const total = b.values.reduce((a, v) => a + v.value, 0);
-        const pct = (total / maxVal) * 100;
-        const segs = b.values.map(v => {
-            const segPct = total > 0 ? (v.value / total) * pct : 0;
-            return segPct > 0 ? `<div class="analytics-bar-seg" style="height:${segPct}%;background:${v.color}" title="${v.label}: ${v.value}"></div>` : '';
-        }).join('');
-
-        return `<div class="analytics-bar-col" style="width:${barWidth}px">
-            <div class="analytics-bar-stack" style="height:100%">${segs}</div>
-            <div class="analytics-bar-label">${b.label}</div>
-        </div>`;
-    }).join('');
-
-    el.innerHTML = `<div class="analytics-legend">${legendHtml}</div>
-        <div class="analytics-bar-chart" style="height:180px">${barsHtml}</div>`;
-}
-
-function _renderHorizontalBars(containerId, items) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-
-    if (!items.length) {
-        el.innerHTML = '<div class="analytics-chart-empty">No data available</div>';
-        return;
-    }
-
-    const maxVal = Math.max(1, ...items.map(i => i.value));
-    el.innerHTML = items.map(item => {
-        const pct = (item.value / maxVal) * 100;
-        return `<div class="analytics-hbar-row">
-            <div class="analytics-hbar-label" title="${item.label}">${_truncate(item.label, 20)}</div>
-            <div class="analytics-hbar-track">
-                <div class="analytics-hbar-fill" style="width:${pct}%;background:${item.color}"></div>
-            </div>
-            <div class="analytics-hbar-value">${_fmtNum(item.value)}</div>
-        </div>`;
-    }).join('');
-}
-
-function _renderDonutChart(containerId, segments) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-
-    const total = segments.reduce((a, s) => a + s.value, 0);
-    if (!total) {
-        el.innerHTML = '<div class="analytics-chart-empty">No data available</div>';
-        return;
-    }
-
-    // Generate SVG donut
-    const size = 140, cx = size / 2, cy = size / 2, r = 50, stroke = 20;
-    const circ = 2 * Math.PI * r;
-    let offset = 0;
-
-    const arcs = segments.filter(s => s.value > 0).map(s => {
-        const pct = s.value / total;
-        const dash = circ * pct;
-        const gap = circ - dash;
-        const svg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
-            stroke="${s.color}" stroke-width="${stroke}"
-            stroke-dasharray="${dash} ${gap}"
-            stroke-dashoffset="${-offset}"
-            class="analytics-donut-arc" />`;
-        offset += dash;
-        return svg;
-    }).join('');
-
-    const legendHtml = segments.filter(s => s.value > 0).map(s =>
-        `<div class="analytics-donut-legend-item">
-            <span class="analytics-legend-dot" style="background:${s.color}"></span>
-            <span>${s.label}</span>
-            <span class="analytics-donut-legend-val">${s.value} (${Math.round(s.value / total * 100)}%)</span>
-        </div>`
-    ).join('');
-
-    el.innerHTML = `<div class="analytics-donut-wrap">
-        <svg viewBox="0 0 ${size} ${size}" class="analytics-donut-svg">
-            ${arcs}
-            <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle"
-                  class="analytics-donut-total">${_fmtNum(total)}</text>
-        </svg>
-        <div class="analytics-donut-legend">${legendHtml}</div>
-    </div>`;
-}
-
-function _renderSyncHistory(history) {
-    const el = document.getElementById('analytics-sync-history');
-    if (!el) return;
-
-    if (!history.length) {
-        el.innerHTML = '<div class="analytics-chart-placeholder">No syncs yet</div>';
-        return;
-    }
-
-    el.innerHTML = history.slice(-10).reverse().map(h =>
-        `<div class="analytics-sync-row">
-            <span class="analytics-sync-status ${h.status === 'completed' ? 'sync-ok' : 'sync-partial'}">${h.status === 'completed' ? '✅' : '⚠️'}</span>
-            <span class="analytics-sync-time">${_timeAgo(h.timestamp)}</span>
-            <span class="analytics-sync-detail">${_fmtNum(h.rows)} rows · ${h.duration}s</span>
-        </div>`
-    ).join('');
-}
 
 // ── Helpers ─────────────────────────────────────
 
