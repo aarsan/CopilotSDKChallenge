@@ -90,6 +90,9 @@ from src.database import (
     get_latest_semver,
     get_latest_service_version,
     get_pipeline_runs,
+    get_pipeline_checkpoint,
+    get_resumable_runs,
+    mark_pipeline_resuming,
     has_running_pipeline,
     get_service,
     get_service_artifacts,
@@ -166,7 +169,11 @@ async def _require_service(service_id: str) -> dict:
 
 
 async def _reject_if_pipeline_running(template_id: str) -> None:
-    """Raise 409 Conflict if a pipeline is already running for this template."""
+    """Raise 409 Conflict if a pipeline is already running for this template.
+
+    If an interrupted (resumable) run exists, include the run_id in the
+    error detail so the frontend can offer a Resume button.
+    """
     existing = await has_running_pipeline(template_id)
     if existing:
         raise HTTPException(
@@ -174,6 +181,23 @@ async def _reject_if_pipeline_running(template_id: str) -> None:
             detail=f"A pipeline is already running for this template "
                    f"(run {existing['run_id']}, type: {existing['pipeline_type']}). "
                    f"Wait for it to finish or check the Pipeline Runs tab.",
+        )
+    # Check for interrupted (resumable) runs — inform, don't block
+    resumable = await get_resumable_runs(template_id)
+    if resumable:
+        run = resumable[0]
+        last_step = run.get("last_completed_step")
+        step_info = f" (last completed step: {last_step})" if last_step is not None else ""
+        raise HTTPException(
+            status_code=409,
+            detail=json.dumps({
+                "message": f"An interrupted pipeline run exists for this template{step_info}. "
+                           f"You can resume it or start fresh.",
+                "run_id": run["run_id"],
+                "pipeline_type": run.get("pipeline_type", ""),
+                "last_completed_step": last_step,
+                "resumable": True,
+            }),
         )
 
 
@@ -639,7 +663,7 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     await cleanup_expired_sessions()
-    # Mark any pipeline runs left as 'running' from a previous crash as failed
+    # Mark any pipeline runs left as 'running' from a previous crash as interrupted (resumable)
     await cleanup_orphaned_pipeline_runs()
     logger.info("Initializing organization standards...")
     await init_standards()
@@ -5641,6 +5665,147 @@ async def get_template_pipeline_runs(template_id: str):
         r.pop("summary_json", None)
         r.pop("pipeline_events_json", None)
     return JSONResponse(runs)
+
+
+# ── Pipeline Resume ──────────────────────────────────────────
+
+@app.get("/api/pipelines/{run_id}/checkpoint")
+async def get_pipeline_checkpoint_endpoint(run_id: str):
+    """Get the checkpoint state for a pipeline run.
+
+    Returns the last completed step index, step name, and whether
+    the run is resumable.
+    """
+    checkpoint = await get_pipeline_checkpoint(run_id)
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail="No checkpoint found for this run")
+
+    run = checkpoint["run"]
+    return JSONResponse({
+        "run_id": run_id,
+        "status": run.get("status"),
+        "pipeline_type": run.get("pipeline_type"),
+        "service_id": run.get("service_id"),
+        "last_completed_step": run.get("last_completed_step"),
+        "resume_count": run.get("resume_count", 0),
+        "resumable": run.get("status") == "interrupted",
+        "checkpoints": [
+            {
+                "step_name": cp.get("step_name"),
+                "step_index": cp.get("step_index"),
+                "status": cp.get("status"),
+                "completed_at": cp.get("completed_at"),
+                "duration_secs": cp.get("duration_secs"),
+            }
+            for cp in checkpoint.get("checkpoints", [])
+        ],
+    })
+
+
+@app.post("/api/pipelines/{run_id}/resume")
+async def resume_pipeline(run_id: str):
+    """Resume an interrupted pipeline run from its last checkpoint.
+
+    Only works for runs with status='interrupted' that have a valid
+    checkpoint. Returns an NDJSON stream just like a fresh pipeline run.
+    """
+    from src.pipeline import PipelineContext, emit
+
+    checkpoint = await get_pipeline_checkpoint(run_id)
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail="No checkpoint found for this run")
+
+    run = checkpoint["run"]
+    if run.get("status") != "interrupted":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run {run_id} is not resumable (status: {run.get('status')})",
+        )
+
+    last_step = run.get("last_completed_step")
+    if last_step is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No checkpoint step recorded — cannot resume. Start a fresh run.",
+        )
+
+    resume_step = last_step + 1  # Resume from the step AFTER the last completed one
+    pipeline_type = run.get("pipeline_type", "")
+    service_id = run.get("service_id", "")
+    ctx_data = checkpoint.get("checkpoint_context", {})
+
+    # Mark the run as running again
+    await mark_pipeline_resuming(run_id)
+
+    # Reconstruct PipelineContext
+    ctx = PipelineContext.from_checkpoint(ctx_data)
+
+    # Determine which runner to use based on pipeline_type
+    if pipeline_type == "onboarding":
+        from src.pipelines.onboarding import runner as pipeline_runner
+    elif pipeline_type in ("validation", "fix_and_validate"):
+        # Validation/deploy pipelines are monolithic generators, not step-based.
+        # For now, return an error suggesting a fresh run.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Resume is not yet supported for '{pipeline_type}' pipelines. "
+                   f"Please start a fresh run.",
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown pipeline type: {pipeline_type}",
+        )
+
+    async def _stream_resume():
+        collected_events: list[str] = []
+        final_status = "completed"
+        try:
+            async for line in pipeline_runner.execute(ctx, resume_from_step=resume_step):
+                collected_events.append(line)
+                yield line
+        except Exception as exc:
+            final_status = "failed"
+            err_line = emit("error", "resume_failed", f"Resume failed: {str(exc)[:300]}")
+            collected_events.append(err_line)
+            yield err_line
+        finally:
+            try:
+                events_json = json.dumps(collected_events, default=str) if collected_events else None
+                await complete_pipeline_run(
+                    run_id,
+                    status=final_status,
+                    version_num=ctx.version_num,
+                    semver=ctx.semver,
+                    summary={"resumed_from_step": resume_step, "steps_completed": ctx.steps_completed},
+                    heal_count=ctx.heal_attempts,
+                    events_json=events_json,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to finalize resumed run: {e}")
+
+    return StreamingResponse(
+        _stream_resume(),
+        media_type="application/x-ndjson",
+    )
+
+
+@app.get("/api/pipelines/resumable")
+async def list_resumable_pipelines(service_id: str | None = None):
+    """List all interrupted pipeline runs that can be resumed."""
+    runs = await get_resumable_runs(service_id)
+    result = []
+    for r in runs:
+        result.append({
+            "run_id": r.get("run_id"),
+            "service_id": r.get("service_id"),
+            "pipeline_type": r.get("pipeline_type"),
+            "last_completed_step": r.get("last_completed_step"),
+            "resume_count": r.get("resume_count", 0),
+            "started_at": r.get("started_at"),
+            "error_detail": r.get("error_detail"),
+        })
+    return JSONResponse(result)
 
 
 # ── Template Publishing ──────────────────────────────────────
