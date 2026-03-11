@@ -7911,7 +7911,7 @@ tr:hover .svc-view-tpl-btn {
     box-shadow: 0 0 6px rgba(248, 81, 73, 0.4);
 }
 
-.health-detail-connected {
+.health-check-detail.health-detail-connected {
     color: var(--accent-green);
 }
 
