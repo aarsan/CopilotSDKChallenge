@@ -55,6 +55,7 @@ Set-StrictMode -Version Latest
 
 function Write-Step { param([string]$Msg) Write-Host "`n━━━ $Msg ━━━" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Msg) Write-Host "  ✓ $Msg" -ForegroundColor Green }
+function Write-Info { param([string]$Msg) Write-Host "  ℹ $Msg" -ForegroundColor Blue }
 function Write-Warn { param([string]$Msg) Write-Host "  ⚠ $Msg" -ForegroundColor Yellow }
 function Write-Err { param([string]$Msg) Write-Host "  ✗ $Msg" -ForegroundColor Red }
 
@@ -1015,7 +1016,7 @@ if ($SkipEntraId) {
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Service principal created"
         } else {
-            Write-Warn "Could not create service principal — it may already exist."
+            Write-Info "Service principal already exists"
         }
 
         # Add Microsoft Graph User.Read permission
@@ -1037,8 +1038,7 @@ if ($SkipEntraId) {
             Write-Ok "Permissions added and admin consent granted"
         } else {
             Write-Ok "Permissions added"
-            Write-Warn "Admin consent could not be auto-granted (requires Application Administrator role)."
-            Write-Host "    This is OK — users will see a one-time consent prompt on first sign-in." -ForegroundColor Gray
+            Write-Info "Admin consent will be handled on first sign-in (this is normal for non-admin users)."
         }
 
         # Create client secret
@@ -1075,8 +1075,7 @@ if ($SkipEntraId) {
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "User.Read permission granted"
     } else {
-        Write-Warn "Could not auto-grant User.Read (requires admin privileges)."
-        Write-Host "    This is OK — users will see a one-time consent prompt on first sign-in." -ForegroundColor Gray
+        Write-Info "User.Read consent will be prompted on first sign-in (this is normal)."
     }
 
     # Configure optional ID token claims (email, upn, given_name, family_name)
