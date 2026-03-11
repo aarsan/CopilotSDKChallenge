@@ -16,13 +16,7 @@
       "required": true,
       "purpose": "All Azure resource provisioning and management"
     },
-    "gh": {
-      "wingetId": "GitHub.cli",
-      "version": "2.81.0",
-      "command": "gh",
-      "required": false,
-      "purpose": "GitHub integration — repo creation, PRs, publishing"
-    },
+
     "odbc18": {
       "wingetId": "Microsoft.msodbcsql.18",
       "version": "18.4.1.1",

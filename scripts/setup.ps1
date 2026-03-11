@@ -460,28 +460,26 @@ if ($hasOdbc18) {
 }
 
 # ── GitHub CLI (optional) ──
-$ghSpec = $prereqs.gh
+# ── GitHub CLI (optional dev convenience, not a prerequisite) ──
+# gh is NOT required for InfraForge. At runtime, GitHub publishing uses
+# GITHUB_TOKEN directly via the REST API. The gh CLI is only used here
+# as a convenience to extract a token during setup. Admins can also set
+# GITHUB_TOKEN in .env manually.
 $ghAvailable = $false
 $ghAuthenticated = $false
 if (Test-Command "gh") {
     $ghAvailable = $true
-    Write-Ok "GitHub CLI found (pinned: $($ghSpec.version))"
+    Write-Ok "GitHub CLI detected (optional)"
     $ghAuthCheck = gh auth status 2>&1
     if ($LASTEXITCODE -eq 0) {
         $ghAuthenticated = $true
-        Write-Ok "GitHub CLI: authenticated"
+        Write-Ok "GitHub CLI: authenticated — will extract token automatically"
     } else {
         Write-Warn "GitHub CLI: installed but not authenticated"
-        Write-Host "  Run 'gh auth login' to enable GitHub integration, or continue without it." -ForegroundColor Gray
+        Write-Host "  Run 'gh auth login' to auto-extract token, or set GITHUB_TOKEN in .env manually." -ForegroundColor Gray
     }
 } else {
-    $installed = Install-Prerequisite -DisplayName "GitHub CLI" -WingetId $ghSpec.wingetId -Version $ghSpec.version -Command $ghSpec.command -Required $ghSpec.required
-    if ($installed) {
-        $ghAvailable = $true
-        Write-Host "  Run 'gh auth login' after setup to enable GitHub integration." -ForegroundColor Gray
-    } else {
-        Write-Warn "GitHub CLI skipped. GitHub publishing features will be unavailable."
-    }
+    Write-Ok "GitHub CLI not found (optional — GITHUB_TOKEN can be set in .env manually)"
 }
 
 # Check existing .env - we'll merge if it exists (non-destructive)

@@ -49,7 +49,11 @@ All other tools are **auto-installed via winget** from pinned versions in `scrip
 | **Azure CLI** (`az`) | 2.77.0 | `Microsoft.AzureCLI` | Yes |
 | **Python** | 3.13.12 | `Python.Python.3.13` | Yes |
 | **ODBC Driver 18 for SQL Server** | 18.4.1.1 | `Microsoft.msodbcsql.18` | Yes |
-| **GitHub CLI** (`gh`) | 2.81.0 | `GitHub.cli` | No (GitHub publishing only) |
+
+> **Note:** The GitHub CLI (`gh`) is **not** a prerequisite. If it's installed and
+> authenticated, setup will use it to extract a `GITHUB_TOKEN` automatically. Otherwise,
+> you can set `GITHUB_TOKEN` in `.env` manually with a
+> [personal access token](https://github.com/settings/tokens).
 
 > **Updating versions:** Edit `scripts/prerequisites.json` to change pinned versions.
 > Only bump versions after testing the full setup flow with the new version.
