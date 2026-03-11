@@ -1,0 +1,35 @@
+{
+  "$schema": "https://aka.ms/winget-packages.schema.2.0.json",
+  "description": "InfraForge prerequisite manifest — pinned versions tested with this release.",
+  "prerequisites": {
+    "python": {
+      "wingetId": "Python.Python.3.13",
+      "version": "3.13.12",
+      "command": "python",
+      "required": true,
+      "purpose": "Runtime, virtual environment, dependencies"
+    },
+    "az": {
+      "wingetId": "Microsoft.AzureCLI",
+      "version": "2.77.0",
+      "command": "az",
+      "required": true,
+      "purpose": "All Azure resource provisioning and management"
+    },
+    "gh": {
+      "wingetId": "GitHub.cli",
+      "version": "2.81.0",
+      "command": "gh",
+      "required": false,
+      "purpose": "GitHub integration — repo creation, PRs, publishing"
+    },
+    "odbc18": {
+      "wingetId": "Microsoft.msodbcsql.18",
+      "version": "18.3.3.1",
+      "command": null,
+      "registryCheck": "HKLM:\\SOFTWARE\\ODBC\\ODBCINST.INI\\ODBC Driver 18 for SQL Server",
+      "required": true,
+      "purpose": "SQL Server database connectivity"
+    }
+  }
+}

@@ -17,12 +17,12 @@
 
 .NOTES
     Prerequisites:
-      - Azure CLI (az) installed and authenticated: az login
+      - winget (ships with Windows 10 1709+ / Windows 11)
       - Azure subscription with Contributor or Owner access
-      - Python 3.9+
-      - ODBC Driver 18 for SQL Server
-      - GitHub CLI (gh) installed and authenticated: gh auth login
       - GitHub account (for publishing repos & PRs)
+
+    All other tools (Azure CLI, Python, ODBC Driver 18, GitHub CLI) are
+    auto-installed via winget from pinned versions in scripts/prerequisites.json.
 
 .EXAMPLE
     .\scripts\setup.ps1
@@ -59,6 +59,60 @@ function Write-Err { param([string]$Msg) Write-Host "  ✗ $Msg" -ForegroundColo
 function Test-Command {
     param([string]$Name)
     $null -ne (Get-Command -Name $Name -ErrorAction SilentlyContinue)
+}
+
+function Install-Prerequisite {
+    <#
+    .SYNOPSIS
+        Install a missing prerequisite via winget using the pinned version from
+        scripts/prerequisites.json. Refreshes PATH after install so the tool is
+        immediately available in this session.
+    #>
+    param(
+        [string]$DisplayName,
+        [string]$WingetId,
+        [string]$Version,
+        [string]$Command,
+        [bool]$Required
+    )
+
+    $label = if ($Required) { "required" } else { "optional" }
+    Write-Host "  $DisplayName ($label) is not installed." -ForegroundColor Yellow
+
+    if (-not (Test-Command "winget")) {
+        Write-Err "winget is not available. Cannot auto-install $DisplayName."
+        Write-Host "  winget ships with Windows 10 1709+ and Windows 11. Update via the Microsoft Store (App Installer)." -ForegroundColor Gray
+        if ($Required) { exit 1 }
+        return $false
+    }
+
+    $prompt = Read-Host "  Install $DisplayName $Version via winget? (Y/n)"
+    if ($prompt -eq "n") {
+        if ($Required) {
+            Write-Err "$DisplayName is required. Cannot continue without it."
+            exit 1
+        }
+        return $false
+    }
+
+    Write-Host "  Installing $DisplayName $Version ..." -ForegroundColor Cyan
+    winget install --id $WingetId --version $Version --exact --source winget --accept-package-agreements --accept-source-agreements 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+
+    # Refresh PATH so newly installed tools are found in this session
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath;$userPath"
+
+    # For tools with a command, verify the install succeeded
+    if ($Command -and -not (Test-Command $Command)) {
+        Write-Warn "$DisplayName was installed but '$Command' is still not on PATH."
+        Write-Host "  You may need to close and reopen your terminal, then re-run setup." -ForegroundColor Gray
+        if ($Required) { exit 1 }
+        return $false
+    }
+
+    Write-Ok "$DisplayName $Version installed"
+    return $true
 }
 
 function Get-RandomSuffix {
@@ -279,17 +333,36 @@ Write-Host ""
 Write-Host "  Before you begin, make sure you have:" -ForegroundColor White
 Write-Host "    • An Azure subscription with Contributor (or Owner) access" -ForegroundColor Gray
 Write-Host "    • A GitHub account (for publishing repos & PRs)" -ForegroundColor Gray
+Write-Host "    • winget (ships with Windows 10 1709+ / Windows 11)" -ForegroundColor Gray
 Write-Host ""
 
-Write-Step "Checking prerequisites"
+Write-Step "Checking prerequisites (from scripts/prerequisites.json)"
 
-# Azure CLI
-if (-not (Test-Command "az")) {
-    Write-Err "Azure CLI (az) not found."
-    Write-Host "  Install: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli" -ForegroundColor Gray
+# Load the prerequisite manifest
+$manifestPath = Join-Path $PSScriptRoot "prerequisites.json"
+if (-not (Test-Path $manifestPath)) {
+    Write-Err "Prerequisite manifest not found at: $manifestPath"
     exit 1
 }
-Write-Ok "Azure CLI found"
+$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$prereqs = $manifest.prerequisites
+
+# ── winget (the one true prerequisite) ──
+if (-not (Test-Command "winget")) {
+    Write-Err "winget is not available. InfraForge setup requires winget to install prerequisites."
+    Write-Host "  winget ships with Windows 10 1709+ and Windows 11." -ForegroundColor Gray
+    Write-Host "  Update via the Microsoft Store (search 'App Installer') or:" -ForegroundColor Gray
+    Write-Host "    https://learn.microsoft.com/en-us/windows/package-manager/winget/#install-winget" -ForegroundColor DarkGray
+    exit 1
+}
+Write-Ok "winget available"
+
+# ── Azure CLI ──
+$azSpec = $prereqs.az
+if (-not (Test-Command "az")) {
+    Install-Prerequisite -DisplayName "Azure CLI" -WingetId $azSpec.wingetId -Version $azSpec.version -Command $azSpec.command -Required $azSpec.required
+}
+Write-Ok "Azure CLI found (pinned: $($azSpec.version))"
 
 # Check az login
 $account = ConvertFrom-AzJson (az account show 2>&1)
@@ -313,31 +386,37 @@ if (-not $currentUserOid -or $currentUserOid -match "ERROR") {
 }
 Write-Ok "User OID: $currentUserOid"
 
-# Python
+# ── Python ──
+$pySpec = $prereqs.python
 if (-not (Test-Command "python")) {
-    Write-Err "Python not found. Install Python 3.9+."
-    exit 1
+    Install-Prerequisite -DisplayName "Python" -WingetId $pySpec.wingetId -Version $pySpec.version -Command $pySpec.command -Required $pySpec.required
 }
 $pyVer = python --version 2>&1
-Write-Ok "Python: $pyVer"
+Write-Ok "Python: $pyVer (pinned: $($pySpec.version))"
 
-# ODBC Driver
+# ── ODBC Driver 18 for SQL Server ──
+$odbcSpec = $prereqs.odbc18
 $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
 if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
-    Write-Ok "ODBC Driver 18 for SQL Server found"
+    Write-Ok "ODBC Driver 18 for SQL Server found (pinned: $($odbcSpec.version))"
 } else {
-    Write-Warn "ODBC Driver 18 for SQL Server not detected."
-    Write-Host "  Download: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server" -ForegroundColor Gray
-    $continue = Read-Host "  Continue anyway? (y/N)"
-    if ($continue -ne "y") { exit 1 }
+    Install-Prerequisite -DisplayName "ODBC Driver 18 for SQL Server" -WingetId $odbcSpec.wingetId -Version $odbcSpec.version -Command $null -Required $odbcSpec.required
+    # Re-check registry after install
+    $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
+    if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
+        Write-Ok "ODBC Driver 18 for SQL Server installed"
+    } else {
+        Write-Warn "ODBC Driver 18 may require a terminal restart to detect."
+    }
 }
 
-# GitHub CLI
+# ── GitHub CLI (optional) ──
+$ghSpec = $prereqs.gh
 $ghAvailable = $false
 $ghAuthenticated = $false
 if (Test-Command "gh") {
     $ghAvailable = $true
-    Write-Ok "GitHub CLI (gh) found"
+    Write-Ok "GitHub CLI found (pinned: $($ghSpec.version))"
     $ghAuthCheck = gh auth status 2>&1
     if ($LASTEXITCODE -eq 0) {
         $ghAuthenticated = $true
@@ -347,9 +426,13 @@ if (Test-Command "gh") {
         Write-Host "  Run 'gh auth login' to enable GitHub integration, or continue without it." -ForegroundColor Gray
     }
 } else {
-    Write-Warn "GitHub CLI (gh) not found. GitHub integration will be skipped."
-    Write-Host "  Install: https://cli.github.com/" -ForegroundColor Gray
-    Write-Host "  GitHub publishing features require the gh CLI." -ForegroundColor Gray
+    $installed = Install-Prerequisite -DisplayName "GitHub CLI" -WingetId $ghSpec.wingetId -Version $ghSpec.version -Command $ghSpec.command -Required $ghSpec.required
+    if ($installed) {
+        $ghAvailable = $true
+        Write-Host "  Run 'gh auth login' after setup to enable GitHub integration." -ForegroundColor Gray
+    } else {
+        Write-Warn "GitHub CLI skipped. GitHub publishing features will be unavailable."
+    }
 }
 
 # Check existing .env - we'll merge if it exists (non-destructive)

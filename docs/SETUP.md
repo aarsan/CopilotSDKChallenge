@@ -38,17 +38,21 @@ Before provisioning, the script runs comprehensive preflight checks:
 
 ### Required
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| **Azure CLI** (`az`) | All Azure resource provisioning | [Install guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
-| **Python 3.9+** | Runtime, virtual environment, dependencies | [python.org](https://www.python.org/downloads/) |
-| **ODBC Driver 18 for SQL Server** | Database connectivity | [Download](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server) |
+| Tool | Purpose | Auto-installed? |
+|------|---------|-----------------|
+| **winget** | Package manager — installs all other tools | Ships with Windows 10 1709+ / Windows 11 |
 
-### Optional
+All other tools are **auto-installed via winget** from pinned versions in `scripts/prerequisites.json`:
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| **GitHub CLI** (`gh`) | Auto-detect token and organization for GitHub integration | [cli.github.com](https://cli.github.com/) |
+| Tool | Pinned Version | winget ID | Required |
+|------|---------------|-----------|----------|
+| **Azure CLI** (`az`) | 2.77.0 | `Microsoft.AzureCLI` | Yes |
+| **Python** | 3.13.12 | `Python.Python.3.13` | Yes |
+| **ODBC Driver 18 for SQL Server** | 18.3.3.1 | `Microsoft.msodbcsql.18` | Yes |
+| **GitHub CLI** (`gh`) | 2.81.0 | `GitHub.cli` | No (GitHub publishing only) |
+
+> **Updating versions:** Edit `scripts/prerequisites.json` to change pinned versions.
+> Only bump versions after testing the full setup flow with the new version.
 
 ---
 
