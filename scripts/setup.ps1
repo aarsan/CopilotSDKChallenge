@@ -26,6 +26,7 @@
 
 .EXAMPLE
     .\scripts\setup.ps1
+    .\scripts\setup.ps1 -Yes              # non-interactive, auto-approve all prompts
     .\scripts\setup.ps1 -Location eastus2 -ResourceGroup MyInfraForge
     .\scripts\setup.ps1 -Cleanup          # tear down resources from a failed run
 #>
@@ -41,6 +42,7 @@ param(
     [switch]$SkipEntraId,
     [switch]$SkipSql,
     [switch]$Force,
+    [switch]$Yes,
     [switch]$Cleanup
 )
 
@@ -86,7 +88,12 @@ function Install-Prerequisite {
         return $false
     }
 
-    $prompt = Read-Host "  Install $DisplayName $Version via winget? (Y/n)"
+    if (-not $Yes) {
+        $prompt = Read-Host "  Install $DisplayName $Version via winget? (Y/n)"
+    } else {
+        $prompt = ""
+        Write-Host "  Install $DisplayName $Version via winget? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
+    }
     if ($prompt -eq "n") {
         if ($Required) {
             Write-Err "$DisplayName is required. Cannot continue without it."
@@ -284,7 +291,12 @@ if ($Cleanup) {
         # 3. Delete resource group (only if user confirms - it deletes EVERYTHING in it)
         Write-Host ""
         Write-Warn "Resource group '$ResourceGroup' still exists."
+        if (-not $Yes) {
         $deleteRg = Read-Host "  Delete the entire resource group? This removes ALL resources in it. (y/N)"
+    } else {
+        $deleteRg = "y"
+        Write-Host "  Delete the entire resource group? (y/N) y [-Yes]" -ForegroundColor DarkGray
+    }
         if ($deleteRg -eq "y") {
             Write-Host "  Deleting resource group '$ResourceGroup'... (this may take a few minutes)"
             az group delete --name $ResourceGroup --yes -o none 2>&1
@@ -564,7 +576,12 @@ if (-not $SkipEntraId) {
         Write-Host "    - Ask your admin to enable 'Users can register applications' in Entra ID" -ForegroundColor DarkGray
         Write-Host "    - Ask for the Application Developer role" -ForegroundColor DarkGray
         Write-Host "    - Run with -SkipEntraId to skip app registration" -ForegroundColor DarkGray
-        $continueEntra = Read-Host "  Continue anyway? (y/N)"
+        if (-not $Yes) {
+            $continueEntra = Read-Host "  Continue anyway? (y/N)"
+        } else {
+            $continueEntra = "y"
+            Write-Host "  Continue anyway? (y/N) y [-Yes]" -ForegroundColor DarkGray
+        }
         if ($continueEntra -ne "y") { exit 1 }
     }
 }
@@ -656,7 +673,12 @@ if (-not $SqlServerName) {
         if ($existingSqlServers -and $existingSqlServers.Count -gt 0) {
             $pick = $existingSqlServers[0]
             Write-Warn "Found existing SQL Server '$($pick.name)' ($($pick.state)) in $($pick.location) from a previous run."
-            $reuse = Read-Host "  Reuse this server? (Y/n)"
+            if (-not $Yes) {
+                $reuse = Read-Host "  Reuse this server? (Y/n)"
+            } else {
+                $reuse = ""
+                Write-Host "  Reuse this server? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
+            }
             if ($reuse -ne "n") {
                 $SqlServerName = $pick.name
                 $existingSqlServer = $pick
@@ -767,7 +789,12 @@ if (-not $SkipEntraId) {
     Write-Host "    App Registration: $AppName $(if ($existingEntraApp) {'(exists)'} else {'(will create)'})" -ForegroundColor White
 }
 Write-Host ""
-$proceed = Read-Host "  Proceed with setup? (Y/n)"
+if (-not $Yes) {
+    $proceed = Read-Host "  Proceed with setup? (Y/n)"
+} else {
+    $proceed = ""
+    Write-Host "  Proceed with setup? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
+}
 if ($proceed -eq "n") {
     Write-Host "  Aborted." -ForegroundColor Gray
     exit 0
@@ -907,7 +934,12 @@ if ($SkipEntraId) {
         }
 
         # Always create a new secret - old secrets cannot be retrieved from Entra ID
+        if (-not $Yes) {
         $createNewSecret = Read-Host "  Create a new client secret? (Y/n)"
+    } else {
+        $createNewSecret = ""
+        Write-Host "  Create a new client secret? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
+    }
         if ($createNewSecret -ne "n") {
             Write-Host "  Creating client secret..."
             $secretInfo = New-AppClientSecret -AppObjectId $appObjectId
@@ -1134,7 +1166,12 @@ if (Test-Command "gh") {
                     Write-Host "    [$($i + 1)] $($orgs[$i])" -ForegroundColor Gray
                 }
                 Write-Host "    [0] Use personal account ($ghUser)" -ForegroundColor Gray
-                $orgChoice = Read-Host "  Select organization (0-$($orgs.Count), default: 0)"
+                if (-not $Yes) {
+        $orgChoice = Read-Host "  Select organization (0-$($orgs.Count), default: 0)"
+    } else {
+        $orgChoice = "0"
+        Write-Host "  Select organization (0-$($orgs.Count), default: 0) 0 [-Yes]" -ForegroundColor DarkGray
+    }
                 if ($orgChoice -and [int]$orgChoice -ge 1 -and [int]$orgChoice -le $orgs.Count) {
                     $githubOrg = $orgs[[int]$orgChoice - 1]
                     Write-Ok "Using organization: $githubOrg"

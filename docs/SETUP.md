@@ -70,6 +70,7 @@ All other tools are **auto-installed via winget** from pinned versions in `scrip
 | `-SkipSql` | switch | `$false` | Skip SQL Server provisioning. You must set `AZURE_SQL_CONNECTION_STRING` in `.env` manually |
 | `-SkipFabric` | switch | `$false` | Skip Fabric workspace provisioning. Fabric IQ analytics will be disabled |
 | `-Force` | switch | `$false` | Overwrite `.env` file instead of merging into the existing one |
+| `-Yes` | switch | `$false` | Auto-approve all prompts (install prerequisites, reuse resources, proceed with setup). No interactive input required |
 | `-Cleanup` | switch | `$false` | Tear down resources from a failed setup run (see [Cleanup](#cleanup)) |
 
 ---
@@ -79,6 +80,11 @@ All other tools are **auto-installed via winget** from pinned versions in `scrip
 ### Basic (all defaults)
 ```powershell
 .\scripts\setup.ps1
+```
+
+### Non-interactive (auto-approve all prompts)
+```powershell
+.\scripts\setup.ps1 -Yes
 ```
 
 ### Custom region and resource group
