@@ -104,7 +104,7 @@ function Install-Prerequisite {
     $ErrorActionPreference = "Continue"
     try {
         winget install --id $WingetId --version $Version --exact --source winget `
-            --accept-package-agreements --accept-source-agreements 2>&1 |
+            --silent --accept-package-agreements --accept-source-agreements 2>&1 |
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         $wingetExit = $LASTEXITCODE
     } finally {
