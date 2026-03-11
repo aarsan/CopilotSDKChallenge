@@ -562,8 +562,6 @@
                                 <tr>
                                     <th class="health-th-status">Status</th>
                                     <th>Service</th>
-                                    <th class="health-th-provider">Provider</th>
-                                    <th class="health-th-location">Location</th>
                                     <th>Detail</th>
                                     <th class="health-th-latency">Latency</th>
                                     <th class="health-th-checked">Last Checked</th>
@@ -575,8 +573,6 @@
                                 <tr id="health-check-sql">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">SQL Database</td>
-                                    <td class="health-check-provider">Microsoft Azure</td>
-                                    <td class="health-check-location">East US 2</td>
                                     <td class="health-check-detail" id="health-detail-sql">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-sql">—</td>
                                     <td class="health-check-timer" id="health-checked-sql">—</td>
@@ -586,8 +582,6 @@
                                 <tr id="health-check-api">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Backend API</td>
-                                    <td class="health-check-provider">Flask / Uvicorn</td>
-                                    <td class="health-check-location">Local</td>
                                     <td class="health-check-detail" id="health-detail-api">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-api">—</td>
                                     <td class="health-check-timer" id="health-checked-api">—</td>
@@ -597,8 +591,6 @@
                                 <tr id="health-check-entra">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Entra ID</td>
-                                    <td class="health-check-provider">Microsoft Entra</td>
-                                    <td class="health-check-location">Global</td>
                                     <td class="health-check-detail" id="health-detail-entra">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-entra">—</td>
                                     <td class="health-check-timer" id="health-checked-entra">—</td>
@@ -608,8 +600,6 @@
                                 <tr id="health-check-workiq">
                                     <td><span class="health-dot health-dot-unknown"></span></td>
                                     <td class="health-check-name">Work IQ</td>
-                                    <td class="health-check-provider">Microsoft 365</td>
-                                    <td class="health-check-location">Tenant</td>
                                     <td class="health-check-detail" id="health-detail-workiq">Checking…</td>
                                     <td class="health-check-latency" id="health-latency-workiq">—</td>
                                     <td class="health-check-timer" id="health-checked-workiq">—</td>
@@ -1540,7 +1530,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=273"></script>
+    <script src="/static/app.js?v=272"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
