@@ -1009,6 +1009,15 @@ if ($SkipEntraId) {
         $appObjectId = $appResult.id
         Write-Ok "App registration created (appId: $entraClientId)"
 
+        # Create service principal FIRST (required before permission grant)
+        Write-Host "  Creating service principal..."
+        az ad sp create --id $entraClientId -o none --only-show-errors 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Service principal created"
+        } else {
+            Write-Warn "Could not create service principal — it may already exist."
+        }
+
         # Add Microsoft Graph User.Read permission
         # Microsoft Graph appId = 00000003-0000-0000-c000-000000000000
         # User.Read permission ID = e1fe6dd8-ba31-4d61-89e7-88639da4683d
@@ -1019,14 +1028,17 @@ if ($SkipEntraId) {
             --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope `
             -o none --only-show-errors 2>&1
 
-        # Grant User.Read permission (User.Read is sufficient for /me and /me/manager)
-        Write-Host "  Granting User.Read permission..."
+        # Try to admin-grant User.Read. This requires Application Administrator
+        # or higher. If it fails, the user will just see a consent prompt on
+        # first sign-in — User.Read is a user-consentable scope, so this is fine.
+        Write-Host "  Attempting admin consent for User.Read..."
         az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Permissions added and granted"
+            Write-Ok "Permissions added and admin consent granted"
         } else {
             Write-Ok "Permissions added"
-            Write-Warn "Admin consent could not be auto-granted. Grant it manually in Azure Portal if required by your org."
+            Write-Warn "Admin consent could not be auto-granted (requires Application Administrator role)."
+            Write-Host "    This is OK — users will see a one-time consent prompt on first sign-in." -ForegroundColor Gray
         }
 
         # Create client secret
@@ -1063,7 +1075,8 @@ if ($SkipEntraId) {
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "User.Read permission granted"
     } else {
-        Write-Warn "Could not auto-grant User.Read. Consent may be required on first sign-in."
+        Write-Warn "Could not auto-grant User.Read (requires admin privileges)."
+        Write-Host "    This is OK — users will see a one-time consent prompt on first sign-in." -ForegroundColor Gray
     }
 
     # Configure optional ID token claims (email, upn, given_name, family_name)
