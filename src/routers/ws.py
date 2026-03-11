@@ -575,11 +575,13 @@ async def websocket_chat(websocket: WebSocket):
                                 _enqueue({"type": "done", "content": full_content})
                         elif evt_type in ("tool.call", "tool.execution_start"):
                             tool_name = getattr(event.data, 'name', 'unknown')
+                            print(f"[TOOL] {evt_type}: {tool_name}")
                             _enqueue({"type": "tool_call", "name": tool_name, "status": "running"})
                             if tool_name == "search_template_catalog":
                                 request_record["from_catalog"] = True
                         elif evt_type in ("tool.result", "tool.execution_complete"):
                             tool_name = getattr(event.data, 'name', 'unknown')
+                            print(f"[TOOL] {evt_type}: {tool_name}")
                             _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
                         elif evt_type == "session.idle":
                             done_event.set()
