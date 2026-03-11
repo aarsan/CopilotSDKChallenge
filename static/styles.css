@@ -2097,6 +2097,9 @@ tr:hover .svc-view-tpl-btn {
     border-color: var(--accent-blue, #58a6ff);
     border-style: solid;
     animation: hero-onboard-pulse 2s ease-in-out infinite;
+    opacity: 0.6;
+    pointer-events: none;
+    filter: saturate(0.5);
 }
 @keyframes hero-onboard-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(88,166,255,0.25); }
@@ -2342,6 +2345,26 @@ tr:hover .svc-view-tpl-btn {
 .comp-hero-onboard-all-btn {
     flex-shrink: 0;
     white-space: nowrap;
+}
+
+/* ── Onboarding-in-progress Banner ────────── */
+.comp-hero-onboarding-banner {
+    background: color-mix(in srgb, var(--accent-blue, #58a6ff) 10%, transparent);
+    border: 1px solid var(--accent-blue, #58a6ff);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.5rem 0.75rem;
+    margin: 0.75rem 0 0.25rem;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+.comp-hero-onboarding-text {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.comp-hero-onboarding-text .tmpl-awaiting-spinner {
+    flex-shrink: 0;
 }
 
 /* ── Batch Onboarding Panel ──────────────── */

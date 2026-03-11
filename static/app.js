@@ -118,6 +118,7 @@ let allServices = [];
 let allTemplates = [];
 let _serviceUpdates = {};  // serviceId → update info from check-updates
 let _batchOnboardState = null;  // batch onboarding tracker state
+let _compOnboardPoll = null;    // composition-level onboarding poll timer
 let currentCategoryFilter = 'all';
 let currentStatusFilter = 'active';
 let currentTemplateFilter = 'all';
@@ -3339,6 +3340,33 @@ async function _fireOnboardRequest(serviceId) {
             _batchOnboardState.statuses[serviceId].detail = err.message;
             _renderBatchOnboardPanel();
         }
+    }
+}
+
+// ── Composition Onboarding Poll (detects single-service onboarding from the template view) ──
+
+function _startCompOnboardPoll(templateId) {
+    _stopCompOnboardPoll();
+    _compOnboardPoll = setInterval(async () => {
+        try {
+            const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/composition`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const components = data.components || [];
+            const stillOnboarding = components.some(c => c.status === 'validating');
+            if (!stillOnboarding) {
+                _stopCompOnboardPoll();
+                await loadAllData();
+                showTemplateDetail(templateId);
+            }
+        } catch (_) { /* ignore transient failures */ }
+    }, 4000);
+}
+
+function _stopCompOnboardPoll() {
+    if (_compOnboardPoll) {
+        clearInterval(_compOnboardPoll);
+        _compOnboardPoll = null;
     }
 }
 
@@ -6616,8 +6644,11 @@ async function _loadTemplateComposition(templateId) {
         // ── Render hero graph ────────────────────────────────
         const anyUpgrade = components.some(c => c.upgrade_available);
         const anyUntracked = components.some(c => c.version_known === false);
-        const anyNotOnboarded = components.some(c => c.fully_onboarded === false);
-        const notOnboardedNames = components.filter(c => c.fully_onboarded === false).map(c => c.name || c.service_id.split('/').pop());
+        const anyOnboarding = components.some(c => c.status === 'validating');
+        const anyNotOnboarded = components.some(c => c.fully_onboarded === false && c.status !== 'validating');
+        const anyBlocked = anyOnboarding || components.some(c => c.fully_onboarded === false);
+        const notOnboardedNames = components.filter(c => c.fully_onboarded === false && c.status !== 'validating').map(c => c.name || c.service_id.split('/').pop());
+        const onboardingNames = components.filter(c => c.status === 'validating').map(c => c.name || c.service_id.split('/').pop());
         const providesList = data.provides || [];
 
         // Build parent→children map for visual grouping
@@ -6670,12 +6701,14 @@ async function _loadTemplateComposition(templateId) {
                 }
 
                 // Build tooltip text
-                const notOnboarded = c.fully_onboarded === false;
+                const isOnboarding = c.status === 'validating';
+                const notOnboarded = c.fully_onboarded === false && !isOnboarding;
                 const tooltipLines = [
                     c.service_id,
                     catLabel ? `Category: ${catLabel}` : '',
                     `Version: ${verDisplay}`,
                     c.upgrade_available ? `Latest: ${c.latest_semver}` : 'Up to date',
+                    isOnboarding ? 'Currently onboarding — pipeline is running' : '',
                     notOnboarded ? 'Not fully onboarded — ARM template has not been deployment-validated' : '',
                     depNames.length ? `Depends on: ${depNames.join(', ')}` : '',
                 ].filter(Boolean).join('\n');
@@ -6689,7 +6722,7 @@ async function _loadTemplateComposition(templateId) {
                 const phantomPin = c.pinned_version_missing === true;
 
                 html += `
-                    <div class="hero-node ${statusCls} ${upgradeCls}${notOnboarded ? ' hero-node-not-onboarded' : ''}${hasChildren ? ' hero-node-has-children' : ''}${phantomPin ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
+                    <div class="hero-node ${statusCls} ${upgradeCls}${isOnboarding ? ' hero-node-onboarding' : notOnboarded ? ' hero-node-not-onboarded' : ''}${hasChildren ? ' hero-node-has-children' : ''}${phantomPin ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(c.service_id)}" title="${escapeHtml(tooltipLines)}">
                         <div class="hero-node-icon">${_azureIcon(c.service_id, 28)}</div>
                         <div class="hero-node-body">
                             <div class="hero-node-name">${escapeHtml(shortName)}${hasChildren ? ' <span class="hero-parent-tag">parent</span>' : ''}</div>
@@ -6704,7 +6737,7 @@ async function _loadTemplateComposition(templateId) {
                                         ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(c.service_id)}','${escapeHtml(c.latest_semver)}',${c.latest_version})" title="${phantomPin ? 'Pinned version removed — upgrade to current' : 'Upgrade to ' + c.latest_semver}">⬆ ${c.latest_semver}</button><button class="hero-analyze-btn" onclick="event.stopPropagation(); analyzeUpgradeForDep('${escapeHtml(c.service_id)}','${escapeHtml(c.latest_api_version || c.latest_semver)}','${escapeHtml(c.template_api_version || c.current_semver || '')}','${escapeHtml(templateId)}')" title="Analyze API version upgrade compatibility">🔬</button>`
                                         : '<span class="hero-node-latest">✓ latest</span>'}
                             </div>
-                            ${notOnboarded ? `<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(c.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(c.service_id)}'), 300)" title="Run the onboarding pipeline for this service">🚀 Onboard</button>` : ''}
+                            ${isOnboarding ? `<div class="hero-node-onboarding-badge" title="Onboarding pipeline is currently running for this service">🔄 onboarding…</div>` : notOnboarded ? `<div class="hero-node-not-onboarded-badge" title="This service has not completed the full onboarding pipeline — its ARM template has not been deployment-validated">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(c.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(c.service_id)}'), 300)" title="Run the onboarding pipeline for this service">🚀 Onboard</button>` : ''}
                             ${depIconsHtml}
                         </div>
                     </div>`;
@@ -6716,11 +6749,12 @@ async function _loadTemplateComposition(templateId) {
                     for (const child of myChildren) {
                         const childName = child.name || child.service_id.split('/').pop();
                         const childVer = child.version_known === false ? '?' : (child.current_semver || '—');
-                        const childOnboarded = child.fully_onboarded === false;
+                        const childIsOnboarding = child.status === 'validating';
+                        const childNotOnboarded = child.fully_onboarded === false && !childIsOnboarding;
                         const childStatusCls = child.status === 'approved' ? 'hero-node-ok' : 'hero-node-warn';
                         const childPhantom = child.pinned_version_missing === true;
                         html += `
-                        <div class="hero-node hero-node-child ${childStatusCls}${childOnboarded ? ' hero-node-not-onboarded' : ''}${childPhantom ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(child.service_id)}" title="${escapeHtml(child.service_id)}">
+                        <div class="hero-node hero-node-child ${childStatusCls}${childIsOnboarding ? ' hero-node-onboarding' : childNotOnboarded ? ' hero-node-not-onboarded' : ''}${childPhantom ? ' hero-node-phantom' : ''}" data-sid="${escapeHtml(child.service_id)}" title="${escapeHtml(child.service_id)}">
                             <div class="hero-node-icon">${_azureIcon(child.service_id, 20)}</div>
                             <div class="hero-node-body">
                                 <div class="hero-node-name">${escapeHtml(childName)} <span class="hero-child-tag">child</span></div>
@@ -6734,7 +6768,7 @@ async function _loadTemplateComposition(templateId) {
                                             ? `<button class="hero-upgrade-btn" onclick="event.stopPropagation(); upgradeTemplateDep('${escapeHtml(templateId)}','${escapeHtml(child.service_id)}','${escapeHtml(child.latest_semver)}',${child.latest_version})">${childPhantom ? '⬆ ' : '⬆ '}${child.latest_semver}</button>`
                                             : '<span class="hero-node-latest">✓ latest</span>'}
                                 </div>
-                                ${childOnboarded ? `<div class="hero-node-not-onboarded-badge">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(child.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(child.service_id)}'), 300)">🚀 Onboard</button>` : ''}
+                                ${childIsOnboarding ? `<div class="hero-node-onboarding-badge">🔄 onboarding…</div>` : childNotOnboarded ? `<div class="hero-node-not-onboarded-badge">⚠ not onboarded</div><button class="btn btn-xs btn-accent hero-node-onboard-btn" onclick="event.stopPropagation(); showServiceDetail('${escapeHtml(child.service_id)}'); setTimeout(() => triggerOnboarding('${escapeHtml(child.service_id)}'), 300)">🚀 Onboard</button>` : ''}
                             </div>
                         </div>`;
                     }
@@ -6775,24 +6809,36 @@ async function _loadTemplateComposition(templateId) {
         if (_batchOnboardState && _batchOnboardState.templateId === templateId) {
             // Batch onboarding is active — insert a placeholder for the tracker panel
             html += '<div id="batch-onboard-panel-anchor"></div>';
-        } else if (anyNotOnboarded) {
-            const notOnboardedIds = components.filter(c => c.fully_onboarded === false).map(c => c.service_id);
-            const idsAttr = escapeHtml(JSON.stringify(notOnboardedIds));
-            // For draft composites, the "Create" button in the CTA handles onboarding — just show info
-            const tmplObj = allTemplates.find(t => t.id === templateId);
-            const isDraftComposite = tmplObj && tmplObj.status === 'draft' &&
-                (tmplObj.template_type === 'composite' || tmplObj.is_blueprint || (tmplObj.service_ids && tmplObj.service_ids.length > 1));
-            if (isDraftComposite) {
-                html += `<div class="comp-hero-not-onboarded-banner">
-                    <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not yet onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
-                    — click <strong>Create</strong> above to onboard all services and validate the template.</div>
+        } else if (anyOnboarding || anyNotOnboarded) {
+            // Show onboarding-in-progress banner if any service is currently onboarding
+            if (anyOnboarding) {
+                html += `<div class="comp-hero-onboarding-banner">
+                    <div class="comp-hero-onboarding-text">
+                        <span class="tmpl-awaiting-spinner"></span>
+                        <strong>${onboardingNames.length} service(s) currently onboarding:</strong> ${escapeHtml(onboardingNames.join(', '))}
+                        — waiting for pipeline to finish. The template cannot be validated until all services are onboarded.
+                    </div>
                 </div>`;
-            } else {
-                html += `<div class="comp-hero-not-onboarded-banner">
-                    <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
-                    — their ARM templates have not been deployment-validated.</div>
-                    <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids), '${escapeHtml(templateId)}')" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
-                </div>`;
+            }
+            // Show not-onboarded banner for remaining idle services
+            if (anyNotOnboarded) {
+                const notOnboardedIds = components.filter(c => c.fully_onboarded === false && c.status !== 'validating').map(c => c.service_id);
+                const idsAttr = escapeHtml(JSON.stringify(notOnboardedIds));
+                const tmplObj = allTemplates.find(t => t.id === templateId);
+                const isDraftComposite = tmplObj && tmplObj.status === 'draft' &&
+                    (tmplObj.template_type === 'composite' || tmplObj.is_blueprint || (tmplObj.service_ids && tmplObj.service_ids.length > 1));
+                if (isDraftComposite) {
+                    html += `<div class="comp-hero-not-onboarded-banner">
+                        <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not yet onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                        — click <strong>Create</strong> above to onboard all services and validate the template.</div>
+                    </div>`;
+                } else {
+                    html += `<div class="comp-hero-not-onboarded-banner">
+                        <div class="comp-hero-not-onboarded-text">⚠️ <strong>${notOnboardedNames.length} service(s) not fully onboarded:</strong> ${escapeHtml(notOnboardedNames.join(', '))}
+                        — their ARM templates have not been deployment-validated.</div>
+                        <button class="btn btn-sm btn-accent comp-hero-onboard-all-btn" onclick="onboardAllDeps(JSON.parse(this.dataset.ids), '${escapeHtml(templateId)}')" data-ids="${idsAttr}">🚀 Onboard All (${notOnboardedNames.length})</button>
+                    </div>`;
+                }
             }
         }
 
@@ -6813,6 +6859,22 @@ async function _loadTemplateComposition(templateId) {
         if (_batchOnboardState && _batchOnboardState.templateId === templateId) {
             _renderBatchOnboardPanel();
             _syncHeroNodesWithBatch();
+        }
+
+        // If services are actively onboarding (detected from DB status), block the CTA
+        // and start polling to auto-refresh when they finish
+        if (anyOnboarding && !_batchOnboardState) {
+            const ctaSection = document.querySelector('.tmpl-test-cta');
+            if (ctaSection) {
+                ctaSection.innerHTML = `
+                    <div class="tmpl-test-banner tmpl-test-awaiting">
+                        <span class="tmpl-awaiting-spinner"></span>
+                        <strong>Waiting for onboarding to complete</strong> — ${escapeHtml(onboardingNames.join(', '))} ${onboardingNames.length === 1 ? 'is' : 'are'} currently being onboarded. Template actions will be available once all services are ready.
+                    </div>`;
+            }
+            _startCompOnboardPoll(templateId);
+        } else {
+            _stopCompOnboardPoll();
         }
 
         // Update the template version display with semver from the API
