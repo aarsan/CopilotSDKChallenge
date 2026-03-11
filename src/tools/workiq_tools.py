@@ -16,10 +16,16 @@ from src.workiq_client import get_workiq_client
 def _format_error(result, action: str) -> str:
     """Format a WorkIQResult error into a helpful tool response."""
     err = result.error or "Unknown error"
+    if "timed out" in err.lower():
+        return (
+            f"Work IQ query timed out while {action}. "
+            "The M365 search took too long to respond. "
+            "This is a temporary issue — please try again with a simpler or shorter query."
+        )
     return (
         f"Work IQ error while {action}: {err}\n\n"
         "If this is a permission or authentication issue, run:\n"
-        "  npx -y @microsoft/workiq accept-eula\n"
+        "  npx @microsoft/workiq accept-eula\n"
         "Then retry the query. Proceeding without organizational context."
     )
 

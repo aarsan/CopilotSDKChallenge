@@ -99,7 +99,7 @@ GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 # Queries M365 data (emails, meetings, docs, Teams, people) via natural language.
 # Requires Node.js 18+ and npx. Uses Entra ID browser-based auth (pre-cached).
 WORKIQ_ENABLED = os.getenv("WORKIQ_ENABLED", "true").lower() in ("true", "1", "yes")
-WORKIQ_TIMEOUT = int(os.getenv("WORKIQ_TIMEOUT", "30"))
+WORKIQ_TIMEOUT = int(os.getenv("WORKIQ_TIMEOUT", "90"))
 
 # ── Database ───────────────────────────────────────────────
 # Azure SQL Database with Azure AD auth (pyodbc + DefaultAzureCredential).

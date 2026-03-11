@@ -1064,7 +1064,7 @@ $managedEnvValues = @{
     "AZURE_RESOURCE_GROUP"        = $ResourceGroup
     "AZURE_SUBSCRIPTION_ID"       = $subscriptionId
     "WORKIQ_ENABLED"               = "true"
-    "WORKIQ_TIMEOUT"               = "30"
+    "WORKIQ_TIMEOUT"               = "90"
 }
 
 if ($envFileExists -and -not $Force) {
@@ -1107,7 +1107,7 @@ AZURE_SUBSCRIPTION_ID=$subscriptionId
 
 # Microsoft Work IQ (M365 organizational intelligence)
 WORKIQ_ENABLED=true
-WORKIQ_TIMEOUT=30
+WORKIQ_TIMEOUT=90
 "@
 
     $envPath = Join-Path $PSScriptRoot ".." ".env"
