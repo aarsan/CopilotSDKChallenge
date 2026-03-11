@@ -643,6 +643,49 @@ IF NOT EXISTS (
 ALTER TABLE template_versions ADD validated_at NVARCHAR(50) DEFAULT NULL;
 GO
 
+-- ── Pipeline Checkpoints (Step-level Persistence) ───────────
+-- Enables pipeline resumption after server restarts.
+-- Each row captures the output of one completed step.
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'pipeline_checkpoints')
+CREATE TABLE pipeline_checkpoints (
+    id              INT IDENTITY(1,1) PRIMARY KEY,
+    run_id          NVARCHAR(50) NOT NULL,
+    step_name       NVARCHAR(200) NOT NULL,
+    step_index      INT NOT NULL,
+    status          NVARCHAR(30) NOT NULL DEFAULT 'completed',
+    artifacts_json  NVARCHAR(MAX) DEFAULT '{}',
+    completed_at    NVARCHAR(50) NOT NULL,
+    duration_secs   FLOAT DEFAULT NULL
+);
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_checkpoints_run')
+CREATE INDEX idx_pipeline_checkpoints_run ON pipeline_checkpoints(run_id, step_index);
+GO
+
+-- Migration: checkpoint columns on pipeline_runs
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'last_completed_step'
+)
+ALTER TABLE pipeline_runs ADD last_completed_step INT DEFAULT NULL;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'checkpoint_context_json'
+)
+ALTER TABLE pipeline_runs ADD checkpoint_context_json NVARCHAR(MAX) DEFAULT NULL;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'resume_count'
+)
+ALTER TABLE pipeline_runs ADD resume_count INT DEFAULT 0;
+GO
+
 -- ── Orchestration Processes ─────────────────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'orchestration_processes')

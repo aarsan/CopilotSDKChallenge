@@ -1696,6 +1696,18 @@ tr:hover .svc-view-tpl-btn {
     border: 1px solid rgba(139, 148, 158, 0.3);
 }
 
+.status-badge.interrupted {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--accent-orange);
+    border: 1px solid rgba(210, 153, 34, 0.3);
+    animation: pulse-badge 2s ease-in-out infinite;
+}
+
+@keyframes pulse-badge {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 /* Risk badges */
 
 .risk-badge {

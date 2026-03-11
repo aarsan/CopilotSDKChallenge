@@ -401,6 +401,92 @@ class PipelineContext:
         except (json.JSONDecodeError, TypeError):
             self.template_meta = {}
 
+    # ── Checkpoint serialization ─────────────────────────────
+
+    def to_checkpoint(self) -> dict:
+        """Serialize pipeline context to a JSON-safe dict for DB persistence.
+
+        Captures all state needed to resume the pipeline from the next step.
+        Non-serializable items (functions, LLM sessions) are excluded —
+        they get re-created on resume.
+        """
+        # Filter artifacts to JSON-serializable values only
+        safe_artifacts = {}
+        for k, v in self.artifacts.items():
+            try:
+                json.dumps(v, default=str)
+                safe_artifacts[k] = v
+            except (TypeError, ValueError, OverflowError):
+                pass  # skip non-serializable artifacts
+
+        return {
+            "process_id": self.process_id,
+            "run_id": self.run_id,
+            "service_id": self.service_id,
+            "template_id": self.template_id,
+            "template": self.template,
+            "template_meta": self.template_meta,
+            "generated_policy": self.generated_policy,
+            "version_num": self.version_num,
+            "semver": self.semver,
+            "gen_source": self.gen_source,
+            "region": self.region,
+            "rg_name": self.rg_name,
+            "model_routing": self.model_routing,
+            "heal_history": self.heal_history,
+            "heal_attempts": self.heal_attempts,
+            "max_heal_attempts": self.max_heal_attempts,
+            "artifacts": safe_artifacts,
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "steps_completed": self.steps_completed,
+            "deployed_rg": self.deployed_rg,
+            "deployed_policy_info": self.deployed_policy_info,
+            "extra": {k: v for k, v in self.extra.items()
+                      if isinstance(v, (str, int, float, bool, list, dict, type(None)))},
+        }
+
+    @classmethod
+    def from_checkpoint(cls, data: dict, *, heal_fn: HealFn | None = None) -> "PipelineContext":
+        """Reconstruct a PipelineContext from a checkpoint dict.
+
+        Non-serializable items (heal_fn) must be supplied by the caller,
+        as they can't be persisted.
+        """
+        ctx = cls(
+            process_id=data.get("process_id", ""),
+            run_id=data.get("run_id", ""),
+            service_id=data.get("service_id", ""),
+            template_id=data.get("template_id", ""),
+            region=data.get("region", "eastus2"),
+            rg_name=data.get("rg_name", ""),
+            max_heal_attempts=data.get("max_heal_attempts", 5),
+            heal_fn=heal_fn,
+        )
+
+        ctx.template = data.get("template", "")
+        ctx.template_meta = data.get("template_meta", {})
+        ctx.generated_policy = data.get("generated_policy")
+        ctx.version_num = data.get("version_num")
+        ctx.semver = data.get("semver", "")
+        ctx.gen_source = data.get("gen_source", "")
+        ctx.model_routing = data.get("model_routing", {})
+        ctx.heal_history = data.get("heal_history", [])
+        ctx.heal_attempts = data.get("heal_attempts", 0)
+        ctx.artifacts = data.get("artifacts", {})
+        ctx.current_step = data.get("current_step", 0)
+        ctx.total_steps = data.get("total_steps", 0)
+        ctx.steps_completed = data.get("steps_completed", [])
+        ctx.deployed_rg = data.get("deployed_rg")
+        ctx.deployed_policy_info = data.get("deployed_policy_info")
+        ctx.extra = data.get("extra", {})
+
+        # Re-parse template JSON if present
+        if ctx.template:
+            ctx.update_template_meta()
+
+        return ctx
+
 
 # ══════════════════════════════════════════════════════════════
 # HEALING LOOP
@@ -680,15 +766,60 @@ class PipelineRunner:
 
     # ── Execution ────────────────────────────────────────────
 
+    async def _checkpoint_step(
+        self,
+        ctx: PipelineContext,
+        step_name: str,
+        step_index: int,
+        step_start: float,
+        status: str = "completed",
+    ) -> None:
+        """Persist a checkpoint after a step completes (best-effort)."""
+        try:
+            import time as _time
+            from src.database import save_pipeline_checkpoint, save_pipeline_context
+
+            duration = _time.monotonic() - step_start
+            ctx_data = ctx.to_checkpoint()
+
+            await save_pipeline_checkpoint(
+                run_id=ctx.run_id,
+                step_name=step_name,
+                step_index=step_index,
+                status=status,
+                artifacts_json=json.dumps(ctx_data.get("artifacts", {}), default=str),
+                duration_secs=round(duration, 2),
+            )
+            await save_pipeline_context(
+                run_id=ctx.run_id,
+                last_completed_step=step_index,
+                context_json=json.dumps(ctx_data, default=str),
+            )
+        except Exception as e:
+            logger.debug(f"Checkpoint save failed (non-fatal): {e}")
+
     async def execute(
         self,
         ctx: PipelineContext,
+        *,
+        resume_from_step: int | None = None,
     ) -> AsyncGenerator[str, None]:
         """Execute the pipeline, yielding NDJSON event lines.
 
         Loads the step definitions for ``ctx.process_id`` from the DB,
         calls each step's registered handler, and manages routing,
         healing, and cleanup.
+
+        After each step completes, a checkpoint is persisted to the DB
+        so the pipeline can be resumed from that point if the server
+        restarts.
+
+        Parameters
+        ----------
+        resume_from_step : int | None
+            If set, skip steps before this index and resume execution.
+            The caller is responsible for reconstructing ``ctx`` from
+            checkpoint data before calling this.
 
         The caller wraps this in a ``StreamingResponse``::
 
@@ -697,6 +828,8 @@ class PipelineRunner:
                 media_type="application/x-ndjson",
             )
         """
+        import time as _time
+
         # Inject the healer into the context if not already set
         if self._heal_fn and not ctx.heal_fn:
             ctx.heal_fn = self._heal_fn
@@ -712,17 +845,26 @@ class PipelineRunner:
 
         ctx.total_steps = len(steps)
 
+        is_resume = resume_from_step is not None
+        start_label = "Resuming" if is_resume else "Starting"
+        resume_detail = ""
+        if is_resume and resume_from_step < len(steps):
+            resume_detail = f" from step {resume_from_step + 1}: {steps[resume_from_step].name}"
+
         yield emit(
             "progress", "pipeline_start",
-            f"Starting pipeline '{ctx.process_id}' — {len(steps)} step(s)",
+            f"{start_label} pipeline '{ctx.process_id}'{resume_detail} "
+            f"— {len(steps)} step(s)",
             progress=0.0,
+            resumed=is_resume,
         )
 
         try:
-            step_idx = 0
+            step_idx = resume_from_step if is_resume else 0
             while step_idx < len(steps):
                 step = steps[step_idx]
                 ctx.current_step = step_idx
+                step_start = _time.monotonic()
 
                 handler = self._handlers.get(step.action)
                 if not handler:
@@ -743,6 +885,7 @@ class PipelineRunner:
                 logger.info(
                     f"[Pipeline:{ctx.process_id}] Step {step.order}: "
                     f"{step.name} (action={step.action})"
+                    f"{' [RESUMED]' if is_resume and step_idx == resume_from_step else ''}"
                 )
 
                 try:
@@ -751,6 +894,10 @@ class PipelineRunner:
 
                     # ── Step succeeded ────────────────────────
                     ctx.steps_completed.append(step.name)
+
+                    # Persist checkpoint (best-effort, non-blocking)
+                    await self._checkpoint_step(ctx, step.name, step_idx, step_start)
+
                     next_idx = self._resolve_target(
                         step.on_success, steps, step_idx,
                     )
@@ -799,6 +946,10 @@ class PipelineRunner:
 
                     # Non-healable or exhausted — route on_failure
                     if target in ("abort", "mark_failed"):
+                        # Save checkpoint before aborting so resume is possible
+                        await self._checkpoint_step(
+                            ctx, step.name, step_idx, step_start, status="failed"
+                        )
                         yield _build_action_required_event(
                             ctx, step.name, e.error,
                             actions=e.actions,

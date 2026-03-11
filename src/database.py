@@ -898,6 +898,42 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE pipeline_runs ADD pipeline_events_json NVARCHAR(MAX) DEFAULT NULL
     """,
+    # ── Pipeline checkpoint columns — enable resume after server restart ──
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'last_completed_step'
+    )
+    ALTER TABLE pipeline_runs ADD last_completed_step INT DEFAULT NULL
+    """,
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'checkpoint_context_json'
+    )
+    ALTER TABLE pipeline_runs ADD checkpoint_context_json NVARCHAR(MAX) DEFAULT NULL
+    """,
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'resume_count'
+    )
+    ALTER TABLE pipeline_runs ADD resume_count INT DEFAULT 0
+    """,
+    # ── Pipeline Checkpoints table — step-level persistence for resumability ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'pipeline_checkpoints')
+    CREATE TABLE pipeline_checkpoints (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        run_id          NVARCHAR(50) NOT NULL,
+        step_name       NVARCHAR(200) NOT NULL,
+        step_index      INT NOT NULL,
+        status          NVARCHAR(30) NOT NULL DEFAULT 'completed',
+        artifacts_json  NVARCHAR(MAX) DEFAULT '{}',
+        completed_at    NVARCHAR(50) NOT NULL,
+        duration_secs   FLOAT DEFAULT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_pipeline_checkpoints_run')
+    CREATE INDEX idx_pipeline_checkpoints_run ON pipeline_checkpoints(run_id, step_index)
+    """,
     # ── Governance reviews ────────────────────────────────────
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'governance_reviews')
@@ -4270,10 +4306,14 @@ async def complete_pipeline_run(
 
 
 async def cleanup_orphaned_pipeline_runs():
-    """Mark any 'running' pipeline runs as 'failed' on startup.
+    """Mark any 'running' pipeline runs as 'interrupted' on startup.
 
     If the server restarts mid-pipeline, runs stay in 'running' forever.
-    This detects and cleans them up.  Also fixes services stuck at 'validating'.
+    This detects them and marks them 'interrupted' — a distinct status from
+    'failed' that signals the run is resumable.
+
+    Services are set to 'validation_interrupted' (not 'draft') so the UI
+    can offer a Resume button instead of losing all progress.
     """
     backend = await get_backend()
     rows = await backend.execute(
@@ -4281,28 +4321,28 @@ async def cleanup_orphaned_pipeline_runs():
     )
     if rows:
         await backend.execute_write(
-            "UPDATE pipeline_runs SET status = 'failed', "
-            "error_detail = 'Server restarted — pipeline interrupted' "
+            "UPDATE pipeline_runs SET status = 'interrupted', "
+            "error_detail = 'Server restarted — pipeline interrupted (resumable)' "
             "WHERE status = 'running'", ()
         )
-        logger.info(f"Cleaned up {len(rows)} orphaned pipeline run(s)")
+        logger.info(f"Marked {len(rows)} orphaned pipeline run(s) as interrupted")
 
-        # Also fix services stuck at 'validating' from these orphaned runs
+        # Set services to 'validation_interrupted' so the UI shows Resume
         orphaned_svc_ids = list({r["service_id"] for r in rows if r.get("service_id")})
         for svc_id in orphaned_svc_ids:
             try:
                 svc_rows = await backend.execute(
                     "SELECT status FROM services WHERE id = ?", (svc_id,)
                 )
-                if svc_rows and svc_rows[0].get("status") == "validating":
+                if svc_rows and svc_rows[0].get("status") in ("validating", "onboarding"):
                     await backend.execute_write(
-                        "UPDATE services SET status = 'validation_failed', "
-                        "review_notes = ? WHERE id = ? AND status = 'validating'",
-                        (json.dumps({"validation_passed": False, "error": "Server restarted during validation"}), svc_id),
+                        "UPDATE services SET status = 'interrupted', "
+                        "review_notes = ? WHERE id = ? AND status IN ('validating', 'onboarding')",
+                        (json.dumps({"validation_passed": False, "error": "Server restarted — pipeline can be resumed"}), svc_id),
                     )
-                    logger.info(f"Fixed stuck service '{svc_id}' — validating → validation_failed")
+                    logger.info(f"Marked service '{svc_id}' as interrupted (resumable)")
             except Exception as e:
-                logger.debug(f"Failed to fix stuck service '{svc_id}': {e}")
+                logger.debug(f"Failed to mark service '{svc_id}' as interrupted: {e}")
 
 
 async def has_running_pipeline(service_id: str) -> dict | None:
@@ -4342,6 +4382,153 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
         else:
             r["events"] = []
     return rows
+
+
+# ══════════════════════════════════════════════════════════════
+# PIPELINE CHECKPOINTS — Step-level persistence for resumability
+# ══════════════════════════════════════════════════════════════
+
+async def save_pipeline_checkpoint(
+    run_id: str,
+    step_name: str,
+    step_index: int,
+    status: str = "completed",
+    artifacts_json: str | None = None,
+    duration_secs: float | None = None,
+) -> None:
+    """Save a checkpoint after a pipeline step completes.
+
+    This is called automatically by the PipelineRunner after each step.
+    The artifacts_json captures the serializable output of the step
+    (template state, RG name, heal history, etc.) that's needed for resume.
+    """
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """INSERT INTO pipeline_checkpoints
+           (run_id, step_name, step_index, status, artifacts_json,
+            completed_at, duration_secs)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (run_id, step_name, step_index, status,
+         artifacts_json or "{}", now, duration_secs),
+    )
+
+
+async def save_pipeline_context(
+    run_id: str,
+    last_completed_step: int,
+    context_json: str,
+) -> None:
+    """Update the pipeline run with the latest checkpoint context.
+
+    The context_json is a serialized PipelineContext snapshot that
+    contains everything needed to resume the pipeline from the next step.
+    """
+    backend = await get_backend()
+    await backend.execute_write(
+        """UPDATE pipeline_runs
+           SET last_completed_step = ?, checkpoint_context_json = ?
+           WHERE run_id = ?""",
+        (last_completed_step, context_json, run_id),
+    )
+
+
+async def get_pipeline_checkpoint(run_id: str) -> dict | None:
+    """Get the latest checkpoint for a pipeline run.
+
+    Returns a dict with:
+      - run row (status, pipeline_type, service_id, last_completed_step, etc.)
+      - checkpoint_context (parsed from checkpoint_context_json)
+      - checkpoints (list of completed step checkpoints)
+
+    Returns None if the run doesn't exist or has no checkpoint.
+    """
+    backend = await get_backend()
+
+    # Get the run itself
+    rows = await backend.execute(
+        "SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,)
+    )
+    if not rows:
+        return None
+    run = rows[0]
+
+    if run.get("last_completed_step") is None:
+        return None  # No checkpoint saved yet
+
+    # Parse checkpoint context
+    ctx_json = run.get("checkpoint_context_json", "{}")
+    try:
+        checkpoint_context = json.loads(ctx_json) if isinstance(ctx_json, str) else {}
+    except (json.JSONDecodeError, TypeError):
+        checkpoint_context = {}
+
+    # Get step checkpoints
+    checkpoints = await backend.execute(
+        "SELECT * FROM pipeline_checkpoints WHERE run_id = ? ORDER BY step_index",
+        (run_id,),
+    )
+    for cp in checkpoints:
+        if isinstance(cp.get("artifacts_json"), str):
+            try:
+                cp["artifacts"] = json.loads(cp["artifacts_json"])
+            except (json.JSONDecodeError, TypeError):
+                cp["artifacts"] = {}
+
+    return {
+        "run": run,
+        "checkpoint_context": checkpoint_context,
+        "checkpoints": checkpoints,
+    }
+
+
+async def get_resumable_runs(service_id: str | None = None) -> list[dict]:
+    """Get pipeline runs that can be resumed (status='interrupted').
+
+    Optionally filter by service_id. Returns runs with their checkpoint context.
+    """
+    backend = await get_backend()
+    if service_id:
+        rows = await backend.execute(
+            "SELECT * FROM pipeline_runs WHERE status = 'interrupted' "
+            "AND service_id = ? ORDER BY started_at DESC",
+            (service_id,),
+        )
+    else:
+        rows = await backend.execute(
+            "SELECT * FROM pipeline_runs WHERE status = 'interrupted' "
+            "ORDER BY started_at DESC", ()
+        )
+
+    for r in rows:
+        if isinstance(r.get("checkpoint_context_json"), str):
+            try:
+                r["checkpoint_context"] = json.loads(r["checkpoint_context_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["checkpoint_context"] = {}
+        else:
+            r["checkpoint_context"] = {}
+    return rows
+
+
+async def mark_pipeline_resuming(run_id: str) -> None:
+    """Transition an interrupted pipeline run back to 'running' for resume."""
+    backend = await get_backend()
+    await backend.execute_write(
+        "UPDATE pipeline_runs SET status = 'running', "
+        "resume_count = ISNULL(resume_count, 0) + 1, "
+        "error_detail = NULL "
+        "WHERE run_id = ? AND status = 'interrupted'",
+        (run_id,),
+    )
+
+
+async def delete_pipeline_checkpoints(run_id: str) -> None:
+    """Delete all checkpoints for a pipeline run (used on fresh retry)."""
+    backend = await get_backend()
+    await backend.execute_write(
+        "DELETE FROM pipeline_checkpoints WHERE run_id = ?", (run_id,)
+    )
 
 
 # ══════════════════════════════════════════════════════════════

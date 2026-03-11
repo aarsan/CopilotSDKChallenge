@@ -1158,6 +1158,7 @@ const statusLabels = {
     not_approved: '❌ Not Approved',
     validating: '● Running',
     validation_failed: '⛔ Validation Failed',
+    interrupted: '⏸ Interrupted',
     offboarded: '📦 Offboarded',
 };
 
@@ -2649,7 +2650,7 @@ function _renderGovernanceReviews(reviews) {
 function _pipelineRunToActivityJob(run, serviceId) {
     // Map pipeline run data to the shape expected by _renderActivityCard
     const svc = allServices.find(s => s.id === serviceId);
-    const statusMap = { completed: 'approved', failed: 'validation_failed', running: 'validating' };
+    const statusMap = { completed: 'approved', failed: 'validation_failed', running: 'validating', interrupted: 'interrupted' };
     const events = Array.isArray(run.events) ? run.events : [];
 
     // Derive steps_completed and phase from events
@@ -2705,6 +2706,12 @@ function _renderPipelineRuns(runs, serviceId) {
 
         let cardHtml = _renderActivityCard(job);
 
+        // Add Resume button for interrupted (resumable) runs
+        if (r.status === 'interrupted' && r.last_completed_step != null) {
+            const resumeBtn = `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); resumePipelineRun('${escapeHtml(r.run_id)}', '${escapeHtml(serviceId)}')" title="Resume from step ${r.last_completed_step + 2}">▶ Resume</button>`;
+            cardHtml = cardHtml.replace('<div class="activity-card-actions">', `<div class="activity-card-actions">${resumeBtn} `);
+        }
+
         // Add "Open Flow View" button for runs with events
         if (hasEvents) {
             const viewBtn = `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); openServicePipelineRun('${escapeHtml(serviceId)}', ${idx})" title="View pipeline flowchart">📊 Open Flow View</button>`;
@@ -2734,13 +2741,55 @@ function openServicePipelineRun(serviceId, runIndex) {
         return;
     }
     const pLabel = { onboarding: 'Onboarding', api_version_update: 'API Version Update', infra_testing: 'Infrastructure Testing' }[run.pipeline_type] || run.pipeline_type;
-    const icon = { completed: '✅', failed: '❌', running: '🔄' }[run.status] || '🚀';
+    const icon = { completed: '✅', failed: '❌', running: '🔄', interrupted: '⏸️' }[run.status] || '🚀';
     openPipelineOverlay(pLabel, icon, serviceId);
     const canvas = document.getElementById('pipeline-canvas');
     if (canvas) {
         for (const event of events) {
             _renderDeployProgress(canvas, event, 'validate');
         }
+    }
+}
+
+async function resumePipelineRun(runId, serviceId) {
+    showToast('Resuming pipeline…', 'info');
+    try {
+        const res = await fetch(`/api/pipelines/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            showToast(`Resume failed: ${err.detail || res.statusText}`, 'error');
+            return;
+        }
+        // Open the pipeline overlay and stream the NDJSON response
+        openPipelineOverlay('Resuming Pipeline', '▶', serviceId);
+        const canvas = document.getElementById('pipeline-canvas');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const evt = JSON.parse(line);
+                    if (canvas) _renderDeployProgress(canvas, evt, 'validate');
+                } catch (e) { /* skip non-JSON lines */ }
+            }
+        }
+        if (buffer.trim()) {
+            try {
+                const evt = JSON.parse(buffer);
+                if (canvas) _renderDeployProgress(canvas, evt, 'validate');
+            } catch (e) { /* skip */ }
+        }
+        showToast('Pipeline resume completed', 'success');
+        _loadPipelineRuns(serviceId);
+    } catch (err) {
+        showToast(`Resume error: ${err.message}`, 'error');
     }
 }
 
