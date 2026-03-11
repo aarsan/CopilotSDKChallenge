@@ -17247,3 +17247,38 @@ details[open] > .tmpl-deploy-group-optional {
     font-size: 0.9rem;
     line-height: 1;
 }
+
+/* ── Pipeline Runs Page & Unified Run Cards in Drawer ──── */
+
+.pipeline-runs-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.pipeline-runs-feed .activity-card {
+    margin: 0;
+}
+
+.activity-pipeline-type {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* Drawer pipeline runs: scale cards slightly to fit the drawer width */
+#pipeline-runs-container .activity-card {
+    font-size: 0.85rem;
+}
+#pipeline-runs-container .activity-card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+#pipeline-runs-container .wf-pipeline {
+    transform: scale(0.9);
+    transform-origin: left center;
+}
