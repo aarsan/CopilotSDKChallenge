@@ -16516,6 +16516,9 @@ function showAgentDetail(agentKey) {
     `;
 
     overlay.classList.remove('hidden');
+
+    // Close on backdrop click (outside the panel)
+    overlay.onclick = (e) => { if (e.target === overlay) hideAgentDetail(); };
 }
 
 /** Fetch and display the full system prompt for an agent */
@@ -16707,6 +16710,14 @@ async function triggerImprovement(agentKey) {
     } catch (err) {
         showToast('Error: ' + err.message, 'error');
     }
+}
+
+function _formatBytes(n) {
+    if (n == null || isNaN(n) || n === 0) return '0B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB'];
+    const i = Math.min(Math.floor(Math.log(Math.abs(n)) / Math.log(k)), sizes.length - 1);
+    return parseFloat((n / Math.pow(k, i)).toFixed(1)) + sizes[i];
 }
 
 function _truncateModel(model) {
