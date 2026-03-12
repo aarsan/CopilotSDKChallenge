@@ -1629,6 +1629,30 @@ tr:hover .svc-view-tpl-btn {
     border-top: 2px solid var(--border-default, #30363d);
 }
 
+/* Virtual parent row for orphan children whose parent isn't in the list */
+.svc-row-virtual-parent {
+    pointer-events: none;
+}
+
+.svc-row-virtual-parent > td {
+    padding-top: 0.75rem;
+    padding-bottom: 0.35rem;
+    border-top: 2px solid var(--border-default, #30363d);
+}
+
+.svc-row-virtual-parent .svc-name {
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.svc-row-virtual-parent .svc-id {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    opacity: 0.7;
+}
+
 .catalog-loading {
     text-align: center;
     color: var(--text-muted);

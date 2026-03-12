@@ -1244,6 +1244,9 @@ function renderServiceTable(services) {
         return a.id.localeCompare(b.id);
     });
 
+    // Build set of real service IDs so we can detect orphan children
+    const realIds = new Set(sorted.map(s => s.id));
+
     let prevParentId = null;
     tbody.innerHTML = sorted.map(svc => {
         const status = svc.status || 'not_approved';
@@ -1331,7 +1334,20 @@ function renderServiceTable(services) {
         prevParentId = isChildResource ? parentId : null;
         const rowClasses = [isChildResource ? 'svc-row-child' : '', isNewGroup ? 'svc-row-child-group-start' : ''].filter(Boolean).join(' ');
 
-        return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClasses ? ` class="${rowClasses}"` : ''}>
+        // If this child's parent doesn't exist as a real row, inject a virtual parent header
+        let virtualParentRow = '';
+        if (isNewGroup && parentId && !realIds.has(parentId)) {
+            const ns = idParts[0];          // e.g. Microsoft.Devices
+            const shortParent = idParts[1]; // e.g. locations
+            virtualParentRow = `<tr class="svc-row-virtual-parent">
+                <td colspan="7">
+                    <div class="svc-name">${escapeHtml(ns)} — ${escapeHtml(shortParent.charAt(0).toUpperCase() + shortParent.slice(1))}</div>
+                    <div class="svc-id">${escapeHtml(parentId)}</div>
+                </td>
+            </tr>`;
+        }
+
+        return virtualParentRow + `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClasses ? ` class="${rowClasses}"` : ''}>
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
