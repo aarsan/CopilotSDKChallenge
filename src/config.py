@@ -76,6 +76,7 @@ OUTPUT_DIR = os.getenv("INFRAFORGE_OUTPUT_DIR", "./output")
 # ── Web Server Settings ──────────────────────────────────────
 WEB_HOST = os.getenv("INFRAFORGE_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.getenv("INFRAFORGE_WEB_PORT", "8080"))
+API_PORT = int(os.getenv("INFRAFORGE_API_PORT", "8081"))
 SESSION_SECRET = os.getenv("INFRAFORGE_SESSION_SECRET", "infraforge-dev-secret-change-in-prod")
 
 # ── Entra ID (Azure AD) Authentication ───────────────────────
