@@ -1338,15 +1338,24 @@ function renderServiceTable(services) {
         // Namespace header when namespace changes
         if (ns !== prevNs) {
             const nsShort = ns.includes('.') ? ns.split('.').slice(1).join('.') : ns;
-            headerRows += `<tr class="svc-row-ns-header"><td colspan="7"><span class="svc-ns-label">${escapeHtml(nsShort)}</span><span class="svc-ns-full">${escapeHtml(ns)}</span></td></tr>`;
+            const nsKey = ns.replace(/[^a-zA-Z0-9]/g, '-');
+            const count = sorted.filter(s => s.id.split('/')[0] === ns).length;
+            headerRows += `<tr class="svc-row-ns-header" onclick="toggleNsGroup('${nsKey}')" data-ns="${nsKey}">`
+                + `<td colspan="7">`
+                + `<span class="svc-ns-chevron" id="ns-chev-${nsKey}">&#9660;</span>`
+                + `<span class="svc-ns-label">${escapeHtml(nsShort)}</span>`
+                + `<span class="svc-ns-count">${count}</span>`
+                + `<span class="svc-ns-full">${escapeHtml(ns)}</span>`
+                + `</td></tr>`;
             prevNs = ns;
             prevParentId = null; // reset parent tracking on new namespace
         }
 
-        // Determine row class
-        const rowClass = isChildResource ? 'svc-row-child' : '';
+        // Tag service rows with namespace for collapse + child styling
+        const nsKey = ns.replace(/[^a-zA-Z0-9]/g, '-');
+        const rowClass = [isChildResource ? 'svc-row-child' : '', `ns-group-${nsKey}`].filter(Boolean).join(' ');
 
-        return headerRows + `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClass ? ` class="${rowClass}"` : ''}>
+        return headerRows + `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')" class="${rowClass}">
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
