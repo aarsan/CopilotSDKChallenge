@@ -14695,10 +14695,10 @@ let _obsCurrentTab = 'agents';
 // ── System Health Checks ─────────────────────────────────────
 
 const _HEALTH_SERVICES = {
-    sql:         { interval: 30, lastChecked: null, checking: false, row: 'health-check-sql',   detail: 'health-detail-sql',   latency: 'health-latency-sql',   checked: 'health-checked-sql',   next: 'health-next-sql' },
-    backend_api: { interval: 30, lastChecked: null, checking: false, row: 'health-check-api',   detail: 'health-detail-api',   latency: 'health-latency-api',   checked: 'health-checked-api',   next: 'health-next-api' },
-    entra_id:    { interval: 45, lastChecked: null, checking: false, row: 'health-check-entra', detail: 'health-detail-entra', latency: 'health-latency-entra', checked: 'health-checked-entra', next: 'health-next-entra' },
-    workiq:      { interval: 45, lastChecked: null, checking: false, row: 'health-check-workiq',detail: 'health-detail-workiq',latency: 'health-latency-workiq',checked: 'health-checked-workiq',next: 'health-next-workiq' },
+    sql:         { interval: 30, lastChecked: null, checking: false, row: 'health-check-sql',   detail: 'health-detail-sql',   latency: 'health-latency-sql',   checked: 'health-checked-sql',   next: 'health-next-sql',   endpoint: 'health-endpoint-sql',   location: 'health-location-sql' },
+    backend_api: { interval: 30, lastChecked: null, checking: false, row: 'health-check-api',   detail: 'health-detail-api',   latency: 'health-latency-api',   checked: 'health-checked-api',   next: 'health-next-api',   endpoint: 'health-endpoint-api',   location: 'health-location-api' },
+    entra_id:    { interval: 45, lastChecked: null, checking: false, row: 'health-check-entra', detail: 'health-detail-entra', latency: 'health-latency-entra', checked: 'health-checked-entra', next: 'health-next-entra', endpoint: 'health-endpoint-entra', location: 'health-location-entra' },
+    workiq:      { interval: 45, lastChecked: null, checking: false, row: 'health-check-workiq',detail: 'health-detail-workiq',latency: 'health-latency-workiq',checked: 'health-checked-workiq',next: 'health-next-workiq',endpoint: 'health-endpoint-workiq',location: 'health-location-workiq' },
 };
 let _healthTimerInterval = null;
 
@@ -14790,7 +14790,29 @@ async function checkServiceHealth(serviceKey) {
     _updatePerServiceTimers();
 }
 
+let _healthMetaLoaded = false;
+
+async function _loadHealthMeta() {
+    if (_healthMetaLoaded) return;
+    try {
+        const res = await fetch('/api/health');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.meta) return;
+        for (const [key, meta] of Object.entries(data.meta)) {
+            const svc = _HEALTH_SERVICES[key];
+            if (!svc) continue;
+            const epEl = document.getElementById(svc.endpoint);
+            const locEl = document.getElementById(svc.location);
+            if (epEl) { epEl.textContent = meta.endpoint || '—'; epEl.title = meta.endpoint || ''; }
+            if (locEl) locEl.textContent = meta.location || '—';
+        }
+        _healthMetaLoaded = true;
+    } catch { /* silent */ }
+}
+
 async function loadHealthStatus() {
+    _loadHealthMeta();
     for (const key of Object.keys(_HEALTH_SERVICES)) {
         checkServiceHealth(key);
     }

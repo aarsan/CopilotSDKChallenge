@@ -501,6 +501,40 @@ _HEALTH_CHECKERS = {
     "workiq": _check_workiq,
 }
 
+def _get_service_meta():
+    """Return static endpoint/location metadata for each health service."""
+    import re
+    from src.config import (
+        AZURE_SQL_CONNECTION_STRING, WEB_HOST, WEB_PORT,
+        ENTRA_AUTHORITY, DEFAULT_AZURE_REGION,
+    )
+    # SQL: extract hostname from connection string
+    sql_endpoint = "—"
+    sql_location = DEFAULT_AZURE_REGION
+    m = re.search(r"Server=tcp:([^,;]+)", AZURE_SQL_CONNECTION_STRING, re.IGNORECASE)
+    if m:
+        sql_endpoint = m.group(1)
+        # Try to extract region from hostname (e.g. infraforge-eastus2.database.windows.net)
+        parts = sql_endpoint.split(".")[0]  # hostname prefix
+        for region in ("eastus2", "eastus", "westus2", "westus3", "westus",
+                       "centralus", "northcentralus", "southcentralus",
+                       "westeurope", "northeurope", "uksouth", "ukwest",
+                       "southeastasia", "eastasia", "japaneast", "japanwest",
+                       "australiaeast", "canadacentral", "brazilsouth"):
+            if region in parts:
+                sql_location = region
+                break
+
+    entra_endpoint = ENTRA_AUTHORITY or "Not configured"
+    backend_endpoint = f"http://localhost:{WEB_PORT}"
+
+    return {
+        "sql":         {"endpoint": sql_endpoint, "location": sql_location},
+        "backend_api": {"endpoint": backend_endpoint, "location": "Local"},
+        "entra_id":    {"endpoint": entra_endpoint, "location": "Global"},
+        "workiq":      {"endpoint": "MCP stdio", "location": "Local"},
+    }
+
 @router.get("/api/health")
 async def get_system_health(check: str = None):
     """Return connectivity health. Use ?check=sql|backend_api|entra_id|workiq for a single service."""
@@ -526,4 +560,5 @@ async def get_system_health(check: str = None):
     return JSONResponse({
         "overall": overall,
         "checks": results,
+        "meta": _get_service_meta(),
     })
