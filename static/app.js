@@ -15874,6 +15874,10 @@ function _renderActivityCard(job) {
         statusClass = 'activity-status-failed';
         statusIcon = '⛔';
         statusText = 'Failed';
+    } else if (status === 'interrupted') {
+        statusClass = 'activity-status-interrupted';
+        statusIcon = '⏸️';
+        statusText = 'Interrupted';
     } else if (status === 'validating') {
         statusClass = 'activity-status-waiting';
         statusIcon = '🔄';
@@ -15913,10 +15917,11 @@ function _renderActivityCard(job) {
     };
     const activeStep = phaseToStep[currentPhase] || currentPhase;
 
+    const isInterrupted = status === 'interrupted';
     let pipelineHtml = '';
-    if (isRunning || status === 'approved' || status === 'validation_failed') {
+    if (isRunning || status === 'approved' || status === 'validation_failed' || isInterrupted) {
         pipelineHtml = _wfPipeline(pipelineSteps, {
-            activeKey: isRunning ? activeStep : undefined,
+            activeKey: isRunning ? activeStep : (isInterrupted ? activeStep : undefined),
             completedKeys: completedSteps,
             failedKey: status === 'validation_failed' ? activeStep : undefined,
             allDone: status === 'approved',
@@ -15978,7 +15983,7 @@ function _renderActivityCard(job) {
 
     // ── Progress bar for running jobs ────────────────────────
     let progressHtml = '';
-    if (isRunning) {
+    if (isRunning || isInterrupted) {
         const pct = Math.min(Math.round(job.progress * 100), 100);
         progressHtml = `
             <div class="activity-progress">
@@ -15992,7 +15997,7 @@ function _renderActivityCard(job) {
     // ── Event log (expanded for running and failed, collapsed for approved) ──
     let eventsHtml = '';
     if (job.events && job.events.length > 0) {
-        const collapsed = !isRunning && status !== 'validation_failed';
+        const collapsed = !isRunning && status !== 'validation_failed' && !isInterrupted;
         const eventLines = job.events.map(e => {
             let icon = '▸';
             if (e.type === 'error') icon = '❌';

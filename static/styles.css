@@ -9233,6 +9233,10 @@ tr[class*="ns-group-"] > td:first-child {
     border-left: 3px solid var(--accent-orange);
 }
 
+.activity-status-interrupted {
+    border-left: 3px solid var(--accent-orange);
+}
+
 /* ── Card Header ────────────────────────────────────────────── */
 .activity-card-header {
     display: flex;
@@ -9310,6 +9314,13 @@ tr[class*="ns-group-"] > td:first-child {
     background: rgba(210, 153, 34, 0.15);
     color: var(--accent-orange);
     border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+.activity-badge.activity-status-interrupted {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--accent-orange);
+    border: 1px solid rgba(210, 153, 34, 0.3);
+    animation: pulse-badge 2s ease-in-out infinite;
 }
 
 .activity-time {

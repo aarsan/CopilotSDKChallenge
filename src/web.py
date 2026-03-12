@@ -11676,20 +11676,39 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     _err = tracker.get("error", "")
                     if _final == "succeeded":
                         _db_status = "completed"
-                    else:
+                    elif _final in ("failed", "policy_blocked"):
                         _db_status = "failed"
+                    else:
+                        # Stream ended without explicit success/failure
+                        # (client disconnect, cancellation) — mark as
+                        # interrupted so the run is resumable.
+                        _db_status = "interrupted"
                     await complete_pipeline_run(
                         _run_id, _db_status,
-                        error_detail=_err[:4000] if _err else "Pipeline did not complete — stream ended without finalization",
+                        error_detail=_err[:4000] if _err else (
+                            "Pipeline interrupted — stream ended before completion (resumable)"
+                            if _db_status == "interrupted"
+                            else "Pipeline did not complete — stream ended without finalization"
+                        ),
                     )
                     logger.info(f"Safety net: marked pipeline run {_run_id} as {_db_status}")
 
-                    # Also fix the service status if stuck at 'validating'
+                    # Also fix the service status
                     if _db_status == "failed":
                         try:
                             await fail_service_validation(
                                 service_id,
                                 _err[:500] if _err else "Pipeline failed without explicit status update",
+                            )
+                        except Exception:
+                            pass
+                    elif _db_status == "interrupted":
+                        try:
+                            _be2 = await get_backend()
+                            await _be2.execute_write(
+                                "UPDATE services SET status = 'interrupted', "
+                                "review_notes = ? WHERE id = ? AND status IN ('validating', 'onboarding')",
+                                (json.dumps({"validation_passed": False, "error": "Pipeline interrupted — can be resumed"}), service_id),
                             )
                         except Exception:
                             pass
