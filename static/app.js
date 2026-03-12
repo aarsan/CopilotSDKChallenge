@@ -1362,6 +1362,16 @@ function renderServiceTable(services) {
     }).join('');
 }
 
+function toggleNsGroup(nsKey) {
+    const rows = document.querySelectorAll(`.ns-group-${nsKey}`);
+    const chev = document.getElementById(`ns-chev-${nsKey}`);
+    const header = document.querySelector(`[data-ns="${nsKey}"]`);
+    const collapsed = !header.classList.contains('ns-collapsed');
+    header.classList.toggle('ns-collapsed', collapsed);
+    if (chev) chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+    rows.forEach(r => r.style.display = collapsed ? 'none' : '');
+}
+
 async function checkForServiceUpdates() {
     const btn = document.getElementById('btn-check-updates');
     const badge = document.getElementById('update-count-badge');

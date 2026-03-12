@@ -1631,28 +1631,65 @@ tr:hover .svc-view-tpl-btn {
 
 /* Namespace group header row */
 .svc-row-ns-header {
-    pointer-events: none;
+    cursor: pointer;
+    user-select: none;
 }
 
 .svc-row-ns-header > td {
-    padding: 0.65rem 0.75rem 0.25rem;
-    border-top: 2px solid var(--border-default, #30363d);
+    padding: 0.6rem 0.75rem;
+    border-top: 1px solid var(--border-default, #30363d);
+    border-bottom: 1px solid var(--border-default, #30363d);
+    background: var(--bg-tertiary, #0d1117);
+}
+
+.svc-row-ns-header:hover > td {
     background: var(--bg-secondary, #161b22);
+}
+
+.svc-ns-chevron {
+    display: inline-block;
+    width: 1rem;
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+    vertical-align: middle;
+}
+
+.ns-collapsed .svc-ns-chevron {
+    color: var(--text-muted);
 }
 
 .svc-ns-label {
     font-weight: 700;
-    font-size: 0.78rem;
+    font-size: 0.85rem;
     color: var(--text-primary);
-    letter-spacing: 0.02em;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.svc-ns-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.3rem;
+    height: 1.1rem;
+    padding: 0 0.35rem;
+    margin-left: 0.45rem;
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg-secondary, #161b22);
+    border: 1px solid var(--border-default, #30363d);
+    border-radius: 100px;
+    vertical-align: middle;
 }
 
 .svc-ns-full {
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
     margin-left: 0.5rem;
-    opacity: 0.7;
+    opacity: 0.5;
 }
 
 .catalog-loading {
