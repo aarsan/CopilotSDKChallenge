@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=263">
+    <link rel="stylesheet" href="/static/styles.css?v=264">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -187,6 +187,36 @@
                         </div>
                     </div>
 
+                    <!-- System Health (compact) -->
+                    <div class="dashboard-section">
+                        <div class="dash-section-header">
+                            <h3 class="section-title">System Health</h3>
+                            <button class="btn btn-xs btn-ghost" onclick="navigateTo('activity')" title="Open full health dashboard">View Details →</button>
+                        </div>
+                        <div class="dash-health-strip" id="dash-health-strip">
+                            <div class="dash-health-item" id="dash-health-sql" onclick="navigateTo('activity')">
+                                <span class="health-dot health-dot-unknown"></span>
+                                <span class="dash-health-name">SQL Database</span>
+                                <span class="dash-health-latency" id="dash-hlat-sql">—</span>
+                            </div>
+                            <div class="dash-health-item" id="dash-health-api" onclick="navigateTo('activity')">
+                                <span class="health-dot health-dot-unknown"></span>
+                                <span class="dash-health-name">Backend API</span>
+                                <span class="dash-health-latency" id="dash-hlat-api">—</span>
+                            </div>
+                            <div class="dash-health-item" id="dash-health-entra" onclick="navigateTo('activity')">
+                                <span class="health-dot health-dot-unknown"></span>
+                                <span class="dash-health-name">Entra ID</span>
+                                <span class="dash-health-latency" id="dash-hlat-entra">—</span>
+                            </div>
+                            <div class="dash-health-item" id="dash-health-workiq" onclick="navigateTo('activity')">
+                                <span class="health-dot health-dot-unknown"></span>
+                                <span class="dash-health-name">Work IQ</span>
+                                <span class="dash-health-latency" id="dash-hlat-workiq">—</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Design Mode Selector -->
                     <div class="dashboard-section">
                         <h3 class="section-title">Design Mode</h3>
@@ -251,73 +281,46 @@
                         </div>
                     </div>
 
-                    <!-- Capabilities Grid -->
+                    <!-- Agent Network (compact) -->
                     <div class="dashboard-section">
-                        <h3 class="section-title">What I Can Do</h3>
-                        <div class="capabilities-grid">
-                            <button class="capability-card" onclick="navigateTo('services')">
-                                <span class="cap-icon">📋</span>
-                                <span class="cap-title">Service Catalog</span>
-                                <span class="cap-desc">Browse all approved Azure services, policies, and SKUs</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateTo('templates')">
-                                <span class="cap-icon">📦</span>
-                                <span class="cap-title">Template Catalog</span>
-                                <span class="cap-desc">Find pre-approved, tested infrastructure modules</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Generate Bicep for a production web app with SQL backend')">
-                                <span class="cap-icon">⚙️</span>
-                                <span class="cap-title">Generate IaC</span>
-                                <span class="cap-desc">Bicep or Terraform from natural language</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Generate a CI/CD pipeline for deploying my infrastructure')">
-                                <span class="cap-icon">🔄</span>
-                                <span class="cap-title">CI/CD Pipelines</span>
-                                <span class="cap-desc">GitHub Actions &amp; Azure DevOps YAML</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Generate an architecture diagram for a 3-tier web application')">
-                                <span class="cap-icon">📊</span>
-                                <span class="cap-title">Architecture Diagrams</span>
-                                <span class="cap-desc">Mermaid diagrams for stakeholder review</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Estimate monthly Azure costs for an App Service + SQL Database setup')">
-                                <span class="cap-icon">💰</span>
-                                <span class="cap-title">Cost Estimation</span>
-                                <span class="cap-desc">Monthly spend projections before provisioning</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Run a policy compliance check on my infrastructure')">
-                                <span class="cap-icon">🛡️</span>
-                                <span class="cap-title">Policy Compliance</span>
-                                <span class="cap-desc">Validate against organizational governance</span>
-                            </button>
-                            <button class="capability-card" onclick="navigateToChat('Generate a design document for production approval')">
-                                <span class="cap-icon">📝</span>
-                                <span class="cap-title">Design Documents</span>
-                                <span class="cap-desc">Approval-ready artifacts with full context</span>
-                            </button>
+                        <div class="dash-section-header">
+                            <h3 class="section-title">Agent Network</h3>
+                            <button class="btn btn-xs btn-ghost" onclick="navigateTo('activity')" title="Open full agent activity">View Details →</button>
+                        </div>
+                        <div class="dash-agent-strip" id="dash-agent-strip">
+                            <div class="dash-agent-stat">
+                                <span class="dash-agent-val" id="dash-agent-ct">—</span>
+                                <span class="dash-agent-lbl">Agents</span>
+                            </div>
+                            <div class="dash-agent-sep"></div>
+                            <div class="dash-agent-stat">
+                                <span class="dash-agent-val dash-agent-ok" id="dash-agent-calls">—</span>
+                                <span class="dash-agent-lbl">SDK Calls</span>
+                            </div>
+                            <div class="dash-agent-sep"></div>
+                            <div class="dash-agent-stat">
+                                <span class="dash-agent-val dash-agent-err" id="dash-agent-errors">—</span>
+                                <span class="dash-agent-lbl">Errors</span>
+                            </div>
+                            <div class="dash-agent-sep"></div>
+                            <div class="dash-agent-stat">
+                                <span class="dash-agent-val" id="dash-agent-latency">—</span>
+                                <span class="dash-agent-lbl">Avg Latency</span>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Quick Start Prompts -->
+                    <!-- Recent Activity -->
                     <div class="dashboard-section">
-                        <h3 class="section-title">Try These</h3>
-                        <div class="example-prompts">
-                            <button class="example-prompt" onclick="navigateToChat(this.dataset.prompt)" data-prompt="I need a production-ready 3-tier web application with App Service, SQL Database, Key Vault, and Application Insights">
-                                <span class="example-icon">🏗️</span>
-                                <span>"I need a production-ready 3-tier web app with database and monitoring"</span>
-                            </button>
-                            <button class="example-prompt" onclick="navigateToChat(this.dataset.prompt)" data-prompt="What services are approved for building a data pipeline with Event Hub and Cosmos DB?">
-                                <span class="example-icon">❓</span>
-                                <span>"What services are approved for a data pipeline?"</span>
-                            </button>
-                            <button class="example-prompt" onclick="navigateToChat(this.dataset.prompt)" data-prompt="Create a microservices setup with AKS, Container Registry, and API Management, then generate an architecture diagram and cost estimate">
-                                <span class="example-icon">🐳</span>
-                                <span>"Create a microservices setup with AKS and give me the diagram + costs"</span>
-                            </button>
-                            <button class="example-prompt" onclick="navigateToChat(this.dataset.prompt)" data-prompt="Generate a GitHub Actions pipeline with dev/staging/prod stages, approval gates, and security scanning for a Node.js application">
-                                <span class="example-icon">🔄</span>
-                                <span>"Generate a multi-stage CI/CD pipeline with approval gates"</span>
-                            </button>
+                        <div class="dash-section-header">
+                            <h3 class="section-title">Recent Activity</h3>
+                            <button class="btn btn-xs btn-ghost" onclick="navigateTo('runs')" title="View all pipeline runs">View All →</button>
+                        </div>
+                        <div class="dash-activity-feed" id="dash-activity-feed">
+                            <div class="dash-activity-empty">
+                                <span class="dash-activity-empty-icon">📡</span>
+                                <p>No recent activity. Deploy a template or onboard a service to see activity here.</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1355,7 +1358,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=283"></script>
+    <script src="/static/app.js?v=284"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
