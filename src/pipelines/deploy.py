@@ -541,6 +541,19 @@ async def stream_deploy(
         "analysis": analysis,
     }) + "\n"
 
+    # Record miss for the healing agents
+    try:
+        from src.copilot_helpers import record_agent_miss
+        last_err = heal_history[-1]["error"] if heal_history else "Unknown"
+        await record_agent_miss(
+            "TEMPLATE_HEALER", "healing_exhausted",
+            context_summary=f"Deploy pipeline exhausted all heals for {template_id}",
+            error_detail=last_err[:2000],
+            pipeline_phase="deploy",
+        )
+    except Exception:
+        pass
+
 
 # ══════════════════════════════════════════════════════════════
 # INTERNAL HELPERS

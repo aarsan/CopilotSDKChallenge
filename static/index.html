@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=265">
+    <link rel="stylesheet" href="/static/styles.css?v=266">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -690,6 +690,12 @@
                             <div class="ao-sum-item"><span class="ao-sum-val ao-val-err" id="ao-err-ct">0</span><span class="ao-sum-lbl">Errors</span></div>
                             <div class="ao-sum-sep"></div>
                             <div class="ao-sum-item"><span class="ao-sum-val" id="ao-lat-avg">—</span><span class="ao-sum-lbl">Avg Latency</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-score" id="ao-score-avg">50</span><span class="ao-sum-lbl">Avg Score</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-miss" id="ao-miss-ct">0</span><span class="ao-sum-lbl">Misses</span></div>
+                            <div class="ao-sum-sep"></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-improve" id="ao-improve-ct">0</span><span class="ao-sum-lbl">Improvements</span></div>
                         </div>
 
                         <!-- Org chart tree -->
@@ -1368,7 +1374,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=284"></script>
+    <script src="/static/app.js?v=285"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

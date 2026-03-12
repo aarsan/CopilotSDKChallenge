@@ -216,6 +216,18 @@ async def _regenerate_template(
         await cleanup_rg(ctx.rg_name)
         ctx.deployed_rg = None
 
+    # Record miss for the healing agents since all heals were exhausted
+    try:
+        from src.copilot_helpers import record_agent_miss
+        await record_agent_miss(
+            "TEMPLATE_HEALER", "healing_exhausted",
+            context_summary=f"Onboarding pipeline template regen triggered for {ctx.service_id} (cycle {regen_count})",
+            error_detail=error[:2000],
+            pipeline_phase="onboarding_regen",
+        )
+    except Exception:
+        pass
+
     total_attempts = len(ctx.heal_history)
     yield emit(
         "regen_start", "replanning",
@@ -1232,6 +1244,19 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                 # The pipeline already auto-healed the template multiple times.
                 # Remaining findings are noted but don't block deployment.
                 remaining_crit = len(critical_findings)
+
+                # Record miss for governance review healing exhaustion
+                try:
+                    from src.copilot_helpers import record_agent_miss
+                    await record_agent_miss(
+                        "CISO_REVIEWER", "governance_blocked",
+                        context_summary=f"Governance healing exhausted for {ctx.service_id} after {MAX_GOV_HEAL} heals",
+                        error_detail=gate_reason[:2000] if gate_reason else "",
+                        pipeline_phase="governance_review",
+                    )
+                except Exception:
+                    pass
+
                 yield emit("progress", "governance_blocked",
                             f"⚠️ CISO flagged {len(ciso_findings)} finding(s) ({remaining_crit} critical/high). "
                             f"Auto-healed {MAX_GOV_HEAL} time(s) — proceeding with remaining concerns noted.",

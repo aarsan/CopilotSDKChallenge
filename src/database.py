@@ -1024,6 +1024,70 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_agent_prompt_history')
     CREATE INDEX idx_agent_prompt_history ON agent_prompt_history(agent_id, version DESC)""",
+    # ── Agent performance rating columns on agent_counters ──
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('agent_counters') AND name = 'performance_score'
+    )
+    ALTER TABLE agent_counters ADD
+        performance_score  INT DEFAULT 50,
+        reliability_score  INT DEFAULT 50,
+        speed_score        INT DEFAULT 50,
+        quality_score      INT DEFAULT 50,
+        total_misses       INT DEFAULT 0,
+        last_score_update  NVARCHAR(50) DEFAULT NULL
+    """,
+    # ── Agent misses — automatic + manual miss events ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_misses')
+    CREATE TABLE agent_misses (
+        id                INT IDENTITY(1,1) PRIMARY KEY,
+        agent_name        NVARCHAR(200) NOT NULL,
+        miss_type         NVARCHAR(50) NOT NULL,
+        context_summary   NVARCHAR(MAX) DEFAULT '',
+        error_detail      NVARCHAR(MAX) DEFAULT '',
+        input_preview     NVARCHAR(MAX) DEFAULT '',
+        output_preview    NVARCHAR(MAX) DEFAULT '',
+        pipeline_phase    NVARCHAR(100) DEFAULT NULL,
+        resolved          BIT DEFAULT 0,
+        resolution_note   NVARCHAR(MAX) DEFAULT NULL,
+        created_at        NVARCHAR(50) NOT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_agent_misses_agent')
+    CREATE INDEX idx_agent_misses_agent ON agent_misses(agent_name, created_at DESC)""",
+    # ── Agent feedback — manual thumbs up/down ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'agent_feedback')
+    CREATE TABLE agent_feedback (
+        id                INT IDENTITY(1,1) PRIMARY KEY,
+        agent_name        NVARCHAR(200) NOT NULL,
+        activity_id       INT DEFAULT NULL,
+        rating            INT NOT NULL,
+        comment           NVARCHAR(500) DEFAULT '',
+        created_at        NVARCHAR(50) NOT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_agent_feedback_agent')
+    CREATE INDEX idx_agent_feedback_agent ON agent_feedback(agent_name, created_at DESC)""",
+    # ── Prompt improvement queue — LLM-suggested prompt patches ──
+    """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'prompt_improvement_queue')
+    CREATE TABLE prompt_improvement_queue (
+        id                INT IDENTITY(1,1) PRIMARY KEY,
+        agent_name        NVARCHAR(200) NOT NULL,
+        miss_pattern      NVARCHAR(MAX) DEFAULT '',
+        miss_count        INT DEFAULT 0,
+        suggested_patch   NVARCHAR(MAX) DEFAULT '',
+        reasoning         NVARCHAR(MAX) DEFAULT '',
+        status            NVARCHAR(20) DEFAULT 'pending',
+        reviewed_by       NVARCHAR(200) DEFAULT NULL,
+        reviewed_at       NVARCHAR(50) DEFAULT NULL,
+        created_at        NVARCHAR(50) NOT NULL
+    )
+    """,
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_prompt_improvement_agent')
+    CREATE INDEX idx_prompt_improvement_agent ON prompt_improvement_queue(agent_name, status)""",
 ]
 
 
@@ -5383,4 +5447,227 @@ async def reset_agent_to_default(agent_id: str) -> dict | None:
         agent_id,
         system_prompt=spec.system_prompt,
         changed_by="system_reset",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# AGENT MISSES — recording & querying
+# ══════════════════════════════════════════════════════════════
+
+async def insert_agent_miss(
+    agent_name: str,
+    miss_type: str,
+    *,
+    context_summary: str = "",
+    error_detail: str = "",
+    input_preview: str = "",
+    output_preview: str = "",
+    pipeline_phase: str | None = None,
+) -> int | None:
+    """Record a miss event for an agent. Returns the new row id."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """INSERT INTO agent_misses
+           (agent_name, miss_type, context_summary, error_detail,
+            input_preview, output_preview, pipeline_phase, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (agent_name, miss_type,
+         (context_summary or "")[:4000], (error_detail or "")[:4000],
+         (input_preview or "")[:1000], (output_preview or "")[:1000],
+         pipeline_phase, now),
+    )
+    # Increment total_misses counter
+    await backend.execute_write(
+        """MERGE agent_counters AS tgt
+        USING (SELECT ? AS agent_name) AS src ON tgt.agent_name = src.agent_name
+        WHEN MATCHED THEN UPDATE SET total_misses = ISNULL(tgt.total_misses, 0) + 1
+        WHEN NOT MATCHED THEN INSERT (agent_name, total_misses) VALUES (?, 1);""",
+        (agent_name, agent_name),
+    )
+    rows = await backend.execute(
+        "SELECT TOP 1 id FROM agent_misses WHERE agent_name = ? ORDER BY id DESC",
+        (agent_name,),
+    )
+    return rows[0]["id"] if rows else None
+
+
+async def get_agent_misses(
+    agent_name: str | None = None,
+    resolved: bool | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Return recent miss events, optionally filtered by agent and resolution."""
+    backend = await get_backend()
+    clauses: list[str] = []
+    params: list[object] = []
+    if agent_name:
+        clauses.append("agent_name = ?")
+        params.append(agent_name)
+    if resolved is not None:
+        clauses.append("resolved = ?")
+        params.append(1 if resolved else 0)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = await backend.execute(
+        f"SELECT TOP {int(limit)} * FROM agent_misses {where} ORDER BY id DESC",
+        tuple(params),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def resolve_agent_miss(miss_id: int, resolution_note: str = "") -> bool:
+    """Mark a miss as resolved."""
+    backend = await get_backend()
+    await backend.execute_write(
+        "UPDATE agent_misses SET resolved = 1, resolution_note = ? WHERE id = ?",
+        (resolution_note[:4000], miss_id),
+    )
+    return True
+
+
+# ══════════════════════════════════════════════════════════════
+# AGENT FEEDBACK — manual thumbs up/down
+# ══════════════════════════════════════════════════════════════
+
+async def insert_agent_feedback(
+    agent_name: str,
+    rating: int,
+    *,
+    activity_id: int | None = None,
+    comment: str = "",
+) -> int | None:
+    """Record a thumbs-up (5) or thumbs-down (1) feedback for an agent."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """INSERT INTO agent_feedback
+           (agent_name, activity_id, rating, comment, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (agent_name, activity_id, rating, (comment or "")[:500], now),
+    )
+    rows = await backend.execute(
+        "SELECT TOP 1 id FROM agent_feedback WHERE agent_name = ? ORDER BY id DESC",
+        (agent_name,),
+    )
+    return rows[0]["id"] if rows else None
+
+
+async def get_agent_feedback_summary(agent_name: str | None = None) -> dict:
+    """Return per-agent feedback summary: {agent_name: {up: N, down: N}}."""
+    backend = await get_backend()
+    if agent_name:
+        rows = await backend.execute(
+            """SELECT agent_name,
+                  SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) AS thumbs_up,
+                  SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS thumbs_down
+               FROM agent_feedback WHERE agent_name = ?
+               GROUP BY agent_name""",
+            (agent_name,),
+        )
+    else:
+        rows = await backend.execute(
+            """SELECT agent_name,
+                  SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) AS thumbs_up,
+                  SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS thumbs_down
+               FROM agent_feedback GROUP BY agent_name""",
+            (),
+        )
+    return {
+        r["agent_name"]: {"up": r.get("thumbs_up", 0), "down": r.get("thumbs_down", 0)}
+        for r in (rows or [])
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+# PROMPT IMPROVEMENT QUEUE
+# ══════════════════════════════════════════════════════════════
+
+async def insert_prompt_improvement(
+    agent_name: str,
+    miss_pattern: str,
+    miss_count: int,
+    suggested_patch: str,
+    reasoning: str,
+) -> int | None:
+    """Queue an LLM-generated prompt improvement suggestion."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """INSERT INTO prompt_improvement_queue
+           (agent_name, miss_pattern, miss_count, suggested_patch, reasoning, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (agent_name, miss_pattern[:4000], miss_count,
+         suggested_patch[:8000], reasoning[:4000], now),
+    )
+    rows = await backend.execute(
+        "SELECT TOP 1 id FROM prompt_improvement_queue WHERE agent_name = ? ORDER BY id DESC",
+        (agent_name,),
+    )
+    return rows[0]["id"] if rows else None
+
+
+async def get_prompt_improvements(
+    agent_name: str | None = None,
+    status: str | None = None,
+) -> list[dict]:
+    """Return prompt improvement queue entries."""
+    backend = await get_backend()
+    clauses: list[str] = []
+    params: list[object] = []
+    if agent_name:
+        clauses.append("agent_name = ?")
+        params.append(agent_name)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = await backend.execute(
+        f"SELECT * FROM prompt_improvement_queue {where} ORDER BY id DESC",
+        tuple(params),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def update_prompt_improvement(
+    improvement_id: int,
+    status: str,
+    reviewed_by: str = "admin",
+) -> bool:
+    """Update the status of a prompt improvement (pending → approved/rejected/applied)."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """UPDATE prompt_improvement_queue
+           SET status = ?, reviewed_by = ?, reviewed_at = ?
+           WHERE id = ?""",
+        (status, reviewed_by, now, improvement_id),
+    )
+    return True
+
+
+async def update_agent_scores(
+    agent_name: str,
+    *,
+    performance_score: int,
+    reliability_score: int,
+    speed_score: int,
+    quality_score: int,
+) -> None:
+    """Persist computed performance scores for an agent."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    await backend.execute_write(
+        """MERGE agent_counters AS tgt
+        USING (SELECT ? AS agent_name) AS src ON tgt.agent_name = src.agent_name
+        WHEN MATCHED THEN UPDATE SET
+            performance_score = ?, reliability_score = ?,
+            speed_score = ?, quality_score = ?, last_score_update = ?
+        WHEN NOT MATCHED THEN INSERT
+            (agent_name, performance_score, reliability_score,
+             speed_score, quality_score, last_score_update)
+            VALUES (?, ?, ?, ?, ?, ?);""",
+        (agent_name, performance_score, reliability_score, speed_score,
+         quality_score, now,
+         agent_name, performance_score, reliability_score, speed_score,
+         quality_score, now),
     )

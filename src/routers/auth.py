@@ -201,7 +201,7 @@ async def get_agents_activity():
 
     # Build agent registry with categories
     AGENT_CATEGORIES = {
-        "Interactive": ["web_chat", "ciso_advisor", "concierge"],
+        "Interactive": ["web_chat", "governance_agent", "ciso_advisor", "concierge"],
         "Orchestrator": ["gap_analyst", "arm_template_editor", "policy_checker", "request_parser"],
         "Standards": ["standards_extractor"],
         "ARM Generation": ["arm_modifier", "arm_generator"],
@@ -210,6 +210,7 @@ async def get_agents_activity():
         "Artifact & Healing": ["artifact_generator", "policy_fixer", "deep_template_healer", "llm_reasoner"],
         "Infrastructure Testing": ["infra_tester", "infra_test_analyzer"],
         "Governance Review": ["ciso_reviewer", "cto_reviewer"],
+        "Analysis": ["upgrade_analyst"],
     }
 
     # Build model routing reasons lookup
@@ -244,12 +245,110 @@ async def get_agents_activity():
     counters = get_agent_counters()
     activity = get_agent_activity(limit=200)
 
+    # Fetch performance data (non-blocking best-effort)
+    scores = {}
+    misses_summary: dict = {}
+    feedback_summary: dict = {}
+    improvements: list = []
+    try:
+        from src.database import (
+            get_agent_misses, get_agent_feedback_summary,
+            get_prompt_improvements,
+        )
+        # Scores are already embedded in counters (performance_score, etc.)
+        for agent_key, ctr in counters.items():
+            scores[agent_key] = {
+                "performance_score": ctr.get("performance_score", 50),
+                "reliability_score": ctr.get("reliability_score", 50),
+                "speed_score": ctr.get("speed_score", 50),
+                "quality_score": ctr.get("quality_score", 50),
+                "total_misses": ctr.get("total_misses", 0),
+            }
+
+        # Recent misses per agent (last 5 each)
+        all_misses = await get_agent_misses(limit=200)
+        for m in all_misses:
+            aname = m.get("agent_name", "")
+            if aname not in misses_summary:
+                misses_summary[aname] = []
+            if len(misses_summary[aname]) < 5:
+                misses_summary[aname].append({
+                    "id": m.get("id"),
+                    "miss_type": m.get("miss_type"),
+                    "context_summary": (m.get("context_summary") or "")[:200],
+                    "error_detail": (m.get("error_detail") or "")[:300],
+                    "pipeline_phase": m.get("pipeline_phase"),
+                    "resolved": m.get("resolved"),
+                    "created_at": m.get("created_at"),
+                })
+
+        feedback_summary = await get_agent_feedback_summary()
+        improvements = await get_prompt_improvements(status="pending")
+    except Exception:
+        pass
+
     return JSONResponse({
         "agents": registry,
         "routing_table": get_routing_table(),
         "counters": counters,
         "activity": activity,
+        "scores": scores,
+        "misses": misses_summary,
+        "feedback_summary": feedback_summary,
+        "pending_improvements": [{
+            "id": imp.get("id"),
+            "agent_name": imp.get("agent_name"),
+            "miss_pattern": imp.get("miss_pattern"),
+            "miss_count": imp.get("miss_count"),
+            "suggested_patch": (imp.get("suggested_patch") or "")[:500],
+            "reasoning": (imp.get("reasoning") or "")[:300],
+            "created_at": imp.get("created_at"),
+        } for imp in improvements],
     })
+
+
+@router.post("/api/agents/{agent_key}/feedback")
+async def submit_agent_feedback(agent_key: str, request: Request):
+    """Submit thumbs-up (5) or thumbs-down (1) feedback for an agent."""
+    from src.agents import AGENTS
+    if agent_key not in AGENTS:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    rating = body.get("rating")
+    if rating not in (1, 5):
+        raise HTTPException(status_code=400, detail="rating must be 1 (thumbs-down) or 5 (thumbs-up)")
+
+    from src.database import insert_agent_feedback
+    fid = await insert_agent_feedback(
+        agent_key,
+        rating,
+        activity_id=body.get("activity_id"),
+        comment=body.get("comment", ""),
+    )
+
+    # If thumbs-down, also record as a miss
+    if rating == 1:
+        from src.copilot_helpers import record_agent_miss
+        await record_agent_miss(
+            agent_key, "user_downvote",
+            context_summary="User gave thumbs-down feedback",
+            error_detail=body.get("comment", "")[:500],
+        )
+
+    return JSONResponse({"status": "ok", "feedback_id": fid})
+
+
+@router.get("/api/agents/{agent_key}/misses")
+async def get_agent_misses_endpoint(agent_key: str, limit: int = 50):
+    """Return recent misses for a specific agent."""
+    from src.database import get_agent_misses
+    misses = await get_agent_misses(agent_name=agent_key, limit=min(limit, 200))
+    return JSONResponse({"agent": agent_key, "misses": misses, "total": len(misses)})
 
 
 @router.get("/api/agents/heartbeat")
