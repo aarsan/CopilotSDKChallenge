@@ -39,11 +39,16 @@ def _parse_server_from_connection_string() -> str | None:
     return m.group(1) if m else None
 
 
-async def ensure_sql_firewall() -> None:
+async def ensure_sql_firewall(blocked_ip: str | None = None) -> None:
     """Ensure the current IP is allowed through the Azure SQL firewall.
 
+    Args:
+        blocked_ip: If provided (e.g. parsed from a SQL error), use this IP
+                    instead of auto-detecting via ipify. Corporate proxies can
+                    route SQL traffic through a different egress IP than HTTPS.
+
     Steps:
-    1. Detect current public IP via https://api.ipify.org
+    1. Detect current public IP via https://api.ipify.org (or use blocked_ip)
     2. Check if the rule already matches
     3. Create/update the rule if needed
     4. Also ensure public network access is enabled
@@ -59,8 +64,10 @@ async def ensure_sql_firewall() -> None:
             logger.warning("Cannot determine SQL server name — set AZURE_SQL_SERVER or AZURE_SQL_CONNECTION_STRING")
             return
 
-        # Detect current public IP
-        ip = await asyncio.get_event_loop().run_in_executor(None, _get_public_ip)
+        # Use blocked_ip if provided, otherwise detect via ipify
+        ip = blocked_ip
+        if not ip:
+            ip = await asyncio.get_event_loop().run_in_executor(None, _get_public_ip)
         if not ip:
             logger.warning("Could not detect public IP — skipping firewall check")
             return

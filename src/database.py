@@ -122,13 +122,18 @@ class AzureSQLBackend(DatabaseBackend):
                 attrs_before={1256: token_struct},  # SQL_COPT_SS_ACCESS_TOKEN
             )
         except pyodbc.ProgrammingError as exc:
-            # Firewall block → retry once after auto-fixing the rule
-            if "is not allowed to access the server" in str(exc):
-                logger.warning("SQL connection blocked by firewall — attempting auto-fix and retry")
-                from src.sql_firewall import ensure_sql_firewall
-                await ensure_sql_firewall()
+            # Firewall block → parse blocked IP from error, fix rule, retry
+            err_msg = str(exc)
+            if "is not allowed to access the server" in err_msg:
                 import asyncio
-                await asyncio.sleep(2)  # brief wait for rule propagation
+                import re
+                # Extract the blocked IP from: "Client with IP address '1.2.3.4'"
+                ip_match = re.search(r"Client with IP address '([^']+)'", err_msg)
+                blocked_ip = ip_match.group(1) if ip_match else None
+                logger.warning(f"SQL connection blocked by firewall (IP: {blocked_ip}) — attempting auto-fix and retry")
+                from src.sql_firewall import ensure_sql_firewall
+                await ensure_sql_firewall(blocked_ip=blocked_ip)
+                await asyncio.sleep(5)  # firewall rules can take a few seconds to propagate
                 token_struct = self._get_token_struct()
                 conn = pyodbc.connect(
                     self.connection_string,
