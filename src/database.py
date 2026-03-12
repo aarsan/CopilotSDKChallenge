@@ -5319,8 +5319,14 @@ async def refresh_orchestration_processes() -> int:
 async def seed_agent_definitions() -> int:
     """Seed agent definitions from the hardcoded registry in agents.py.
 
-    Uses an upsert strategy: inserts missing agents, updates existing ones
-    only if the hardcoded version has changed (based on prompt hash).
+    Uses an upsert strategy:
+    - Missing agents are inserted.
+    - Existing agents at version 1 (never user-edited) are updated if the
+      hardcoded prompt has changed, so code-side prompt improvements
+      propagate automatically on restart.
+    - Existing agents at version > 1 (user-edited via UI) are left alone
+      so platform-engineer customisations are preserved.
+
     Returns the number of agents inserted or updated.
     """
     import hashlib
@@ -5338,11 +5344,26 @@ async def seed_agent_definitions() -> int:
         prompt_hash = hashlib.sha256(spec.system_prompt.encode()).hexdigest()[:16]
 
         existing = await backend.execute(
-            "SELECT id, version FROM agent_definitions WHERE id = ?",
+            "SELECT id, version, system_prompt FROM agent_definitions WHERE id = ?",
             (agent_id,),
         )
         if existing:
-            # Already exists — skip (DB version takes precedence)
+            row = existing[0]
+            db_version = row.get("version", 1) if isinstance(row, dict) else row[1]
+            db_prompt = (row.get("system_prompt", "") if isinstance(row, dict)
+                         else row[2]) or ""
+            # Only update if never user-edited (version 1) and prompt differs
+            if db_version <= 1 and db_prompt != spec.system_prompt:
+                await backend.execute_write(
+                    """UPDATE agent_definitions
+                       SET name = ?, description = ?, system_prompt = ?,
+                           task = ?, timeout = ?, category = ?, updated_at = ?
+                       WHERE id = ? AND version <= 1""",
+                    (spec.name, spec.description, spec.system_prompt,
+                     spec.task.value, spec.timeout, category, now, agent_id),
+                )
+                count += 1
+                logger.info(f"Updated stale agent definition: {agent_id}")
             continue
 
         await backend.execute_write(
@@ -5356,7 +5377,7 @@ async def seed_agent_definitions() -> int:
         count += 1
 
     if count:
-        logger.info(f"Seeded {count} agent definitions into database")
+        logger.info(f"Seeded/updated {count} agent definitions in database")
     return count
 
 
