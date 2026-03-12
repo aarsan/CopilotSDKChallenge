@@ -118,6 +118,7 @@ from src.database import (
     update_template_version_status,
     upsert_service,
     upsert_template,
+    update_service_status,
 )
 from src.utils import ensure_output_dir
 from src.standards import init_standards
@@ -5737,6 +5738,10 @@ async def resume_pipeline(run_id: str):
     # Mark the run as running again
     await mark_pipeline_resuming(run_id)
 
+    # Also set the service status back to 'onboarding' so the list view updates
+    if service_id:
+        await update_service_status(service_id, "onboarding")
+
     # Reconstruct PipelineContext
     ctx = PipelineContext.from_checkpoint(ctx_data)
 
@@ -5757,17 +5762,81 @@ async def resume_pipeline(run_id: str):
             detail=f"Unknown pipeline type: {pipeline_type}",
         )
 
+    rg_name = ctx_data.get("rg_name", "")
+
+    def _track_resume(event_json: str):
+        """Mirror the onboarding _track() so observability sees progress."""
+        try:
+            evt = json.loads(event_json)
+        except Exception:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        tracker = _active_validations.get(service_id)
+        if not tracker:
+            tracker = {
+                "status": "running",
+                "service_name": run.get("service_name", service_id),
+                "started_at": run.get("started_at", now),
+                "updated_at": now,
+                "phase": "",
+                "step": 0,
+                "progress": 0,
+                "rg_name": rg_name,
+                "events": [],
+                "error": "",
+                "current_attempt": 1,
+                "max_attempts": 5,
+            }
+            _active_validations[service_id] = tracker
+        tracker["updated_at"] = now
+        if evt.get("phase"):
+            tracker["phase"] = evt["phase"]
+        if evt.get("step"):
+            tracker["step"] = evt["step"]
+        elif evt.get("attempt"):
+            tracker["step"] = evt["attempt"]
+        if evt.get("attempt"):
+            tracker["current_attempt"] = evt["attempt"]
+        if evt.get("max_attempts"):
+            tracker["max_attempts"] = evt["max_attempts"]
+        if evt.get("progress"):
+            tracker["progress"] = evt["progress"]
+        if evt.get("detail"):
+            tracker["detail"] = evt["detail"]
+            tracker["events"].append({
+                "type": evt.get("type", ""),
+                "phase": evt.get("phase", ""),
+                "detail": evt["detail"],
+                "time": now,
+            })
+            if len(tracker["events"]) > 80:
+                tracker["events"] = tracker["events"][-80:]
+        if evt.get("type") == "progress" and evt.get("phase", "").endswith("_complete"):
+            completed = tracker.get("steps_completed", [])
+            step = evt["phase"].replace("_complete", "")
+            if step not in completed:
+                completed.append(step)
+            tracker["steps_completed"] = completed
+        if evt.get("type") == "done":
+            tracker["status"] = "succeeded"
+            tracker["progress"] = 1.0
+        elif evt.get("type") == "error":
+            tracker["status"] = "failed"
+            tracker["error"] = evt.get("detail", "")
+
     async def _stream_resume():
         collected_events: list[str] = []
         final_status = "completed"
         try:
             async for line in pipeline_runner.execute(ctx, resume_from_step=resume_step):
                 collected_events.append(line)
+                _track_resume(line)
                 yield line
         except Exception as exc:
             final_status = "failed"
             err_line = emit("error", "resume_failed", f"Resume failed: {str(exc)[:300]}")
             collected_events.append(err_line)
+            _track_resume(err_line)
             yield err_line
         finally:
             try:
@@ -5783,6 +5852,31 @@ async def resume_pipeline(run_id: str):
                 )
             except Exception as e:
                 logger.debug(f"Failed to finalize resumed run: {e}")
+
+            # Safety net: if the pipeline runner finished but the service is
+            # still stuck at 'onboarding', fix it.
+            try:
+                _be = await get_backend()
+                _svc_rows = await _be.execute(
+                    "SELECT status FROM services WHERE id = ?", (service_id,)
+                )
+                if _svc_rows and _svc_rows[0].get("status") == "onboarding":
+                    if final_status == "failed":
+                        await fail_service_validation(
+                            service_id,
+                            _active_validations.get(service_id, {}).get("error", "")[:500]
+                            or "Pipeline failed during resume",
+                        )
+                    elif final_status != "completed":
+                        await update_service_status(service_id, "interrupted")
+            except Exception:
+                pass
+
+            # Clean up activity tracker after a delay
+            async def _cleanup():
+                await asyncio.sleep(300)
+                _active_validations.pop(service_id, None)
+            asyncio.create_task(_cleanup())
 
     return StreamingResponse(
         _stream_resume(),

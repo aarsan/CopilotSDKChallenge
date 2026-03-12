@@ -3014,6 +3014,8 @@ async function resumePipelineRun(runId, serviceId) {
         }
         showToast('Pipeline resume completed', 'success');
         _loadPipelineRuns(serviceId);
+        // Refresh the main service list so status updates from 'interrupted'
+        if (typeof loadAllData === 'function') loadAllData();
     } catch (err) {
         showToast(`Resume error: ${err.message}`, 'error');
     }
