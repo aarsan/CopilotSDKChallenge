@@ -4751,10 +4751,11 @@ tr:hover .svc-view-tpl-btn {
 }
 
 .svc-stat-number {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: var(--accent-cyan);
     line-height: 1.1;
+    white-space: nowrap;
 }
 
 .svc-stat-status {
