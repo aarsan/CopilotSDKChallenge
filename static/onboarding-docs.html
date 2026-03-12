@@ -277,30 +277,35 @@
             <a href="#model-routing">Model Routing</a>
 
             <div class="section-gap"></div>
-            <h3>Pre-Loop Phases</h3>
-            <a class="indent" href="#phase-0">Phase 0 — Model Init</a>
-            <a class="indent" href="#phase-1">Phase 1 — Standards</a>
-            <a class="indent" href="#phase-2">Phase 2 — Planning</a>
-            <a class="indent" href="#phase-3">Phase 3 — Generation</a>
-            <a class="indent" href="#phase-3-5">Phase 3.5 — Policy Gen</a>
+            <h3>Pre-Loop Steps (1–7)</h3>
+            <a class="indent" href="#step-1">Step 1 — Model Init</a>
+            <a class="indent" href="#step-2">Step 2 — Dependency Gates</a>
+            <a class="indent" href="#step-3">Step 3 — Standards</a>
+            <a class="indent" href="#step-4">Step 4 — Planning</a>
+            <a class="indent" href="#step-5">Step 5 — Generation</a>
+            <a class="indent" href="#step-6">Step 6 — Policy Gen</a>
+            <a class="indent" href="#step-7">Step 7 — Governance Review</a>
 
             <div class="section-gap"></div>
-            <h3>Healing Loop (×5)</h3>
-            <a class="indent" href="#step-4-1">4.1 — Parse JSON</a>
-            <a class="indent" href="#step-4-2">4.2 — Static Policy</a>
-            <a class="indent" href="#step-4-3">4.3 — ARM What-If</a>
-            <a class="indent" href="#step-4-4">4.4 — Deploy</a>
-            <a class="indent" href="#step-4-5">4.5 — Resource Verify</a>
-            <a class="indent" href="#step-4-6">4.6 — Policy Test</a>
+            <h3>Healing Loop — Step 8 (×5)</h3>
+            <a class="indent" href="#step-8-1">8.1 — Parse JSON</a>
+            <a class="indent" href="#step-8-2">8.2 — Static Policy</a>
+            <a class="indent" href="#step-8-3">8.3 — ARM What-If</a>
+            <a class="indent" href="#step-8-4">8.4 — Deploy</a>
+            <a class="indent" href="#step-8-5">8.5 — Resource Verify</a>
+            <a class="indent" href="#step-8-6">8.6 — Policy Test</a>
 
             <div class="section-gap"></div>
-            <h3>Post-Loop</h3>
-            <a class="indent" href="#phase-5">Phase 5 — Cleanup</a>
-            <a class="indent" href="#phase-6">Phase 6 — Approve</a>
+            <h3>Post-Loop (9–12)</h3>
+            <a class="indent" href="#step-9">Step 9 — Infra Testing</a>
+            <a class="indent" href="#step-10">Step 10 — Deploy Policy</a>
+            <a class="indent" href="#step-11">Step 11 — Cleanup</a>
+            <a class="indent" href="#step-12">Step 12 — Approve</a>
 
             <div class="section-gap"></div>
             <h3>Deep Dives</h3>
             <a href="#healing-loop">Healing Loop Mechanics</a>
+            <a href="#regen-cycles">Regeneration Cycles</a>
             <a href="#transient-errors">Transient Error Handling</a>
             <a href="#parameter-injection">Parameter Injection</a>
         </nav>
@@ -310,14 +315,15 @@
             <h1 id="overview">Service Onboarding Pipeline</h1>
             <p class="subtitle">
                 A complete guide to how InfraForge generates, validates, deploys, and approves
-                Azure infrastructure — with AI-powered auto-healing across up to 5 attempts.
+                Azure infrastructure — a 12-step pipeline with AI-powered auto-healing (5 attempts
+                per cycle, up to 2 regeneration cycles).
             </p>
 
             <p>
                 When you click <strong>"Start Onboarding"</strong> on a service, InfraForge runs a
-                multi-phase pipeline that takes a service type (e.g. <code>Microsoft.Network/virtualNetworks</code>)
+                12-step pipeline that takes a service type (e.g. <code>Microsoft.Network/virtualNetworks</code>)
                 and produces a fully validated, deployed-and-cleaned-up ARM template ready for production use.
-                Every phase is streamed to the UI in real time as NDJSON events.
+                Every step is streamed to the UI in real time as NDJSON events.
             </p>
 
             <!-- ── Visual Pipeline Bar ── -->
@@ -326,28 +332,34 @@
 
             <div class="pipeline-bar">
                 <div class="pipeline-step done">
+                    <span class="step-icon">⚙️</span> INIT
+                </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">🔗</span> DEPS
+                </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">📋</span> STDS
+                </div>
+                <div class="pipeline-step done">
                     <span class="step-icon">🧠</span> PLAN
                 </div>
                 <div class="pipeline-step done">
-                    <span class="step-icon">⚙️</span> GENERATE
-                </div>
-                <div class="pipeline-step done">
-                    <span class="step-icon">📝</span> PARSE
+                    <span class="step-icon">⚙️</span> GEN
                 </div>
                 <div class="pipeline-step done">
                     <span class="step-icon">🛡️</span> POLICY
                 </div>
+                <div class="pipeline-step done">
+                    <span class="step-icon">🏛️</span> GOVERN
+                </div>
                 <div class="pipeline-step active">
-                    <span class="step-icon">🔮</span> WHAT-IF
-                </div>
-                <div class="pipeline-step">
-                    <span class="step-icon">🚀</span> DEPLOY
-                </div>
-                <div class="pipeline-step">
-                    <span class="step-icon">✅</span> VERIFY
+                    <span class="step-icon">🔄</span> HEAL
                 </div>
                 <div class="pipeline-step">
                     <span class="step-icon">🧪</span> TEST
+                </div>
+                <div class="pipeline-step">
+                    <span class="step-icon">📋</span> POL DEPLOY
                 </div>
                 <div class="pipeline-step">
                     <span class="step-icon">🧹</span> CLEANUP
@@ -358,9 +370,10 @@
             </div>
 
             <div class="callout info">
-                <strong>Auto-Healing:</strong> If any step from PARSE through TEST fails, the template is
-                automatically sent to <code>gpt-4.1</code> for repair. The loop retries up to 5 times
-                with escalating fix strategies. Steps before the healing loop (PLAN, GENERATE) only run once.
+                <strong>Auto-Healing:</strong> Step 8 runs a healing loop with sub-steps
+                (Parse → Policy Check → What-If → Deploy → Verify → Compliance). Failed templates are
+                automatically sent to <code>claude-sonnet-4</code> for repair — up to 5 attempts per cycle,
+                with up to 2 full regeneration cycles if all 5 attempts are exhausted.
             </div>
 
             <!-- ── Flowchart ── -->
@@ -428,7 +441,7 @@ flowchart TD
             <!-- ── Model Routing ── -->
             <h2 id="model-routing">Model Routing Table</h2>
             <p>
-                InfraForge uses <strong>task-based model routing</strong> — each phase is handled by the
+                InfraForge uses <strong>task-based model routing</strong> — each pipeline step is handled by the
                 LLM best suited for that specific type of work.
             </p>
             <table>
@@ -438,18 +451,18 @@ flowchart TD
                 <tbody>
                     <tr>
                         <td><span class="tag tag-info">PLANNING</span></td>
-                        <td><code>o3-mini</code></td>
-                        <td>Deep chain-of-thought reasoning for architecture decisions</td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>Architecture planning + root-cause analysis — consistent with generation and fixing models</td>
                     </tr>
                     <tr>
                         <td><span class="tag tag-success">CODE_GENERATION</span></td>
                         <td><code>claude-sonnet-4</code></td>
-                        <td>Precise, structured ARM/Bicep code generation</td>
+                        <td>Precise, structured ARM/Bicep code generation with strong instruction adherence</td>
                     </tr>
                     <tr>
                         <td><span class="tag tag-purple">CODE_FIXING</span></td>
-                        <td><code>gpt-4.1</code></td>
-                        <td>Error comprehension + surgical repair of broken templates</td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>Template healing needs strong instruction adherence to apply policy-required changes</td>
                     </tr>
                     <tr>
                         <td><span class="tag tag-success">POLICY_GENERATION</span></td>
@@ -458,8 +471,18 @@ flowchart TD
                     </tr>
                     <tr>
                         <td><span class="tag tag-info">VALIDATION_ANALYSIS</span></td>
-                        <td><code>o3-mini</code></td>
-                        <td>Analyzing deployment errors &amp; compliance violations</td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>Analyzing What-If results, deploy errors, and policy violations — consistent with planning model</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-purple">GOVERNANCE_REVIEW</span></td>
+                        <td><code>claude-sonnet-4</code></td>
+                        <td>CISO/CTO review gate — deep reasoning about security, architecture, and compliance</td>
+                    </tr>
+                    <tr>
+                        <td><span class="tag tag-info">QUICK_CLASSIFY</span></td>
+                        <td><code>gpt-4.1-nano</code></td>
+                        <td>Simple classification, routing, or yes/no decisions — speed wins</td>
                     </tr>
                     <tr>
                         <td><span class="tag tag-warning">DESIGN_DOCUMENT</span></td>
@@ -469,30 +492,50 @@ flowchart TD
                 </tbody>
             </table>
 
-            <!-- ── Pre-Loop Phases ── -->
-            <h2>Pre-Loop Phases <span style="font-size:0.8rem;color:var(--text-muted)">(Run Once)</span></h2>
+            <!-- ── Pre-Loop Steps ── -->
+            <h2>Pre-Loop Steps <span style="font-size:0.8rem;color:var(--text-muted)">(Steps 1–7, Run Once)</span></h2>
 
-            <div class="phase-card" id="phase-0">
+            <div class="phase-card" id="step-1">
                 <div class="phase-header">
-                    <span class="phase-num blue">0</span>
+                    <span class="phase-num blue">1</span>
                     <span class="phase-title">Model Routing Initialization</span>
                 </div>
                 <p>
-                    Builds the per-task model routing table and emits each assignment to the UI.
-                    The user sees which LLM handles each phase — full transparency.
+                    Builds the per-task model routing table, cleans up stale draft versions, and emits
+                    each assignment to the UI. The user sees which LLM handles each step — full transparency.
+                    Also emits an overview of all 12 pipeline steps.
                 </p>
                 <p><span class="tag tag-info">No LLM call</span> <span class="tag tag-success">Cannot fail</span></p>
             </div>
 
-            <div class="phase-card" id="phase-1">
+            <div class="phase-card" id="step-2">
                 <div class="phase-header">
-                    <span class="phase-num blue">1</span>
+                    <span class="phase-num blue">2</span>
+                    <span class="phase-title">Dependency Gates</span>
+                </div>
+                <p>
+                    Checks whether the service has required dependencies that must be onboarded first
+                    (e.g. a subnet requires a virtual network). If any dependencies are missing or not
+                    yet fully onboarded, the pipeline <strong>auto-onboards them inline</strong> by
+                    spawning recursive sub-pipelines.
+                </p>
+                <p>
+                    A circular dependency guard prevents infinite loops — if service A depends on B which
+                    depends on A, the cycle is detected and the gate proceeds.
+                </p>
+                <p><span class="tag tag-info">No LLM call</span> <span class="tag tag-warning">May spawn sub-pipelines</span></p>
+            </div>
+
+            <div class="phase-card" id="step-3">
+                <div class="phase-header">
+                    <span class="phase-num blue">3</span>
                     <span class="phase-title">Organization Standards Analysis</span>
                 </div>
                 <p>
                     Fetches all applicable organization standards (security, tagging, networking, compliance)
-                    from the governance database. Standards constrain template generation and policy validation
-                    in all subsequent phases.
+                    from the governance database. Builds three separate context bundles used by later steps:
+                    <code>standards_ctx</code> (for generation), <code>policy_standards_ctx</code> (for policy gen),
+                    and <code>governance_ctx</code> (for governance review).
                 </p>
                 <p>
                     Each standard is displayed with severity: <span class="tag tag-error">🔴 Critical</span>
@@ -502,14 +545,14 @@ flowchart TD
                 <p><span class="tag tag-info">No LLM call</span></p>
             </div>
 
-            <div class="phase-card" id="phase-2">
+            <div class="phase-card" id="step-4">
                 <div class="phase-header">
-                    <span class="phase-num purple">2</span>
-                    <span class="phase-title">Architecture Planning (PLAN Phase)</span>
-                    <span class="phase-model">o3-mini</span>
+                    <span class="phase-num purple">4</span>
+                    <span class="phase-title">Architecture Planning</span>
+                    <span class="phase-model">claude-sonnet-4</span>
                 </div>
                 <p>
-                    The reasoning model analyzes the service type, org standards, and security requirements
+                    The model analyzes the service type, org standards, and security requirements
                     to produce an architecture plan. This plan specifies:
                 </p>
                 <ul>
@@ -518,6 +561,7 @@ flowchart TD
                     <li>Parameters to expose with default values</li>
                     <li>Critical properties for production readiness</li>
                     <li>Standards compliance mapping</li>
+                    <li>Validation criteria for later verification</li>
                 </ul>
                 <div class="callout info">
                     The plan is fed into all subsequent LLM calls — the code generation model follows
@@ -525,10 +569,10 @@ flowchart TD
                 </div>
             </div>
 
-            <div class="phase-card" id="phase-3">
+            <div class="phase-card" id="step-5">
                 <div class="phase-header">
-                    <span class="phase-num green">3</span>
-                    <span class="phase-title">ARM Template Generation (EXECUTE Phase)</span>
+                    <span class="phase-num green">5</span>
+                    <span class="phase-title">ARM Template Generation</span>
                     <span class="phase-model">claude-sonnet-4</span>
                 </div>
                 <p>
@@ -538,55 +582,84 @@ flowchart TD
                     <li><strong>Built-in skeleton exists</strong> — Uses a pre-tested, hand-crafted template. No LLM call needed.</li>
                     <li><strong>No skeleton</strong> — The code generation model produces an ARM template guided by the architecture plan + org standards.</li>
                 </ul>
-                <p>After generation, a safety guard (<code>_ensure_parameter_defaults</code>) injects missing
-                   <code>defaultValue</code> on every parameter. Parameters are then extracted and passed explicitly
-                   to ARM deploy calls to prevent "parameter not provided" errors.</p>
+                <p>After generation, post-processing runs: sanitize resource names, inject required tags,
+                   strip foreign properties, stamp metadata, and a safety guard (<code>_ensure_parameter_defaults</code>)
+                   injects missing <code>defaultValue</code> on every parameter.</p>
                 <div class="callout error">
                     <strong>Fatal if:</strong> Generation returns empty content or invalid JSON. Pipeline aborts — no healing possible at this stage.
                 </div>
             </div>
 
-            <div class="phase-card" id="phase-3-5">
+            <div class="phase-card" id="step-6">
                 <div class="phase-header">
-                    <span class="phase-num green">3.5</span>
+                    <span class="phase-num green">6</span>
                     <span class="phase-title">Azure Policy Generation</span>
                     <span class="phase-model">claude-sonnet-4</span>
                 </div>
                 <p>
                     Generates an Azure Policy definition that enforces organizational standards on the
-                    deployed resources. Used in Step 4.6 (Runtime Policy Test) to verify the actual
+                    deployed resources. Used in Step 8.6 (Runtime Policy Test) to verify the actual
                     deployed resources comply with org requirements.
                 </p>
-                <p><span class="tag tag-warning">Non-fatal</span> If generation fails, the runtime policy test is skipped.</p>
+                <p><span class="tag tag-warning">Non-fatal</span> If LLM generation fails, a <strong>deterministic
+                    policy fallback</strong> is generated from rules instead. The runtime policy test is only
+                    skipped if both the LLM and the fallback produce nothing.</p>
+            </div>
+
+            <div class="phase-card" id="step-7">
+                <div class="phase-header">
+                    <span class="phase-num purple">7</span>
+                    <span class="phase-title">Governance Review (CISO + CTO Gate)</span>
+                    <span class="phase-model">claude-sonnet-4</span>
+                </div>
+                <p>
+                    A <strong>structured security and architecture review</strong> gate. Two parallel
+                    reviewer personas (CISO and CTO) evaluate the generated ARM template against
+                    organizational security requirements and architectural best practices.
+                </p>
+                <p>
+                    If the CISO review identifies blocking security issues, the template enters its own
+                    <strong>governance heal loop (up to 5 attempts)</strong> — the template is repaired to
+                    address security concerns, then re-reviewed. If all 5 governance heal attempts are
+                    exhausted, the pipeline proceeds to the main healing loop anyway (as a last resort).
+                </p>
+                <p>
+                    <span class="tag tag-error">CISO blocks →</span> Governance heal loop (×5).<br>
+                    <span class="tag tag-success">Both approve →</span> Proceed to healing loop.
+                </p>
             </div>
 
             <!-- ── Healing Loop ── -->
-            <h2>Healing Loop <span style="font-size:0.8rem;color:var(--text-muted)">(Up to 5 Attempts)</span></h2>
+            <h2>Step 8: Healing Loop <span style="font-size:0.8rem;color:var(--text-muted)">(Up to 5 Attempts × 2 Regen Cycles)</span></h2>
 
             <div class="callout">
-                <strong>How it works:</strong> Each attempt runs steps 4.1→4.6 sequentially. If any step fails and it's
-                not the last attempt, the template is sent to <code>gpt-4.1</code> for repair. The fixed template is
-                re-validated from the beginning. A <strong>heal history</strong> tracks every fix attempt so the LLM
-                never repeats the same failed approach.
+                <strong>How it works:</strong> Each attempt runs sub-steps 8.1→8.6 sequentially. If any sub-step
+                fails and it's not the last attempt, the template is sent to <code>claude-sonnet-4</code> for repair.
+                The fixed template is re-validated from the beginning. A <strong>heal history</strong> tracks every
+                fix attempt so the LLM never repeats the same failed approach.<br><br>
+                <strong>Regeneration:</strong> If all 5 heal attempts are exhausted, the pipeline can trigger a
+                <strong>full regeneration cycle</strong> — re-planning architecture with error context, then generating
+                an entirely new ARM template. Up to 2 regeneration cycles are allowed, each resetting the heal counter.
             </div>
 
-            <div class="phase-card" id="step-4-1">
+            <div class="phase-card" id="step-8-1">
                 <div class="phase-header">
-                    <span class="phase-num cyan">4.1</span>
+                    <span class="phase-num cyan">8.1</span>
                     <span class="phase-title">Parse JSON</span>
                 </div>
                 <p>
                     Validates the ARM template is syntactically valid JSON via <code>json.loads()</code>.
-                    Reports line number and column on failure.
+                    Reports line number and column on failure. Also runs <code>validate_arm_references()</code>
+                    to auto-fix missing variables and parameters before proceeding.
                 </p>
                 <p>
                     <span class="tag tag-error">On failure →</span> Auto-heal with error context, then restart loop.
                 </p>
             </div>
 
-            <div class="phase-card" id="step-4-2">
+            <div class="phase-card" id="step-8-2">
                 <div class="phase-header">
-                    <span class="phase-num cyan">4.2</span>
+                    <span class="phase-num cyan">8.2</span>
                     <span class="phase-title">Static Policy Check</span>
                 </div>
                 <p>
@@ -600,9 +673,9 @@ flowchart TD
                 </p>
             </div>
 
-            <div class="phase-card" id="step-4-3">
+            <div class="phase-card" id="step-8-3">
                 <div class="phase-header">
-                    <span class="phase-num cyan">4.3</span>
+                    <span class="phase-num cyan">8.3</span>
                     <span class="phase-title">ARM What-If</span>
                     <span class="phase-model">Azure RM API</span>
                 </div>
@@ -620,9 +693,9 @@ flowchart TD
                 </p>
             </div>
 
-            <div class="phase-card" id="step-4-4">
+            <div class="phase-card" id="step-8-4">
                 <div class="phase-header">
-                    <span class="phase-num orange">4.4</span>
+                    <span class="phase-num orange">8.4</span>
                     <span class="phase-title">ARM Deployment</span>
                     <span class="phase-model">Azure RM API</span>
                 </div>
@@ -630,19 +703,21 @@ flowchart TD
                     Actually provisions resources into a temporary validation resource group. Deployment
                     mode is <strong>incremental</strong> (doesn't delete existing resources). If the error message
                     is generic, InfraForge fetches operation-level errors for better diagnostics.
+                    A <strong>heartbeat event</strong> is emitted every 20 seconds during long deployments
+                    to keep the HTTP connection alive.
                 </p>
                 <p>
-                    <span class="tag tag-error">On deploy error →</span> Auto-heal. On last attempt, cleans up
-                    the resource group then fails the pipeline.
+                    <span class="tag tag-error">On deploy error →</span> Auto-heal. On last attempt (no regen cycles left),
+                    cleans up the resource group then fails the pipeline.
                 </p>
                 <p>
-                    <span class="tag tag-success">On success →</span> Resource group is marked for cleanup in Phase 5.
+                    <span class="tag tag-success">On success →</span> Resource group is marked for cleanup in Step 11.
                 </p>
             </div>
 
-            <div class="phase-card" id="step-4-5">
+            <div class="phase-card" id="step-8-5">
                 <div class="phase-header">
-                    <span class="phase-num green">4.5</span>
+                    <span class="phase-num green">8.5</span>
                     <span class="phase-title">Resource Verification</span>
                     <span class="phase-model">Azure RM API</span>
                 </div>
@@ -654,9 +729,9 @@ flowchart TD
                 <p><span class="tag tag-warning">Non-fatal</span> If enumeration fails, the policy test proceeds with an empty resource list.</p>
             </div>
 
-            <div class="phase-card" id="step-4-6">
+            <div class="phase-card" id="step-8-6">
                 <div class="phase-header">
-                    <span class="phase-num purple">4.6</span>
+                    <span class="phase-num purple">8.6</span>
                     <span class="phase-title">Runtime Policy Compliance Test</span>
                 </div>
                 <p>
@@ -665,43 +740,89 @@ flowchart TD
                     <code>if</code> condition tree (allOf / anyOf / not) with operators like
                     equals, notEquals, in, contains, exists, greater, less.
                 </p>
+                <div class="callout">
+                    <strong>Nested policy healing:</strong> If resources violate the policy, this step
+                    first attempts to <strong>relax the policy</strong> (up to 3 times) to match the deployed
+                    resources before falling back to healing the ARM template. This avoids unnecessary
+                    template churn when the policy is overly restrictive.
+                </div>
                 <p>
-                    <span class="tag tag-error">On violation →</span> Auto-heal with violation details + policy content.
-                    On last attempt, cleans up RG then fails.
+                    <span class="tag tag-error">On violation (after policy heal) →</span> Auto-heal template with
+                    violation details + policy content. On last attempt, cleans up RG then fails (or triggers regen).
                 </p>
                 <p>
                     <span class="tag tag-info">Skipped</span> if no policy was generated or no resources exist.
                 </p>
             </div>
 
-            <!-- ── Post-Loop ── -->
-            <h2>Post-Loop Phases <span style="font-size:0.8rem;color:var(--text-muted)">(On Success)</span></h2>
+            <!-- ── Post-Loop Steps ── -->
+            <h2>Post-Loop Steps <span style="font-size:0.8rem;color:var(--text-muted)">(Steps 9–12, On Success)</span></h2>
 
-            <div class="phase-card" id="phase-5">
+            <div class="phase-card" id="step-9">
                 <div class="phase-header">
-                    <span class="phase-num red">5</span>
+                    <span class="phase-num cyan">9</span>
+                    <span class="phase-title">Infrastructure Testing</span>
+                    <span class="phase-model">claude-sonnet-4</span>
+                </div>
+                <p>
+                    AI-generates infrastructure smoke tests for each resource type in the deployed template.
+                    Tests validate real resource behavior: connectivity, configuration, security settings.
+                    Test results are captured in the validation record.
+                </p>
+                <p>
+                    <span class="tag tag-warning">Advisory by default</span> — test failures are reported but
+                    don't block the pipeline. Set <code>INFRA_TEST_BLOCKING=true</code> to make failures block.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-10">
+                <div class="phase-header">
+                    <span class="phase-num blue">10</span>
+                    <span class="phase-title">Deploy Azure Policy</span>
+                    <span class="phase-model">Azure RM API</span>
+                </div>
+                <p>
+                    Deploys the generated (or healed) Azure Policy definition to Azure, making it
+                    available for ongoing compliance enforcement across the organization.
+                </p>
+                <p>
+                    <span class="tag tag-warning">Non-blocking</span> — if deployment fails, the error is
+                    logged but does not fail the pipeline. Policy cleanup on failure is automatic.
+                </p>
+            </div>
+
+            <div class="phase-card" id="step-11">
+                <div class="phase-header">
+                    <span class="phase-num red">11</span>
                     <span class="phase-title">Cleanup Validation Resource Group</span>
                 </div>
                 <p>
-                    Deletes the temporary validation resource group. This is <strong>fire-and-forget</strong>
+                    Deletes the temporary validation resource group and any deployed policy artifacts.
+                    This is <strong>fire-and-forget</strong>
                     — the pipeline doesn't wait for full deletion (which can take minutes). A safety-net
                     <code>finally</code> block ensures cleanup even if an unhandled error occurs.
                 </p>
             </div>
 
-            <div class="phase-card" id="phase-6">
+            <div class="phase-card" id="step-12">
                 <div class="phase-header">
-                    <span class="phase-num green">6</span>
-                    <span class="phase-title">Promote to Approved ✅</span>
+                    <span class="phase-num green">12</span>
+                    <span class="phase-title">Promote to Approved + Co-onboard ✅</span>
                 </div>
                 <p>
                     Builds a comprehensive validation result capturing What-If results, deployed resources,
-                    static policy check, runtime policy compliance, and attempt count. Updates the service
-                    version status to <code>"approved"</code> and sets it as the active version.
+                    static policy check, runtime policy compliance, test results, and attempt count.
+                    Updates the service version status to <code>"approved"</code> and sets it as the active version.
+                </p>
+                <p>
+                    After promotion, the pipeline checks for <strong>always_include child resources</strong>
+                    (e.g. subnets for a virtual network) and <strong>auto-onboards them</strong> by spawning
+                    additional onboarding sub-pipelines. This ensures composite resource types are fully
+                    onboarded together.
                 </p>
                 <div class="callout success">
                     <strong>🎉 Service onboarded!</strong> The ARM template is now marked as production-ready
-                    and available in the service catalog.
+                    and available in the service catalog. Any child resources are being co-onboarded automatically.
                 </div>
             </div>
 
@@ -710,9 +831,11 @@ flowchart TD
 
             <h3>How Auto-Healing Works</h3>
             <p>
-                When a step fails, the current template + error message + full heal history is sent to
-                <code>gpt-4.1</code> (the CODE_FIXING model). The healer produces a corrected template,
-                which then goes through the full validation loop again from step 4.1.
+                When a sub-step fails, the current template + error message + full heal history is sent to
+                <code>claude-sonnet-4</code> (the CODE_FIXING model) via a two-phase process: first an
+                <strong>analysis</strong> call identifies the root cause, then a <strong>repair</strong> call
+                produces the corrected template. The healed template then goes through the full validation
+                loop again from step 8.1.
             </p>
 
             <h3>Escalation Strategy</h3>
@@ -742,7 +865,7 @@ flowchart TD
             <h3>Heal History Tracking</h3>
             <p>
                 Each heal attempt is recorded as <code>{attempt, phase, error, fix_summary}</code>.
-                The <code>_summarize_fix()</code> function produces a structural diff (resource count changes,
+                The <code>summarize_fix()</code> function produces a structural diff (resource count changes,
                 API version changes, added/removed resources, parameter changes). The full history is included
                 in subsequent fix prompts with: <em>"DO NOT repeat these fixes — they already failed."</em>
             </p>
@@ -756,6 +879,29 @@ flowchart TD
                 <li><strong>Missing defaults</strong> → Inject via <code>_ensure_parameter_defaults()</code></li>
                 <li><strong>Markdown fences</strong> → Strip automatically</li>
             </ol>
+
+            <!-- ── Regeneration Cycles ── -->
+            <h2 id="regen-cycles">Regeneration Cycles</h2>
+            <p>
+                If all 5 heal attempts in a cycle are exhausted without success, the pipeline doesn't
+                immediately fail. Instead, it can trigger a <strong>full regeneration cycle</strong>
+                (up to 2 times):
+            </p>
+            <ol>
+                <li><strong>Re-plan</strong> — Calls the PLANNING model again with full error context from
+                    the failed cycle. The prompt includes every error encountered and explicitly asks for
+                    a fundamentally different architectural approach.</li>
+                <li><strong>Re-generate</strong> — Produces an entirely new ARM template from the new plan.</li>
+                <li><strong>Reset</strong> — Clears the heal history and resets the attempt counter to 1.</li>
+                <li><strong>Re-enter loop</strong> — The new template goes through steps 8.1→8.6 with a fresh
+                    set of 5 heal attempts.</li>
+            </ol>
+            <div class="callout info">
+                <strong>Total resilience:</strong> 5 heal attempts × (1 initial + 2 regen cycles) = up to
+                <strong>15 template fix attempts</strong> before the pipeline gives up. Combined with the
+                governance heal loop (×5) and the policy heal sub-loop (×3 per attempt), the pipeline
+                has substantial self-repair capacity.
+            </div>
 
             <!-- ── Transient Errors ── -->
             <h2 id="transient-errors">Transient Error Handling</h2>
