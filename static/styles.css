@@ -1629,27 +1629,29 @@ tr:hover .svc-view-tpl-btn {
     border-top: 2px solid var(--border-default, #30363d);
 }
 
-/* Virtual parent row for orphan children whose parent isn't in the list */
-.svc-row-virtual-parent {
+/* Namespace group header row */
+.svc-row-ns-header {
     pointer-events: none;
 }
 
-.svc-row-virtual-parent > td {
-    padding-top: 0.75rem;
-    padding-bottom: 0.35rem;
+.svc-row-ns-header > td {
+    padding: 0.65rem 0.75rem 0.25rem;
     border-top: 2px solid var(--border-default, #30363d);
+    background: var(--bg-secondary, #161b22);
 }
 
-.svc-row-virtual-parent .svc-name {
-    font-weight: 600;
-    color: var(--text-secondary);
-    font-size: 0.82rem;
+.svc-ns-label {
+    font-weight: 700;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
 }
 
-.svc-row-virtual-parent .svc-id {
+.svc-ns-full {
+    font-size: 0.65rem;
     color: var(--text-muted);
-    font-size: 0.68rem;
     font-family: var(--font-mono);
+    margin-left: 0.5rem;
     opacity: 0.7;
 }
 

@@ -1228,13 +1228,16 @@ function renderServiceTable(services) {
     }
 
     // Sort so children appear directly after their parent.
-    // Primary: category (preserve DB ordering). Secondary: parent group, then parent before children.
+    // Primary: namespace, then parent resource type, then parent-first, then children alphabetically.
     const sorted = [...services].sort((a, b) => {
-        const catCmp = (a.category || '').localeCompare(b.category || '');
-        if (catCmp !== 0) return catCmp;
         const ap = a.id.split('/'), bp = b.id.split('/');
-        const aParent = ap.length >= 3 ? ap.slice(0, 2).join('/') : a.id;
-        const bParent = bp.length >= 3 ? bp.slice(0, 2).join('/') : b.id;
+        // Namespace = first segment (e.g. Microsoft.Devices)
+        const aNs = ap[0], bNs = bp[0];
+        const nsCmp = aNs.localeCompare(bNs);
+        if (nsCmp !== 0) return nsCmp;
+        // Parent resource type (segment 2, or the resource itself if top-level)
+        const aParent = ap.length >= 3 ? ap[1] : ap[1] || '';
+        const bParent = bp.length >= 3 ? bp[1] : bp[1] || '';
         const parentCmp = aParent.localeCompare(bParent);
         if (parentCmp !== 0) return parentCmp;
         // Same parent group: parent row first, then children alphabetically
@@ -1244,9 +1247,8 @@ function renderServiceTable(services) {
         return a.id.localeCompare(b.id);
     });
 
-    // Build set of real service IDs so we can detect orphan children
-    const realIds = new Set(sorted.map(s => s.id));
-
+    // Track previous namespace and parent to inject group headers
+    let prevNs = null;
     let prevParentId = null;
     tbody.innerHTML = sorted.map(svc => {
         const status = svc.status || 'not_approved';
@@ -1323,31 +1325,28 @@ function renderServiceTable(services) {
         // Detect child resource (3+ segments in resource type)
         const idParts = svc.id.split('/');
         const isChildResource = idParts.length >= 3;
-        const parentId = isChildResource ? idParts.slice(0, 2).join('/') : null;
         const parentShortName = isChildResource ? idParts[1] : null;
         const childTag = isChildResource
-            ? `<span class="svc-child-tag" title="Child resource of ${escapeHtml(parentId)}">↳ child of ${escapeHtml(parentShortName)}</span>`
+            ? `<span class="svc-child-tag" title="Child resource of ${escapeHtml(idParts.slice(0, 2).join('/'))}">↳ child of ${escapeHtml(parentShortName)}</span>`
             : '';
 
-        // Track parent boundaries — add a separator class when the parent changes
-        const isNewGroup = isChildResource && parentId !== prevParentId;
-        prevParentId = isChildResource ? parentId : null;
-        const rowClasses = [isChildResource ? 'svc-row-child' : '', isNewGroup ? 'svc-row-child-group-start' : ''].filter(Boolean).join(' ');
+        // Build hierarchy headers: namespace group + parent boundary tracking
+        let headerRows = '';
+        const ns = idParts[0]; // e.g. Microsoft.Devices
+        const parentId = isChildResource ? idParts.slice(0, 2).join('/') : svc.id;
 
-        // If this child's parent doesn't exist as a real row, inject a virtual parent header
-        let virtualParentRow = '';
-        if (isNewGroup && parentId && !realIds.has(parentId)) {
-            const ns = idParts[0];          // e.g. Microsoft.Devices
-            const shortParent = idParts[1]; // e.g. locations
-            virtualParentRow = `<tr class="svc-row-virtual-parent">
-                <td colspan="7">
-                    <div class="svc-name">${escapeHtml(ns)} — ${escapeHtml(shortParent.charAt(0).toUpperCase() + shortParent.slice(1))}</div>
-                    <div class="svc-id">${escapeHtml(parentId)}</div>
-                </td>
-            </tr>`;
+        // Namespace header when namespace changes
+        if (ns !== prevNs) {
+            const nsShort = ns.includes('.') ? ns.split('.').slice(1).join('.') : ns;
+            headerRows += `<tr class="svc-row-ns-header"><td colspan="7"><span class="svc-ns-label">${escapeHtml(nsShort)}</span><span class="svc-ns-full">${escapeHtml(ns)}</span></td></tr>`;
+            prevNs = ns;
+            prevParentId = null; // reset parent tracking on new namespace
         }
 
-        return virtualParentRow + `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClasses ? ` class="${rowClasses}"` : ''}>
+        // Determine row class
+        const rowClass = isChildResource ? 'svc-row-child' : '';
+
+        return headerRows + `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClass ? ` class="${rowClass}"` : ''}>
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
