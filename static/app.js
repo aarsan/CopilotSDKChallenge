@@ -813,6 +813,11 @@ async function loadAllData() {
         // Load activity badge (non-blocking)
         loadActivity(true);
 
+        // Load dashboard live sections (non-blocking)
+        loadDashboardHealth();
+        loadDashboardAgents();
+        loadDashboardActivity();
+
         // Build service category filters
         const categories = svcData.categories || [];
         const filterContainer = document.getElementById('catalog-filters');
@@ -857,6 +862,164 @@ async function loadAllData() {
     } catch (err) {
         console.warn('Failed to load data:', err);
     }
+}
+
+// ── Dashboard: Live Data Sections ───────────────────────────
+
+/** Populate the compact health strip on the dashboard (fire-and-forget). */
+async function loadDashboardHealth() {
+    const _dashHealthMap = {
+        sql:         { item: 'dash-health-sql',   latency: 'dash-hlat-sql' },
+        backend_api: { item: 'dash-health-api',   latency: 'dash-hlat-api' },
+        entra_id:    { item: 'dash-health-entra',  latency: 'dash-hlat-entra' },
+        workiq:      { item: 'dash-health-workiq', latency: 'dash-hlat-workiq' },
+    };
+
+    for (const key of Object.keys(_dashHealthMap)) {
+        const ids = _dashHealthMap[key];
+        const item = document.getElementById(ids.item);
+        const latEl = document.getElementById(ids.latency);
+        if (!item) continue;
+
+        try {
+            const res = await fetch(`/api/health?check=${encodeURIComponent(key)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const info = data.result;
+            const dot = item.querySelector('.health-dot');
+            if (dot) dot.className = `health-dot health-dot-${info.status}`;
+            if (latEl) latEl.textContent = info.status === 'healthy' && info.latency_ms != null ? `${info.latency_ms}ms` : '';
+        } catch {
+            const dot = item.querySelector('.health-dot');
+            if (dot) dot.className = 'health-dot health-dot-unhealthy';
+            if (latEl) latEl.textContent = '';
+        }
+    }
+}
+
+/** Populate the compact agent summary strip on the dashboard. */
+async function loadDashboardAgents() {
+    try {
+        const res = await fetch('/api/agents/activity');
+        if (!res.ok) return;
+        const data = await res.json();
+        const agents = data.agents || [];
+        const counters = data.counters || {};
+
+        let totalCalls = 0, totalErrors = 0, totalMs = 0;
+        Object.values(counters).forEach(c => {
+            totalCalls += c.calls || 0;
+            totalErrors += c.errors || 0;
+            totalMs += c.total_ms || 0;
+        });
+        const avgLatency = totalCalls > 0 ? Math.round(totalMs / totalCalls) : 0;
+
+        const _s = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        _s('dash-agent-ct', agents.length);
+        _s('dash-agent-calls', totalCalls.toLocaleString());
+        _s('dash-agent-errors', totalErrors);
+        _s('dash-agent-latency', totalCalls > 0 ? `${avgLatency}ms` : '—');
+    } catch {
+        // silent — dashboard is best-effort
+    }
+}
+
+/** Populate the recent activity feed on the dashboard (last 5 combined). */
+async function loadDashboardActivity() {
+    const feed = document.getElementById('dash-activity-feed');
+    if (!feed) return;
+
+    try {
+        const [deployRes, activityRes] = await Promise.all([
+            fetch('/api/deployments'),
+            fetch('/api/activity'),
+        ]);
+
+        const items = [];
+
+        if (deployRes.ok) {
+            const deployData = await deployRes.json();
+            (deployData.deployments || []).forEach(d => {
+                items.push({
+                    type: 'deployment',
+                    title: d.template_name || d.deployment_name || 'Deployment',
+                    status: d.status || 'unknown',
+                    meta: d.resource_group || '',
+                    time: d.started_at || d.completed_at || '',
+                    icon: '🚀',
+                });
+            });
+        }
+
+        if (activityRes.ok) {
+            const actData = await activityRes.json();
+            (actData.jobs || []).forEach(j => {
+                const status = j.is_running ? 'running'
+                    : j.status === 'approved' ? 'succeeded'
+                    : j.status === 'validation_failed' ? 'failed'
+                    : 'validating';
+                items.push({
+                    type: 'validation',
+                    title: j.service_id || 'Service Validation',
+                    status,
+                    meta: j.region || '',
+                    time: (j.events && j.events.length > 0) ? j.events[j.events.length - 1].timestamp : '',
+                    icon: '🔬',
+                });
+            });
+        }
+
+        // Sort by time descending, take last 5
+        items.sort((a, b) => {
+            const ta = a.time ? new Date(a.time).getTime() : 0;
+            const tb = b.time ? new Date(b.time).getTime() : 0;
+            return tb - ta;
+        });
+        const recent = items.slice(0, 5);
+
+        if (recent.length === 0) {
+            feed.innerHTML = `
+                <div class="dash-activity-empty">
+                    <span class="dash-activity-empty-icon">📡</span>
+                    <p>No recent activity. Deploy a template or onboard a service to see activity here.</p>
+                </div>`;
+            return;
+        }
+
+        const statusLabels = {
+            succeeded: 'Succeeded', failed: 'Failed', running: 'Running',
+            deploying: 'Deploying', validating: 'Validating', torn_down: 'Torn Down',
+            tearing_down: 'Tearing Down', unknown: 'Unknown',
+        };
+
+        feed.innerHTML = recent.map(item => `
+            <div class="dash-activity-item" onclick="navigateTo('runs')">
+                <span class="dash-activity-icon">${escapeHtml(item.icon)}</span>
+                <div class="dash-activity-body">
+                    <div class="dash-activity-title">${escapeHtml(item.title)}</div>
+                    <div class="dash-activity-meta">${escapeHtml(item.meta)}${item.time ? ' · ' + _formatTimeAgo(item.time) : ''}</div>
+                </div>
+                <span class="dash-activity-status ${item.status}">${statusLabels[item.status] || item.status}</span>
+            </div>
+        `).join('');
+    } catch {
+        feed.innerHTML = `
+            <div class="dash-activity-empty">
+                <span class="dash-activity-empty-icon">📡</span>
+                <p>No recent activity. Deploy a template or onboard a service to see activity here.</p>
+            </div>`;
+    }
+}
+
+/** Format an ISO timestamp to a relative time string. */
+function _formatTimeAgo(isoStr) {
+    if (!isoStr) return '';
+    const sec = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+    if (sec < 0 || isNaN(sec)) return '';
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+    return `${Math.round(sec / 86400)}d ago`;
 }
 
 // ── Azure Service Sync (SSE streaming with live progress) ───
