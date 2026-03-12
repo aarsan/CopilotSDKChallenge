@@ -13,20 +13,19 @@
       7. GitHub integration (token + org via gh CLI)
       8. Generates .env file with all values populated
 
-    After running this script, just: .\.venv\Scripts\python.exe web_start.py
+    After running this script, just: python web_start.py
 
 .NOTES
     Prerequisites:
-      - winget (ships with Windows 10 1709+ / Windows 11)
+      - Azure CLI (az) installed and authenticated: az login
       - Azure subscription with Contributor or Owner access
+      - Python 3.9+
+      - ODBC Driver 18 for SQL Server
+      - GitHub CLI (gh) installed and authenticated: gh auth login
       - GitHub account (for publishing repos & PRs)
-
-    All other tools (Azure CLI, Python, ODBC Driver 18, GitHub CLI) are
-    auto-installed via winget from pinned versions in scripts/prerequisites.json.
 
 .EXAMPLE
     .\scripts\setup.ps1
-    .\scripts\setup.ps1 -Yes              # non-interactive, auto-approve all prompts
     .\scripts\setup.ps1 -Location eastus2 -ResourceGroup MyInfraForge
     .\scripts\setup.ps1 -Cleanup          # tear down resources from a failed run
 #>
@@ -42,7 +41,6 @@ param(
     [switch]$SkipEntraId,
     [switch]$SkipSql,
     [switch]$Force,
-    [switch]$Yes,
     [switch]$Cleanup
 )
 
@@ -55,7 +53,6 @@ Set-StrictMode -Version Latest
 
 function Write-Step { param([string]$Msg) Write-Host "`n━━━ $Msg ━━━" -ForegroundColor Cyan }
 function Write-Ok { param([string]$Msg) Write-Host "  ✓ $Msg" -ForegroundColor Green }
-function Write-Info { param([string]$Msg) Write-Host "  ℹ $Msg" -ForegroundColor Blue }
 function Write-Warn { param([string]$Msg) Write-Host "  ⚠ $Msg" -ForegroundColor Yellow }
 function Write-Err { param([string]$Msg) Write-Host "  ✗ $Msg" -ForegroundColor Red }
 
@@ -64,129 +61,8 @@ function Test-Command {
     $null -ne (Get-Command -Name $Name -ErrorAction SilentlyContinue)
 }
 
-function Install-Prerequisite {
-    <#
-    .SYNOPSIS
-        Install a missing prerequisite via winget using the pinned version from
-        scripts/prerequisites.json. Refreshes PATH after install so the tool is
-        immediately available in this session.
-    #>
-    param(
-        [string]$DisplayName,
-        [string]$WingetId,
-        [string]$Version,
-        [string]$Command,
-        [bool]$Required
-    )
-
-    $label = if ($Required) { "required" } else { "optional" }
-    Write-Host "  $DisplayName ($label) is not installed." -ForegroundColor Yellow
-
-    if (-not (Test-Command "winget")) {
-        Write-Err "winget is not available. Cannot auto-install $DisplayName."
-        Write-Host "  winget ships with Windows 10 1709+ and Windows 11. Update via the Microsoft Store (App Installer)." -ForegroundColor Gray
-        if ($Required) { exit 1 }
-        return $false
-    }
-
-    if (-not $Yes) {
-        $prompt = Read-Host "  Install $DisplayName $Version via winget? (Y/n)"
-    } else {
-        $prompt = ""
-        Write-Host "  Install $DisplayName $Version via winget? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
-    }
-    if ($prompt -eq "n") {
-        if ($Required) {
-            Write-Err "$DisplayName is required. Cannot continue without it."
-            exit 1
-        }
-        return $false
-    }
-
-    Write-Host "  Installing $DisplayName $Version ..." -ForegroundColor Cyan
-
-    # Temporarily relax ErrorActionPreference — winget writes progress and
-    # warnings to stderr. With "Stop", the 2>&1 redirect turns those into
-    # terminating ErrorRecord objects and kills the script mid-install.
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        winget install --id $WingetId --version $Version --exact --source winget `
-            --silent --accept-package-agreements --accept-source-agreements 2>&1 |
-            ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-        $wingetExit = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $savedEAP
-    }
-
-    if ($wingetExit -ne 0) {
-        Write-Err "winget install failed for $DisplayName (exit code $wingetExit)."
-        if ($Required) { exit 1 }
-        return $false
-    }
-
-    # Refresh PATH so newly installed tools are found in this session
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = "$machinePath;$userPath"
-
-    # For tools with a command, verify the install succeeded
-    if ($Command -and -not (Test-Command $Command)) {
-        Write-Warn "$DisplayName was installed but '$Command' is still not on PATH."
-        Write-Host "  You may need to close and reopen your terminal, then re-run setup." -ForegroundColor Gray
-        if ($Required) { exit 1 }
-        return $false
-    }
-
-    Write-Ok "$DisplayName $Version installed"
-    return $true
-}
-
 function Get-RandomSuffix {
     -join ((97..122) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
-}
-
-function Find-RealPython {
-    <#
-    .SYNOPSIS
-        Find a real python.exe, skipping the Windows Store stub in WindowsApps.
-        Returns the full path to the executable, or $null if not found.
-    #>
-
-    # 1. Check every python.exe on PATH, skip the Store stub
-    $cmds = Get-Command python -All -ErrorAction SilentlyContinue
-    foreach ($cmd in $cmds) {
-        $src = $cmd.Source
-        if ($src -match 'WindowsApps') { continue }
-        # Verify it actually runs
-        $probe = & $src --version 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
-            return $src
-        }
-    }
-
-    # 2. Search common winget/installer locations
-    $candidates = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-        "$env:ProgramFiles\Python313\python.exe",
-        "$env:ProgramFiles\Python312\python.exe",
-        "$env:ProgramFiles\Python311\python.exe",
-        "C:\Python313\python.exe",
-        "C:\Python312\python.exe",
-        "C:\Python311\python.exe"
-    )
-    foreach ($path in $candidates) {
-        if (Test-Path $path) {
-            $probe = & $path --version 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
-                return $path
-            }
-        }
-    }
-
-    return $null
 }
 
 function New-AppClientSecret {
@@ -335,12 +211,7 @@ if ($Cleanup) {
         # 3. Delete resource group (only if user confirms - it deletes EVERYTHING in it)
         Write-Host ""
         Write-Warn "Resource group '$ResourceGroup' still exists."
-        if (-not $Yes) {
         $deleteRg = Read-Host "  Delete the entire resource group? This removes ALL resources in it. (y/N)"
-    } else {
-        $deleteRg = "y"
-        Write-Host "  Delete the entire resource group? (y/N) y [-Yes]" -ForegroundColor DarkGray
-    }
         if ($deleteRg -eq "y") {
             Write-Host "  Deleting resource group '$ResourceGroup'... (this may take a few minutes)"
             az group delete --name $ResourceGroup --yes -o none 2>&1
@@ -408,36 +279,17 @@ Write-Host ""
 Write-Host "  Before you begin, make sure you have:" -ForegroundColor White
 Write-Host "    • An Azure subscription with Contributor (or Owner) access" -ForegroundColor Gray
 Write-Host "    • A GitHub account (for publishing repos & PRs)" -ForegroundColor Gray
-Write-Host "    • winget (ships with Windows 10 1709+ / Windows 11)" -ForegroundColor Gray
 Write-Host ""
 
-Write-Step "Checking prerequisites (from scripts/prerequisites.json)"
+Write-Step "Checking prerequisites"
 
-# Load the prerequisite manifest
-$manifestPath = Join-Path $PSScriptRoot "prerequisites.json"
-if (-not (Test-Path $manifestPath)) {
-    Write-Err "Prerequisite manifest not found at: $manifestPath"
-    exit 1
-}
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-$prereqs = $manifest.prerequisites
-
-# ── winget (the one true prerequisite) ──
-if (-not (Test-Command "winget")) {
-    Write-Err "winget is not available. InfraForge setup requires winget to install prerequisites."
-    Write-Host "  winget ships with Windows 10 1709+ and Windows 11." -ForegroundColor Gray
-    Write-Host "  Update via the Microsoft Store (search 'App Installer') or:" -ForegroundColor Gray
-    Write-Host "    https://learn.microsoft.com/en-us/windows/package-manager/winget/#install-winget" -ForegroundColor DarkGray
-    exit 1
-}
-Write-Ok "winget available"
-
-# ── Azure CLI ──
-$azSpec = $prereqs.az
+# Azure CLI
 if (-not (Test-Command "az")) {
-    Install-Prerequisite -DisplayName "Azure CLI" -WingetId $azSpec.wingetId -Version $azSpec.version -Command $azSpec.command -Required $azSpec.required
+    Write-Err "Azure CLI (az) not found."
+    Write-Host "  Install: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli" -ForegroundColor Gray
+    exit 1
 }
-Write-Ok "Azure CLI found (pinned: $($azSpec.version))"
+Write-Ok "Azure CLI found"
 
 # Check az login
 $account = ConvertFrom-AzJson (az account show 2>&1)
@@ -461,71 +313,43 @@ if (-not $currentUserOid -or $currentUserOid -match "ERROR") {
 }
 Write-Ok "User OID: $currentUserOid"
 
-# ── Python ──
-# Windows ships a python.exe stub in WindowsApps that just opens the
-# Microsoft Store. We must find a real python.exe and track its full path
-# for use throughout setup (venv creation, pip install, verification).
-$pySpec = $prereqs.python
-$script:PythonExe = Find-RealPython
-if (-not $script:PythonExe) {
-    Install-Prerequisite -DisplayName "Python" -WingetId $pySpec.wingetId -Version $pySpec.version -Command $pySpec.command -Required $pySpec.required
-    # Re-search after install (PATH was already refreshed by Install-Prerequisite)
-    $script:PythonExe = Find-RealPython
-    if (-not $script:PythonExe) {
-        Write-Err "Python was installed but could not be found. You may need to restart your terminal and re-run setup."
-        exit 1
-    }
+# Python
+if (-not (Test-Command "python")) {
+    Write-Err "Python not found. Install Python 3.9+."
+    exit 1
 }
-$pyVer = (& $script:PythonExe --version 2>&1 | Out-String).Trim()
-Write-Ok "Python: $pyVer (pinned: $($pySpec.version))"
-Write-Ok "Python path: $($script:PythonExe)"
+$pyVer = python --version 2>&1
+Write-Ok "Python: $pyVer"
 
-# ── ODBC Driver 18 for SQL Server ──
-$odbcSpec = $prereqs.odbc18
+# ODBC Driver
 $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
-$hasOdbc18 = $odbcDrivers -and ($odbcDrivers.PSObject.Properties.Name -contains "ODBC Driver 18 for SQL Server")
-if ($hasOdbc18) {
-    Write-Ok "ODBC Driver 18 for SQL Server found (pinned: $($odbcSpec.version))"
+if ($odbcDrivers -and $odbcDrivers."ODBC Driver 18 for SQL Server") {
+    Write-Ok "ODBC Driver 18 for SQL Server found"
 } else {
-    Install-Prerequisite -DisplayName "ODBC Driver 18 for SQL Server" -WingetId $odbcSpec.wingetId -Version $odbcSpec.version -Command $null -Required $odbcSpec.required
-    # Re-check registry after install
-    $odbcDrivers = Get-ItemProperty "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Drivers" -ErrorAction SilentlyContinue
-    $hasOdbc18 = $odbcDrivers -and ($odbcDrivers.PSObject.Properties.Name -contains "ODBC Driver 18 for SQL Server")
-    if ($hasOdbc18) {
-        Write-Ok "ODBC Driver 18 for SQL Server installed"
-    } else {
-        Write-Warn "ODBC Driver 18 may require a terminal restart to detect."
-    }
+    Write-Warn "ODBC Driver 18 for SQL Server not detected."
+    Write-Host "  Download: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server" -ForegroundColor Gray
+    $continue = Read-Host "  Continue anyway? (y/N)"
+    if ($continue -ne "y") { exit 1 }
 }
 
-# ── Node.js (required for Work IQ MCP server) ──
-$nodeSpec = $prereqs.node
-if (-not (Test-Command "node")) {
-    Install-Prerequisite -DisplayName "Node.js" -WingetId $nodeSpec.wingetId -Version $nodeSpec.version -Command $nodeSpec.command -Required $nodeSpec.required
-}
-$nodeVer = (node --version 2>&1).ToString().TrimStart('v')
-Write-Ok "Node.js: v$nodeVer (pinned: $($nodeSpec.version))"
-
-# ── GitHub CLI (optional dev convenience, not a prerequisite) ──
-# gh is NOT required for InfraForge. At runtime, GitHub publishing uses
-# GITHUB_TOKEN directly via the REST API. The gh CLI is only used here
-# as a convenience to extract a token during setup. Admins can also set
-# GITHUB_TOKEN in .env manually.
+# GitHub CLI
 $ghAvailable = $false
 $ghAuthenticated = $false
 if (Test-Command "gh") {
     $ghAvailable = $true
-    Write-Ok "GitHub CLI detected (optional)"
+    Write-Ok "GitHub CLI (gh) found"
     $ghAuthCheck = gh auth status 2>&1
     if ($LASTEXITCODE -eq 0) {
         $ghAuthenticated = $true
-        Write-Ok "GitHub CLI: authenticated — will extract token automatically"
+        Write-Ok "GitHub CLI: authenticated"
     } else {
         Write-Warn "GitHub CLI: installed but not authenticated"
-        Write-Host "  Run 'gh auth login' to auto-extract token, or set GITHUB_TOKEN in .env manually." -ForegroundColor Gray
+        Write-Host "  Run 'gh auth login' to enable GitHub integration, or continue without it." -ForegroundColor Gray
     }
 } else {
-    Write-Ok "GitHub CLI not found (optional — GITHUB_TOKEN can be set in .env manually)"
+    Write-Warn "GitHub CLI (gh) not found. GitHub integration will be skipped."
+    Write-Host "  Install: https://cli.github.com/" -ForegroundColor Gray
+    Write-Host "  GitHub publishing features require the gh CLI." -ForegroundColor Gray
 }
 
 # Check existing .env - we'll merge if it exists (non-destructive)
@@ -620,12 +444,7 @@ if (-not $SkipEntraId) {
         Write-Host "    - Ask your admin to enable 'Users can register applications' in Entra ID" -ForegroundColor DarkGray
         Write-Host "    - Ask for the Application Developer role" -ForegroundColor DarkGray
         Write-Host "    - Run with -SkipEntraId to skip app registration" -ForegroundColor DarkGray
-        if (-not $Yes) {
-            $continueEntra = Read-Host "  Continue anyway? (y/N)"
-        } else {
-            $continueEntra = "y"
-            Write-Host "  Continue anyway? (y/N) y [-Yes]" -ForegroundColor DarkGray
-        }
+        $continueEntra = Read-Host "  Continue anyway? (y/N)"
         if ($continueEntra -ne "y") { exit 1 }
     }
 }
@@ -717,12 +536,7 @@ if (-not $SqlServerName) {
         if ($existingSqlServers -and $existingSqlServers.Count -gt 0) {
             $pick = $existingSqlServers[0]
             Write-Warn "Found existing SQL Server '$($pick.name)' ($($pick.state)) in $($pick.location) from a previous run."
-            if (-not $Yes) {
-                $reuse = Read-Host "  Reuse this server? (Y/n)"
-            } else {
-                $reuse = ""
-                Write-Host "  Reuse this server? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
-            }
+            $reuse = Read-Host "  Reuse this server? (Y/n)"
             if ($reuse -ne "n") {
                 $SqlServerName = $pick.name
                 $existingSqlServer = $pick
@@ -833,12 +647,7 @@ if (-not $SkipEntraId) {
     Write-Host "    App Registration: $AppName $(if ($existingEntraApp) {'(exists)'} else {'(will create)'})" -ForegroundColor White
 }
 Write-Host ""
-if (-not $Yes) {
-    $proceed = Read-Host "  Proceed with setup? (Y/n)"
-} else {
-    $proceed = ""
-    Write-Host "  Proceed with setup? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
-}
+$proceed = Read-Host "  Proceed with setup? (Y/n)"
 if ($proceed -eq "n") {
     Write-Host "  Aborted." -ForegroundColor Gray
     exit 0
@@ -978,12 +787,7 @@ if ($SkipEntraId) {
         }
 
         # Always create a new secret - old secrets cannot be retrieved from Entra ID
-        if (-not $Yes) {
         $createNewSecret = Read-Host "  Create a new client secret? (Y/n)"
-    } else {
-        $createNewSecret = ""
-        Write-Host "  Create a new client secret? (Y/n) Y [-Yes]" -ForegroundColor DarkGray
-    }
         if ($createNewSecret -ne "n") {
             Write-Host "  Creating client secret..."
             $secretInfo = New-AppClientSecret -AppObjectId $appObjectId
@@ -1017,15 +821,6 @@ if ($SkipEntraId) {
         $appObjectId = $appResult.id
         Write-Ok "App registration created (appId: $entraClientId)"
 
-        # Create service principal FIRST (required before permission grant)
-        Write-Host "  Creating service principal..."
-        az ad sp create --id $entraClientId -o none --only-show-errors 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Service principal created"
-        } else {
-            Write-Info "Service principal already exists"
-        }
-
         # Add Microsoft Graph User.Read permission
         # Microsoft Graph appId = 00000003-0000-0000-c000-000000000000
         # User.Read permission ID = e1fe6dd8-ba31-4d61-89e7-88639da4683d
@@ -1036,16 +831,14 @@ if ($SkipEntraId) {
             --api-permissions e1fe6dd8-ba31-4d61-89e7-88639da4683d=Scope `
             -o none --only-show-errors 2>&1
 
-        # Try to admin-grant User.Read. This requires Application Administrator
-        # or higher. If it fails, the user will just see a consent prompt on
-        # first sign-in — User.Read is a user-consentable scope, so this is fine.
-        Write-Host "  Attempting admin consent for User.Read..."
-        az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
+        # Grant User.Read permission (User.Read is sufficient for /me and /me/manager)
+        Write-Host "  Granting User.Read permission..."
+        $grantOutput = az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Write-Ok "Permissions added and admin consent granted"
+            Write-Ok "Permissions added and granted"
         } else {
             Write-Ok "Permissions added"
-            Write-Info "Admin consent will be handled on first sign-in (this is normal for non-admin users)."
+            Write-Host "    ℹ User.Read consent will be prompted on first sign-in (this is normal)." -ForegroundColor Green
         }
 
         # Create client secret
@@ -1078,11 +871,11 @@ if ($SkipEntraId) {
 
     # Ensure User.Read permission is granted (idempotent)
     Write-Host "  Ensuring User.Read permission is granted..."
-    az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
+    $grantOutput = az ad app permission grant --id $entraClientId --api 00000003-0000-0000-c000-000000000000 --scope "User.Read" -o none --only-show-errors 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Ok "User.Read permission granted"
     } else {
-        Write-Info "User.Read consent will be prompted on first sign-in (this is normal)."
+        Write-Host "    ℹ User.Read consent will be prompted on first sign-in (this is normal)." -ForegroundColor Green
     }
 
     # Configure optional ID token claims (email, upn, given_name, family_name)
@@ -1221,12 +1014,7 @@ if (Test-Command "gh") {
                     Write-Host "    [$($i + 1)] $($orgs[$i])" -ForegroundColor Gray
                 }
                 Write-Host "    [0] Use personal account ($ghUser)" -ForegroundColor Gray
-                if (-not $Yes) {
-        $orgChoice = Read-Host "  Select organization (0-$($orgs.Count), default: 0)"
-    } else {
-        $orgChoice = "0"
-        Write-Host "  Select organization (0-$($orgs.Count), default: 0) 0 [-Yes]" -ForegroundColor DarkGray
-    }
+                $orgChoice = Read-Host "  Select organization (0-$($orgs.Count), default: 0)"
                 if ($orgChoice -and [int]$orgChoice -ge 1 -and [int]$orgChoice -le $orgs.Count) {
                     $githubOrg = $orgs[[int]$orgChoice - 1]
                     Write-Ok "Using organization: $githubOrg"
@@ -1336,51 +1124,13 @@ Write-Step "Step 7/9 - Python dependencies"
 $projectRoot = Join-Path $PSScriptRoot ".."
 $venvPath = Join-Path $projectRoot ".venv"
 $requirementsPath = Join-Path $projectRoot "requirements.txt"
-$venvPython = Join-Path $venvPath "Scripts" "python.exe"
 
-# Validate existing venv — it may have been created with the Windows Store
-# stub, in which case its python.exe is a broken symlink.
-$venvValid = $false
-if (Test-Path $venvPath) {
-    if (Test-Path $venvPython) {
-        $probe = & $venvPython --version 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0 -and $probe -match "^Python \d+\.\d+") {
-            $venvValid = $true
-            Write-Ok "Virtual environment verified (.venv/Scripts/python.exe works)"
-        }
-    }
-    if (-not $venvValid) {
-        Write-Info "Existing .venv is broken (likely created with Windows Store stub). Recreating..."
-        Remove-Item $venvPath -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-if (-not $venvValid) {
-    Write-Host "  Creating virtual environment (using $($script:PythonExe))..."
-    # Use --copies so python.exe is a real copy, not a symlink that breaks
-    # if the source location changes or the Store stub is removed.
-    & $script:PythonExe -m venv --copies $venvPath
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
-        Write-Err "Failed to create virtual environment."
-        exit 1
-    }
+if (-not (Test-Path $venvPath)) {
+    Write-Host "  Creating virtual environment..."
+    python -m venv $venvPath
     Write-Ok "Virtual environment created at .venv/"
-}
-
-# Disable Windows Store python stubs (App Execution Aliases) that shadow
-# the real Python. These stubs just open the Microsoft Store and cause
-# confusing "Python was not found" errors. Safe to remove now that the
-# venv has its own copy of python.exe.
-$aliasDir = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
-foreach ($stub in @("python.exe", "python3.exe")) {
-    $stubPath = Join-Path $aliasDir $stub
-    if (Test-Path $stubPath) {
-        $size = (Get-Item $stubPath -ErrorAction SilentlyContinue).Length
-        if ($null -eq $size -or $size -eq 0) {
-            Remove-Item $stubPath -Force -ErrorAction SilentlyContinue
-            Write-Info "Removed Windows Store stub: $stub"
-        }
-    }
+} else {
+    Write-Ok "Virtual environment already exists"
 }
 
 $pipPath = Join-Path $venvPath "Scripts" "pip.exe"
@@ -1397,68 +1147,70 @@ Write-Ok "Dependencies installed"
 # Step 8/9: Microsoft Work IQ (M365 organizational intelligence)
 # ─────────────────────────────────────────────────────────
 
-Write-Step "Step 8/9 - Microsoft Work IQ (M365 organizational intelligence)"
+Write-Step "Step 8/9 - Microsoft Work IQ"
 
-# Node.js is guaranteed by the preflight prerequisite check.
-# Install @microsoft/workiq globally so the MCP server is available at runtime.
 $workiqReady = $false
-Write-Host "  Installing @microsoft/workiq globally..."
-$savedEAP = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-try {
-    $installOutput = npm install -g @microsoft/workiq 2>&1 | Out-String
-    $npmExit = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $savedEAP
-}
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmd) {
+    $nodeVer = (node --version 2>&1).ToString().TrimStart('v')
+    $nodeMajor = [int]($nodeVer.Split('.')[0])
+    if ($nodeMajor -ge 18) {
+        Write-Ok "Node.js v$nodeVer (>= 18 required)"
 
-if ($npmExit -eq 0) {
-    $wiqVersion = (npx @microsoft/workiq --version 2>&1 | Out-String).Trim()
-    Write-Ok "Work IQ MCP server installed: $wiqVersion"
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+        if ($npmCmd) {
+            # Install @microsoft/workiq globally so it persists across sessions
+            Write-Host "  Installing @microsoft/workiq globally..."
+            $installOutput = npm install -g @microsoft/workiq 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $wiqVersion = npx @microsoft/workiq --version 2>&1
+                Write-Ok "Work IQ CLI installed: $wiqVersion"
 
-    # Accept EULA / authenticate
-    Write-Host "  Running EULA acceptance / authentication..."
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        npx @microsoft/workiq accept-eula 2>&1 | Out-Null
-        $eulaExit = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $savedEAP
-    }
-    if ($eulaExit -eq 0) {
-        Write-Ok "Work IQ: EULA accepted / authentication complete"
+                # Accept EULA / authenticate
+                Write-Host "  Running EULA acceptance / authentication..."
+                npx @microsoft/workiq accept-eula 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "Work IQ: EULA accepted / authentication complete"
+                } else {
+                    Write-Warn "Work IQ: EULA/auth flow did not complete automatically."
+                    Write-Host "    You can run this later: npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+                }
+
+                # Try a test query to verify M365 permissions
+                Write-Host "  Verifying M365 permissions..."
+                $testResult = npx @microsoft/workiq ask -q "test" 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "Work IQ: M365 permissions verified"
+                    $workiqReady = $true
+                } else {
+                    Write-Warn "Work IQ: M365 query failed — tenant admin consent may be required."
+                    Write-Host "    The Work IQ CLI is installed, but M365 permissions are not yet granted." -ForegroundColor Gray
+                    Write-Host "    Ask your tenant admin to grant consent, then re-run:" -ForegroundColor Gray
+                    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
+                }
+            } else {
+                Write-Warn "npm install -g @microsoft/workiq failed:"
+                Write-Host "    $installOutput" -ForegroundColor DarkGray
+                Write-Host "    Try running manually: npm install -g @microsoft/workiq" -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Warn "npm not found. Work IQ requires npm (comes with Node.js)."
+        }
     } else {
-        Write-Info "Work IQ: EULA acceptance requires interactive browser sign-in."
-        Write-Host "    Run after setup: npx @microsoft/workiq accept-eula" -ForegroundColor Gray
-    }
-
-    # Try a test query to verify M365 permissions
-    Write-Host "  Verifying M365 permissions..."
-    $savedEAP = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $testResult = npx @microsoft/workiq ask -q "test" 2>&1 | Out-String
-        $testExit = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $savedEAP
-    }
-    if ($testExit -eq 0) {
-        Write-Ok "Work IQ: M365 permissions verified"
-        $workiqReady = $true
-    } else {
-        Write-Info "Work IQ: M365 permissions not yet granted — tenant admin consent may be required."
-        Write-Host "    The MCP server is installed and ready. On first use, InfraForge will" -ForegroundColor Gray
-        Write-Host "    prompt for M365 consent if needed." -ForegroundColor Gray
+        Write-Warn "Node.js v$nodeVer is too old. Work IQ requires Node.js 18+."
+        Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
     }
 } else {
-    Write-Warn "npm install -g @microsoft/workiq failed. Work IQ will be unavailable."
-    Write-Host "    Try running manually: npm install -g @microsoft/workiq" -ForegroundColor DarkGray
+    Write-Warn "Node.js not found. Work IQ (M365 integration) will be disabled."
+    Write-Host "    Download: https://nodejs.org/" -ForegroundColor DarkGray
+    Write-Host "    Work IQ searches emails, meetings, docs, and Teams for organizational context." -ForegroundColor Gray
 }
 
 if (-not $workiqReady) {
-    Write-Host "  Work IQ enables searching emails, meetings, docs, and Teams for organizational context." -ForegroundColor Gray
-    Write-Host "  To complete setup later: npx @microsoft/workiq accept-eula" -ForegroundColor Gray
+    Write-Host "  Work IQ is optional — InfraForge works fine without it." -ForegroundColor Gray
+    Write-Host "  To enable later: install Node.js 18+, then run:" -ForegroundColor Gray
+    Write-Host "    npm install -g @microsoft/workiq" -ForegroundColor DarkGray
+    Write-Host "    npx @microsoft/workiq accept-eula" -ForegroundColor DarkGray
 }
 
 # ─────────────────────────────────────────────────────────
@@ -1545,7 +1297,8 @@ if (-not $githubToken) {
 Write-Host "    • If sign-in shows a consent prompt, approve 'User.Read' for the app" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Start InfraForge:" -ForegroundColor White
-Write-Host "    .\.venv\Scripts\python.exe web_start.py" -ForegroundColor Cyan
+Write-Host "    .\.venv\Scripts\Activate.ps1" -ForegroundColor Cyan
+Write-Host "    python web_start.py" -ForegroundColor Cyan
 Write-Host "    # Open http://localhost:${WebPort}" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  On first launch, InfraForge will automatically:" -ForegroundColor White
