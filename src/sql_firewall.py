@@ -26,6 +26,19 @@ _IS_WIN = sys.platform == "win32"
 _AZ = shutil.which("az") or "az"
 
 
+def _parse_server_from_connection_string() -> str | None:
+    """Extract the SQL server short name from AZURE_SQL_CONNECTION_STRING.
+
+    Connection strings look like:
+      ...;Server=tcp:my-server.database.windows.net,1433;...
+    Returns 'my-server' or None if not parseable.
+    """
+    import re
+    cs = os.environ.get("AZURE_SQL_CONNECTION_STRING", "")
+    m = re.search(r"Server\s*=\s*tcp:([^.]+)\.database\.windows\.net", cs, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
 async def ensure_sql_firewall() -> None:
     """Ensure the current IP is allowed through the Azure SQL firewall.
 
@@ -40,8 +53,11 @@ async def ensure_sql_firewall() -> None:
     import asyncio
 
     try:
-        server = os.environ.get("AZURE_SQL_SERVER", "infraforgesql")
+        server = os.environ.get("AZURE_SQL_SERVER") or _parse_server_from_connection_string()
         rg = os.environ.get("AZURE_RESOURCE_GROUP", "InfraForge")
+        if not server:
+            logger.warning("Cannot determine SQL server name — set AZURE_SQL_SERVER or AZURE_SQL_CONNECTION_STRING")
+            return
 
         # Detect current public IP
         ip = await asyncio.get_event_loop().run_in_executor(None, _get_public_ip)

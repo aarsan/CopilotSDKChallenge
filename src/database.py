@@ -116,10 +116,26 @@ class AzureSQLBackend(DatabaseBackend):
 
         token_struct = self._get_token_struct()
 
-        conn = pyodbc.connect(
-            self.connection_string,
-            attrs_before={1256: token_struct},  # SQL_COPT_SS_ACCESS_TOKEN
-        )
+        try:
+            conn = pyodbc.connect(
+                self.connection_string,
+                attrs_before={1256: token_struct},  # SQL_COPT_SS_ACCESS_TOKEN
+            )
+        except pyodbc.ProgrammingError as exc:
+            # Firewall block → retry once after auto-fixing the rule
+            if "is not allowed to access the server" in str(exc):
+                logger.warning("SQL connection blocked by firewall — attempting auto-fix and retry")
+                from src.sql_firewall import ensure_sql_firewall
+                await ensure_sql_firewall()
+                import asyncio
+                await asyncio.sleep(2)  # brief wait for rule propagation
+                token_struct = self._get_token_struct()
+                conn = pyodbc.connect(
+                    self.connection_string,
+                    attrs_before={1256: token_struct},
+                )
+            else:
+                raise
         try:
             cursor = conn.cursor()
             # Create tables if they don't exist (T-SQL syntax)
