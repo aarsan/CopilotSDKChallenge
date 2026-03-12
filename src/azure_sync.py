@@ -505,6 +505,33 @@ async def sync_azure_services(
         f"({skipped} skipped as non-user-facing)"
     )
 
+    # ── 2b. Ensure parent types exist for every child ─────────
+    # If Microsoft.Devices/locations/foo was discovered but Microsoft.Devices/locations
+    # was skipped (e.g. by SKIP_SUFFIXES), synthesize the parent so the hierarchy
+    # is complete. Without this, orphan children appear with no parent row.
+    discovered_ids = {s["id"] for s in discovered}
+    parents_to_add: list[dict] = []
+    for svc in list(discovered):
+        parts = svc["id"].split("/")
+        if len(parts) >= 3:
+            parent_id = "/".join(parts[:2])
+            if parent_id not in discovered_ids:
+                ns = parts[0]
+                parent_type = parts[1]
+                parent_entry = {
+                    "id": parent_id,
+                    "name": _friendly_name(ns, parent_type),
+                    "category": _classify_category(ns),
+                    "azure_locations": [],
+                    "latest_api_version": None,
+                    "default_api_version": None,
+                }
+                parents_to_add.append(parent_entry)
+                discovered_ids.add(parent_id)
+    if parents_to_add:
+        discovered.extend(parents_to_add)
+        logger.info(f"Synthesized {len(parents_to_add)} missing parent resource types")
+
     await _emit({"phase": "filtering", "detail": f"Found {len(discovered)} resource types ({skipped} noise filtered out)", "progress": 0.55, "discovered": len(discovered), "skipped": skipped})
 
     # ── 3. Upsert into DB (only new services) ────────────────
