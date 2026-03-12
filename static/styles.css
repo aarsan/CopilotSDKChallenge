@@ -1624,6 +1624,11 @@ tr:hover .svc-view-tpl-btn {
     border-radius: 1px;
 }
 
+/* Visual break between child groups from different parents */
+.svc-row-child-group-start > td {
+    border-top: 2px solid var(--border-default, #30363d);
+}
+
 .catalog-loading {
     text-align: center;
     color: var(--text-muted);
