@@ -953,6 +953,27 @@ async def stream_infra_testing(
 
             # Only retry if the analysis says transient
             if diagnosis.get("action") != "retry":
+                # Record miss for relevant agent based on root cause
+                try:
+                    from src.copilot_helpers import record_agent_miss
+                    root_cause = diagnosis.get("root_cause", "unknown")
+                    if root_cause == "test":
+                        await record_agent_miss(
+                            "INFRA_TESTER", "bad_output",
+                            context_summary="Generated test script had errors",
+                            error_detail=diagnosis.get("fix_guidance", "")[:2000],
+                            pipeline_phase="testing",
+                        )
+                    elif root_cause == "template":
+                        await record_agent_miss(
+                            "TEMPLATE_HEALER", "healing_exhausted",
+                            context_summary="Infra tests found template issues post-healing",
+                            error_detail=diagnosis.get("fix_guidance", "")[:2000],
+                            pipeline_phase="testing",
+                        )
+                except Exception:
+                    pass
+
                 # Emit feedback for template fixes
                 if diagnosis.get("action") == "fix_template":
                     yield json.dumps({

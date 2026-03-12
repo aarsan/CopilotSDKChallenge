@@ -423,3 +423,85 @@ async def update_enforcement_mode_setting(request: Request):
 
     logger.info(f"Governance enforcement mode changed to: {mode}")
     return JSONResponse({"enforcement_mode": mode, "status": "updated"})
+
+
+# ══════════════════════════════════════════════════════════════
+# AGENT PERFORMANCE & LEARNING — Admin Endpoints
+# ══════════════════════════════════════════════════════════════
+
+@router.post("/api/admin/agents/recalculate-scores")
+async def recalculate_all_scores():
+    """Recalculate performance scores for all agents."""
+    from src.copilot_helpers import recalculate_all_agent_scores
+    scores = await recalculate_all_agent_scores()
+    return JSONResponse({"status": "ok", "scores": scores})
+
+
+@router.post("/api/admin/agents/{agent_key}/recalculate-score")
+async def recalculate_single_score(agent_key: str):
+    """Recalculate performance score for a single agent."""
+    from src.copilot_helpers import _async_recalculate_scores, _compute_scores
+    await _async_recalculate_scores(agent_key)
+    scores = _compute_scores(agent_key)
+    return JSONResponse({"status": "ok", "agent": agent_key, "scores": scores})
+
+
+@router.get("/api/admin/agents/{agent_key}/improvement-queue")
+async def get_improvement_queue(agent_key: str):
+    """List prompt improvement suggestions for an agent."""
+    from src.database import get_prompt_improvements
+    improvements = await get_prompt_improvements(agent_name=agent_key)
+    return JSONResponse({"agent": agent_key, "improvements": improvements})
+
+
+@router.post("/api/admin/agents/{agent_key}/apply-improvement")
+async def apply_improvement(agent_key: str, request: Request):
+    """Approve and apply a prompt improvement suggestion."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    improvement_id = body.get("improvement_id")
+    if not improvement_id:
+        raise HTTPException(status_code=400, detail="improvement_id is required")
+
+    reviewed_by = body.get("reviewed_by", "admin")
+    from src.copilot_helpers import apply_prompt_improvement
+    success = await apply_prompt_improvement(improvement_id, reviewed_by=reviewed_by)
+    if not success:
+        raise HTTPException(status_code=404, detail="Improvement not found or could not be applied")
+
+    return JSONResponse({"status": "ok", "improvement_id": improvement_id, "applied": True})
+
+
+@router.post("/api/admin/agents/{agent_key}/reject-improvement")
+async def reject_improvement(agent_key: str, request: Request):
+    """Reject a prompt improvement suggestion."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    improvement_id = body.get("improvement_id")
+    if not improvement_id:
+        raise HTTPException(status_code=400, detail="improvement_id is required")
+
+    reviewed_by = body.get("reviewed_by", "admin")
+    from src.database import update_prompt_improvement
+    await update_prompt_improvement(improvement_id, "rejected", reviewed_by)
+    return JSONResponse({"status": "ok", "improvement_id": improvement_id, "rejected": True})
+
+
+@router.post("/api/admin/agents/{agent_key}/generate-improvement")
+async def trigger_improvement_generation(agent_key: str):
+    """Manually trigger prompt improvement analysis for an agent."""
+    from src.database import get_agent_misses
+    from src.copilot_helpers import generate_prompt_improvement
+
+    misses = await get_agent_misses(agent_name=agent_key, resolved=False, limit=50)
+    if not misses:
+        return JSONResponse({"status": "ok", "message": "No unresolved misses to analyze"})
+
+    await generate_prompt_improvement(agent_key, misses)
+    return JSONResponse({"status": "ok", "message": f"Improvement generated from {len(misses)} misses"})

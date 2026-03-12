@@ -16084,11 +16084,12 @@ const AO_CAT_META = {
     'Artifact & Healing':      { icon: '🔧', color: '#ec4899', role: 'Fix & Generate' },
     'Infrastructure Testing':  { icon: '🧪', color: '#14b8a6', role: 'Verify & Test' },
     'Governance Review':       { icon: '⚖️', color: '#6366f1', role: 'Review Gates' },
+    'Analysis':                { icon: '📈', color: '#0ea5e9', role: 'Upgrade & Compat' },
 };
 
 // Individual agent icons based on their key — gives each card a unique "avatar"
 const AO_AGENT_ICONS = {
-    web_chat: '💬', ciso_advisor: '🔐', concierge: '🛎️',
+    web_chat: '💬', governance_agent: '📜', ciso_advisor: '🔐', concierge: '🛎️',
     gap_analyst: '🔍', arm_template_editor: '✏️', policy_checker: '📋', request_parser: '🧩',
     standards_extractor: '📄',
     arm_modifier: '🛠️', arm_generator: '🏗️',
@@ -16097,6 +16098,7 @@ const AO_AGENT_ICONS = {
     artifact_generator: '✨', policy_fixer: '🩹', deep_template_healer: '🔬', llm_reasoner: '🧠',
     infra_tester: '🧪', infra_test_analyzer: '🔎',
     ciso_reviewer: '🛡️', cto_reviewer: '🏛️',
+    upgrade_analyst: '📈',
 };
 
 // Cached API data for detail panel
@@ -16134,6 +16136,20 @@ async function loadAgentActivity() {
         _s('ao-call-ct', totalCalls.toLocaleString());
         _s('ao-err-ct', totalErrors);
         _s('ao-lat-avg', totalCalls > 0 ? `${avgLatency}ms` : '—');
+
+        // Performance data from extended API
+        const scores = data.scores || {};
+        const missesData = data.misses || {};
+        const feedbackData = data.feedback_summary || {};
+        const pendingImprovements = data.pending_improvements || [];
+
+        // Compute summary performance stats
+        const allScores = Object.values(scores).map(s => s.performance_score || 50);
+        const avgScore = allScores.length > 0 ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length) : 50;
+        const totalMisses = Object.values(scores).reduce((sum, s) => sum + (s.total_misses || 0), 0);
+        _s('ao-score-avg', avgScore);
+        _s('ao-miss-ct', totalMisses);
+        _s('ao-improve-ct', pendingImprovements.length);
 
         // Group agents by category
         const categories = {};
@@ -16179,7 +16195,14 @@ async function loadAgentActivity() {
                 const agentIcon = AO_AGENT_ICONS[a.key] || meta.icon;
                 const isActive = calls > 0;
 
+                // Performance score badge
+                const sc = scores[agentKey] || scores[a.key.toUpperCase()] || scores[a.key] || {};
+                const perfScore = sc.performance_score ?? 50;
+                const scoreCls = perfScore >= 90 ? 'ao-score-excellent' : perfScore >= 70 ? 'ao-score-good' : perfScore >= 50 ? 'ao-score-fair' : perfScore >= 30 ? 'ao-score-attention' : 'ao-score-critical';
+                const missCount = sc.total_misses || 0;
+
                 html += `<div class="ao-card ${isActive ? 'ao-card-hot' : ''}" data-agent-key="${a.key}" onclick="showAgentDetail('${a.key}')" style="--cat-color: ${meta.color}">
+                    <div class="ao-card-score-badge ${scoreCls}" title="Performance: ${perfScore}/100">${perfScore}</div>
                     <div class="ao-card-avatar" style="background: ${meta.color}22; border-color: ${meta.color}66">
                         <span class="ao-card-avatar-icon">${agentIcon}</span>
                     </div>
@@ -16188,7 +16211,7 @@ async function loadAgentActivity() {
                     <div class="ao-card-desc">${a.description.length > 90 ? a.description.substring(0, 87) + '…' : a.description}</div>
                     <div class="ao-card-footer">
                         ${isActive
-                            ? `<span class="ao-card-calls">${calls}</span><span class="ao-card-calls-lbl">calls</span>${errors > 0 ? `<span class="ao-card-errs">${errors} err</span>` : ''}`
+                            ? `<span class="ao-card-calls">${calls}</span><span class="ao-card-calls-lbl">calls</span>${errors > 0 ? `<span class="ao-card-errs">${errors} err</span>` : ''}${missCount > 0 ? `<span class="ao-card-misses">${missCount} miss</span>` : ''}`
                             : `<span class="ao-card-idle">Idle</span>`}
                         <span class="ao-card-sdk">SDK</span>
                     </div>
@@ -16239,6 +16262,30 @@ function showAgentDetail(agentKey) {
     const meta = AO_CAT_META[agent.category] || { icon: '🤖', color: '#6b7280', role: '' };
     const agentIcon = AO_AGENT_ICONS[agentKey] || meta.icon;
 
+    // Performance scores
+    const scoresData = (_aoData.scores || {});
+    const sc = scoresData[agentNameKey] || scoresData[agentKey.toUpperCase()] || scoresData[agentKey] || {};
+    const perfScore = sc.performance_score ?? 50;
+    const relScore = sc.reliability_score ?? 50;
+    const spdScore = sc.speed_score ?? 50;
+    const qualScore = sc.quality_score ?? 50;
+    const totalMisses = sc.total_misses || 0;
+    const scoreCls = perfScore >= 90 ? 'ao-score-excellent' : perfScore >= 70 ? 'ao-score-good' : perfScore >= 50 ? 'ao-score-fair' : perfScore >= 30 ? 'ao-score-attention' : 'ao-score-critical';
+
+    // Misses for this agent
+    const missesMap = _aoData.misses || {};
+    const agentMisses = missesMap[agentNameKey] || missesMap[agentKey.toUpperCase()] || missesMap[agentKey] || [];
+
+    // Feedback
+    const fbMap = _aoData.feedback_summary || {};
+    const fb = fbMap[agentNameKey] || fbMap[agentKey.toUpperCase()] || fbMap[agentKey] || {};
+    const thumbsUp = fb.up || 0;
+    const thumbsDown = fb.down || 0;
+
+    // Pending improvements
+    const allImprovements = _aoData.pending_improvements || [];
+    const agentImprovements = allImprovements.filter(i => i.agent_name === agentKey || i.agent_name === agentNameKey || i.agent_name === agentKey.toUpperCase());
+
     // Filter activity for this agent
     const agentActivity = activity.filter(e => {
         const ea = (e.agent || '').toUpperCase().replace(/\s+/g, '_');
@@ -16259,9 +16306,36 @@ function showAgentDetail(agentKey) {
                     <span class="ao-detail-badge ao-detail-badge-key">${agentKey}</span>
                 </div>
             </div>
+            <div class="ao-detail-score-ring ${scoreCls}" title="Performance Score: ${perfScore}/100">
+                <span class="ao-detail-score-val">${perfScore}</span>
+                <span class="ao-detail-score-lbl">Score</span>
+            </div>
         </div>
 
         <div class="ao-detail-desc">${agent.description}</div>
+
+        <div class="ao-detail-score-breakdown">
+            <div class="ao-score-bar-item">
+                <span class="ao-score-bar-label">Reliability</span>
+                <div class="ao-score-bar-track"><div class="ao-score-bar-fill ${relScore >= 70 ? 'ao-bar-good' : relScore >= 50 ? 'ao-bar-fair' : 'ao-bar-poor'}" style="width:${relScore}%"></div></div>
+                <span class="ao-score-bar-val">${relScore}</span>
+            </div>
+            <div class="ao-score-bar-item">
+                <span class="ao-score-bar-label">Speed</span>
+                <div class="ao-score-bar-track"><div class="ao-score-bar-fill ${spdScore >= 70 ? 'ao-bar-good' : spdScore >= 50 ? 'ao-bar-fair' : 'ao-bar-poor'}" style="width:${spdScore}%"></div></div>
+                <span class="ao-score-bar-val">${spdScore}</span>
+            </div>
+            <div class="ao-score-bar-item">
+                <span class="ao-score-bar-label">Quality</span>
+                <div class="ao-score-bar-track"><div class="ao-score-bar-fill ${qualScore >= 70 ? 'ao-bar-good' : qualScore >= 50 ? 'ao-bar-fair' : 'ao-bar-poor'}" style="width:${qualScore}%"></div></div>
+                <span class="ao-score-bar-val">${qualScore}</span>
+            </div>
+            <div class="ao-detail-feedback-strip">
+                <span title="Thumbs up">👍 ${thumbsUp}</span>
+                <span title="Thumbs down">👎 ${thumbsDown}</span>
+                <span title="Total misses">⚠️ ${totalMisses} misses</span>
+            </div>
+        </div>
 
         <div class="ao-detail-stats">
             <div class="ao-dstat">
@@ -16299,29 +16373,85 @@ function showAgentDetail(agentKey) {
             </button>
         </div>
 
-        <div class="ao-detail-metrics">
-            <div class="ao-dmetric"><span class="ao-dmetric-num">${calls}</span><span class="ao-dmetric-lbl">Calls</span></div>
-            <div class="ao-dmetric"><span class="ao-dmetric-num ao-dmetric-err">${errors}</span><span class="ao-dmetric-lbl">Errors</span></div>
-            <div class="ao-dmetric"><span class="ao-dmetric-num">${avgMs ? avgMs + 'ms' : '—'}</span><span class="ao-dmetric-lbl">Avg Latency</span></div>
-            <div class="ao-dmetric"><span class="ao-dmetric-num">${lastCalled}</span><span class="ao-dmetric-lbl">Last Called</span></div>
+        <!-- Tabbed sections: Metrics | Misses | Learning -->
+        <div class="ao-detail-tabs">
+            <button class="ao-dtab active" onclick="switchAgentTab(this, 'metrics')">📊 Metrics</button>
+            <button class="ao-dtab" onclick="switchAgentTab(this, 'misses')">⚠️ Misses${totalMisses > 0 ? ' (' + totalMisses + ')' : ''}</button>
+            <button class="ao-dtab" onclick="switchAgentTab(this, 'learning')">🧠 Learning${agentImprovements.length > 0 ? ' (' + agentImprovements.length + ')' : ''}</button>
         </div>
 
-        ${agentActivity.length > 0 ? `
-        <div class="ao-detail-feed-title">Recent Invocations</div>
-        <div class="ao-detail-feed">
-            ${agentActivity.map(e => {
-                const icon = e.status === 'ok' ? '✅' : '❌';
-                const dur = e.duration_ms ? `${Math.round(e.duration_ms)}ms` : '';
-                const ts = _timeShort(e.timestamp);
-                return `<div class="ao-dfeed-row ${e.status === 'error' ? 'ao-dfeed-err' : ''}">
-                    <span>${icon}</span>
-                    <span class="ao-dfeed-dur">${dur}</span>
-                    <span class="ao-dfeed-size">${_formatBytes(e.prompt_len)}→${_formatBytes(e.response_len)}</span>
-                    ${e.error ? `<span class="ao-dfeed-error" title="${escapeHtml(e.error)}">⚠ ${e.error.substring(0, 60)}</span>` : ''}
-                    <span class="ao-dfeed-time">${ts}</span>
-                </div>`;
-            }).join('')}
-        </div>` : `<div class="ao-detail-no-activity">No invocations recorded yet.</div>`}
+        <!-- Metrics tab -->
+        <div class="ao-dtab-content ao-dtab-metrics" id="ao-dtab-metrics">
+            <div class="ao-detail-metrics">
+                <div class="ao-dmetric"><span class="ao-dmetric-num">${calls}</span><span class="ao-dmetric-lbl">Calls</span></div>
+                <div class="ao-dmetric"><span class="ao-dmetric-num ao-dmetric-err">${errors}</span><span class="ao-dmetric-lbl">Errors</span></div>
+                <div class="ao-dmetric"><span class="ao-dmetric-num">${avgMs ? avgMs + 'ms' : '—'}</span><span class="ao-dmetric-lbl">Avg Latency</span></div>
+                <div class="ao-dmetric"><span class="ao-dmetric-num">${lastCalled}</span><span class="ao-dmetric-lbl">Last Called</span></div>
+            </div>
+
+            ${agentActivity.length > 0 ? `
+            <div class="ao-detail-feed-title">Recent Invocations</div>
+            <div class="ao-detail-feed">
+                ${agentActivity.map((e, idx) => {
+                    const icon = e.status === 'ok' ? '✅' : '❌';
+                    const dur = e.duration_ms ? `${Math.round(e.duration_ms)}ms` : '';
+                    const ts = _timeShort(e.timestamp);
+                    return `<div class="ao-dfeed-row ${e.status === 'error' ? 'ao-dfeed-err' : ''}">
+                        <span>${icon}</span>
+                        <span class="ao-dfeed-dur">${dur}</span>
+                        <span class="ao-dfeed-size">${_formatBytes(e.prompt_len)}→${_formatBytes(e.response_len)}</span>
+                        ${e.error ? `<span class="ao-dfeed-error" title="${escapeHtml(e.error)}">⚠ ${e.error.substring(0, 60)}</span>` : ''}
+                        <span class="ao-dfeed-time">${ts}</span>
+                        <span class="ao-dfeed-feedback">
+                            <button class="ao-fb-btn ao-fb-up" onclick="event.stopPropagation();submitAgentFeedback('${agentKey}',5,${e.id||0})" title="Thumbs up">👍</button>
+                            <button class="ao-fb-btn ao-fb-down" onclick="event.stopPropagation();submitAgentFeedback('${agentKey}',1,${e.id||0})" title="Thumbs down">👎</button>
+                        </span>
+                    </div>`;
+                }).join('')}
+            </div>` : `<div class="ao-detail-no-activity">No invocations recorded yet.</div>`}
+        </div>
+
+        <!-- Misses tab (hidden by default) -->
+        <div class="ao-dtab-content ao-dtab-misses hidden" id="ao-dtab-misses">
+            ${agentMisses.length > 0 ? `
+            <div class="ao-misses-list">
+                ${agentMisses.map(m => {
+                    const typeColors = {error:'#ef4444',healing_exhausted:'#f59e0b',bad_output:'#ec4899',user_downvote:'#8b5cf6',parse_error:'#06b6d4',timeout:'#6b7280',governance_blocked:'#dc2626'};
+                    const tc = typeColors[m.miss_type] || '#6b7280';
+                    return `<div class="ao-miss-item">
+                        <span class="ao-miss-badge" style="background:${tc}22;color:${tc};border:1px solid ${tc}44">${m.miss_type}</span>
+                        <span class="ao-miss-ctx">${escapeHtml((m.context_summary||'').substring(0,120))}</span>
+                        ${m.pipeline_phase ? `<span class="ao-miss-phase">${m.pipeline_phase}</span>` : ''}
+                        <span class="ao-miss-resolved">${m.resolved ? '✅ Resolved' : '🔴 Open'}</span>
+                        <span class="ao-miss-time">${_timeAgo(m.created_at)}</span>
+                    </div>`;
+                }).join('')}
+            </div>` : `<div class="ao-detail-no-activity">No misses recorded. This agent is performing well!</div>`}
+            <button class="ao-load-more-btn" onclick="loadFullMisses('${agentKey}')">Load All Misses</button>
+        </div>
+
+        <!-- Learning tab (hidden by default) -->
+        <div class="ao-dtab-content ao-dtab-learning hidden" id="ao-dtab-learning">
+            ${agentImprovements.length > 0 ? `
+            <div class="ao-improve-list">
+                <div class="ao-improve-title">Pending Prompt Improvements</div>
+                ${agentImprovements.map(imp => `
+                    <div class="ao-improve-card">
+                        <div class="ao-improve-header">
+                            <span class="ao-improve-pattern">${escapeHtml(imp.miss_pattern || '')}</span>
+                            <span class="ao-improve-count">${imp.miss_count} misses</span>
+                        </div>
+                        <div class="ao-improve-patch">${escapeHtml((imp.suggested_patch||'').substring(0,300))}${(imp.suggested_patch||'').length > 300 ? '…' : ''}</div>
+                        <div class="ao-improve-reasoning"><em>${escapeHtml((imp.reasoning||'').substring(0,200))}</em></div>
+                        <div class="ao-improve-actions">
+                            <button class="ao-improve-approve" onclick="event.stopPropagation();applyImprovement('${agentKey}',${imp.id})">✅ Approve & Apply</button>
+                            <button class="ao-improve-reject" onclick="event.stopPropagation();rejectImprovement('${agentKey}',${imp.id})">❌ Reject</button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>` : `<div class="ao-detail-no-activity">No pending improvements. Misses will trigger automatic analysis.</div>`}
+            <button class="ao-gen-improve-btn" onclick="triggerImprovement('${agentKey}')">🧠 Analyze Misses & Generate Improvement</button>
+        </div>
     `;
 
     overlay.classList.remove('hidden');
@@ -16404,6 +16534,118 @@ function closeAgentPrompt() {
 function hideAgentDetail() {
     const overlay = document.getElementById('ao-detail-overlay');
     if (overlay) overlay.classList.add('hidden');
+}
+
+// ── Agent Performance UI Helpers ──
+
+function switchAgentTab(btn, tab) {
+    const tabs = btn.parentElement.querySelectorAll('.ao-dtab');
+    tabs.forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+
+    const contents = btn.parentElement.parentElement.querySelectorAll('.ao-dtab-content');
+    contents.forEach(c => c.classList.add('hidden'));
+    const target = document.getElementById('ao-dtab-' + tab);
+    if (target) target.classList.remove('hidden');
+}
+
+async function submitAgentFeedback(agentKey, rating, activityId) {
+    try {
+        const res = await fetch(`/api/agents/${agentKey}/feedback`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rating, activity_id: activityId || null }),
+        });
+        if (res.ok) {
+            showToast(rating === 5 ? '👍 Feedback recorded' : '👎 Feedback recorded — miss logged', rating === 5 ? 'success' : 'warning');
+        }
+    } catch (err) {
+        console.warn('Feedback submission failed:', err);
+    }
+}
+
+async function loadFullMisses(agentKey) {
+    try {
+        const res = await fetch(`/api/agents/${agentKey}/misses?limit=100`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('ao-dtab-misses');
+        if (!container) return;
+
+        const misses = data.misses || [];
+        if (misses.length === 0) {
+            container.innerHTML = '<div class="ao-detail-no-activity">No misses recorded.</div>';
+            return;
+        }
+
+        const typeColors = {error:'#ef4444',healing_exhausted:'#f59e0b',bad_output:'#ec4899',user_downvote:'#8b5cf6',parse_error:'#06b6d4',timeout:'#6b7280',governance_blocked:'#dc2626'};
+        container.innerHTML = `<div class="ao-misses-list">${misses.map(m => {
+            const tc = typeColors[m.miss_type] || '#6b7280';
+            return `<div class="ao-miss-item">
+                <span class="ao-miss-badge" style="background:${tc}22;color:${tc};border:1px solid ${tc}44">${m.miss_type}</span>
+                <span class="ao-miss-ctx">${escapeHtml((m.context_summary||'').substring(0,200))}</span>
+                ${m.error_detail ? `<span class="ao-miss-error">${escapeHtml((m.error_detail||'').substring(0,150))}</span>` : ''}
+                ${m.pipeline_phase ? `<span class="ao-miss-phase">${m.pipeline_phase}</span>` : ''}
+                <span class="ao-miss-resolved">${m.resolved ? '✅ Resolved' : '🔴 Open'}</span>
+                <span class="ao-miss-time">${_timeAgo(m.created_at)}</span>
+            </div>`;
+        }).join('')}</div>`;
+    } catch (err) {
+        console.warn('Failed to load misses:', err);
+    }
+}
+
+async function applyImprovement(agentKey, improvementId) {
+    if (!confirm('Apply this prompt improvement? The agent\'s system prompt will be permanently updated.')) return;
+    try {
+        const res = await fetch(`/api/admin/agents/${agentKey}/apply-improvement`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ improvement_id: improvementId }),
+        });
+        if (res.ok) {
+            showToast('✅ Prompt improvement applied! Agent is now smarter.', 'success');
+            loadAgentActivity();
+        } else {
+            showToast('Failed to apply improvement', 'error');
+        }
+    } catch (err) {
+        showToast('Error applying improvement: ' + err.message, 'error');
+    }
+}
+
+async function rejectImprovement(agentKey, improvementId) {
+    try {
+        const res = await fetch(`/api/admin/agents/${agentKey}/reject-improvement`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ improvement_id: improvementId }),
+        });
+        if (res.ok) {
+            showToast('Improvement rejected', 'warning');
+            loadAgentActivity();
+        }
+    } catch (err) {
+        console.warn('Reject failed:', err);
+    }
+}
+
+async function triggerImprovement(agentKey) {
+    try {
+        showToast('🧠 Analyzing misses and generating improvement...', 'info');
+        const res = await fetch(`/api/admin/agents/${agentKey}/generate-improvement`, {
+            method: 'POST',
+        });
+        if (res.ok) {
+            const data = await res.json();
+            showToast(data.message || 'Improvement generated', 'success');
+            setTimeout(() => loadAgentActivity(), 2000);
+        } else {
+            showToast('Failed to generate improvement', 'error');
+        }
+    } catch (err) {
+        showToast('Error: ' + err.message, 'error');
+    }
 }
 
 function _truncateModel(model) {

@@ -425,6 +425,20 @@ async def stream_validation(
                     for h in heal_history
                 ],
             }) + "\n"
+
+            # Record miss for the healing agents
+            try:
+                from src.copilot_helpers import record_agent_miss
+                last_err = heal_history[-1]["error"] if heal_history else "Unknown"
+                await record_agent_miss(
+                    "TEMPLATE_HEALER", "healing_exhausted",
+                    context_summary=f"Validation pipeline exhausted heals for {template_id}",
+                    error_detail=last_err[:2000],
+                    pipeline_phase="validation",
+                )
+            except Exception:
+                pass
+
             break
 
         # ── DEEP HEALING (for blueprints) ──
@@ -552,6 +566,19 @@ async def stream_validation(
                 "context": {"template_id": template_id, "version_num": version_num,
                             "region": region, "error": error_msg[:500]},
             }) + "\n"
+
+            # Record miss for heal failure
+            try:
+                from src.copilot_helpers import record_agent_miss
+                await record_agent_miss(
+                    "TEMPLATE_HEALER", "healing_exhausted",
+                    context_summary=f"Heal exception in validation for {template_id}: {heal_err}",
+                    error_detail=str(heal_err)[:2000],
+                    pipeline_phase="validation_heal",
+                )
+            except Exception:
+                pass
+
             final_status = "failed"
             break
 

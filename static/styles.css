@@ -17115,6 +17115,323 @@ details[open] > .tmpl-deploy-group-optional {
     font-family: var(--font-mono);
 }
 
+/* ── Performance Score Badge (on cards) ──────────────────── */
+.ao-card-score-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.55rem;
+    font-weight: 800;
+    color: #fff;
+    border: 2px solid var(--surface-tertiary);
+    z-index: 2;
+}
+.ao-card { position: relative; }
+.ao-score-excellent { background: #10b981; }
+.ao-score-good { background: #3b82f6; }
+.ao-score-fair { background: #f59e0b; }
+.ao-score-attention { background: #f97316; }
+.ao-score-critical { background: #ef4444; }
+
+.ao-card-misses {
+    color: #f59e0b;
+    font-weight: 600;
+    font-size: 0.6rem;
+}
+
+/* ── Summary strip new items ─────────────────────────────── */
+.ao-val-score { color: #3b82f6; }
+.ao-val-miss { color: #f59e0b; }
+.ao-val-improve { color: #8b5cf6; }
+
+/* ── Detail panel — score ring ───────────────────────────── */
+.ao-detail-score-ring {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 3px solid;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.ao-detail-score-ring.ao-score-excellent { border-color: #10b981; color: #10b981; }
+.ao-detail-score-ring.ao-score-good { border-color: #3b82f6; color: #3b82f6; }
+.ao-detail-score-ring.ao-score-fair { border-color: #f59e0b; color: #f59e0b; }
+.ao-detail-score-ring.ao-score-attention { border-color: #f97316; color: #f97316; }
+.ao-detail-score-ring.ao-score-critical { border-color: #ef4444; color: #ef4444; }
+.ao-detail-score-val { font-size: 1.1rem; font-weight: 800; line-height: 1; }
+.ao-detail-score-lbl { font-size: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; }
+
+/* ── Score breakdown bars ────────────────────────────────── */
+.ao-detail-score-breakdown {
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    margin: 0.5rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.ao-score-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.ao-score-bar-label {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    width: 65px;
+    flex-shrink: 0;
+}
+.ao-score-bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--surface-secondary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.ao-score-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+.ao-bar-good { background: #10b981; }
+.ao-bar-fair { background: #f59e0b; }
+.ao-bar-poor { background: #ef4444; }
+.ao-score-bar-val {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    width: 24px;
+    text-align: right;
+}
+.ao-detail-feedback-strip {
+    display: flex;
+    gap: 0.75rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--border-default);
+    margin-top: 0.25rem;
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+}
+
+/* ── Tabbed sections in detail panel ─────────────────────── */
+.ao-detail-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid var(--border-default);
+    margin: 0.5rem 0 0;
+}
+.ao-dtab {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.ao-dtab:hover { color: var(--text-primary); }
+.ao-dtab.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+.ao-dtab-content { padding: 0.5rem 0; }
+.ao-dtab-content.hidden { display: none; }
+
+/* ── Feedback buttons on invocation rows ─────────────────── */
+.ao-dfeed-feedback {
+    display: flex;
+    gap: 0.2rem;
+    margin-left: auto;
+}
+.ao-fb-btn {
+    background: none;
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+    padding: 0.1rem 0.25rem;
+    font-size: 0.6rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    line-height: 1;
+}
+.ao-fb-btn:hover {
+    border-color: var(--accent-blue);
+    background: var(--surface-secondary);
+}
+
+/* ── Misses list ─────────────────────────────────────────── */
+.ao-misses-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.ao-miss-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.5rem;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    font-size: 0.65rem;
+}
+.ao-miss-badge {
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.55rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+.ao-miss-ctx {
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 100px;
+}
+.ao-miss-error {
+    color: var(--accent-red);
+    font-size: 0.6rem;
+    width: 100%;
+}
+.ao-miss-phase {
+    font-size: 0.55rem;
+    color: var(--text-muted);
+    padding: 0.05rem 0.25rem;
+    background: var(--surface-secondary);
+    border-radius: 3px;
+}
+.ao-miss-resolved {
+    font-size: 0.6rem;
+    white-space: nowrap;
+}
+.ao-miss-time {
+    font-size: 0.55rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+.ao-load-more-btn {
+    margin-top: 0.5rem;
+    padding: 0.3rem 0.75rem;
+    font-size: 0.65rem;
+    color: var(--accent-blue);
+    background: none;
+    border: 1px solid var(--accent-blue);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.ao-load-more-btn:hover {
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+}
+
+/* ── Learning / Improvement cards ────────────────────────── */
+.ao-improve-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.ao-improve-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+.ao-improve-card {
+    padding: 0.5rem 0.6rem;
+    background: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    font-size: 0.65rem;
+}
+.ao-improve-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.3rem;
+}
+.ao-improve-pattern {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.ao-improve-count {
+    font-size: 0.55rem;
+    color: #f59e0b;
+    font-weight: 700;
+}
+.ao-improve-patch {
+    padding: 0.35rem 0.5rem;
+    background: var(--surface-secondary);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 0.3rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.ao-improve-reasoning {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+}
+.ao-improve-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+.ao-improve-approve {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: #fff;
+    background: #10b981;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.ao-improve-approve:hover { background: #059669; }
+.ao-improve-reject {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--surface-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.ao-improve-reject:hover { color: var(--accent-red); border-color: var(--accent-red); }
+.ao-gen-improve-btn {
+    margin-top: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #8b5cf6;
+    background: color-mix(in srgb, #8b5cf6 8%, transparent);
+    border: 1px solid color-mix(in srgb, #8b5cf6 30%, transparent);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.ao-gen-improve-btn:hover {
+    background: color-mix(in srgb, #8b5cf6 15%, transparent);
+    border-color: #8b5cf6;
+}
+
 /* ── Responsive ───────────────────────────────────────────── */
 @media (max-width: 768px) {
     .ao-branches {
