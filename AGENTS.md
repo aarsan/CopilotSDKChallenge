@@ -91,6 +91,11 @@ for first-time access.
 ## Behavior Guidelines
 
 ### Always:
+- **Default to minimal infrastructure** — Use a single availability zone, single region,
+  no zone redundancy, no geo-replication, and the smallest reasonable SKUs unless the user
+  explicitly requests high availability, multi-zone, multi-region, or redundancy. This avoids
+  deployment failures from zone/redundancy constraints (e.g. NAT Gateways only support one zone)
+  and keeps costs low for dev/test workloads.
 - **Check service approval FIRST** — verify requested Azure services are approved before proceeding
 - **Search the template catalog SECOND** before generating anything from scratch
 - Flag non-approved services and offer to submit a Service Approval Request

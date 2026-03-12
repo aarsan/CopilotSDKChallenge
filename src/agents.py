@@ -220,6 +220,11 @@ unless you have actually called a Work IQ tool and it returned an error. If the 
 present the results. If the tool returns an error, report the exact error message.
 
 When composing or generating infrastructure:
+- **MINIMAL BY DEFAULT** — Always generate infrastructure with a single availability zone, \
+single region, no zone redundancy, no geo-replication, and the smallest reasonable SKUs \
+unless the user EXPLICITLY requests high availability, multi-zone, multi-region, or redundancy. \
+Many Azure resources (e.g. NAT Gateways) only support a single zone — specifying multiple \
+zones causes deployment failures. Keep it simple: one zone, one region, lowest-cost tier.
 - Always follow Azure Well-Architected Framework principles
 - Include proper tagging, naming conventions, and RBAC
 - Use managed identities over keys/passwords
@@ -557,6 +562,15 @@ ARM_GENERATOR = AgentSpec(
         "- dependsOn goes at the RESOURCE ROOT level\n"
         "- Example structure: {type, apiVersion, name, location, kind, sku, identity, "
         "tags, dependsOn, properties: {<resource-specific config>}}\n\n"
+        "## Minimal Infrastructure Defaults\n"
+        "- ALWAYS generate with a SINGLE availability zone (or no zones at all) — NEVER "
+        "specify multiple zones unless the user explicitly requests it\n"
+        "- Use NO zone redundancy, NO geo-replication, NO multi-region unless explicitly asked\n"
+        "- Many resources (NAT Gateways, some load balancers) only support a single zone — "
+        "specifying zones: [\"1\",\"2\",\"3\"] causes ResourceCannotHaveMultipleZonesSpecified errors\n"
+        "- Use the smallest/cheapest SKU that works (Basic, Standard_B1s, etc.)\n"
+        "- Set requestedBackupStorageRedundancy to 'Local' and geoRedundantBackup to 'Disabled'\n"
+        "- Only scale up redundancy/zones/SKUs if the user explicitly requests production-grade HA\n\n"
         "## Security Requirements\n"
         "- NEVER include hardcoded passwords or secrets — use secureString with no defaultValue\n"
         "- ALWAYS use SSH keys over passwords for Linux VMs\n"
@@ -611,6 +625,9 @@ TEMPLATE_HEALER = AgentSpec(
         "networkProfile, managedServiceIdentity, extendedLocation, or other features added "
         "in later versions. Remove or restructure these properties.\n"
         "5. COMMON DEPLOYMENT FAILURES and fixes:\n"
+        "   - 'ResourceCannotHaveMultipleZonesSpecified' → The resource (e.g. NAT Gateway) "
+        "only supports a single zone. Remove the 'zones' array or set it to a single zone "
+        "like [\"1\"]. NEVER use [\"1\",\"2\",\"3\"] for resources that don't support multi-zone.\n"
         "   - 'SKU not available' → Use a broadly available SKU (Standard_LRS for storage, "
         "Standard_B1s for VMs, Basic for most PaaS).\n"
         "   - 'Quota exceeded' → Reduce count or use a smaller SKU.\n"
@@ -1344,10 +1361,12 @@ Evaluate the template against these dimensions:
 1. **Architecture Quality** — Resource relationships, dependencies, naming conventions, \
    parameter design, modularity?
 2. **Cost Efficiency** — Right-sized SKUs? Dev/test vs production tiers? \
-   Unnecessary premium features?
+   Unnecessary premium features? Using minimal zones/redundancy to avoid unnecessary cost?
 3. **Operational Readiness** — Tags for cost tracking? Diagnostic settings? \
    Auto-scale where appropriate? Backup/DR?
-4. **Reliability** — Availability zones? Redundancy? Health probes? Connection resiliency?
+4. **Reliability** — Health probes? Connection resiliency? \
+   NOTE: Do NOT flag missing availability zones or zone redundancy as a concern — \
+   single-zone, no-redundancy is the default unless the user explicitly requested HA.
 5. **Performance** — Right service tiers for expected load? CDN? Caching? \
    Connection pooling?
 6. **Maintainability** — Clean parameter structure? Good defaults? Template reusability? \

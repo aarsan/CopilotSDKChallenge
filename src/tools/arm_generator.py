@@ -1253,6 +1253,12 @@ async def generate_arm_template_with_copilot(
             "parameter without a default will cause a deployment failure. "
             "Use sensible defaults (e.g. resourceName → \"infraforge-resource\", "
             "location → \"[resourceGroup().location]\").\n\n"
+            "MINIMAL INFRASTRUCTURE: Unless the plan explicitly says otherwise, use "
+            "a SINGLE availability zone (or omit 'zones' entirely) — NEVER specify "
+            "zones: [\"1\",\"2\",\"3\"]. NAT Gateways and many resources FAIL with "
+            "multiple zones. Set zoneRedundant=false, geoRedundantBackup='Disabled', "
+            "requestedBackupStorageRedundancy='Local'. Only add HA/redundancy if the "
+            "plan explicitly requests it.\n\n"
         )
     else:
         prompt += (
@@ -1269,6 +1275,11 @@ async def generate_arm_template_with_copilot(
             "- Use the LATEST STABLE (GA) API version for this resource type — never "
             "use preview versions unless no GA version exists\n"
             "- Include minimal required properties only\n"
+            "- SINGLE ZONE / NO REDUNDANCY: Do NOT specify multiple availability zones. "
+            "Either omit the 'zones' property entirely or set it to at most [\"1\"]. "
+            "Many resources (NAT Gateways, some LBs) fail with multiple zones. "
+            "Use requestedBackupStorageRedundancy='Local', geoRedundantBackup='Disabled', "
+            "zoneRedundant=false. Only add HA/redundancy if explicitly requested.\n"
             "- Enable managed identity (SystemAssigned) if the resource supports it — "
             "identity block goes at RESOURCE ROOT, not inside properties\n"
             "- sku goes at RESOURCE ROOT level, not inside properties\n"
