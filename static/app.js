@@ -1227,7 +1227,25 @@ function renderServiceTable(services) {
         return;
     }
 
-    tbody.innerHTML = services.map(svc => {
+    // Sort so children appear directly after their parent.
+    // Primary: category (preserve DB ordering). Secondary: parent group, then parent before children.
+    const sorted = [...services].sort((a, b) => {
+        const catCmp = (a.category || '').localeCompare(b.category || '');
+        if (catCmp !== 0) return catCmp;
+        const ap = a.id.split('/'), bp = b.id.split('/');
+        const aParent = ap.length >= 3 ? ap.slice(0, 2).join('/') : a.id;
+        const bParent = bp.length >= 3 ? bp.slice(0, 2).join('/') : b.id;
+        const parentCmp = aParent.localeCompare(bParent);
+        if (parentCmp !== 0) return parentCmp;
+        // Same parent group: parent row first, then children alphabetically
+        const aIsChild = ap.length >= 3 ? 1 : 0;
+        const bIsChild = bp.length >= 3 ? 1 : 0;
+        if (aIsChild !== bIsChild) return aIsChild - bIsChild;
+        return a.id.localeCompare(b.id);
+    });
+
+    let prevParentId = null;
+    tbody.innerHTML = sorted.map(svc => {
         const status = svc.status || 'not_approved';
         const activeVer = svc.active_version;
         const update = _serviceUpdates[svc.id];
@@ -1302,12 +1320,18 @@ function renderServiceTable(services) {
         // Detect child resource (3+ segments in resource type)
         const idParts = svc.id.split('/');
         const isChildResource = idParts.length >= 3;
+        const parentId = isChildResource ? idParts.slice(0, 2).join('/') : null;
         const parentShortName = isChildResource ? idParts[1] : null;
         const childTag = isChildResource
-            ? `<span class="svc-child-tag" title="Child resource of ${escapeHtml(idParts.slice(0, 2).join('/'))}">↳ child of ${escapeHtml(parentShortName)}</span>`
+            ? `<span class="svc-child-tag" title="Child resource of ${escapeHtml(parentId)}">↳ child of ${escapeHtml(parentShortName)}</span>`
             : '';
 
-        return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${isChildResource ? ' class="svc-row-child"' : ''}>
+        // Track parent boundaries — add a separator class when the parent changes
+        const isNewGroup = isChildResource && parentId !== prevParentId;
+        prevParentId = isChildResource ? parentId : null;
+        const rowClasses = [isChildResource ? 'svc-row-child' : '', isNewGroup ? 'svc-row-child-group-start' : ''].filter(Boolean).join(' ');
+
+        return `<tr onclick="showServiceDetail('${escapeHtml(svc.id)}')"${rowClasses ? ` class="${rowClasses}"` : ''}>
             <td>
                 <div class="svc-name">${escapeHtml(svc.name)}</div>
                 <div class="svc-id">${escapeHtml(svc.id)}</div>
