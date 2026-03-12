@@ -5,6 +5,7 @@ InfraForge custom tools for the Copilot SDK agent.
 from src.tools.catalog_search import search_template_catalog
 from src.tools.catalog_compose import compose_from_catalog
 from src.tools.catalog_register import register_template
+from src.tools.catalog_clone import clone_template
 from src.tools.bicep_generator import generate_bicep
 from src.tools.terraform_generator import generate_terraform
 from src.tools.github_actions_generator import generate_github_actions_pipeline
@@ -75,6 +76,7 @@ def get_all_tools() -> list:
         browse_template_catalog,
         compose_from_catalog,
         register_template,
+        clone_template,
         # Generation (fallback)
         generate_bicep,
         generate_terraform,

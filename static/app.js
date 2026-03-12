@@ -6611,6 +6611,9 @@ function showTemplateDetail(templateId) {
 
         <!-- Delete template -->
         <div class="detail-section tmpl-danger-section">
+            <button class="btn btn-sm btn-secondary" onclick="openCloneTemplateModal('${escapeHtml(tmpl.id)}', '${escapeHtml(tmpl.name)}')">
+                📋 Clone Template
+            </button>
             <button class="btn btn-sm btn-danger" onclick="deleteTemplate('${escapeHtml(tmpl.id)}')">
                 🗑 Delete Template
             </button>
@@ -7690,6 +7693,64 @@ async function deleteTemplate(templateId) {
         await loadAllData();
     } catch (err) {
         showToast(`Failed to delete template: ${err.message}`, 'error');
+    }
+}
+
+/* ── Clone Template ────────────────────────────────────────── */
+
+function openCloneTemplateModal(sourceId, sourceName) {
+    document.getElementById('clone-source-id').value = sourceId;
+    document.getElementById('clone-new-id').value = '';
+    document.getElementById('clone-new-name').value = '';
+    document.getElementById('clone-error').style.display = 'none';
+    document.getElementById('btn-clone-submit').disabled = false;
+    openModal('modal-clone-template');
+}
+
+async function submitCloneTemplate(event) {
+    event.preventDefault();
+    const sourceId = document.getElementById('clone-source-id').value;
+    const newId = document.getElementById('clone-new-id').value.trim();
+    const newName = document.getElementById('clone-new-name').value.trim();
+    const errorEl = document.getElementById('clone-error');
+    const submitBtn = document.getElementById('btn-clone-submit');
+
+    if (!newId) {
+        errorEl.textContent = 'New Template ID is required.';
+        errorEl.style.display = 'block';
+        return;
+    }
+    if (newId === sourceId) {
+        errorEl.textContent = 'New ID must differ from the source template ID.';
+        errorEl.style.display = 'block';
+        return;
+    }
+
+    errorEl.style.display = 'none';
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ Cloning…';
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(sourceId)}/clone`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_id: newId, new_name: newName }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        closeModal('modal-clone-template');
+        showToast(`Template cloned as "${data.template.name}"`, 'success');
+        await loadAllData();
+        showTemplateDetail(newId);
+    } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.style.display = 'block';
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '📋 Clone';
     }
 }
 

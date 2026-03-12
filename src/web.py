@@ -9732,6 +9732,60 @@ async def delete_template_draft_versions(template_id: str):
     return JSONResponse({"deleted": count})
 
 
+@app.post("/api/catalog/templates/{template_id}/clone")
+async def clone_template_endpoint(template_id: str, request: Request):
+    """Clone a template under a new unique ID."""
+    body = await _parse_body_required(request)
+
+    new_id = (body.get("new_id") or "").strip()
+    if not new_id:
+        raise HTTPException(status_code=400, detail="new_id is required")
+
+    if new_id == template_id:
+        raise HTTPException(status_code=400, detail="new_id must differ from the source template ID")
+
+    source = await get_template_by_id(template_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source template not found")
+
+    existing = await get_template_by_id(new_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A template with ID '{new_id}' already exists",
+        )
+
+    new_name = (body.get("new_name") or "").strip() or f"{source['name']} (Copy)"
+
+    clone = {
+        "id": new_id,
+        "name": new_name,
+        "description": source.get("description", ""),
+        "format": source.get("format", "bicep"),
+        "category": source.get("category", "compute"),
+        "source_path": "",
+        "content": source.get("content", ""),
+        "tags": list(source.get("tags", [])),
+        "resources": list(source.get("resources", [])),
+        "parameters": list(source.get("parameters", [])),
+        "outputs": list(source.get("outputs", [])),
+        "is_blueprint": source.get("is_blueprint", False),
+        "service_ids": list(source.get("service_ids", [])),
+        "template_type": source.get("template_type", "workload"),
+        "provides": list(source.get("provides", [])),
+        "requires": list(source.get("requires", [])),
+        "optional_refs": list(source.get("optional_refs", [])),
+        "compliance_profile": source.get("compliance_profile"),
+        "pinned_versions": dict(source.get("pinned_versions", {})),
+        "registered_by": "web-ui",
+        "status": "draft",
+    }
+
+    await upsert_template(clone)
+    tmpl = await get_template_by_id(new_id)
+    return JSONResponse({"status": "ok", "template": tmpl})
+
+
 # ══════════════════════════════════════════════════════════════
 # TEMPLATE DEPENDENCIES & RESOURCE DISCOVERY
 # ══════════════════════════════════════════════════════════════
