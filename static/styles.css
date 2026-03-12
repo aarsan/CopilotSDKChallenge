@@ -1637,7 +1637,7 @@ tr:hover .svc-view-tpl-btn {
 
 .svc-row-ns-header > td {
     padding: 0.6rem 0.75rem;
-    border-top: 2px solid var(--accent-yellow, #d29922);
+    border-top: none;
     border-bottom: 1px solid var(--accent-yellow, #d29922);
     background: rgba(210, 153, 34, 0.06);
 }
@@ -1662,7 +1662,7 @@ tr:hover .svc-view-tpl-btn {
 .svc-ns-label {
     font-weight: 700;
     font-size: 0.85rem;
-    color: var(--accent-yellow, #d29922);
+    color: var(--text-primary);
     letter-spacing: 0.03em;
     text-transform: uppercase;
 }
@@ -1693,6 +1693,16 @@ tr:hover .svc-view-tpl-btn {
 }
 
 /* Yellow left accent on all service rows within a namespace group */
+tr[class*="ns-group-"] {
+    transition: max-height 0.25s ease, opacity 0.2s ease;
+    overflow: hidden;
+}
+
+tr[class*="ns-group-"].ns-row-collapsing {
+    opacity: 0;
+    max-height: 0;
+}
+
 tr[class*="ns-group-"] > td:first-child {
     border-left: 2px solid rgba(210, 153, 34, 0.35);
 }

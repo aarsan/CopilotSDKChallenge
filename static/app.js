@@ -1378,7 +1378,12 @@ function toggleNsGroup(nsKey) {
     const collapsed = !header.classList.contains('ns-collapsed');
     header.classList.toggle('ns-collapsed', collapsed);
     if (chev) chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
-    rows.forEach(r => r.style.display = collapsed ? 'none' : '');
+    if (collapsed) {
+        rows.forEach(r => r.classList.add('ns-row-collapsing'));
+        setTimeout(() => rows.forEach(r => r.style.display = 'none'), 200);
+    } else {
+        rows.forEach(r => { r.style.display = ''; r.classList.remove('ns-row-collapsing'); });
+    }
 }
 
 async function checkForServiceUpdates() {
