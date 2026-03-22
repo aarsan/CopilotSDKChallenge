@@ -391,6 +391,34 @@ async def list_governance_policies(category: Optional[str] = None):
 
 
 
+# ── Toggle Governance Policy ──────────────────────────────────
+
+@router.put("/api/governance/policies/{policy_id}")
+async def toggle_governance_policy(policy_id: str, request: Request):
+    """Enable or disable a single governance policy."""
+    from src.database import get_governance_policies as db_get_policies, upsert_governance_policy
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    enabled = body.get("enabled")
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="'enabled' field is required")
+
+    all_policies = await db_get_policies(enabled_only=False)
+    current = next((p for p in all_policies if p["id"] == policy_id), None)
+    if not current:
+        raise HTTPException(status_code=404, detail=f"Policy '{policy_id}' not found")
+
+    current["enabled"] = bool(enabled)
+    await upsert_governance_policy(current)
+    action = "enabled" if enabled else "disabled"
+    logger.info(f"Governance policy {policy_id} {action}")
+    return JSONResponse({"status": action, "policy_id": policy_id, "enabled": bool(enabled)})
+
+
 # ── Governance Enforcement Mode ───────────────────────────────
 
 @router.get("/api/settings/enforcement-mode")

@@ -406,9 +406,10 @@ function navigateTo(page) {
         _stopHealthTimer();
     }
 
-    // Load standards when switching to governance page
+    // Load standards and governance policies when switching to governance page
     if (page === 'governance') {
         loadStandards();
+        loadGovernancePolicies();
     }
 
 
@@ -13104,6 +13105,84 @@ function _renderComposeTestResults(testData) {
 
 
 // ══════════════════════════════════════════════════════════════
+// GOVERNANCE POLICIES (GOV-xxx toggles)
+// ══════════════════════════════════════════════════════════════
+
+let allGovPolicies = [];
+
+async function loadGovernancePolicies() {
+    try {
+        const res = await fetch('/api/governance/policies');
+        if (!res.ok) throw new Error('Failed to load governance policies');
+        const data = await res.json();
+        allGovPolicies = (data.policies || []).filter(p => p.category !== 'migration');
+        _renderGovernancePolicies();
+    } catch (err) {
+        console.error('Failed to load governance policies:', err);
+        const el = document.getElementById('gov-policies-section');
+        if (el) el.innerHTML = '';
+    }
+}
+
+function _renderGovernancePolicies() {
+    const container = document.getElementById('gov-policies-section');
+    if (!container || !allGovPolicies.length) { if (container) container.innerHTML = ''; return; }
+
+    const enabledCount = allGovPolicies.filter(p => p.enabled).length;
+
+    let html = `
+    <div class="gov-policies-card">
+        <div class="gov-policies-header">
+            <div>
+                <h3 class="gov-policies-title">Governance Policies</h3>
+                <p class="gov-policies-subtitle">${enabledCount} of ${allGovPolicies.length} policies enabled &mdash; controls what the compliance checker enforces</p>
+            </div>
+        </div>
+        <div class="gov-policies-grid">`;
+
+    for (const pol of allGovPolicies) {
+        const sevIcon = pol.severity === 'critical' ? '🔴' : pol.severity === 'high' ? '🟠' : pol.severity === 'medium' ? '🟡' : '🟢';
+        const enfIcon = pol.enforcement === 'block' ? '🚫' : '⚠️';
+        html += `
+        <div class="gov-policy-row ${pol.enabled ? '' : 'gov-policy-disabled'}">
+            <div class="gov-policy-info">
+                <span class="gov-policy-id">${escapeHtml(pol.id)}</span>
+                <span class="gov-policy-name">${escapeHtml(pol.name)}</span>
+                <span class="gov-policy-sev">${sevIcon}</span>
+                <span class="gov-policy-enf">${enfIcon} ${escapeHtml(pol.enforcement)}</span>
+            </div>
+            <div class="gov-policy-desc">${escapeHtml(pol.description || '')}</div>
+            <div class="gov-policy-toggle-wrap">
+                <label class="std-toggle" onclick="event.stopPropagation()" title="${pol.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
+                    <input type="checkbox" ${pol.enabled ? 'checked' : ''} onchange="toggleGovernancePolicy('${escapeHtml(pol.id)}', this.checked)" />
+                    <span class="std-toggle-slider"></span>
+                </label>
+            </div>
+        </div>`;
+    }
+
+    html += '</div></div>';
+    container.innerHTML = html;
+}
+
+async function toggleGovernancePolicy(policyId, enabled) {
+    try {
+        const res = await fetch(`/api/governance/policies/${encodeURIComponent(policyId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+        if (!res.ok) throw new Error('Failed to toggle policy');
+        const pol = allGovPolicies.find(p => p.id === policyId);
+        if (pol) pol.enabled = enabled;
+        _renderGovernancePolicies();
+        showToast(`${policyId} ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+        showToast(err.message, 'error');
+        await loadGovernancePolicies();
+    }
+}
+
 // GOVERNANCE STANDARDS
 // ══════════════════════════════════════════════════════════════
 

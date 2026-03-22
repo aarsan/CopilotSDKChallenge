@@ -10203,6 +10203,107 @@ tr[class*="ns-group-"] > td:first-child {
     padding: 0.5rem;
 }
 
+/* ── Governance Policies Section ──────────────────────────── */
+
+.gov-policies-section {
+    margin-bottom: 1.5rem;
+}
+
+.gov-policies-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+}
+
+.gov-policies-header {
+    margin-bottom: 1rem;
+}
+
+.gov-policies-title {
+    margin: 0 0 0.25rem 0;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.gov-policies-subtitle {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
+.gov-policies-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.gov-policy-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 0.15rem 1rem;
+    align-items: center;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 0.65rem 0.85rem;
+    transition: opacity 0.2s;
+}
+
+.gov-policy-row.gov-policy-disabled {
+    opacity: 0.5;
+}
+
+.gov-policy-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.gov-policy-id {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-blue);
+    background: var(--bg-secondary);
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius-sm);
+}
+
+.gov-policy-name {
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.gov-policy-sev {
+    font-size: 0.78rem;
+}
+
+.gov-policy-enf {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.gov-policy-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    grid-column: 1;
+    grid-row: 2;
+    line-height: 1.4;
+}
+
+.gov-policy-toggle-wrap {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    display: flex;
+    align-items: center;
+}
+
 /* ── Governance Completeness Dashboard ────────────────────── */
 
 .gov-completeness-header {
