@@ -20,7 +20,7 @@ from copilot.types import PermissionRequest, PermissionRequestResult
 
 from src.model_router import Task, get_model_for_task  # re-export
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("infraforge.copilot_helpers")
 
 
 def approve_all(request: PermissionRequest, context: dict[str, str]) -> PermissionRequestResult:

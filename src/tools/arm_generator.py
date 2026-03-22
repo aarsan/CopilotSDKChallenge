@@ -17,7 +17,7 @@ import logging
 import re
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("infraforge.tools.arm_generator")
 
 # ══════════════════════════════════════════════════════════════
 # ARM TEMPLATE SKELETON REGISTRY

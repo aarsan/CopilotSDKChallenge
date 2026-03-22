@@ -20,7 +20,7 @@ import logging
 import re
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("infraforge.standards_import")
 
 from src.agents import STANDARDS_EXTRACTOR
 

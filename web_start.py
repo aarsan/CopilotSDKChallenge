@@ -1,12 +1,13 @@
 # InfraForge Web UI — Quick Start
 # Run this file to launch the web-based interface
 
+import logging
 import os
 import signal
 import sys
 
 import uvicorn
-from src.config import WEB_HOST, WEB_PORT
+from src.config import WEB_HOST, WEB_PORT, setup_logging
 
 
 def kill_existing(port: int) -> None:
@@ -34,7 +35,7 @@ def kill_existing(port: int) -> None:
                 continue
             try:
                 os.kill(pid, signal.SIGTERM)
-                print(f"  Killed existing process on port {port} (PID {pid})")
+                _startup_log.info("Killed existing process on port %d (PID %d)", port, pid)
             except OSError:
                 pass
     else:
@@ -49,7 +50,7 @@ def kill_existing(port: int) -> None:
                 pid = int(line)
                 if pid != my_pid:
                     os.kill(pid, signal.SIGTERM)
-                    print(f"  Killed existing process on port {port} (PID {pid})")
+                    _startup_log.info("Killed existing process on port %d (PID %d)", port, pid)
             except (ValueError, OSError):
                 continue
 
@@ -61,11 +62,14 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+_startup_log = logging.getLogger("infraforge.startup")
+
 if __name__ == "__main__":
+    # Encoding must be set before logging is configured
+    setup_logging()
     kill_existing(WEB_PORT)
-    print(f"⚒️  InfraForge Web UI starting on http://localhost:{WEB_PORT}")
-    print(f"   Open your browser to http://localhost:{WEB_PORT}")
-    print()
+    _startup_log.info("InfraForge Web UI starting on http://localhost:%d", WEB_PORT)
+    _startup_log.info("Open your browser to http://localhost:%d", WEB_PORT)
     uvicorn.run(
         "src.web:app",
         host=WEB_HOST,
