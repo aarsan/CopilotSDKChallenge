@@ -574,7 +574,13 @@ async def copilot_send(
     try:
         if on_event:
             unsub = session.on(on_event)
-        result = await session.send_and_wait({"prompt": prompt}, timeout=timeout)
+        
+        # Enforce strict total timeout for the generation so it doesn't hang forever
+        result = await asyncio.wait_for(
+            session.send_and_wait({"prompt": prompt}), 
+            timeout=timeout
+        )
+
         response = ((result.data.content or "") if result else "").strip()
         _record_activity(
             agent_name=agent_name, model=model, status="ok",
