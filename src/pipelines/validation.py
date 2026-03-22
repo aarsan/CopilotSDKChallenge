@@ -616,27 +616,36 @@ async def stream_validation(
         "heal_history": heal_history,
         "deep_healed": deep_healed,
     }
+
+    # Save healed template content BEFORE updating status to avoid
+    # consistency window where status="validated" but content is stale.
+    if final_status == "validated" and final_tpl and (heal_history or deep_healed):
+        try:
+            fixed_content = json.dumps(final_tpl, indent=2)
+            from src.database import get_backend as _get_hb
+            _hb = await _get_hb()
+            await _hb.execute_write(
+                """UPDATE template_versions
+                   SET arm_template = ?
+                   WHERE template_id = ? AND version = ?""",
+                (fixed_content, template_id, version_num),
+            )
+            await _hb.execute_write(
+                """UPDATE catalog_templates
+                   SET content = ?, updated_at = ?
+                   WHERE id = ?""",
+                (fixed_content, datetime.now(timezone.utc).isoformat(), template_id),
+            )
+        except Exception as _save_err:
+            logger.error("Failed to save healed template content: %s", _save_err, exc_info=True)
+            # Downgrade status — don't mark as validated if content save failed
+            final_status = "heal_save_failed"
+            validation_results["validation_passed"] = False
+            validation_results["save_error"] = str(_save_err)
+
     await update_template_validation_status(
         template_id, version_num, final_status, validation_results
     )
-
-    # Save healed template back
-    if final_status == "validated" and final_tpl and (heal_history or deep_healed):
-        fixed_content = json.dumps(final_tpl, indent=2)
-        from src.database import get_backend as _get_hb
-        _hb = await _get_hb()
-        await _hb.execute_write(
-            """UPDATE template_versions
-               SET arm_template = ?
-               WHERE template_id = ? AND version = ?""",
-            (fixed_content, template_id, version_num),
-        )
-        await _hb.execute_write(
-            """UPDATE catalog_templates
-               SET content = ?, updated_at = ?
-               WHERE id = ?""",
-            (fixed_content, datetime.now(timezone.utc).isoformat(), template_id),
-        )
 
     # Sync parent template status
     from src.database import get_backend as _get_val_backend
