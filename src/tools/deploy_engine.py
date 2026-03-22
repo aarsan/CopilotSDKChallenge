@@ -312,6 +312,16 @@ async def run_what_if(
         ),
     )
 
+    # Poll without blocking a thread indefinitely
+    import time
+    start_time = time.time()
+    timeout = 180  # 3 minutes
+
+    while not poller.done():
+        if time.time() - start_time > timeout:
+            raise Exception(f"What-If validation timed out after {timeout} seconds")
+        await asyncio.sleep(2)
+
     result = await loop.run_in_executor(None, poller.result)
 
     # Parse results
