@@ -2912,6 +2912,32 @@ async function _loadPipelineRuns(serviceId) {
         _servicePipelineRunCache[serviceId] = runs;
         container.innerHTML = _renderPipelineRuns(runs, serviceId);
         container.style.display = '';
+
+        // If the latest run is active (running/interrupted) and the drawer has a
+        // validation-log that's empty, replay stored events so the user sees
+        // the current pipeline state instead of a blank "Connecting to pipeline..."
+        const latestRun = runs[0];
+        if (latestRun && (latestRun.status === 'running' || latestRun.status === 'interrupted')) {
+            const events = latestRun.events || [];
+            const logEl = document.getElementById('validation-log');
+            if (logEl && events.length > 0 && !logEl._flow) {
+                for (const event of events) {
+                    _handleValidationFlowEvent(logEl, event, document.getElementById('validation-card'));
+                }
+                // Also update progress bar and detail text from last event
+                const lastEvent = events[events.length - 1];
+                if (lastEvent) {
+                    const progressFill = document.getElementById('validation-progress-fill');
+                    const detailEl = document.getElementById('validation-detail');
+                    if (lastEvent.progress && progressFill) {
+                        progressFill.style.width = `${Math.min(lastEvent.progress * 100, 100)}%`;
+                    }
+                    if (lastEvent.detail && detailEl) {
+                        detailEl.textContent = lastEvent.detail;
+                    }
+                }
+            }
+        }
     } catch (_) { /* ignore */ }
 }
 
