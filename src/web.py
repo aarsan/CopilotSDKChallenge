@@ -104,6 +104,7 @@ from src.database import (
     get_template_versions,
     get_version_summary_batch,
     init_db,
+    invalidate_service_cache,
     log_usage,
     promote_service_after_validation,
     promote_template_version,
@@ -6198,6 +6199,7 @@ async def offboard_service_endpoint(service_id: str):
         (service_id,),
     )
 
+    invalidate_service_cache()
     logger.info(f"Service offboarded: {service_id}")
 
     return JSONResponse({
