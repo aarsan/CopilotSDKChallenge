@@ -4977,7 +4977,10 @@ async def get_template_composition(template_id: str):
             "name": svc.get("name", sid.split("/")[-1]),
             "category": svc.get("category", ""),
             "status": svc.get("status", ""),
-            "fully_onboarded": svc.get("reviewed_by") == "Deployment Validated",
+            "fully_onboarded": (
+                svc.get("reviewed_by") == "Deployment Validated"
+                and svc.get("status") == "approved"
+            ),
             "parent_service_id": get_parent_resource_type(sid),
             "current_version": pinned_int,
             "current_semver": pinned_semver or (f"{pinned_int}.0.0" if pinned_int else None),
