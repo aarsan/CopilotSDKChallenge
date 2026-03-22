@@ -2202,6 +2202,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
             </div>
             <div class="svc-status-actions">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Restart</button>
+                <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
@@ -2232,6 +2233,26 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
             ${errorDetail ? `<div class="svc-status-error">${errorDetail}</div>` : ''}
             <div class="svc-status-actions">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🤖 Retry Onboarding</button>
+                <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
+            </div>
+            <div class="validation-log" id="validation-log"></div>
+        </div>`;
+    }
+
+    // ── Interrupted ──
+    if (status === 'interrupted') {
+        return `
+        <div class="svc-status-card svc-status-failed" id="validation-card">
+            <div class="svc-status-row">
+                <span class="svc-status-icon">⏸</span>
+                <div class="svc-status-info">
+                    <div class="svc-status-title">Pipeline Interrupted</div>
+                    <div class="svc-status-sub">The onboarding pipeline was interrupted before completing.</div>
+                </div>
+            </div>
+            <div class="svc-status-actions">
+                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Retry Onboarding</button>
+                <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
             <div class="validation-log" id="validation-log"></div>
         </div>`;
