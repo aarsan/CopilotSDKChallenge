@@ -163,10 +163,10 @@ async def websocket_governance_chat(websocket: WebSocket):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
                         elif evt_type == "session.idle":
-                            done_event.set()
+                            loop.call_soon_threadsafe(done_event.set)
                     except Exception as e:
                         logger.error(f"Governance event handler error: {e}")
-                        done_event.set()
+                        loop.call_soon_threadsafe(done_event.set)
 
                 unsubscribe = copilot_session.on(on_event)
 
@@ -366,10 +366,10 @@ async def websocket_concierge_chat(websocket: WebSocket):
                             tool_name = getattr(event.data, 'name', 'unknown')
                             _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
                         elif evt_type == "session.idle":
-                            done_event.set()
+                            loop.call_soon_threadsafe(done_event.set)
                     except Exception as e:
                         logger.error(f"Concierge event handler error: {e}")
-                        done_event.set()
+                        loop.call_soon_threadsafe(done_event.set)
 
                 unsubscribe = copilot_session.on(on_event)
 
@@ -584,10 +584,10 @@ async def websocket_chat(websocket: WebSocket):
                             logger.debug("[TOOL] %s: %s", evt_type, tool_name)
                             _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
                         elif evt_type == "session.idle":
-                            done_event.set()
+                            loop.call_soon_threadsafe(done_event.set)
                     except Exception as e:
                         logger.error(f"Event handler error: {e}")
-                        done_event.set()
+                        loop.call_soon_threadsafe(done_event.set)
 
                 unsubscribe = copilot_session.on(on_event)
 

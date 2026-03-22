@@ -1041,10 +1041,22 @@ async def step_generate_policy(ctx: PipelineContext, step: StepDef):
     )
 
     try:
-        policy_raw = await _llm_reason(
-            policy_gen_prompt,
-            "You are an Azure Policy expert. Return ONLY raw JSON — no markdown, no code fences.",
-            task=Task.POLICY_GENERATION,
+        from src.agents import POLICY_GENERATOR
+        from src.copilot_helpers import copilot_send
+        from src.web import ensure_copilot_client
+
+        task_model = get_model_for_task(Task.POLICY_GENERATION)
+        _client = await ensure_copilot_client()
+        if _client is None:
+            raise RuntimeError("Copilot SDK not available")
+
+        policy_raw = await copilot_send(
+            _client,
+            model=task_model,
+            system_prompt=POLICY_GENERATOR.system_prompt,
+            prompt=policy_gen_prompt,
+            timeout=POLICY_GENERATOR.timeout,
+            agent_name=POLICY_GENERATOR.name,
         )
 
         cleaned = policy_raw.strip()
@@ -1314,7 +1326,7 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
                 "The security gate cannot be bypassed automatically — "
                 "please retry or contact the platform team.",
                 event_type="governance_error",
-                recoverable=True,
+                healable=False,
             )
 
 
@@ -1655,6 +1667,19 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             brief = brief_azure_error(errors)
 
             if is_transient_error(errors):
+                if is_last:
+                    await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": errors, "phase": "what_if_transient"})
+                    await fail_service_validation(ctx.service_id, f"What-If failed (transient Azure error on final attempt): {brief}")
+                    raise StepFailure(brief, healable=False, phase="what_if",
+                        actions=[
+                            {"id": "retry", "label": "Retry Pipeline",
+                             "description": "Re-run the pipeline (Azure may have recovered)",
+                             "style": "primary"},
+                            {"id": "end_pipeline", "label": "End Pipeline",
+                             "description": "Stop and investigate",
+                             "style": "danger"},
+                        ],
+                    )
                 yield emit("progress", "infra_retry", "Azure is temporarily busy — retrying in 10 seconds…", ctx.progress(att_base + 0.11), step=attempt)
                 await asyncio.sleep(10)
                 continue
@@ -1773,6 +1798,19 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
             yield emit("progress", "deploy_failed", f"Deployment failed — {brief}", ctx.progress(att_base + 0.20), step=attempt)
 
             if is_transient_error(deploy_error):
+                if is_last:
+                    await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": deploy_error, "phase": "deploy_transient"})
+                    await fail_service_validation(ctx.service_id, f"Deployment failed (transient Azure error on final attempt): {brief}")
+                    raise StepFailure(brief, healable=False, phase="deploy",
+                        actions=[
+                            {"id": "retry", "label": "Retry Pipeline",
+                             "description": "Re-run the pipeline (Azure may have recovered)",
+                             "style": "primary"},
+                            {"id": "end_pipeline", "label": "End Pipeline",
+                             "description": "Stop and investigate",
+                             "style": "danger"},
+                        ],
+                    )
                 yield emit("progress", "infra_retry", "Azure is temporarily busy — retrying in 10 seconds…", ctx.progress(att_base + 0.21), step=attempt)
                 await asyncio.sleep(10)
                 continue
@@ -2251,6 +2289,7 @@ async def step_promote_service(ctx: PipelineContext, step: StepDef):
         ctx.service_id, ctx.version_num, "approved",
         validation_result=validation_summary,
         policy_check=report.to_dict() if report else {},
+        azure_policy_json=ctx.generated_policy,
     )
     await set_active_service_version(ctx.service_id, ctx.version_num)
 
