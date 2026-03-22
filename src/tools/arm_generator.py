@@ -1227,6 +1227,24 @@ async def generate_arm_template_with_copilot(
         f"'{resource_type}' (service: {service_name}).\n\n"
     )
 
+    # ── Child resource type: inject parent requirement ──
+    from src.template_engine import get_parent_resource_type
+    _parent_type = get_parent_resource_type(resource_type)
+    if _parent_type:
+        prompt += (
+            f"## CRITICAL — CHILD RESOURCE TYPE\n"
+            f"'{resource_type}' is a CHILD resource of '{_parent_type}'. "
+            f"Child resources CANNOT exist without their parent in Azure.\n"
+            f"You MUST include the parent resource ({_parent_type}) in the same template.\n"
+            f"Use one of these approaches:\n"
+            f"1. Define the parent resource first, then define the child as a separate "
+            f"resource with name like \"[concat(parameters('parentName'), '/childName')]\" "
+            f"and a dependsOn reference to the parent\n"
+            f"2. Define the child as a nested resource inside the parent's resources array\n\n"
+            f"The parent resource should have minimal configuration — just enough to be "
+            f"deployable. The child resource is the primary focus.\n\n"
+        )
+
     # Inject region-aware naming context
     from src.config import region_abbr as _region_abbr
     _region = region or "eastus2"

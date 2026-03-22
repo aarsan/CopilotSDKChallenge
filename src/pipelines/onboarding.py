@@ -443,7 +443,28 @@ async def step_check_dependency_gates(ctx: PipelineContext, step: StepDef):
     from src.template_engine import RESOURCE_DEPENDENCIES, get_parent_resource_type
 
     service_id = ctx.service_id
-    deps = RESOURCE_DEPENDENCIES.get(service_id, [])
+    deps = list(RESOURCE_DEPENDENCIES.get(service_id, []))
+
+    # ── Auto-inject parent as a required dependency for child resource types ──
+    # Azure ARM child resources (e.g., Microsoft.Network/virtualNetworks/subnets)
+    # CANNOT exist without their parent. If the parent is not already in the
+    # dependency list, inject it so the gate enforces parent-first onboarding.
+    parent_type = get_parent_resource_type(service_id)
+    if parent_type:
+        parent_already_listed = any(d["type"] == parent_type for d in deps)
+        if not parent_already_listed:
+            deps.insert(0, {
+                "type": parent_type,
+                "reason": (
+                    f"{service_id.split('/')[-1]} is a child resource of "
+                    f"{parent_type.split('/')[-1]} — parent must be onboarded first"
+                ),
+                "required": True,
+            })
+            logger.info(
+                "Auto-injected parent dependency %s for child resource %s",
+                parent_type, service_id,
+            )
 
     # Circular dependency guard — carried through sub-pipelines via ctx.extra
     onboarding_chain: set = ctx.extra.setdefault("onboarding_chain", set())
