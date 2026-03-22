@@ -15,6 +15,7 @@ This enables:
 Sessions are persisted in the database so users survive server restarts.
 """
 
+import logging
 import os
 import time
 import secrets
@@ -31,6 +32,8 @@ from src.config import (
     ENTRA_AUTHORITY,
     ENTRA_SCOPES,
 )
+
+logger = logging.getLogger("infraforge.auth")
 
 
 @dataclass
@@ -274,8 +277,7 @@ def _build_user_context(claims: dict, access_token: Optional[str] = None) -> Use
                 if graph_data.get("manager_name"):
                     ctx.manager = graph_data["manager_name"]
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug(f"Graph API enrichment failed (non-fatal): {e}")
+            logger.debug("Graph API enrichment failed (non-fatal): %s", e)
 
     return ctx
 

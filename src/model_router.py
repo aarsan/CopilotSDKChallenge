@@ -99,7 +99,7 @@ from typing import Optional
 
 from src.config import get_active_model
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("infraforge.model_router")
 
 
 # ── Task Types ────────────────────────────────────────────────

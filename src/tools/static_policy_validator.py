@@ -28,7 +28,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("infraforge.tools.static_policy_validator")
 
 
 # ══════════════════════════════════════════════════════════════

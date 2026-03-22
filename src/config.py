@@ -2,10 +2,37 @@
 InfraForge configuration and constants.
 """
 
+import logging
 import os
+import sys
+
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+
+# ── Centralized Logging ──────────────────────────────────────
+def setup_logging() -> None:
+    """Configure the ``infraforge`` root logger.
+
+    Call once at startup (before uvicorn.run).  Every module that uses
+    ``logging.getLogger("infraforge.<name>")`` inherits this config.
+    """
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    root = logging.getLogger("infraforge")
+    root.setLevel(level)
+
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(level)
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
 # ── App Settings ──────────────────────────────────────────────
 APP_NAME = "InfraForge"
