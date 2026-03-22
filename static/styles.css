@@ -16135,6 +16135,105 @@ details[open] > .tmpl-deploy-group-optional {
     padding: 0.4rem 0.5rem;
 }
 
+/* ── Azure Policy Section (service detail drawer) ────────── */
+.azure-policy-section {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+}
+.azure-policy-warning {
+    background: rgba(234, 179, 8, 0.08);
+    border-color: rgba(234, 179, 8, 0.25);
+}
+.azure-policy-attached {
+    background: var(--bg-tertiary);
+}
+.azure-policy-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+}
+.azure-policy-warn-icon {
+    font-size: 0.85rem;
+}
+.azure-policy-warn-text {
+    color: var(--text-warning, #eab308);
+    font-size: 0.75rem;
+}
+.azure-policy-icon {
+    font-size: 0.85rem;
+}
+.azure-policy-name {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+.azure-policy-effect {
+    padding: 0.1rem 0.4rem;
+    border-radius: 100px;
+    font-size: 0.625rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.effect-deny {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+.effect-audit {
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+}
+.effect-other {
+    background: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
+}
+.azure-policy-conditions {
+    color: var(--text-secondary);
+    font-size: 0.675rem;
+}
+.azure-policy-actions {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+}
+.azure-policy-generating {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.spinner-inline {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+.azure-policy-viewer {
+    margin-top: 0.4rem;
+}
+.azure-policy-code {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem;
+    font-size: 0.65rem;
+    line-height: 1.4;
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre;
+    color: var(--text-primary);
+}
+.azure-policy-loading {
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-style: italic;
+}
+
 .gov-chat-input-wrapper textarea {
     flex: 1;
     background: transparent;

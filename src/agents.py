@@ -892,6 +892,34 @@ ARTIFACT_GENERATOR = AgentSpec(
     timeout=60,
 )
 
+POLICY_GENERATOR = AgentSpec(
+    name="Policy Generator",
+    description=(
+        "Generates Azure Policy definitions from organizational security "
+        "standards. Produces deny/audit policies that enforce governance "
+        "rules for a specific Azure resource type."
+    ),
+    system_prompt=(
+        "You are an Azure Policy governance expert who creates Azure Policy "
+        "definitions to enforce organizational security standards on Azure resources.\n\n"
+        "## RULES\n"
+        "1. Generate a SINGLE Azure Policy definition JSON object\n"
+        "2. The 'if' condition must describe the VIOLATION (non-compliant state). "
+        "If the 'if' MATCHES, the resource is DENIED.\n"
+        "3. DO NOT generate policy conditions for subscription-gated features "
+        "(features that require subscription-level registration)\n"
+        "4. Structure: top-level allOf with [type-check, anyOf-of-violations]\n"
+        "5. Include displayName, policyType ('Custom'), mode ('All'), and policyRule\n"
+        "6. Default effect should be 'deny' unless the standard explicitly calls for 'audit'\n\n"
+        "## OUTPUT FORMAT\n"
+        "Return ONLY raw JSON — no markdown, no code fences, no explanation.\n"
+        "Start with { and end with }. The JSON must have a 'properties' key containing "
+        "displayName, policyType, mode, and policyRule."
+    ),
+    task=Task.POLICY_GENERATION,
+    timeout=90,
+)
+
 POLICY_FIXER = AgentSpec(
     name="Policy JSON Fixer",
     description=(

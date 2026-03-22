@@ -2293,6 +2293,133 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
     </div>`;
 }
 
+        <div class="validation-log" id="validation-log"></div>
+    </div>`;
+}
+
+// ── Azure Policy Section (per version) ──────────────────────
+
+function _renderAzurePolicySection(v) {
+    const sid = escapeHtml(v.service_id);
+    const ver = v.version;
+    const containerId = `azure-policy-section-${ver}`;
+    const ps = v.azure_policy_summary;
+
+    if (!ps) {
+        // No policy attached — show warning + generate button
+        return `
+        <div class="azure-policy-section azure-policy-warning" id="${containerId}">
+            <div class="azure-policy-header">
+                <span class="azure-policy-warn-icon">⚠️</span>
+                <span class="azure-policy-warn-text">No Azure Policy attached to this version</span>
+            </div>
+            <button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); generateAzurePolicy('${sid}', ${ver})">
+                🛡️ Generate Policy
+            </button>
+        </div>`;
+    }
+
+    // Policy exists — show summary + view/re-generate buttons
+    const effectClass = ps.effect === 'deny' ? 'effect-deny' : (ps.effect === 'audit' ? 'effect-audit' : 'effect-other');
+    return `
+    <div class="azure-policy-section azure-policy-attached" id="${containerId}">
+        <div class="azure-policy-header">
+            <span class="azure-policy-icon">🛡️</span>
+            <span class="azure-policy-name">${escapeHtml(ps.display_name || 'Azure Policy')}</span>
+            <span class="azure-policy-effect ${effectClass}">${escapeHtml(ps.effect)}</span>
+            <span class="azure-policy-conditions">${ps.condition_count} condition${ps.condition_count === 1 ? '' : 's'}</span>
+        </div>
+        <div class="azure-policy-actions">
+            <button class="btn btn-xs btn-outline" onclick="event.stopPropagation(); viewAzurePolicy('${sid}', ${ver})">
+                👁 View Policy
+            </button>
+            <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); generateAzurePolicy('${sid}', ${ver})">
+                🔄 Re-generate
+            </button>
+        </div>
+        <div class="azure-policy-viewer hidden" id="azure-policy-viewer-${ver}"></div>
+    </div>`;
+}
+
+async function generateAzurePolicy(serviceId, version) {
+    const container = document.getElementById(`azure-policy-section-${version}`);
+    if (!container) return;
+
+    // Show spinner
+    container.innerHTML = `
+        <div class="azure-policy-header">
+            <span class="azure-policy-icon">🛡️</span>
+            <span class="azure-policy-generating">Generating Azure Policy…</span>
+            <span class="spinner-inline"></span>
+        </div>`;
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}/azure-policy/generate`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({}),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Server returned ${res.status}`);
+        }
+        const data = await res.json();
+        const ps = data.azure_policy_summary;
+        const effectClass = ps.effect === 'deny' ? 'effect-deny' : (ps.effect === 'audit' ? 'effect-audit' : 'effect-other');
+
+        container.className = 'azure-policy-section azure-policy-attached';
+        container.innerHTML = `
+            <div class="azure-policy-header">
+                <span class="azure-policy-icon">🛡️</span>
+                <span class="azure-policy-name">${escapeHtml(ps.display_name || 'Azure Policy')}</span>
+                <span class="azure-policy-effect ${effectClass}">${escapeHtml(ps.effect)}</span>
+                <span class="azure-policy-conditions">${ps.condition_count} condition${ps.condition_count === 1 ? '' : 's'}</span>
+            </div>
+            <div class="azure-policy-actions">
+                <button class="btn btn-xs btn-outline" onclick="event.stopPropagation(); viewAzurePolicy('${escapeHtml(serviceId)}', ${version})">
+                    👁 View Policy
+                </button>
+                <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); generateAzurePolicy('${escapeHtml(serviceId)}', ${version})">
+                    🔄 Re-generate
+                </button>
+            </div>
+            <div class="azure-policy-viewer hidden" id="azure-policy-viewer-${version}"></div>`;
+    } catch (e) {
+        container.innerHTML = `
+            <div class="azure-policy-header">
+                <span class="azure-policy-warn-icon">❌</span>
+                <span class="azure-policy-warn-text">Policy generation failed: ${escapeHtml(e.message)}</span>
+            </div>
+            <button class="btn btn-sm btn-accent" onclick="event.stopPropagation(); generateAzurePolicy('${escapeHtml(serviceId)}', ${version})">
+                🔄 Retry
+            </button>`;
+    }
+}
+
+async function viewAzurePolicy(serviceId, version) {
+    const viewer = document.getElementById(`azure-policy-viewer-${version}`);
+    if (!viewer) return;
+
+    // Toggle — if already visible, hide it
+    if (!viewer.classList.contains('hidden')) {
+        viewer.classList.add('hidden');
+        return;
+    }
+
+    viewer.classList.remove('hidden');
+    viewer.innerHTML = '<span class="azure-policy-loading">Loading policy JSON…</span>';
+
+    try {
+        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/versions/${version}/azure-policy`);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const policy = await res.json();
+        const formatted = JSON.stringify(policy, null, 2);
+        viewer.innerHTML = `<pre class="azure-policy-code"><code>${escapeHtml(formatted)}</code></pre>`;
+    } catch (e) {
+        viewer.innerHTML = `<span class="azure-policy-warn-text">Failed to load policy: ${escapeHtml(e.message)}</span>`;
+    }
+}
+
 function _renderVersionHistory(versions, activeVersion) {
     const approvedVersions = versions.filter(v => v.status === 'approved' || v.status === 'deprecated');
     const draftVersions = versions.filter(v => v.status === 'draft' || v.status === 'failed');
@@ -2350,6 +2477,7 @@ function _renderVersionHistory(versions, activeVersion) {
                                     ⬇ Download
                                 </button>
                             </div>
+                            ${_renderAzurePolicySection(v)}
                         </div>
                     </div>`;
                 }).join('')}
