@@ -2160,7 +2160,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                     <div class="svc-status-sub">Validated ARM template approved for deployment.${displayVer.validated_at ? ` Last validated ${displayVer.validated_at.substring(0, 10)}.` : ''}</div>
                 </div>
             </div>
-            <div class="svc-status-actions">
+            <div class="svc-status-actions" data-offboard-id="${escapeHtml(svc.id)}">
                 ${updateBtn}
                 ${analyzeBtn}
                 <button class="btn btn-sm btn-ghost" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🔄 Re-validate</button>
@@ -2200,7 +2200,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                     <div class="svc-status-sub">Service is being validated…</div>
                 </div>
             </div>
-            <div class="svc-status-actions">
+            <div class="svc-status-actions" data-offboard-id="${escapeHtml(svc.id)}">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Restart</button>
                 <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
@@ -2231,7 +2231,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                 </div>
             </div>
             ${errorDetail ? `<div class="svc-status-error">${errorDetail}</div>` : ''}
-            <div class="svc-status-actions">
+            <div class="svc-status-actions" data-offboard-id="${escapeHtml(svc.id)}">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🤖 Retry Onboarding</button>
                 <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
@@ -2250,7 +2250,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                     <div class="svc-status-sub">The onboarding pipeline was interrupted before completing.</div>
                 </div>
             </div>
-            <div class="svc-status-actions">
+            <div class="svc-status-actions" data-offboard-id="${escapeHtml(svc.id)}">
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Retry Onboarding</button>
                 <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
@@ -3080,29 +3080,45 @@ async function deleteAllDraftVersions(serviceId) {
     }
 }
 
-async function offboardService(serviceId, serviceName) {
-    if (!confirm(
-        `⚠️ Offboard "${serviceName}"?\n\n` +
-        `This will:\n` +
-        `• Deactivate the service (no active template)\n` +
-        `• Mark all approved versions as deprecated\n` +
-        `• Preserve all data for audit trail\n\n` +
-        `The service can be re-onboarded later if needed.`
-    )) return;
+function offboardService(serviceId, serviceName) {
+    // First click: swap button to inline confirmation strip
+    const actionsEl = document.querySelector(`[data-offboard-id="${serviceId}"]`);
+    if (!actionsEl) return;
+    // Prevent double-click from re-rendering confirmation
+    if (actionsEl.dataset.confirming) return;
+    actionsEl.dataset.confirming = '1';
 
-    try {
-        const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/offboard`, { method: 'POST' });
-        if (!res.ok) {
-            const err = await _safeJsonError(res);
-            throw new Error(err.detail || 'Offboarding failed');
+    const original = actionsEl.innerHTML;
+    actionsEl.innerHTML = `
+        <span class="offboard-confirm-strip">
+            <span class="offboard-confirm-label">Offboard <strong>${escapeHtml(serviceName)}</strong>?</span>
+            <button class="btn btn-sm btn-danger" id="offboard-yes">Yes, offboard</button>
+            <button class="btn btn-sm btn-ghost" id="offboard-no">Cancel</button>
+        </span>`;
+
+    actionsEl.querySelector('#offboard-no').addEventListener('click', () => {
+        actionsEl.innerHTML = original;
+        delete actionsEl.dataset.confirming;
+    });
+
+    actionsEl.querySelector('#offboard-yes').addEventListener('click', async () => {
+        actionsEl.innerHTML = `<span class="offboard-confirm-label">Offboarding…</span>`;
+        try {
+            const res = await fetch(`/api/services/${encodeURIComponent(serviceId)}/offboard`, { method: 'POST' });
+            if (!res.ok) {
+                const err = await _safeJsonError(res);
+                throw new Error(err.detail || 'Offboarding failed');
+            }
+            const data = await res.json();
+            showToast(data.message || `${serviceName} offboarded successfully`, 'info');
+            await loadAllData();
+            await showServiceDetail(serviceId);
+        } catch (err) {
+            showToast(`Failed to offboard: ${err.message}`, 'error');
+            actionsEl.innerHTML = original;
+            delete actionsEl.dataset.confirming;
         }
-        const data = await res.json();
-        showToast(data.message || `${serviceName} offboarded successfully`, 'info');
-        await loadAllData();
-        await showServiceDetail(serviceId);
-    } catch (err) {
-        showToast(`Failed to offboard: ${err.message}`, 'error');
-    }
+    });
 }
 
 async function triggerDraftValidation(serviceId, version, semver) {

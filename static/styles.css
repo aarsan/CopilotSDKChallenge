@@ -7148,6 +7148,18 @@ tr[class*="ns-group-"] > td:first-child {
     margin-top: 0.75rem;
 }
 
+/* Inline offboard confirmation strip */
+.offboard-confirm-strip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+}
+.offboard-confirm-label {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
 /* Spinner for validating state */
 .svc-status-spin {
     display: inline-block;
