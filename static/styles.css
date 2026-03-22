@@ -7655,8 +7655,8 @@ tr[class*="ns-group-"] > td:first-child {
 .uf-connector-failed .uf-connector-plus { border-color: #f85149; color: #f85149; }
 
 @keyframes ufEdgePulse {
-    0%, 100% { opacity: 0.6; }
-    50%      { opacity: 1; }
+    0%, 100% { opacity: 0.5; box-shadow: 0 0 3px rgba(59,130,246,0.2); }
+    50%      { opacity: 1;   box-shadow: 0 0 8px rgba(59,130,246,0.5); }
 }
 
 /* ── Final result card ───────────────────────────────────── */
@@ -7683,6 +7683,20 @@ tr[class*="ns-group-"] > td:first-child {
 }
 .uf-result-icon  { font-size: 1.1rem; flex-shrink: 0; }
 .uf-result-text  { flex: 1; word-break: break-word; }
+
+/* ── Pipeline summary footer ─────────────────────────────── */
+.uf-pipeline-summary {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    width: 420px; max-width: 100%;
+}
+.uf-pipeline-summary-chips {
+    display: flex; flex-wrap: wrap; gap: 0.35rem;
+    font-size: 0.75rem;
+}
 
 /* Rich analysis body inside action card */
 .uf-analysis-body {

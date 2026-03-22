@@ -4477,6 +4477,12 @@ function openPipelineOverlay(title, icon, meta) {
     }
     overlay.classList.remove('hidden');
     _pipelineOverlayOpen = true;
+    // Reset pipeline tracking state
+    overlay._pipelineStartTime = Date.now();
+    overlay._pipelineStepCount = 0;
+    overlay._pipelineTotalSteps = null;
+    overlay._pipelineModels = new Set();
+    overlay._pipelineHealCount = 0;
 }
 
 function closePipelineOverlay() {
@@ -4637,9 +4643,21 @@ async function resolveGovernanceBlock(serviceId, action) {
     const logEl = document.getElementById('pipeline-overlay-log') || document.getElementById('validation-log');
     if (!logEl) return;
 
-    // Disable resolution buttons
+    // Disable resolution buttons and show resolving state
     const btns = logEl.querySelectorAll('.gov-resolve-btn');
     btns.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+
+    // Update the governance card badge to "Resolving..." if there's an active failed card
+    const govCard = logEl.querySelector('.uf-action-failed');
+    if (govCard) {
+        govCard.classList.remove('uf-action-failed');
+        govCard.classList.add('uf-action-active');
+        const badge = govCard.querySelector('.uf-action-badge');
+        if (badge) {
+            badge.className = 'uf-action-badge uf-badge-active';
+            badge.innerHTML = '<span class="uf-badge-dot"></span> Resolving…';
+        }
+    }
 
     // Get stored findings
     const findings = logEl._governanceFindings || [];
@@ -4655,6 +4673,16 @@ async function resolveGovernanceBlock(serviceId, action) {
         );
         if (!confirmed) {
             btns.forEach(b => { b.disabled = false; b.style.opacity = '1'; });
+            // Restore card state
+            if (govCard) {
+                govCard.classList.remove('uf-action-active');
+                govCard.classList.add('uf-action-failed');
+                const badge = govCard.querySelector('.uf-action-badge');
+                if (badge) {
+                    badge.className = 'uf-action-badge uf-badge-failed';
+                    badge.innerHTML = '✗ Blocked';
+                }
+            }
             return;
         }
     }
@@ -4814,11 +4842,21 @@ function _renderActionRequired(logEl, event) {
 
     // Attach per-dependency onboard buttons
     panel.querySelectorAll('.dep-onboard-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             const sid = btn.dataset.serviceId;
             btn.disabled = true;
-            btn.textContent = 'Onboarding…';
-            triggerOnboarding(sid);
+            btn.innerHTML = '<span class="validation-spinner" style="display:inline-block;width:12px;height:12px;margin-right:4px">⏳</span> Onboarding…';
+            try {
+                await triggerOnboarding(sid);
+                btn.innerHTML = '✓ Ready';
+                btn.className = btn.className.replace('btn-accent', 'btn-success');
+                btn.style.opacity = '0.8';
+            } catch (_depErr) {
+                btn.innerHTML = '✗ Failed';
+                btn.className = btn.className.replace('btn-accent', '');
+                btn.style.color = '#f85149';
+                btn.disabled = false; // allow retry
+            }
         });
     });
 
@@ -5092,6 +5130,34 @@ function _flowResult(logEl, status, text) {
     result.className = `uf-result ${cls}`;
     result.innerHTML = `<div class="uf-result-icon">${icon}</div><div class="uf-result-text">${escapeHtml(text)}</div>`;
     logEl.appendChild(result);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** Append a compact pipeline summary card after the result block */
+function _appendPipelineSummary(logEl, status, event) {
+    const overlay = document.getElementById('pipeline-overlay');
+    if (!overlay) return;
+    const startTime = overlay._pipelineStartTime;
+    const models = overlay._pipelineModels || new Set();
+    const heals = overlay._pipelineHealCount || 0;
+    const steps = overlay._pipelineStepCount || 0;
+
+    const elapsed = startTime ? Math.round((Date.now() - startTime) / 1000) : null;
+    const mins = elapsed ? Math.floor(elapsed / 60) : 0;
+    const secs = elapsed ? elapsed % 60 : 0;
+    const timeStr = elapsed ? (mins > 0 ? `${mins}m ${secs}s` : `${secs}s`) : 'N/A';
+
+    const chips = [];
+    chips.push(`<span class="uf-analysis-chip">⏱ ${timeStr}</span>`);
+    chips.push(`<span class="uf-analysis-chip">📊 ${steps} steps</span>`);
+    if (heals > 0) chips.push(`<span class="uf-analysis-chip">🔧 ${heals} heal${heals > 1 ? 's' : ''}</span>`);
+    if (models.size > 0) chips.push(`<span class="uf-analysis-chip">🤖 ${Array.from(models).join(', ')}</span>`);
+    if (event && event.semver) chips.push(`<span class="uf-analysis-chip">📦 v${escapeHtml(event.semver)}</span>`);
+
+    const summary = document.createElement('div');
+    summary.className = 'uf-pipeline-summary';
+    summary.innerHTML = `<div class="uf-pipeline-summary-chips">${chips.join('')}</div>`;
+    logEl.appendChild(summary);
     logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -5844,6 +5910,7 @@ function _handleValidationFlowEvent(logEl, event, card) {
     } else if (type === 'done') {
         _flowFinalizeActive(logEl, 'done');
         _flowResult(logEl, 'success', detail || `Service approved — v${event.semver || event.version + '.0.0'}`);
+        _appendPipelineSummary(logEl, 'success', event);
     } else if (type === 'policy_blocked') {
         _flowFinalizeActive(logEl, 'failed');
         _flowResult(logEl, 'blocked', 'Policy review needed');
@@ -5902,6 +5969,7 @@ function _handleValidationFlowEvent(logEl, event, card) {
             errMsg = readablePhase ? `Pipeline failed during: ${readablePhase}` : 'Pipeline encountered an unexpected error';
         }
         _flowResult(logEl, 'failed', errMsg);
+        _appendPipelineSummary(logEl, 'failed', event);
     } else if (detail) {
         const k = logEl._flow?.activeKey;
         if (k) _flowDetail(logEl, k, '▸', escapeHtml(detail));
@@ -5927,6 +5995,7 @@ function _handleValidationEvent(event) {
     const badge = document.getElementById('validation-attempt-badge');
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
+    const overlay = document.getElementById('pipeline-overlay');
 
     // Progress bar + detail text
     if (event.progress && progressFill) {
@@ -5938,6 +6007,42 @@ function _handleValidationEvent(event) {
     if (event.phase === 'init_model' && event.model && modelBadge) {
         modelBadge.textContent = `🤖 ${event.model.display || event.model.id}`;
         modelBadge.classList.add('visible');
+    }
+
+    // ── Track pipeline progress for step counter and summary ──
+    if (overlay) {
+        // Track total steps from pipeline_overview event
+        if (event.phase === 'pipeline_overview' && event.steps) {
+            overlay._pipelineTotalSteps = event.steps.length;
+        }
+        // Track model usage
+        if (event.model && event.model.display) {
+            overlay._pipelineModels = overlay._pipelineModels || new Set();
+            overlay._pipelineModels.add(event.model.display);
+        }
+        if (event.phase === 'init_model' && event.model_routing) {
+            overlay._pipelineModels = overlay._pipelineModels || new Set();
+            for (const info of Object.values(event.model_routing)) {
+                if (info.display) overlay._pipelineModels.add(info.display);
+            }
+        }
+        // Track healing iterations
+        if (event.type === 'healing' || event.type === 'healing_done') {
+            overlay._pipelineHealCount = (overlay._pipelineHealCount || 0) + (event.type === 'healing' ? 1 : 0);
+        }
+        // Update overlay meta with step counter for major phase transitions
+        const stepPhases = ['init_complete', 'standards_complete', 'planning_complete', 'generated',
+            'policy_generation_complete', 'governance_complete', 'deploy_succeeded', 'testing_complete',
+            'policy_deploy_complete', 'cleanup_complete', 'promoting', 'dep_gate_complete'];
+        if (stepPhases.includes(event.phase)) {
+            overlay._pipelineStepCount = (overlay._pipelineStepCount || 0) + 1;
+            const metaEl = document.getElementById('pipeline-overlay-meta');
+            if (metaEl) {
+                const total = overlay._pipelineTotalSteps || 12;
+                const step = Math.min(overlay._pipelineStepCount, total);
+                metaEl.textContent = `Step ${step} of ${total} — ${event.detail || ''}`;
+            }
+        }
     }
 
     // Dispatch flow cards to all active targets (overlay + drawer)
@@ -8806,32 +8911,65 @@ async function readNDJSONStream(response, onEvent) {
     const decoder = new TextDecoder();
     let buffer = '';
     const events = [];
+    let receivedTerminal = false;
 
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
 
-        const lines = buffer.split('\n');
-        buffer = lines.pop(); // keep incomplete line
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
 
-        for (const line of lines) {
-            if (!line.trim()) continue;
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const event = JSON.parse(line);
+                    events.push(event);
+                    onEvent(event);
+                    // Track terminal events
+                    if (event.type === 'done' || event.type === 'error' || event.type === 'policy_blocked' || event.type === 'action_required') {
+                        receivedTerminal = true;
+                    }
+                } catch (e) { /* skip malformed */ }
+            }
+        }
+
+        // Process remaining buffer
+        if (buffer.trim()) {
             try {
-                const event = JSON.parse(line);
+                const event = JSON.parse(buffer);
                 events.push(event);
                 onEvent(event);
-            } catch (e) { /* skip malformed */ }
+                if (event.type === 'done' || event.type === 'error' || event.type === 'policy_blocked' || event.type === 'action_required') {
+                    receivedTerminal = true;
+                }
+            } catch (e) { /* skip */ }
         }
+    } catch (streamErr) {
+        // Network error during stream read
+        if (!receivedTerminal) {
+            const disconnectEvent = {
+                type: 'error',
+                phase: 'stream_disconnected',
+                detail: 'Connection to server lost. The pipeline may still be running — refresh and check the service status.',
+            };
+            events.push(disconnectEvent);
+            onEvent(disconnectEvent);
+        }
+        return events;
     }
 
-    // Process remaining buffer
-    if (buffer.trim()) {
-        try {
-            const event = JSON.parse(buffer);
-            events.push(event);
-            onEvent(event);
-        } catch (e) { /* skip */ }
+    // Stream ended normally but without a terminal event — inject synthetic error
+    if (!receivedTerminal && events.length > 0) {
+        const disconnectEvent = {
+            type: 'error',
+            phase: 'stream_disconnected',
+            detail: 'Pipeline stream ended unexpectedly without a final status. The pipeline may still be running — refresh and check the service status.',
+        };
+        events.push(disconnectEvent);
+        onEvent(disconnectEvent);
     }
 
     return events;

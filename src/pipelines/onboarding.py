@@ -180,8 +180,8 @@ async def _heal_policy(
     try:
         fixed_policy = json.loads(cleaned)
     except json.JSONDecodeError:
-        logger.warning("Policy healer returned invalid JSON — keeping original policy")
-        return policy, strategy_text
+        logger.warning("Policy healer returned invalid JSON — signaling failure to caller")
+        return None, strategy_text
 
     return fixed_policy, strategy_text
 
@@ -806,6 +806,9 @@ async def step_plan_architecture(ctx: PipelineContext, step: StepDef):
     except Exception as e:
         logger.warning(f"Planning phase failed (non-fatal): {e}")
         planning_response = ""
+        yield emit("llm_reasoning", "planning",
+                    f"⚠️ Planning LLM call failed: {e} — ARM generation will proceed without architectural guidance",
+                    ctx.progress(0.4))
 
     ctx.artifacts["planning_response"] = planning_response
 
@@ -816,7 +819,7 @@ async def step_plan_architecture(ctx: PipelineContext, step: StepDef):
 
     if not planning_response:
         yield emit("progress", "planning_complete",
-                    f"⚠️ Planning phase returned no response — proceeding without plan", ctx.progress(1.0))
+                    f"⚠️ Planning context unavailable — generating without architectural guidance", ctx.progress(1.0))
     else:
         yield emit("progress", "planning_complete",
                     f"✓ Architecture plan complete ({len(planning_response)} chars)", ctx.progress(1.0))
@@ -1302,11 +1305,17 @@ async def step_governance_review(ctx: PipelineContext, step: StepDef):
             raise
         except Exception as exc:
             logger.error("Governance review failed: %s", exc, exc_info=True)
-            yield emit("progress", "governance_complete",
-                        f"⚠️ Governance review error: {exc} — proceeding without gate",
+            yield emit("progress", "governance_error",
+                        f"❌ Governance review failed: {exc} — manual intervention required",
                         ctx.progress(1.0),
-                        gate_decision="conditional", gate_reason=f"Review error: {exc}")
-            return
+                        gate_decision="error", gate_reason=f"Review error: {exc}")
+            raise StepFailure(
+                f"Governance review encountered an error: {exc}. "
+                "The security gate cannot be bypassed automatically — "
+                "please retry or contact the platform team.",
+                event_type="governance_error",
+                recoverable=True,
+            )
 
 
 @runner.step("validate_arm_deploy")
@@ -1969,10 +1978,23 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                             f"✏️ {len(violations)} resource(s) failed policy — adjusting governance policy (attempt {_pol_attempt}/{MAX_POLICY_HEAL})…",
                             ctx.progress(att_base + 0.30), step=attempt)
 
-                fixed_policy, _strategy = await _heal_policy(
-                    ctx.generated_policy, resource_details, violations,
-                    standards_ctx, ctx.heal_history,
-                )
+                try:
+                    fixed_policy, _strategy = await _heal_policy(
+                        ctx.generated_policy, resource_details, violations,
+                        standards_ctx, ctx.heal_history,
+                    )
+                except Exception as _pol_heal_err:
+                    logger.error("Policy healing failed: %s", _pol_heal_err, exc_info=True)
+                    yield emit("healing_done", "policy_heal_error",
+                                f"⚠️ Policy healing failed: {_pol_heal_err} — keeping existing policy",
+                                ctx.progress(att_base + 0.31), step=attempt)
+                    break  # exit policy heal loop, don't kill outer validation loop
+                if fixed_policy is None:
+                    logger.warning("Policy healer returned invalid JSON — breaking heal loop")
+                    yield emit("healing_done", "policy_heal_invalid",
+                                "⚠️ Policy healer produced invalid JSON — keeping existing policy",
+                                ctx.progress(att_base + 0.31), step=attempt)
+                    break  # exit policy heal loop early
                 ctx.generated_policy = fixed_policy
                 yield emit("llm_reasoning", "strategy", f"Policy fix: {_strategy[:500]}", step=attempt)
                 ctx.heal_history.append({
@@ -2001,10 +2023,22 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
         # Restore standalone template after composite co-validation
         # so the service version stores only its own template.
+        # Stage into local var and persist BEFORE emitting success event
+        # to avoid consistency window where ctx.template is briefly composite.
         standalone = ctx.extra.get("_standalone_template")
         if standalone:
-            ctx.template = standalone
+            _restored_template = standalone
             del ctx.extra["_standalone_template"]
+            # Persist the standalone template to DB first
+            try:
+                await update_service_version_template(
+                    ctx.service_id, ctx.version_num, _restored_template,
+                    extract_meta(_restored_template),
+                )
+            except Exception as _restore_err:
+                logger.error("Failed to persist standalone template after co-validation: %s",
+                             _restore_err, exc_info=True)
+            ctx.template = _restored_template
             yield emit(
                 "progress", "co_validation_done",
                 "🔗 Composite validation passed — storing standalone template for this service",
