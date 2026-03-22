@@ -2293,10 +2293,6 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
     </div>`;
 }
 
-        <div class="validation-log" id="validation-log"></div>
-    </div>`;
-}
-
 // ── Azure Policy Section (per version) ──────────────────────
 
 function _renderAzurePolicySection(v) {
