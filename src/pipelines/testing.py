@@ -684,12 +684,30 @@ async def stream_infra_testing(
     }) + "\n"
 
     try:
-        test_script = await generate_test_script(
-            arm_template=arm_template,
-            resource_group=resource_group,
-            deployed_resources=deployed_resources,
-            region=region,
+        test_script = await asyncio.wait_for(
+            generate_test_script(
+                arm_template=arm_template,
+                resource_group=resource_group,
+                deployed_resources=deployed_resources,
+                region=region,
+            ),
+            timeout=120.0,  # hard backstop for test generation LLM call
         )
+    except asyncio.TimeoutError:
+        logger.warning("Test generation timed out after 120s")
+        yield json.dumps({
+            "phase": "testing_generate",
+            "detail": "Test generation timed out — skipping infrastructure tests",
+            "status": "error",
+        }) + "\n"
+        yield json.dumps({
+            "phase": "testing_complete",
+            "status": "skipped",
+            "detail": "Test generation timed out — skipping infrastructure tests. The deployment itself succeeded.",
+            "tests_passed": 0,
+            "tests_failed": 0,
+        }) + "\n"
+        return
     except Exception as e:
         logger.warning(f"Test generation failed: {e}")
         yield json.dumps({
@@ -925,12 +943,25 @@ async def stream_infra_testing(
             }) + "\n"
 
             try:
-                diagnosis = await analyze_test_failures(
-                    test_script=test_script,
-                    test_results=results,
-                    arm_template=arm_template,
-                    deployed_resources=deployed_resources,
+                diagnosis = await asyncio.wait_for(
+                    analyze_test_failures(
+                        test_script=test_script,
+                        test_results=results,
+                        arm_template=arm_template,
+                        deployed_resources=deployed_resources,
+                    ),
+                    timeout=90.0,  # hard backstop for LLM analysis
                 )
+            except asyncio.TimeoutError:
+                logger.warning("Test analysis timed out after 90s")
+                diagnosis = {
+                    "diagnosis": "Analysis timed out — LLM did not respond in time",
+                    "root_cause": "test",
+                    "confidence": 0.2,
+                    "action": "skip",
+                    "fix_guidance": "",
+                    "affected_resources": [],
+                }
             except Exception as e:
                 logger.warning(f"Test analysis failed: {e}")
                 diagnosis = {

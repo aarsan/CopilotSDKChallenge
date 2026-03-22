@@ -548,13 +548,28 @@ async def copilot_send(
         Exception: On session-level errors.
     """
     t0 = time.perf_counter()
-    session = await client.create_session({
-        "model": model,
-        "streaming": True,
-        "tools": [],
-        "system_message": {"content": system_prompt},
-        "on_permission_request": approve_all,
-    })
+    # Wrap entire session lifecycle in asyncio.wait_for as a hard backstop.
+    # The SDK timeout on send_and_wait is the primary timeout, but
+    # create_session() itself has no timeout and can hang indefinitely.
+    try:
+        session = await asyncio.wait_for(
+            client.create_session({
+                "model": model,
+                "streaming": True,
+                "tools": [],
+                "system_message": {"content": system_prompt},
+                "on_permission_request": approve_all,
+            }),
+            timeout=min(timeout, 30.0),  # session creation should be fast
+        )
+    except asyncio.TimeoutError:
+        _record_activity(
+            agent_name=agent_name, model=model, status="error",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            prompt_len=len(prompt), response_len=0,
+            error="Session creation timed out",
+        )
+        raise
     unsub = None
     try:
         if on_event:

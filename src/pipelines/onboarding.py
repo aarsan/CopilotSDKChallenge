@@ -2116,6 +2116,10 @@ async def step_infra_testing(ctx: PipelineContext, step: StepDef):
 
     # Stream testing events — translate NDJSON from testing pipeline into
     # proper pipeline emit() events so the frontend renders flow cards.
+    # Individual LLM calls inside the testing pipeline have their own
+    # timeouts (90s for analysis, 60s for generation). The subprocess
+    # has a 120s timeout. No outer timeout needed here since all inner
+    # operations are now bounded.
     progress_base = 0.1
     async for raw_line in stream_infra_testing(
         arm_template=arm_template,
