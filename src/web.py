@@ -11253,6 +11253,21 @@ async def get_service_versions_endpoint(service_id: str, status: str | None = No
         for v in versions:
             vs = {k: v2 for k, v2 in v.items() if k != "arm_template"}
             vs["template_size_bytes"] = len(v.get("arm_template") or "") if v.get("arm_template") else 0
+            # Azure Policy summary (lightweight — not the full JSON)
+            ap = v.get("azure_policy")
+            if ap and isinstance(ap, dict):
+                props = ap.get("properties", ap)
+                rule = props.get("policyRule", {})
+                effect = rule.get("then", {}).get("effect", "unknown")
+                if_cond = rule.get("if", {})
+                cond_count = len(if_cond.get("allOf", if_cond.get("anyOf", [None])))
+                vs["azure_policy_summary"] = {
+                    "display_name": props.get("displayName", ""),
+                    "effect": effect,
+                    "condition_count": cond_count,
+                }
+            else:
+                vs["azure_policy_summary"] = None
             # Extract API version(s) from the ARM template for display
             arm_str = v.get("arm_template")
             if arm_str:
@@ -11410,6 +11425,110 @@ async def delete_all_draft_versions_endpoint(service_id: str):
 
     count = await delete_service_versions_by_status(service_id, ["draft", "failed"])
     return JSONResponse({"deleted": count})
+
+
+@app.get("/api/services/{service_id:path}/versions/{version:int}/azure-policy")
+async def get_service_version_azure_policy(service_id: str, version: int):
+    """Get the full Azure Policy JSON for a specific service version."""
+
+    await _require_service(service_id)
+    versions = await get_service_versions(service_id)
+    match = next((v for v in versions if v.get("version") == version), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
+
+    policy = match.get("azure_policy")
+    if not policy:
+        raise HTTPException(status_code=404, detail=f"No Azure Policy stored for version {version}")
+
+    return JSONResponse(policy)
+
+
+@app.post("/api/services/{service_id:path}/versions/{version:int}/azure-policy/generate")
+async def generate_azure_policy_for_version(service_id: str, version: int, request: Request):
+    """Generate (or re-generate) an Azure Policy for a specific service version.
+
+    Uses the POLICY_GENERATOR agent with org standards context to produce
+    a governance policy, then persists it on the version row.
+    """
+    from src.agents import POLICY_GENERATOR
+    from src.copilot_helpers import copilot_send
+    from src.database import update_service_version_policy
+    from src.model_router import Task, get_model_for_task
+    from src.standards import build_policy_generation_context
+
+    svc = await _require_service(service_id)
+    versions = await get_service_versions(service_id)
+    match = next((v for v in versions if v.get("version") == version), None)
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found for '{service_id}'")
+
+    # Build prompt with org standards
+    standards_ctx = await build_policy_generation_context(service_id)
+    prompt = (
+        f"Generate an Azure Policy definition JSON for '{svc['name']}' (type: {service_id}).\n\n"
+    )
+    if standards_ctx:
+        prompt += f"Organization standards to enforce:\n{standards_ctx}\n\n"
+    prompt += (
+        "IMPORTANT — Azure Policy semantics for 'deny' effect:\n"
+        "The 'if' condition must describe the VIOLATION (non-compliant state).\n"
+        "If the 'if' MATCHES, the resource is DENIED.\n\n"
+        "DO NOT generate policy conditions for subscription-gated features.\n\n"
+        "Structure: top-level allOf with [type-check, anyOf-of-violations].\n"
+        "Return ONLY raw JSON — NO markdown, NO explanation. Start with {"
+    )
+
+    _client = await ensure_copilot_client()
+    if _client is None:
+        raise HTTPException(status_code=503, detail="Copilot SDK not available")
+
+    task_model = get_model_for_task(Task.POLICY_GENERATION)
+    raw = await copilot_send(
+        _client,
+        model=task_model,
+        system_prompt=POLICY_GENERATOR.system_prompt,
+        prompt=prompt,
+        timeout=POLICY_GENERATOR.timeout,
+        agent_name=POLICY_GENERATOR.name,
+    )
+
+    # Parse the response
+    import re as _re
+    cleaned = raw.strip()
+    fence_match = _re.search(r'```(?:json)?\s*\n(.*?)```', cleaned, _re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1).strip()
+    if not cleaned.startswith('{'):
+        brace_start = cleaned.find('{')
+        if brace_start >= 0:
+            depth = 0
+            for i in range(brace_start, len(cleaned)):
+                if cleaned[i] == '{': depth += 1
+                elif cleaned[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        cleaned = cleaned[brace_start:i + 1]
+                        break
+
+    policy = json.loads(cleaned)
+    await update_service_version_policy(service_id, version, policy)
+
+    # Return summary
+    props = policy.get("properties", policy)
+    rule = props.get("policyRule", {})
+    effect = rule.get("then", {}).get("effect", "unknown")
+    if_cond = rule.get("if", {})
+    cond_count = len(if_cond.get("allOf", if_cond.get("anyOf", [None])))
+
+    return JSONResponse({
+        "success": True,
+        "azure_policy_summary": {
+            "display_name": props.get("displayName", ""),
+            "effect": effect,
+            "condition_count": cond_count,
+        },
+    })
 
 
 @app.get("/api/services/{service_id:path}/pipeline-runs")

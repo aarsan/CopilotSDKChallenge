@@ -686,6 +686,14 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE service_versions ADD validated_with_parent NVARCHAR(MAX) DEFAULT NULL
     """,
+    # ── Azure Policy JSON storage on service_versions ──
+    """
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('service_versions') AND name = 'azure_policy_json'
+    )
+    ALTER TABLE service_versions ADD azure_policy_json NVARCHAR(MAX) DEFAULT NULL
+    """,
     # ── Template Catalog ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'catalog_templates')
@@ -2950,6 +2958,9 @@ async def get_service_versions(
         pc_json = d.pop("policy_check_json", None) or "{}"
         d["validation_result"] = json.loads(vr_json)
         d["policy_check"] = json.loads(pc_json)
+        # Parse azure_policy_json if present
+        ap_json = d.pop("azure_policy_json", None)
+        d["azure_policy"] = json.loads(ap_json) if ap_json else None
         result.append(d)
     return result
 
@@ -2977,6 +2988,7 @@ async def update_service_version_status(
     status: str,
     validation_result: dict | None = None,
     policy_check: dict | None = None,
+    azure_policy_json: dict | None = None,
 ) -> bool:
     """Update the status and validation results of a service version."""
     backend = await get_backend()
@@ -2992,6 +3004,10 @@ async def update_service_version_status(
     if policy_check is not None:
         set_clauses.append("policy_check_json = ?")
         params.append(json.dumps(policy_check))
+
+    if azure_policy_json is not None:
+        set_clauses.append("azure_policy_json = ?")
+        params.append(json.dumps(azure_policy_json))
 
     if status in ("approved", "failed"):
         set_clauses.append("validated_at = ?")
@@ -3062,6 +3078,21 @@ async def update_service_version_deployment_info(
         f"UPDATE service_versions SET {', '.join(set_clauses)} "
         f"WHERE service_id = ? AND version = ?",
         tuple(params),
+    )
+    return count > 0
+
+
+async def update_service_version_policy(
+    service_id: str,
+    version: int,
+    azure_policy_json: dict,
+) -> bool:
+    """Save or replace the Azure Policy JSON on a service version."""
+    backend = await get_backend()
+    count = await backend.execute_write(
+        "UPDATE service_versions SET azure_policy_json = ? "
+        "WHERE service_id = ? AND version = ?",
+        (json.dumps(azure_policy_json), service_id, version),
     )
     return count > 0
 

@@ -154,6 +154,10 @@ RESOURCE_DEPENDENCIES: dict[str, list[dict]] = {
         {"type": "Microsoft.Network/publicIPAddresses", "reason": "Public IP for Bastion", "required": True, "created_by_template": True},
     ],
     "Microsoft.Network/privateDnsZones": [],  # Foundation
+    "Microsoft.Network/dnsResolvers": [
+        {"type": "Microsoft.Network/virtualNetworks", "reason": "DNS Resolver must attach to a VNet", "required": True, "created_by_template": True},
+        {"type": "Microsoft.Network/virtualNetworks/subnets", "reason": "Inbound and outbound endpoints need subnets delegated to Microsoft.Network/dnsResolvers", "required": True, "created_by_template": True},
+    ],
     "Microsoft.Network/privateEndpoints": [
         {"type": "Microsoft.Network/virtualNetworks", "reason": "Private endpoint needs a VNet/subnet", "required": True},
     ],

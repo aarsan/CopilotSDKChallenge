@@ -837,6 +837,29 @@ def get_resource_type_hints(res_types: set[str]) -> str:
             "requestRoutingRules. Requires an existing subnet (not the same as any "
             "other resource's subnet). Use a dedicated 'AppGatewaySubnet'."
         ),
+        "microsoft.network/dnsresolvers": (
+            "DNS RESOLVER: Requires a VNet with TWO dedicated subnets, each with a "
+            "delegation to 'Microsoft.Network/dnsResolvers'. The template MUST include:\n"
+            "  1. A VNet resource (e.g. 10.100.0.0/16) with two subnets:\n"
+            "     - 'snet-dns-inbound' (e.g. 10.100.0.0/28) with delegation: "
+            "       {serviceName: 'Microsoft.Network/dnsResolvers'}\n"
+            "     - 'snet-dns-outbound' (e.g. 10.100.0.16/28) with delegation: "
+            "       {serviceName: 'Microsoft.Network/dnsResolvers'}\n"
+            "  2. The DNS Resolver resource (type: Microsoft.Network/dnsResolvers, "
+            "     apiVersion: 2022-07-01) with a 'virtualNetwork.id' property "
+            "     pointing to the VNet.\n"
+            "  3. An inbound endpoint child resource "
+            "     (Microsoft.Network/dnsResolvers/inboundEndpoints) with "
+            "     ipConfigurations[].subnet.id referencing the inbound subnet. "
+            "     dependsOn the resolver.\n"
+            "  4. An outbound endpoint child resource "
+            "     (Microsoft.Network/dnsResolvers/outboundEndpoints) with "
+            "     ipConfigurations[].subnet.id referencing the outbound subnet. "
+            "     dependsOn the resolver.\n"
+            "  Deploy order: VNet → DNS Resolver → endpoints (strict dependsOn chain).\n"
+            "  The resolver uses the DEPLOYMENT REGION (NOT 'global').\n"
+            "  Use apiVersion '2022-07-01' for dnsResolvers and all child resources."
+        ),
     }
     hints = []
     for rt in res_types:
@@ -1166,6 +1189,10 @@ async def copilot_heal_template(
         "     its defaultValue to comply with Azure naming rules.\n"
         "   - Azure DNS zone names MUST be valid FQDNs with at least two labels "
         "     (e.g. 'infraforge-demo.com', NOT 'if-dnszones').\n"
+        "   - Microsoft.Network/dnsResolvers requires subnets with "
+        "     delegation.serviceName = 'Microsoft.Network/dnsResolvers'. "
+        "     Inbound/outbound endpoint child resources need the delegated "
+        "     subnet IDs in ipConfigurations. Use apiVersion 2022-07-01.\n"
         "   - Storage account names: 3-24 lowercase alphanumeric, no hyphens.\n"
         "   - Key vault names: 3-24 alphanumeric + hyphens.\n"
         "   - Ensure EVERY parameter has a \"defaultValue\".\n\n"
