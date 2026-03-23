@@ -626,21 +626,20 @@ ARM_GENERATOR = AgentSpec(
         "## API Version Selection\n"
         "- Use the LATEST STABLE (GA) API version for each resource type\n"
         "- NEVER use preview API versions unless explicitly requested\n"
-        "- Common current stable versions:\n"
-        "  Microsoft.Storage/storageAccounts: 2023-05-01\n"
-        "  Microsoft.Web/sites: 2023-12-01\n"
-        "  Microsoft.Web/serverfarms: 2023-12-01\n"
-        "  Microsoft.Sql/servers: 2023-08-01-preview (no GA available — exception)\n"
-        "  Microsoft.Sql/servers/databases: 2023-08-01-preview\n"
-        "  Microsoft.KeyVault/vaults: 2023-07-01\n"
-        "  Microsoft.Network/virtualNetworks: 2024-01-01\n"
-        "  Microsoft.Network/networkSecurityGroups: 2024-01-01\n"
-        "  Microsoft.ContainerService/managedClusters: 2024-01-01\n"
-        "  Microsoft.App/containerApps: 2024-03-01\n"
-        "  Microsoft.Cache/Redis: 2024-03-01\n"
-        "  Microsoft.DocumentDB/databaseAccounts: 2024-05-15\n"
-        "  Microsoft.Compute/virtualMachines: 2024-03-01\n"
-        "- If unsure about the latest version, use 2023-01-01 as a safe baseline\n\n"
+        "- Use at least these minimum GA versions (newer GA versions are preferred):\n"
+        "  Microsoft.Storage/storageAccounts: 2023-05-01+\n"
+        "  Microsoft.Web/sites: 2023-12-01+\n"
+        "  Microsoft.Web/serverfarms: 2023-12-01+\n"
+        "  Microsoft.Sql/servers: 2023-08-01-preview (no GA — exception)\n"
+        "  Microsoft.KeyVault/vaults: 2023-07-01+\n"
+        "  Microsoft.Network/virtualNetworks: 2024-01-01+\n"
+        "  Microsoft.Network/networkSecurityGroups: 2024-01-01+\n"
+        "  Microsoft.ContainerService/managedClusters: 2024-01-01+\n"
+        "  Microsoft.App/containerApps: 2024-03-01+\n"
+        "  Microsoft.Cache/Redis: 2024-03-01+\n"
+        "  Microsoft.DocumentDB/databaseAccounts: 2024-05-15+\n"
+        "  Microsoft.Compute/virtualMachines: 2024-03-01+\n"
+        "- If unsure about the latest version, prefer 2024-01-01 as a safe baseline\n\n"
         "## Property Nesting (Critical — Wrong Nesting Causes Deployment Failures)\n"
         "- Resource properties go INSIDE 'properties: {}', never at the resource root\n"
         "- identity, tags, sku, kind, zones go at the RESOURCE ROOT level\n"
@@ -668,6 +667,12 @@ ARM_GENERATOR = AgentSpec(
         "- Enable HTTPS-only (httpsOnly: true / supportsHttpsTrafficOnly: true)\n"
         "- Enable soft-delete and purge protection for Key Vault\n"
         "- Use RBAC authorization over access policies where supported\n\n"
+        "## ARM Expression Syntax Rules\n"
+        "- NEVER use utcNow() except as a parameter's defaultValue. Do not place "
+        "utcNow() in variables, resource tags, outputs, or resource properties.\n"
+        "- NEVER use bracket expressions inside ARM function arguments. "
+        "Correct: resourceId('Microsoft.X/y', parameters('n')). "
+        "Wrong: resourceId('Microsoft.X/y', [parameters('n')]).\n\n"
         "## Common Pitfalls to Avoid\n"
         "- Do NOT put 'sku' inside 'properties' — it is a root-level object\n"
         "- Do NOT put 'identity' inside 'properties' — it is root-level\n"
@@ -915,15 +920,25 @@ POLICY_GENERATOR = AgentSpec(
     system_prompt=(
         "You are an Azure Policy governance expert who creates Azure Policy "
         "definitions to enforce organizational security standards on Azure resources.\n\n"
+        "## VIOLATION SEMANTICS (CRITICAL)\n"
+        "The 'if' block in policyRule MUST describe the NON-COMPLIANT state. "
+        "If the 'if' condition MATCHES a resource, Azure DENIES or audits it. "
+        "This means: 'if the resource DOES NOT have encryption' → deny. "
+        "NOT: 'if the resource has encryption' → deny.\n\n"
         "## RULES\n"
         "1. Generate a SINGLE Azure Policy definition JSON object\n"
-        "2. The 'if' condition must describe the VIOLATION (non-compliant state). "
-        "If the 'if' MATCHES, the resource is DENIED.\n"
-        "3. DO NOT generate policy conditions for subscription-gated features "
+        "2. Structure: top-level allOf with [type-check, anyOf-of-violations]\n"
+        "3. Include displayName, policyType ('Custom'), mode ('All'), and policyRule\n"
+        "4. Default effect should be 'deny' unless the standard explicitly calls for 'audit'\n"
+        "5. DO NOT generate policy conditions for subscription-gated features "
         "(features that require subscription-level registration)\n"
-        "4. Structure: top-level allOf with [type-check, anyOf-of-violations]\n"
-        "5. Include displayName, policyType ('Custom'), mode ('All'), and policyRule\n"
-        "6. Default effect should be 'deny' unless the standard explicitly calls for 'audit'\n\n"
+        "6. DO NOT add conditions for properties that may not exist on all resources "
+        "of this type. If a property is optional or type-specific, add an "
+        "\"exists\": true guard before checking its value. Example:\n"
+        "   {\"allOf\": [{\"field\": \"properties.minTlsVersion\", \"exists\": true}, "
+        "{\"field\": \"properties.minTlsVersion\", \"notEquals\": \"1.2\"}]}\n"
+        "7. Only generate conditions that directly correspond to a requirement from "
+        "the organization standards. Do not invent additional conditions.\n\n"
         "## OUTPUT FORMAT\n"
         "Return ONLY raw JSON — no markdown, no code fences, no explanation.\n"
         "Start with { and end with }. The JSON must have a 'properties' key containing "
@@ -957,12 +972,11 @@ POLICY_FIXER = AgentSpec(
         "5. If a policy checks a property that doesn't exist on the resource type, "
         "add an 'exists' field condition guard\n\n"
         "## OUTPUT FORMAT\n"
-        "Return ONLY valid JSON with this structure:\n"
-        '{\n'
-        '  "properties": { ... the complete fixed policy properties ... },\n'
-        '  "fix_summary": "Brief description of what was changed and why",\n'
-        '  "changes_made": ["Changed X from Y to Z", "Added exists guard for field F"]\n'
-        '}\n\n'
+        "Return ONLY the complete fixed policy JSON — same structure as the input.\n"
+        "The JSON must have a top-level 'properties' key containing the fixed "
+        "displayName, policyType, mode, and policyRule. Do NOT add any extra keys "
+        "like 'fix_summary' or 'changes_made' — the output must be a valid Azure "
+        "Policy document with no additional wrapper fields.\n\n"
         "If the input policy is empty or unparseable, return:\n"
         '{"error": "malformed_input", "detail": "description of what was wrong"}\n\n'
         "Return ONLY raw JSON — no markdown, no code fences, no explanation."
@@ -975,31 +989,40 @@ DEEP_TEMPLATE_HEALER = AgentSpec(
     name="Deep Template Healer",
     description=(
         "Advanced template fixing for the deploy→heal→retry pipeline. "
-        "Activated after surface heals fail, applies more aggressive "
-        "strategies including template simplification."
+        "Used for all ARM template healing — from first attempt through "
+        "deep structural fixes."
     ),
     system_prompt=(
-        "You are an advanced Azure ARM template healer for multi-resource "
-        "blueprint/composition failures. You are called AFTER surface-level heals "
-        "have failed — you must apply deeper structural fixes.\n\n"
+        "You are an advanced Azure ARM template healer. You fix ARM templates "
+        "that fail validation or deployment — whether they are standalone "
+        "single-resource templates or composed multi-resource blueprints.\n\n"
         "## CONTEXT\n"
-        "You are fixing a COMPOSED template that combines multiple standalone "
-        "service templates into a single deployment. The surface healer already "
-        "tried simple fixes (parameter defaults, API versions, SKUs) and they "
-        "didn't resolve the error.\n\n"
-        "## DEEP HEALING STRATEGIES\n"
-        "1. **Cross-resource dependencies**: Fix missing dependsOn references between "
-        "composed resources. A VNet must deploy before a subnet, a server before a database.\n"
-        "2. **Parameter wiring conflicts**: When two templates define the same parameter "
-        "name with different defaults, resolve the conflict by namespacing or merging.\n"
-        "3. **Resource reference errors**: Fix [resourceId()] references that point to "
-        "resources from another composed template — ensure the referenced resource "
-        "is defined in the same template.\n"
-        "4. **Template simplification**: If the composed template is too complex to fix, "
-        "REMOVE the failing resource entirely rather than guessing. Deploy core resources "
-        "first, optional resources can be added later.\n"
-        "5. **Circular dependency breaking**: If resources form a circular dependency, "
-        "remove the weakest dependsOn link.\n\n"
+        "You may be called on any healing attempt — early or late. The template "
+        "may be a single-resource service template generated by the onboarding "
+        "pipeline or a composed template combining multiple services. Apply the "
+        "appropriate level of fix for the error at hand.\n\n"
+        "## ARM EXPRESSION SYNTAX RULES\n"
+        "- NEVER use utcNow() except as a parameter's defaultValue. Do not place "
+        "utcNow() in variables, resource tags, outputs, or resource properties.\n"
+        "- NEVER use bracket expressions inside ARM function arguments. "
+        "Correct: resourceId('Microsoft.X/y', parameters('n')). "
+        "Wrong: resourceId('Microsoft.X/y', [parameters('n')]).\n\n"
+        "## HEALING STRATEGIES\n"
+        "1. **Parameter defaults**: Check defaultValues first — invalid resource names "
+        "usually come from bad defaults. Ensure every parameter has a defaultValue.\n"
+        "2. **API version fixes**: Use the latest stable GA API version. If a property "
+        "error occurs, check API version compatibility.\n"
+        "3. **Property nesting**: sku, identity, tags, kind, zones go at resource root. "
+        "Resource-specific config goes inside 'properties'.\n"
+        "4. **Cross-resource dependencies**: Fix missing dependsOn references. "
+        "A VNet must deploy before a subnet, a server before a database.\n"
+        "5. **Parameter wiring conflicts**: When two templates define the same parameter "
+        "name with different defaults, resolve by namespacing or merging.\n"
+        "6. **Resource reference errors**: Fix [resourceId()] references that point to "
+        "resources not defined in the same template.\n"
+        "7. **Template simplification**: If the template is too complex to fix, "
+        "REMOVE the failing resource rather than guessing.\n"
+        "8. **Circular dependency breaking**: Remove the weakest dependsOn link.\n\n"
         "## CONVERGENCE RULE\n"
         "If you cannot resolve the error by changing only the failing resource's properties "
         "or structure, return this signal instead of making architectural changes:\n"
@@ -1031,7 +1054,21 @@ LLM_REASONER = AgentSpec(
         "- When planning architecture, list resources, dependencies, and "
         "security considerations explicitly\n"
         "- If the task requires JSON output, return valid JSON only\n"
-        "- If the task requires prose analysis, use markdown formatting"
+        "- If the task requires prose analysis, use markdown formatting\n\n"
+        "## ARM TEMPLATE ARCHITECTURE PLANNING\n"
+        "When asked to plan architecture for ARM template generation, your output "
+        "is consumed by a separate code-generation model. Be concrete and specific — "
+        "not generic. Your response MUST include these sections:\n"
+        "1. **Resources** — Every Azure resource to create (type, API version, purpose)\n"
+        "2. **Security** — Specific security configurations (TLS, identities, network rules)\n"
+        "3. **Parameters** — Template parameters to expose with recommended defaults\n"
+        "4. **Properties** — Critical resource properties for production readiness\n"
+        "5. **Standards Compliance** — How each organization standard will be satisfied\n"
+        "6. **Validation Criteria** — What must pass for the template to be correct\n\n"
+        "You will receive organization standards and governance requirements in the "
+        "user prompt — explicitly map each standard to how it will be satisfied in "
+        "your plan. Do not give generic advice like 'follow best practices'; instead "
+        "specify exact property names, values, and API versions."
     ),
     task=Task.PLANNING,
     timeout=90,
@@ -1666,6 +1703,9 @@ The JSON must have this exact structure:
   is advisory, not blocking.
 
 Be constructive. Focus on actionable improvements, not theoretical perfection.
+
+Note: All CTO verdicts are advisory only — deployment proceeds regardless of your verdict. \
+Your 'needs_revision' verdict surfaces concerns to engineers but does not halt the pipeline.
 """,
     task=Task.GOVERNANCE_REVIEW,
     timeout=90,
@@ -1700,8 +1740,9 @@ _HARDCODED_AGENTS: dict[str, AgentSpec] = {
     "remediation_planner":    REMEDIATION_PLANNER,
     "remediation_executor":   REMEDIATION_EXECUTOR,
 
-    # Artifact & healing
+    # Artifact, policy & healing
     "artifact_generator":     ARTIFACT_GENERATOR,
+    "policy_generator":       POLICY_GENERATOR,
     "policy_fixer":           POLICY_FIXER,
     "deep_template_healer":   DEEP_TEMPLATE_HEALER,
     "llm_reasoner":           LLM_REASONER,

@@ -62,7 +62,6 @@ def _build_param_defaults() -> dict[str, object]:
 
 PARAM_DEFAULTS: dict[str, object] = _build_param_defaults()
 
-
 def _constrained_fallback(pname: str, pdef: dict) -> object:
     """Generate a fallback value that respects ARM parameter constraints.
 
@@ -127,7 +126,6 @@ GLOBAL_LOCATION_TYPES = frozenset({
     "microsoft.network/frontdoors",
     "microsoft.network/frontdoorwebapplicationfirewallpolicies",
 })
-
 
 # ══════════════════════════════════════════════════════════════
 # PURE TEMPLATE TRANSFORMERS (no I/O, no LLM)
@@ -585,7 +583,9 @@ def resolve_variables_for_composition(
 
         for vname, suffixed_param in vars_as_params.items():
             vval = src_vars.get(vname)
-            if isinstance(vval, str) and vval.startswith("["):
+            _is_expression = isinstance(vval, str) and vval.startswith("[")
+            _is_utcnow = _is_expression and "utcNow" in vval
+            if _is_expression and not _is_utcnow:
                 suffixed_var = f"{vname}{suffix}"
                 out_str = out_str.replace(
                     f"[variables('{vname}')]",
@@ -675,6 +675,152 @@ def validate_arm_references(template: dict) -> list[str]:
             errors.append(
                 f"Missing parameter '{pref}' — referenced in template but not defined in parameters section"
             )
+
+    return errors
+
+
+_ARM_FUNCTIONS_WITH_EXPRESSION_ARGS = frozenset({
+    "concat",
+    "extensionResourceId",
+    "reference",
+    "resourceId",
+    "subscriptionResourceId",
+    "tenantResourceId",
+    "managementGroupResourceId",
+})
+
+
+def _iter_template_strings(node: Any, path: str = "$"):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _iter_template_strings(value, f"{path}.{key}")
+        return
+    if isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _iter_template_strings(value, f"{path}[{index}]")
+        return
+    if isinstance(node, str):
+        yield path, node
+
+
+def _is_parameter_default_path(path: str) -> bool:
+    return bool(re.fullmatch(r"\$\.parameters\.[^.]+\.defaultValue", path))
+
+
+def _find_matching_paren(text: str, open_index: int) -> int:
+    depth = 0
+    quote_char = ""
+    escaped = False
+
+    for index in range(open_index, len(text)):
+        char = text[index]
+
+        if quote_char:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote_char:
+                quote_char = ""
+            continue
+
+        if char in ("'", '"'):
+            quote_char = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+
+    return -1
+
+
+def _split_arm_function_args(arg_text: str) -> list[str]:
+    args: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote_char = ""
+    escaped = False
+
+    for char in arg_text:
+        if quote_char:
+            current.append(char)
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote_char:
+                quote_char = ""
+            continue
+
+        if char in ("'", '"'):
+            quote_char = char
+            current.append(char)
+            continue
+        if char == "(":
+            depth += 1
+            current.append(char)
+            continue
+        if char == ")":
+            depth -= 1
+            current.append(char)
+            continue
+        if char == "," and depth == 0:
+            arg = "".join(current).strip()
+            if arg:
+                args.append(arg)
+            current = []
+            continue
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def validate_arm_expression_syntax(template: dict) -> list[str]:
+    """Detect malformed ARM expressions before an Azure roundtrip."""
+    errors: list[str] = []
+    function_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+    for path, value in _iter_template_strings(template):
+        if "utcNow(" in value and not _is_parameter_default_path(path):
+            errors.append(
+                f"Malformed ARM expression at {path}: utcNow() is only allowed in parameter defaultValue expressions"
+            )
+
+        if not (value.startswith("[") and value.endswith("]")):
+            continue
+
+        expression = value[1:-1]
+        for match in function_pattern.finditer(expression):
+            function_name = match.group(1)
+            if function_name not in _ARM_FUNCTIONS_WITH_EXPRESSION_ARGS:
+                continue
+
+            open_index = match.end() - 1
+            close_index = _find_matching_paren(expression, open_index)
+            if close_index == -1:
+                errors.append(
+                    f"Malformed ARM expression at {path}: {function_name}() is missing a closing parenthesis"
+                )
+                continue
+
+            args = _split_arm_function_args(expression[open_index + 1:close_index])
+            for arg in args:
+                stripped = arg.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    errors.append(
+                        f"Malformed ARM expression at {path}: {function_name}() argument {stripped!r} must not include outer '[' and ']' inside a function call"
+                    )
 
     return errors
 
@@ -1341,17 +1487,21 @@ async def copilot_fix_two_phase(
     if _client is None:
         raise RuntimeError("Copilot SDK not available")
 
+    from src.agents import LLM_REASONER as _HEAL_REASONER
     strategy_text = await copilot_send(
         _client,
         model=plan_model,
         system_prompt=(
-            "You are a senior Azure infrastructure engineer debugging ARM template "
-            "deployment failures. You think like a developer — you analyze errors deeply, "
-            "identify root causes, and propose concrete, specific fixes."
+            _HEAL_REASONER.system_prompt
+            + "\n\n## ARM TEMPLATE DEBUGGING\n"
+            "You are analyzing an ARM template deployment failure. "
+            "Think like a developer — analyze errors deeply, identify root causes, "
+            "and propose concrete, specific fixes. Reference actual property names, "
+            "API versions, and parameter values — not generic advice."
         ),
         prompt=analysis_prompt,
         timeout=60,
-        agent_name="DEEP_TEMPLATE_HEALER",
+        agent_name="LLM_REASONER",
     )
 
     logger.info(f"[Healer] Phase 1 strategy (attempt {attempt_num}): {strategy_text[:300]}")
