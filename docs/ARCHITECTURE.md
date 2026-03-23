@@ -83,8 +83,9 @@ CopilotSDKChallenge/
 │   │   └── ws.py              # WebSocket endpoints: chat, governance, concierge (3 routes)
 │   ├── pipelines/             # Pipeline step handlers
 │   │   ├── onboarding.py      # Service onboarding pipeline (12 steps)
+│   │   ├── template_onboarding.py # Template validation pipeline (10 steps)
 │   │   ├── deploy.py          # Deployment-specific pipeline steps
-│   │   ├── validation.py      # Template validation pipeline
+│   │   ├── validation.py      # Template validation (legacy async generator)
 │   │   └── testing.py         # Infrastructure test pipeline
 │   ├── tools/                 # Copilot SDK tool definitions (see §6)
 │   │   ├── __init__.py        # Tool registry — all imports
@@ -111,7 +112,8 @@ CopilotSDKChallenge/
 │   ├── pipelines/             # DB-driven pipeline implementations
 │   │   ├── __init__.py        # Pipeline module registry
 │   │   ├── onboarding.py      # Service onboarding (12-step pipeline)
-│   │   ├── validation.py      # Template validation (deploy → heal → promote)
+│   │   ├── template_onboarding.py # Template validation (10-step pipeline)
+│   │   ├── validation.py      # Template validation (legacy async generator)
 │   │   ├── deploy.py          # Template deployment (sanitise → what-if → deploy)
 │   │   └── testing.py         # Infrastructure smoke testing
 │   └── templates/             # Pattern libraries for code generation
@@ -583,9 +585,19 @@ User Request
     │   ├─ cleanup ──▶ cleanup_rg() (delete validation RG + policy)
     │   └─ promote_service ──▶ (DB: mark approved, set active version, optional child co-onboard)
     │
-    ├─ Template Validation Pipeline:
-    │   ├─ deploy ──▶ TEMPLATE_HEALER (surface heal)
-    │   └─ deep_heal ──▶ DEEP_TEMPLATE_HEALER + ERROR_CULPRIT_DETECTOR
+    ├─ Template Validation Pipeline (10 steps):
+    │   ├─ initialize_template ──▶ (no LLM — load template, model routing, conflict check)
+    │   ├─ recompose_template ──▶ (no LLM — blueprint: recompose from pinned services)
+    │   ├─ structural_test ──▶ (no LLM — 7-category structural test suite)
+    │   ├─ auto_heal_structural ──▶ TEMPLATE_HEALER (CODE_FIXING — fix structural failures)
+    │   ├─ pre_validate_arm ──▶ TEMPLATE_HEALER (expression syntax fix if needed)
+    │   ├─ check_availability ──▶ (no LLM — quota check, region fallback)
+    │   ├─ arm_deploy_template ──▶ TEMPLATE_HEALER (heal loop, up to 5×):
+    │   │     ARM expression syntax → What-If → deploy
+    │   │     Deep heal for blueprints: ERROR_CULPRIT_DETECTOR (PLANNING)
+    │   ├─ infra_testing_template ──▶ INFRA_TESTER → INFRA_TEST_ANALYZER
+    │   ├─ cleanup_template ──▶ cleanup_rg() (delete validation RG)
+    │   └─ promote_template ──▶ (DB: mark validated, complete pipeline run)
     │
     └─ Template Deploy Pipeline:
         ├─ what_if + deploy ──▶ TEMPLATE_HEALER
