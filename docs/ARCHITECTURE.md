@@ -67,7 +67,7 @@ CopilotSDKChallenge/
 │   ├── fabric.py              # Microsoft Fabric / OneLake integration
 │   ├── auth.py                # Entra ID OAuth2 flow (MSAL)
 │   ├── azure_sync.py          # Azure Resource Provider sync engine
-│   ├── sql_firewall.py        # Auto-detect IP & update SQL firewall on startup
+│   ├── sql_firewall.py        # Detect caller IP, update SQL firewall, and verify propagation on startup
 │   ├── template_engine.py     # ARM template composition and dependency wiring
 │   ├── agents.py              # Agent definitions (WEB_CHAT_AGENT, TEMPLATE_HEALER, etc.)
 │   ├── governance.py          # Governance policy helpers
@@ -82,13 +82,13 @@ CopilotSDKChallenge/
 │   │   ├── deployment.py      # Deployments, Azure resources, orchestration (12 routes)
 │   │   └── ws.py              # WebSocket endpoints: chat, governance, concierge (3 routes)
 │   ├── pipelines/             # Pipeline step handlers
-│   │   ├── onboarding.py      # Service onboarding pipeline (9 steps)
+│   │   ├── onboarding.py      # Service onboarding pipeline (12 steps)
 │   │   ├── deploy.py          # Deployment-specific pipeline steps
 │   │   ├── validation.py      # Template validation pipeline
 │   │   └── testing.py         # Infrastructure test pipeline
 │   ├── tools/                 # Copilot SDK tool definitions (see §6)
 │   │   ├── __init__.py        # Tool registry — all imports
-│   │   ├── arm_generator.py   # ARM skeleton registry (~21 resource types)
+│   │   ├── arm_generator.py   # ARM generation/editing helpers (Copilot SDK)
 │   │   ├── catalog_search.py  # Search template catalog (DB-backed)
 │   │   ├── catalog_compose.py # Compose templates from services (DB-backed)
 │   │   ├── catalog_register.py# Register new templates (DB-backed)
@@ -110,7 +110,7 @@ CopilotSDKChallenge/
 │   │   └── azure_devops_generator.py   # Azure DevOps YAML
 │   ├── pipelines/             # DB-driven pipeline implementations
 │   │   ├── __init__.py        # Pipeline module registry
-│   │   ├── onboarding.py      # Service onboarding (11-step pipeline)
+│   │   ├── onboarding.py      # Service onboarding (12-step pipeline)
 │   │   ├── validation.py      # Template validation (deploy → heal → promote)
 │   │   ├── deploy.py          # Template deployment (sanitise → what-if → deploy)
 │   │   └── testing.py         # Infrastructure smoke testing
@@ -510,7 +510,7 @@ can iterate on prompts via the API without code changes or server restarts.
 | `agent_definitions` | Agent specs: name, prompt, task, timeout, enabled |
 | `agent_prompt_history` | Version history for every prompt change |
 
-### Agent Registry (24 agents)
+### Agent Registry (26 agents)
 
 | ID | Name | Category | Task | Used By |
 |----|------|----------|------|---------|
@@ -531,9 +531,11 @@ can iterate on prompts via the API without code changes or server restarts.
 | `remediation_planner` | Remediation Planner | Compliance | PLANNING | web.py |
 | `remediation_executor` | Remediation Executor | Compliance | PLANNING | web.py |
 | `artifact_generator` | Artifact Generator | Artifact | CODE_GENERATION | web.py |
+| `policy_generator` | Policy Generator | Pipeline | POLICY_GENERATION | onboarding.py |
 | `policy_fixer` | Policy JSON Fixer | Healing | CODE_FIXING | onboarding.py |
 | `deep_template_healer` | Deep Template Healer | Healing | CODE_FIXING | pipeline_helpers.py |
 | `llm_reasoner` | LLM Reasoner | Healing | PLANNING | onboarding.py, web.py |
+| `upgrade_analyst` | Upgrade Analyst | Orchestrator | VALIDATION_ANALYSIS | orchestrator.py |
 | `infra_tester` | Infrastructure Tester | Testing | CODE_GENERATION | testing.py |
 | `infra_test_analyzer` | Test Analyzer | Testing | VALIDATION_ANALYSIS | testing.py |
 | `ciso_reviewer` | CISO Reviewer | Governance | GOVERNANCE_REVIEW | governance.py |
@@ -564,13 +566,22 @@ User Request
     │
     ├─ WebSocket Chat ──▶ WEB_CHAT_AGENT (interactive, with tools)
     │
-    ├─ Service Onboarding Pipeline:
+    ├─ Service Onboarding Pipeline (12 steps):
+    │   ├─ initialize ──▶ (no LLM — model routing, cleanup stale drafts)
+    │   ├─ check_dependency_gates ──▶ (recursive sub-pipeline for unvalidated deps)
+    │   ├─ analyze_standards ──▶ (no LLM — DB fetch for org standards)
     │   ├─ plan_architecture ──▶ LLM_REASONER
-    │   ├─ generate_arm ──▶ ARM_GENERATOR / ARM_MODIFIER
-    │   ├─ generate_policy ──▶ POLICY_FIXER (heal loop)
-    │   ├─ governance_review ──▶ CISO_REVIEWER + CTO_REVIEWER (parallel)
-    │   ├─ validate_arm_deploy ──▶ TEMPLATE_HEALER (heal loop)
-    │   └─ infra_testing ──▶ INFRA_TESTER → INFRA_TEST_ANALYZER
+    │   ├─ generate_arm ──▶ ARM_GENERATOR
+    │   ├─ generate_policy ──▶ POLICY_GENERATOR (LLM + deterministic fallback)
+    │   ├─ governance_review ──▶ CISO_REVIEWER + CTO_REVIEWER (heal loop, up to 5 rounds)
+    │   ├─ validate_arm_deploy ──▶ TEMPLATE_HEALER (heal loop):
+    │   │     JSON parse → static policy → ARM expression syntax
+    │   │     → What-If → deploy → resource verify
+    │   │     → runtime policy compliance (policy heal sub-loop, up to 3 rounds)
+    │   ├─ infra_testing ──▶ INFRA_TESTER → INFRA_TEST_ANALYZER
+    │   ├─ deploy_policy ──▶ policy_deployer.py (deploys Azure Policy to Azure)
+    │   ├─ cleanup ──▶ cleanup_rg() (delete validation RG + policy)
+    │   └─ promote_service ──▶ (DB: mark approved, set active version, optional child co-onboard)
     │
     ├─ Template Validation Pipeline:
     │   ├─ deploy ──▶ TEMPLATE_HEALER (surface heal)
@@ -632,17 +643,17 @@ limitation** — prices are approximate and not sourced from the Azure Retail Pr
 or the database. Environment multipliers (dev=0.5×, staging=0.75×, prod=1.0×) are
 also static.
 
-### ARM Skeleton Registry (`arm_generator.py`)
+### ARM Generation Helpers (`arm_generator.py`)
 
-~21 registered ARM skeleton generator functions producing full ARM template dicts for
-common Azure resource types. These are intentional built-in fallbacks for when the
-Copilot SDK is unavailable.
+Shared ARM generation/editing helpers now route service template creation through the
+Copilot SDK. The module keeps standard parameter/template metadata, response cleanup,
+and template post-processing helpers used by onboarding, recovery, and modification flows.
 
-### Resource Dependency Map (`orchestrator.py`)
+### Resource Dependency Map (`template_engine.py`)
 
 `RESOURCE_DEPENDENCIES` dict maps Azure resource types to their dependencies. This is
-hard-coded as a performance optimization — looking up dependencies in the DB for every
-composition would add latency.
+hard-coded in `src/template_engine.py` as a performance optimization — looking up
+dependencies in the DB for every composition would add latency.
 
 ### Category Inference
 
