@@ -5524,7 +5524,9 @@ async def resume_pipeline(run_id: str):
     await mark_pipeline_resuming(run_id)
 
     # Also set the service status back to 'onboarding' so the list view updates
-    if service_id:
+    # (skip for template_validation — service_id is a template ID, not a service)
+    is_template_run = pipeline_type == "template_validation"
+    if service_id and not is_template_run:
         await update_service_status(service_id, "onboarding")
 
     # Reconstruct PipelineContext
@@ -5533,6 +5535,8 @@ async def resume_pipeline(run_id: str):
     # Determine which runner to use based on pipeline_type
     if pipeline_type == "onboarding":
         from src.pipelines.onboarding import runner as pipeline_runner
+    elif pipeline_type == "template_validation":
+        from src.pipelines.template_onboarding import runner as pipeline_runner
     elif pipeline_type in ("validation", "fix_and_validate"):
         # Validation/deploy pipelines are monolithic generators, not step-based.
         # For now, return an error suggesting a fresh run.
@@ -5640,22 +5644,24 @@ async def resume_pipeline(run_id: str):
 
             # Safety net: if the pipeline runner finished but the service is
             # still stuck at 'onboarding', fix it.
-            try:
-                _be = await get_backend()
-                _svc_rows = await _be.execute(
-                    "SELECT status FROM services WHERE id = ?", (service_id,)
-                )
-                if _svc_rows and _svc_rows[0].get("status") == "onboarding":
-                    if final_status == "failed":
-                        await fail_service_validation(
-                            service_id,
-                            _active_validations.get(service_id, {}).get("error", "")[:500]
-                            or "Pipeline failed during resume",
-                        )
-                    elif final_status != "completed":
-                        await update_service_status(service_id, "interrupted")
-            except Exception:
-                pass
+            # (skip for template_validation — service_id is a template ID)
+            if not is_template_run:
+                try:
+                    _be = await get_backend()
+                    _svc_rows = await _be.execute(
+                        "SELECT status FROM services WHERE id = ?", (service_id,)
+                    )
+                    if _svc_rows and _svc_rows[0].get("status") == "onboarding":
+                        if final_status == "failed":
+                            await fail_service_validation(
+                                service_id,
+                                _active_validations.get(service_id, {}).get("error", "")[:500]
+                                or "Pipeline failed during resume",
+                            )
+                        elif final_status != "completed":
+                            await update_service_status(service_id, "interrupted")
+                except Exception:
+                    pass
 
             # Clean up activity tracker after a delay
             async def _cleanup():

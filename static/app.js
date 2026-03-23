@@ -7002,9 +7002,11 @@ function _renderTemplatePipelineRuns(runs, templateId) {
             detailRows += `<div class="run-detail-row run-detail-runid"><strong>Run ID:</strong> <code>${escapeHtml(r.run_id)}</code></div>`;
         }
 
-        // Action button: "Watch Live" for running, "View Flowchart" for completed with events
+        // Action button: "Watch Live" for running, "Resume" for interrupted, "View Flowchart" for completed with events
         let actionBtn = '';
-        if (isRunning && liveTracker && liveTracker.running) {
+        if (r.status === 'interrupted' && r.last_completed_step != null && r.run_id) {
+            actionBtn = `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); resumeTemplatePipelineRun('${escapeHtml(r.run_id)}', '${escapeHtml(templateId)}')" title="Resume from step ${r.last_completed_step + 2}">▶ Resume</button>`;
+        } else if (isRunning && liveTracker && liveTracker.running) {
             actionBtn = `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); scrollToLiveProgress()" title="Watch this run in real time">👁 Watch Live</button>`;
         } else if (hasEvents) {
             actionBtn = `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); expandPipelineRun(this, '${escapeHtml(templateId)}', ${idx})" title="View the deployment flowchart for this run">📊 View</button>`;
@@ -16130,10 +16132,22 @@ function _renderTemplateValidationCard(run) {
     // Run ID
     const shortRunId = run.run_id ? run.run_id.substring(0, 20) : '';
 
-    // Action button - navigate to template
+    // Action buttons
     let actionHtml = '';
+
+    // Resume button for interrupted runs with a checkpoint
+    if (run.status === 'interrupted' && run.last_completed_step != null && run.run_id) {
+        actionHtml += `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); resumeTemplatePipelineRun('${escapeHtml(run.run_id)}', '${escapeHtml(tmplId)}')" title="Resume from step ${run.last_completed_step + 2}">▶ Resume</button> `;
+    }
+
+    // Flow view button for runs with events
+    if (events.length > 0 && run.run_id) {
+        actionHtml += `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); replayTemplatePipelineRun('${escapeHtml(run.run_id)}', '${escapeHtml(tmplId)}')" title="View pipeline flowchart">📊 View</button> `;
+    }
+
+    // Navigate to template
     if (tmplId) {
-        actionHtml = `<button class="btn btn-xs btn-ghost" onclick="navigateTo('catalog'); setTimeout(() => showTemplateDetail('${escapeHtml(tmplId)}'), 200)">View Template</button>`;
+        actionHtml += `<button class="btn btn-xs btn-ghost" onclick="navigateTo('catalog'); setTimeout(() => showTemplateDetail('${escapeHtml(tmplId)}'), 200)">View Template</button>`;
     }
 
     return `
@@ -16163,6 +16177,73 @@ function _renderTemplateValidationCard(run) {
         ${eventsHtml}
         <div class="activity-card-actions">${actionHtml}</div>
     </div>`;
+}
+
+/** Resume an interrupted template validation pipeline run. */
+async function resumeTemplatePipelineRun(runId, templateId) {
+    showToast('Resuming template pipeline…', 'info');
+    try {
+        const res = await fetch(`/api/pipelines/${encodeURIComponent(runId)}/resume`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            showToast(`Resume failed: ${err.detail || res.statusText}`, 'error');
+            return;
+        }
+        openPipelineOverlay('Resuming Template Validation', '▶', templateId);
+        const canvas = document.getElementById('pipeline-canvas');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const evt = JSON.parse(line);
+                    if (canvas) _renderDeployProgress(canvas, evt, 'validate');
+                } catch (e) { /* skip non-JSON lines */ }
+            }
+        }
+        if (buffer.trim()) {
+            try {
+                const evt = JSON.parse(buffer);
+                if (canvas) _renderDeployProgress(canvas, evt, 'validate');
+            } catch (e) { /* skip */ }
+        }
+        showToast('Template pipeline resume completed', 'success');
+        loadTemplateValidationRuns();
+    } catch (err) {
+        showToast(`Resume error: ${err.message}`, 'error');
+    }
+}
+
+/** Replay a template pipeline run's events in the flow view overlay. */
+async function replayTemplatePipelineRun(runId, templateId) {
+    try {
+        const res = await fetch(`/api/catalog/template-validation-runs`);
+        if (!res.ok) return;
+        const runs = await res.json();
+        const run = runs.find(r => r.run_id === runId);
+        if (!run || !run.events || run.events.length === 0) {
+            showToast('No event data saved for this run', 'info');
+            return;
+        }
+        const tmplName = run.template_name || templateId;
+        const statusIcon = { completed: '✅', failed: '❌', running: '🔄', interrupted: '⏸️' }[run.status] || '🚀';
+        openPipelineOverlay(`Template Validation — ${tmplName}`, statusIcon, templateId);
+        const canvas = document.getElementById('pipeline-canvas');
+        if (canvas) {
+            for (const event of run.events) {
+                _renderDeployProgress(canvas, event, 'validate');
+            }
+        }
+    } catch (err) {
+        showToast(`Failed to load run: ${err.message}`, 'error');
+    }
 }
 
 
