@@ -10391,6 +10391,26 @@ tr[class*="ns-group-"] > td:first-child {
     border-color: var(--border-subtle);
 }
 
+/* ── AI-powered step highlight ── */
+.ao-step-ai {
+    border-color: rgba(139, 92, 246, 0.35);
+    background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(139, 92, 246, 0.06) 100%);
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.08);
+}
+
+.ao-step-ai .ao-step-num {
+    background: rgba(139, 92, 246, 0.16);
+    color: #a78bfa;
+}
+
+.ao-ai-icon {
+    width: 0.85rem;
+    height: 0.85rem;
+    color: #a78bfa;
+    vertical-align: -0.12em;
+    flex-shrink: 0;
+}
+
 .ao-stage-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -16678,17 +16678,25 @@ function _aoStepStats(step, steps, jobs) {
     return { active, completed };
 }
 
-function _aoModelChips(step, routingMap) {
-    const tasks = AO_STEP_TASKS[step.action] || [];
-    if (!tasks.length) {
-        return '<span class="ao-model-chip ao-model-chip-static">Platform logic</span>';
-    }
+function _aoStepUsesAI(step) {
+    return (AO_STEP_AGENTS[step.action] || []).length > 0;
+}
 
+function _aoModelChips(step, routingMap) {
+    if (!_aoStepUsesAI(step)) return '';
+
+    const tasks = AO_STEP_TASKS[step.action] || [];
+    if (!tasks.length) return '';
+
+    const seen = new Set();
     return tasks.map(task => {
         const route = routingMap[_aoNormalizeTaskKey(task)] || {};
         const model = route.model_name || route.model_id || route.display_name || 'Configured model';
+        const label = _truncateModel(model);
+        if (seen.has(label)) return '';
+        seen.add(label);
         const reason = route.reason ? ` title="${escapeHtml(route.reason)}"` : '';
-        return `<span class="ao-model-chip"${reason}>${escapeHtml(_truncateModel(model))}</span>`;
+        return `<span class="ao-model-chip"${reason}>${escapeHtml(label)}</span>`;
     }).join('');
 }
 
@@ -16837,12 +16845,13 @@ async function loadAgentActivity() {
         const stepCards = steps.map(step => {
             const stats = _aoStepStats(step, steps, jobs);
             const stepAction = step.action || step.name;
+            const isAI = _aoStepUsesAI(step);
             return `
-                <article class="ao-step-card">
+                <article class="ao-step-card${isAI ? ' ao-step-ai' : ''}">
                     <div class="ao-step-card-top">
                         <span class="ao-step-num">${step.step_order}</span>
                         <div>
-                            <div class="ao-step-name">${escapeHtml(step.name)}</div>
+                            <div class="ao-step-name">${isAI ? '<svg class="ao-ai-icon" viewBox="0 0 16 16" fill="none"><path d="M8 1l1.796 4.858L15 7.5l-5.204 1.642L8 14l-1.796-4.858L1 7.5l5.204-1.642z" fill="currentColor"/></svg> ' : ''}${escapeHtml(step.name)}</div>
                             <div class="ao-step-action">${escapeHtml(_aoFormatStepAction(stepAction))}</div>
                         </div>
                     </div>
