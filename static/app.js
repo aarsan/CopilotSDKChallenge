@@ -4625,6 +4625,7 @@ function _updateTableBadge(event) {
 
 /** ─── Pipeline overlay management ──────────────────────── */
 let _pipelineOverlayOpen = false;
+let _activePipelineRunId = null;
 
 function openPipelineOverlay(title, icon, meta) {
     const overlay = document.getElementById('pipeline-overlay');
@@ -4643,6 +4644,10 @@ function openPipelineOverlay(title, icon, meta) {
     }
     overlay.classList.remove('hidden');
     _pipelineOverlayOpen = true;
+    _activePipelineRunId = null;
+    // Show the stop button in running state
+    const stopBtn = document.getElementById('pipeline-stop-btn');
+    if (stopBtn) { stopBtn.classList.remove('hidden'); stopBtn.disabled = false; stopBtn.textContent = '⏹ Stop'; }
     // Reset pipeline tracking state
     overlay._pipelineStartTime = Date.now();
     overlay._pipelineStepCount = 0;
@@ -4655,6 +4660,30 @@ function closePipelineOverlay() {
     const overlay = document.getElementById('pipeline-overlay');
     if (overlay) overlay.classList.add('hidden');
     _pipelineOverlayOpen = false;
+    _activePipelineRunId = null;
+    const stopBtn = document.getElementById('pipeline-stop-btn');
+    if (stopBtn) stopBtn.classList.add('hidden');
+}
+
+/** Stop a running pipeline by signaling the backend to abort */
+async function stopPipeline() {
+    const runId = _activePipelineRunId;
+    if (!runId) { showToast('No active pipeline to stop', 'warning'); return; }
+    const btn = document.getElementById('pipeline-stop-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+    try {
+        const res = await fetch(`/api/pipelines/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            showToast(`Stop failed: ${err.detail || res.statusText}`, 'error');
+            if (btn) { btn.disabled = false; btn.textContent = '⏹ Stop'; }
+            return;
+        }
+        showToast('Pipeline stop requested — finishing current step…', 'info');
+    } catch (err) {
+        showToast(`Stop error: ${err.message}`, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = '⏹ Stop'; }
+    }
 }
 
 /** Toggle all pipeline cards expanded/collapsed */
@@ -5682,6 +5711,9 @@ function _handleUpdateFlowEvent(logEl, event, card) {
         );
     } else if (type === 'action_required') {
         _renderActionRequired(logEl, event);
+    } else if (type === 'aborted') {
+        _flowFinalizeActive(logEl, 'failed');
+        _flowResult(logEl, 'stopped', detail || 'Pipeline stopped by user');
     } else if (type === 'error') {
         // Don't render a separate error result if governance already blocks — the card handles it
         if (phase === 'governance_blocked' && logEl._flow?.cards?.['governance']) {
@@ -6127,6 +6159,10 @@ function _handleValidationFlowEvent(logEl, event, card) {
         );
     } else if (type === 'action_required') {
         _renderActionRequired(logEl, event);
+    } else if (type === 'aborted') {
+        _flowFinalizeActive(logEl, 'failed');
+        _flowResult(logEl, 'stopped', detail || 'Pipeline stopped by user');
+        _appendPipelineSummary(logEl, 'stopped', event);
     } else if (type === 'error') {
         _flowFinalizeActive(logEl, 'failed');
         let errMsg = detail;
@@ -6162,6 +6198,17 @@ function _handleValidationEvent(event) {
     const modelBadge = document.getElementById('validation-model-badge');
     const card = document.getElementById('validation-card');
     const overlay = document.getElementById('pipeline-overlay');
+
+    // Capture run_id from the pipeline_start event
+    if (event.run_id && !_activePipelineRunId) {
+        _activePipelineRunId = event.run_id;
+    }
+
+    // Hide stop button on terminal events
+    if (event.type === 'done' || event.type === 'error' || event.type === 'aborted' || event.type === 'policy_blocked' || event.type === 'action_required') {
+        const stopBtn = document.getElementById('pipeline-stop-btn');
+        if (stopBtn) stopBtn.classList.add('hidden');
+    }
 
     // Progress bar + detail text
     if (event.progress && progressFill) {
@@ -6329,6 +6376,10 @@ function _handleValidationEvent(event) {
         card.className = 'validation-card validation-failed';
         if (header) header.textContent = 'Onboarding Failed';
         if (iconEl) { iconEl.textContent = '⛔'; iconEl.classList.remove('validation-spinner'); }
+    } else if (type === 'aborted' && card) {
+        card.className = 'validation-card validation-failed';
+        if (header) header.textContent = 'Pipeline Stopped';
+        if (iconEl) { iconEl.textContent = '⏹'; iconEl.classList.remove('validation-spinner'); }
     }
 }
 
@@ -9097,7 +9148,7 @@ async function readNDJSONStream(response, onEvent) {
                     events.push(event);
                     onEvent(event);
                     // Track terminal events
-                    if (event.type === 'done' || event.type === 'error' || event.type === 'policy_blocked' || event.type === 'action_required') {
+                    if (event.type === 'done' || event.type === 'error' || event.type === 'aborted' || event.type === 'policy_blocked' || event.type === 'action_required') {
                         receivedTerminal = true;
                     }
                 } catch (e) { /* skip malformed */ }
@@ -9110,7 +9161,7 @@ async function readNDJSONStream(response, onEvent) {
                 const event = JSON.parse(buffer);
                 events.push(event);
                 onEvent(event);
-                if (event.type === 'done' || event.type === 'error' || event.type === 'policy_blocked' || event.type === 'action_required') {
+                if (event.type === 'done' || event.type === 'error' || event.type === 'aborted' || event.type === 'policy_blocked' || event.type === 'action_required') {
                     receivedTerminal = true;
                 }
             } catch (e) { /* skip */ }

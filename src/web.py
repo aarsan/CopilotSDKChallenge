@@ -5519,6 +5519,53 @@ async def get_all_template_validation_runs_endpoint():
     return JSONResponse(runs)
 
 
+# ── Pipeline Abort ────────────────────────────────────────────
+
+@app.post("/api/pipelines/{run_id}/abort")
+async def abort_pipeline(run_id: str):
+    """Signal a running pipeline to stop gracefully at the next step boundary.
+
+    The pipeline context's abort event is set, causing the runner to
+    stop before the next step begins.  The run is marked 'interrupted'
+    in the DB so it can be resumed later.
+    """
+    from src.pipeline import _active_pipelines
+
+    ctx = _active_pipelines.get(run_id)
+    if not ctx:
+        # Not in-memory — check if it's a real run that already finished
+        backend = await get_backend()
+        rows = await backend.execute(
+            "SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        status = rows[0].get("status", "")
+        if status != "running":
+            return JSONResponse({
+                "status": "already_finished",
+                "run_id": run_id,
+                "pipeline_status": status,
+            })
+        # Running in DB but not in memory (stale) — mark interrupted directly
+        await complete_pipeline_run(
+            run_id, "interrupted",
+            error_detail="User-initiated abort (pipeline not in memory)",
+        )
+        return JSONResponse({"status": "abort_forced", "run_id": run_id})
+
+    ctx.request_abort()
+
+    # Also update the in-memory activity tracker
+    service_id = ctx.service_id or ctx.template_id
+    tracker = _active_validations.get(service_id)
+    if tracker:
+        tracker["status"] = "aborting"
+        tracker["detail"] = "Abort requested — stopping after current step…"
+
+    return JSONResponse({"status": "abort_signaled", "run_id": run_id})
+
+
 # ── Pipeline Resume ──────────────────────────────────────────
 
 @app.get("/api/pipelines/{run_id}/checkpoint")
@@ -11674,6 +11721,9 @@ async def onboard_service_endpoint(service_id: str, request: Request):
         if evt.get("type") == "done":
             tracker["status"] = "succeeded"
             tracker["progress"] = 1.0
+        elif evt.get("type") == "aborted":
+            tracker["status"] = "stopped"
+            tracker["error"] = evt.get("detail", "Stopped by user")
         elif evt.get("type") == "policy_blocked":
             tracker["status"] = "policy_blocked"
             tracker["error"] = evt.get("detail", "")
@@ -11753,6 +11803,8 @@ async def onboard_service_endpoint(service_id: str, request: Request):
                     _err = tracker.get("error", "")
                     if _final == "succeeded":
                         _db_status = "completed"
+                    elif _final == "stopped":
+                        _db_status = "interrupted"
                     elif _final in ("failed", "policy_blocked"):
                         _db_status = "failed"
                     else:

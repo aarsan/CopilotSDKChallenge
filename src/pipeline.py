@@ -78,6 +78,11 @@ from typing import (
 
 logger = logging.getLogger("infraforge.pipeline")
 
+# ── Active pipeline registry (for abort signaling) ──────────
+# run_id → PipelineContext for all currently executing pipelines.
+# Entries are added when execute() starts and removed in its finally block.
+_active_pipelines: dict[str, "PipelineContext"] = {}
+
 
 # ══════════════════════════════════════════════════════════════
 # NDJSON EVENT HELPER
@@ -365,10 +370,22 @@ class PipelineContext:
         self.deployed_rg: Optional[str] = None
         self.deployed_policy_info: Optional[dict] = None
 
+        # ── Abort signal ─────────────────────────────────────
+        self._abort_event: asyncio.Event = asyncio.Event()
+
         # ── Anything else the caller passes ──────────────────
         self.extra: dict[str, Any] = extra
 
     # ── Helpers ───────────────────────────────────────────────
+
+    @property
+    def abort_requested(self) -> bool:
+        """Check whether an abort has been signaled for this pipeline."""
+        return self._abort_event.is_set()
+
+    def request_abort(self) -> None:
+        """Signal this pipeline to stop at the next step boundary."""
+        self._abort_event.set()
 
     def progress(self, local: float) -> float:
         """Scale a step-local progress value (0→1) to global pipeline progress.
@@ -851,12 +868,16 @@ class PipelineRunner:
         if is_resume and resume_from_step < len(steps):
             resume_detail = f" from step {resume_from_step + 1}: {steps[resume_from_step].name}"
 
+        # Register in active pipeline registry for abort signaling
+        _active_pipelines[ctx.run_id] = ctx
+
         yield emit(
             "progress", "pipeline_start",
             f"{start_label} pipeline '{ctx.process_id}'{resume_detail} "
             f"— {len(steps)} step(s)",
             progress=0.0,
             resumed=is_resume,
+            run_id=ctx.run_id,
         )
 
         try:
@@ -889,6 +910,16 @@ class PipelineRunner:
                 )
 
                 try:
+                    # ── Check for user-initiated abort ────────
+                    if ctx.abort_requested:
+                        logger.info(f"[Pipeline:{ctx.process_id}] Abort requested before step '{step.name}'")
+                        yield emit(
+                            "aborted", step.name,
+                            "Pipeline stopped by user",
+                            progress=ctx.progress(0),
+                        )
+                        return
+
                     async for line in handler(ctx, step):
                         yield line
 
@@ -1015,6 +1046,7 @@ class PipelineRunner:
             # Cannot yield from inside GeneratorExit handler
 
         finally:
+            _active_pipelines.pop(ctx.run_id, None)
             for fn in self._finalizers:
                 try:
                     await fn(ctx)

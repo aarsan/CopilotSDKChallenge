@@ -7373,6 +7373,25 @@ tr[class*="ns-group-"] > td:first-child {
     background: var(--bg-tertiary);
     color: var(--text-primary);
 }
+.pipeline-overlay-stop {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--error);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--error);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+.pipeline-overlay-stop:hover:not(:disabled) {
+    background: var(--error);
+    color: #fff;
+}
+.pipeline-overlay-stop:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 .pipeline-overlay-close {
     width: 32px; height: 32px;
     border: 1px solid var(--border-default);
