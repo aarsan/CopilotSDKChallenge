@@ -16132,8 +16132,17 @@ function _renderTemplateValidationCard(run) {
     // Run ID
     const shortRunId = run.run_id ? run.run_id.substring(0, 20) : '';
 
+    // Check for active in-browser tracker (set when validation was started from this session)
+    const liveTracker = _activeTemplateValidations[tmplId];
+    const hasLiveTracker = liveTracker && liveTracker.running;
+
     // Action buttons
     let actionHtml = '';
+
+    // Watch Live button for running runs
+    if (run.status === 'running') {
+        actionHtml += `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); watchLiveTemplatePipeline('${escapeHtml(tmplId)}')" title="Watch this pipeline in real time">👁 Watch Live</button> `;
+    }
 
     // Resume button for interrupted runs with a checkpoint
     if (run.status === 'interrupted' && run.last_completed_step != null && run.run_id) {
@@ -16244,6 +16253,45 @@ async function replayTemplatePipelineRun(runId, templateId) {
     } catch (err) {
         showToast(`Failed to load run: ${err.message}`, 'error');
     }
+}
+
+/** Watch a live running template validation — replay cached events and navigate to template detail. */
+function watchLiveTemplatePipeline(templateId) {
+    // Option 1: If there's an active in-browser tracker with events, open overlay and replay
+    const tracker = _activeTemplateValidations[templateId];
+    if (tracker && tracker.events && tracker.events.length > 0) {
+        const tmplName = templateId;
+        openPipelineOverlay(`Template Validation Pipeline — Live`, '🔄', templateId);
+        const canvas = document.getElementById('pipeline-canvas');
+        if (canvas) {
+            for (const event of tracker.events) {
+                _renderDeployProgress(canvas, event, 'validate');
+            }
+        }
+
+        // If still running, keep polling for new events
+        if (tracker.running) {
+            let lastIdx = tracker.events.length;
+            const pollInterval = setInterval(() => {
+                if (!tracker.running) {
+                    clearInterval(pollInterval);
+                    return;
+                }
+                const newEvents = tracker.events.slice(lastIdx);
+                if (newEvents.length > 0 && canvas) {
+                    for (const event of newEvents) {
+                        _renderDeployProgress(canvas, event, 'validate');
+                    }
+                    lastIdx = tracker.events.length;
+                }
+            }, 1000);
+        }
+        return;
+    }
+
+    // Option 2: Navigate to template detail where the live view is rendered
+    navigateTo('catalog');
+    setTimeout(() => showTemplateDetail(templateId), 200);
 }
 
 
