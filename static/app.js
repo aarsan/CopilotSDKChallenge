@@ -437,7 +437,7 @@ function updatePageActions(page) {
             actions.innerHTML = '';
             break;
         case 'activity':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadHealthStatus(); loadRunsActivity(true); loadRunsDeploymentHistory()" title="Refresh">⟳ Refresh</button>';
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadHealthStatus(); loadRunsActivity(true); loadRunsDeploymentHistory(); loadTemplateValidationRuns()" title="Refresh">⟳ Refresh</button>';
             break;
 
         case 'chat':
@@ -15277,8 +15277,9 @@ function switchObsTab(tab) {
     if (tab === 'data-mgmt') loadBackupsList();
     if (tab === 'agents') loadAgentActivity();
     if (tab === 'validations') { loadRunsActivity(true); _startRunsPolling(); }
+    if (tab === 'tmpl-validations') { loadTemplateValidationRuns(); _startRunsPolling(); }
     if (tab === 'deployments') { loadRunsDeploymentHistory(); _startRunsPolling(); }
-    if (tab !== 'validations' && tab !== 'deployments') _stopRunsPolling();
+    if (tab !== 'validations' && tab !== 'deployments' && tab !== 'tmpl-validations') _stopRunsPolling();
 }
 
 async function loadDeploymentHistory() {
@@ -15884,6 +15885,7 @@ function _startRunsPolling() {
     _runsPollTimer = setInterval(() => {
         loadRunsActivity(true);
         if (_runsCurrentTab === 'deployments') loadRunsDeploymentHistory();
+        if (_obsCurrentTab === 'tmpl-validations') loadTemplateValidationRuns(true);
     }, 5000);
 }
 
@@ -15997,6 +15999,170 @@ function _renderRunsDeploymentFeed(deployments) {
     }
 
     feed.innerHTML = deployments.map(d => _renderDeploymentRunCard(d)).join('');
+}
+
+
+// ── Template Validation Runs ────────────────────────────────
+
+async function loadTemplateValidationRuns(silent = false) {
+    try {
+        const res = await fetch('/api/catalog/template-validation-runs');
+        if (!res.ok) throw new Error('Failed to load template validation runs');
+        const runs = await res.json();
+        _renderTemplateValidationFeed(runs);
+    } catch (err) {
+        if (!silent) console.warn('Template validation runs load failed:', err);
+    }
+}
+
+function _renderTemplateValidationFeed(runs) {
+    const feed = document.getElementById('tmpl-val-feed');
+    if (!feed) return;
+
+    // Update summary counters
+    const running = runs.filter(r => r.status === 'running').length;
+    const completed = runs.filter(r => r.status === 'completed').length;
+    const failed = runs.filter(r => r.status === 'failed').length;
+    const totalHeals = runs.reduce((sum, r) => sum + (r.heal_count || 0), 0);
+
+    const _el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    _el('tmpl-val-running', running);
+    _el('tmpl-val-completed', completed);
+    _el('tmpl-val-failed', failed);
+    _el('tmpl-val-heals', totalHeals);
+
+    // Pulse animation for running count
+    const runEl = document.getElementById('tmpl-val-running');
+    if (runEl) {
+        if (running > 0) runEl.classList.add('activity-pulse');
+        else runEl.classList.remove('activity-pulse');
+    }
+
+    if (runs.length === 0) {
+        feed.innerHTML = `
+            <div class="activity-empty">
+                <span class="activity-empty-icon">🧪</span>
+                <p>No template validation runs yet. Validate a template from the Template Catalog to see runs here.</p>
+            </div>`;
+        return;
+    }
+
+    feed.innerHTML = runs.map(r => _renderTemplateValidationCard(r)).join('');
+}
+
+function _renderTemplateValidationCard(run) {
+    // Status display
+    const statusMap = {
+        completed: { cls: 'activity-status-approved', icon: '✅', text: 'Completed' },
+        failed:    { cls: 'activity-status-failed',   icon: '❌', text: 'Failed' },
+        running:   { cls: 'activity-status-running',  icon: '⏳', text: 'Running' },
+        interrupted: { cls: 'activity-status-interrupted', icon: '⏸️', text: 'Interrupted' },
+    };
+    const s = statusMap[run.status] || { cls: 'activity-status-unknown', icon: '❓', text: run.status || 'Unknown' };
+
+    const tmplName = run.template_name || run.service_id || 'Unknown Template';
+    const tmplId = run.service_id || '';
+
+    // Time
+    const startTime = run.started_at ? new Date(run.started_at).toLocaleString() : '';
+    const timeAgo = run.started_at ? _timeAgo(run.started_at) : '';
+
+    // Duration
+    let durationStr = '—';
+    if (run.duration_secs != null) {
+        durationStr = _formatDuration(run.duration_secs * 1000);
+    } else if (run.started_at && run.completed_at) {
+        durationStr = _formatDuration(new Date(run.completed_at) - new Date(run.started_at));
+    } else if (run.started_at && run.status === 'running') {
+        durationStr = _timeAgo(run.started_at);
+    }
+
+    // Heal count
+    const healCount = run.heal_count || 0;
+    const healBadge = healCount > 0
+        ? `<span class="run-item-heals" title="${healCount} heal cycle(s)">🔧 ${healCount}</span>`
+        : '';
+
+    // Version
+    const verDisplay = run.semver || (run.version_num ? `v${run.version_num}` : '');
+    const verBadge = verDisplay ? `<span class="activity-meta-chip">📌 ${escapeHtml(verDisplay)}</span>` : '';
+
+    // Region from summary
+    const summary = run.summary || {};
+    const region = summary.region || '';
+    const regionBadge = region ? `<span class="activity-meta-chip">📍 ${escapeHtml(region)}</span>` : '';
+
+    // Error display
+    let errorHtml = '';
+    if (run.status === 'failed' && run.error_detail) {
+        const parsed = _parseValidationError(run.error_detail);
+        errorHtml = _renderStructuredError(parsed, { compact: true, showRaw: true });
+    }
+
+    // Events log
+    let eventsHtml = '';
+    const events = run.events || [];
+    if (events.length > 0) {
+        const collapsed = run.status !== 'running' && run.status !== 'failed';
+        const eventLines = events.map(e => {
+            let icon = '▸';
+            if (e.type === 'error') icon = '❌';
+            else if (e.type === 'done') icon = '✅';
+            else if (e.type === 'healing') icon = '🤖';
+            else if (e.type === 'healing_done') icon = '🔧';
+            else if (e.type === 'init') icon = '🚦';
+            else if (e.phase === 'what_if') icon = '🔍';
+            else if (e.phase === 'deploying') icon = '🚀';
+            else if (e.phase === 'deploy_failed') icon = '💥';
+            else if (e.phase === 'cleanup') icon = '🧹';
+            else if (e.phase === 'promoting') icon = '🏆';
+            const timeStr = e.time ? `<span class="activity-event-time">${_timeShort(e.time)}</span>` : '';
+            return `<div class="activity-event-line">${timeStr}${icon} ${escapeHtml(e.detail)}</div>`;
+        }).join('');
+        const chevronChar = collapsed ? '▸' : '▾';
+        eventsHtml = `
+            <div class="activity-events-toggle" onclick="this.nextElementSibling.classList.toggle('hidden'); this.querySelector('.chevron').textContent = this.nextElementSibling.classList.contains('hidden') ? '▸' : '▾'">
+                <span class="chevron">${chevronChar}</span> ${events.length} event${events.length !== 1 ? 's' : ''} — full validation log
+            </div>
+            <div class="activity-events ${collapsed ? 'hidden' : ''}">${eventLines}</div>`;
+    }
+
+    // Run ID
+    const shortRunId = run.run_id ? run.run_id.substring(0, 20) : '';
+
+    // Action button - navigate to template
+    let actionHtml = '';
+    if (tmplId) {
+        actionHtml = `<button class="btn btn-xs btn-ghost" onclick="navigateTo('catalog'); setTimeout(() => showTemplateDetail('${escapeHtml(tmplId)}'), 200)">View Template</button>`;
+    }
+
+    return `
+    <div class="activity-card ${s.cls} ${run.status === 'running' ? 'activity-card-running' : ''}">
+        <div class="activity-card-header">
+            <div class="activity-card-title">
+                <span class="activity-card-icon">${s.icon}</span>
+                <div class="activity-card-name">
+                    <span class="activity-svc-name">${escapeHtml(tmplName)}</span>
+                    <span class="activity-svc-id">${escapeHtml(tmplId)}</span>
+                </div>
+            </div>
+            <div class="activity-card-meta">
+                <span class="activity-pipeline-type">Template Validation</span>
+                ${healBadge}
+                <span class="activity-badge ${s.cls}">${s.text}</span>
+                <span class="activity-time" title="${escapeHtml(startTime)}">Started ${escapeHtml(timeAgo)}</span>
+            </div>
+        </div>
+        <div class="activity-meta-chips">
+            ${verBadge}
+            ${regionBadge}
+            ${shortRunId ? `<span class="activity-meta-chip">🆔 ${escapeHtml(shortRunId)}</span>` : ''}
+            ${durationStr !== '—' ? `<span class="activity-meta-chip">⏱️ ${escapeHtml(durationStr)}</span>` : ''}
+        </div>
+        ${errorHtml}
+        ${eventsHtml}
+        <div class="activity-card-actions">${actionHtml}</div>
+    </div>`;
 }
 
 

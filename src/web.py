@@ -84,6 +84,7 @@ from src.database import (
     get_active_service_version,
     get_all_services,
     get_all_templates,
+    get_all_template_validation_runs,
     get_backend,
     get_governance_policies_as_dict,
     get_governance_reviews,
@@ -5436,6 +5437,16 @@ async def get_template_pipeline_runs(template_id: str):
     """
     runs = await get_pipeline_runs(template_id, limit=20)
     # Strip the raw JSON columns to keep the response clean
+    for r in runs:
+        r.pop("summary_json", None)
+        r.pop("pipeline_events_json", None)
+    return JSONResponse(runs)
+
+
+@app.get("/api/catalog/template-validation-runs")
+async def get_all_template_validation_runs_endpoint():
+    """Get recent template validation pipeline runs across ALL templates."""
+    runs = await get_all_template_validation_runs(limit=50)
     for r in runs:
         r.pop("summary_json", None)
         r.pop("pipeline_events_json", None)

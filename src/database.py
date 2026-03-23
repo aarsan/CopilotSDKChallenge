@@ -4523,6 +4523,33 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
     return rows
 
 
+async def get_all_template_validation_runs(limit: int = 50) -> list[dict]:
+    """Get recent template validation pipeline runs across ALL templates, newest first."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        f"SELECT TOP {int(limit)} pr.*, ct.name AS template_name "
+        "FROM pipeline_runs pr "
+        "LEFT JOIN catalog_templates ct ON pr.service_id = ct.id "
+        "WHERE pr.pipeline_type = 'template_validation' "
+        "ORDER BY pr.started_at DESC",
+        (),
+    )
+    for r in rows:
+        if isinstance(r.get("summary_json"), str):
+            try:
+                r["summary"] = json.loads(r["summary_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["summary"] = {}
+        if isinstance(r.get("pipeline_events_json"), str):
+            try:
+                r["events"] = json.loads(r["pipeline_events_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["events"] = []
+        else:
+            r["events"] = []
+    return rows
+
+
 async def get_step_invocations(step_name: str | None = None, limit: int = 10) -> list[dict]:
     """Get recent step invocations across all pipeline runs.
 

@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=277">
+    <link rel="stylesheet" href="/static/styles.css?v=278">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -622,6 +622,7 @@
                     <div class="obs-tabs">
                         <button class="obs-tab active" id="obs-tab-agents" onclick="switchObsTab('agents')">🧭 Onboarding Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
                         <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab" id="obs-tab-tmpl-validations" onclick="switchObsTab('tmpl-validations')">🧪 Template Validations <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
                         <button class="obs-tab" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                         <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
@@ -781,6 +782,34 @@
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">🔬</span>
                                 <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Template Validations -->
+                    <div class="obs-tab-content hidden" id="obs-content-tmpl-validations">
+                        <div class="obs-summary" id="tmpl-val-summary">
+                            <div class="obs-stat">
+                                <span class="obs-stat-num activity-pulse" id="tmpl-val-running">0</span>
+                                <span class="obs-stat-label">Running</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-ok" id="tmpl-val-completed">0</span>
+                                <span class="obs-stat-label">Completed</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-fail" id="tmpl-val-failed">0</span>
+                                <span class="obs-stat-label">Failed</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num" id="tmpl-val-heals">0</span>
+                                <span class="obs-stat-label">Heal Cycles</span>
+                            </div>
+                        </div>
+                        <div class="activity-feed" id="tmpl-val-feed">
+                            <div class="activity-empty">
+                                <span class="activity-empty-icon">🧪</span>
+                                <p>No template validation runs yet. Validate a template from the Template Catalog to see runs here.</p>
                             </div>
                         </div>
                     </div>
@@ -1415,7 +1444,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=303"></script>
+    <script src="/static/app.js?v=304"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
