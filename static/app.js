@@ -2180,6 +2180,7 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                 </div>
             </div>
             <div class="svc-status-actions" data-offboard-id="${escapeHtml(svc.id)}">
+                <button class="btn btn-sm btn-stop-pipeline" onclick="stopPipeline()" title="Stop the running pipeline">⏹ Stop Pipeline</button>
                 <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Restart</button>
                 <button class="btn btn-sm btn-ghost btn-danger-text" onclick="offboardService('${escapeHtml(svc.id)}', '${escapeHtml(svc.name)}')" title="Deactivate this service">📦 Offboard</button>
             </div>
@@ -3269,6 +3270,7 @@ async function triggerDraftValidation(serviceId, version, semver) {
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⏳</span>
                 <span class="validation-title">Validating Draft v${semver}…</span>
+                <button class="btn btn-sm btn-stop-pipeline" onclick="stopPipeline()" title="Stop the running pipeline">⏹ Stop</button>
             </div>
             <div class="validation-model-badge" id="validation-model-badge"></div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>
@@ -3470,6 +3472,7 @@ async function triggerOnboarding(serviceId, opts = {}) {
             <div class="validation-header">
                 <span class="validation-icon validation-spinner">⏳</span>
                 <span class="validation-title">Onboarding In Progress…</span>
+                <button class="btn btn-sm btn-stop-pipeline" onclick="stopPipeline()" title="Stop the running pipeline">⏹ Stop</button>
             </div>
             <div class="validation-model-badge" id="validation-model-badge"></div>
             <div class="validation-attempt-badge" id="validation-attempt-badge"></div>

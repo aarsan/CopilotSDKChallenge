@@ -6566,6 +6566,29 @@ tr[class*="ns-group-"] > td:first-child {
     font-weight: 600;
     font-size: 0.95rem;
     color: var(--text-primary);
+    flex: 1;
+}
+
+.btn-stop-pipeline {
+    margin-left: auto;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--error);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--error);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+    flex-shrink: 0;
+}
+.btn-stop-pipeline:hover:not(:disabled) {
+    background: var(--error);
+    color: #fff;
+}
+.btn-stop-pipeline:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .validation-detail {
