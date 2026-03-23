@@ -389,13 +389,12 @@ function navigateTo(page) {
         if (fab) fab.style.display = '';
     }
 
-    // Load pipeline runs data when switching to runs page
+    // Load pipeline runs data when switching to runs page (now part of activity)
     if (page === 'runs') {
-        loadRunsDeploymentHistory();
-        loadRunsActivity(true);
-        _startRunsPolling();
-    } else {
-        _stopRunsPolling();
+        page = 'activity';
+        navigateTo('activity');
+        setTimeout(() => switchObsTab('validations'), 100);
+        return;
     }
 
     // Load observability data when switching to activity page
@@ -404,6 +403,7 @@ function navigateTo(page) {
         loadAgentActivity();
     } else {
         _stopHealthTimer();
+        _stopRunsPolling();
     }
 
     // Load standards and governance policies when switching to governance page
@@ -434,10 +434,10 @@ function updatePageActions(page) {
             actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAddStandardModal()">＋ Add Standard</button> <button class="btn btn-sm btn-secondary" onclick="openImportStandardsModal()">📥 Import Standards</button>';
             break;
         case 'runs':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadRunsDeploymentHistory(); loadRunsActivity(true)" title="Refresh">⟳ Refresh</button>';
+            actions.innerHTML = '';
             break;
         case 'activity':
-            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadHealthStatus()" title="Refresh">⟳ Refresh</button>';
+            actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="loadHealthStatus(); loadRunsActivity(true); loadRunsDeploymentHistory()" title="Refresh">⟳ Refresh</button>';
             break;
 
         case 'chat':
@@ -995,7 +995,7 @@ async function loadDashboardActivity() {
         };
 
         feed.innerHTML = recent.map(item => `
-            <div class="dash-activity-item" onclick="navigateTo('runs')">
+            <div class="dash-activity-item" onclick="navigateTo('activity'); setTimeout(() => switchObsTab('validations'), 100)">
                 <span class="dash-activity-icon">${escapeHtml(item.icon)}</span>
                 <div class="dash-activity-body">
                     <div class="dash-activity-title">${escapeHtml(item.title)}</div>
@@ -15276,6 +15276,9 @@ function switchObsTab(tab) {
     if (tab === 'azure-resources') loadAzureResources();
     if (tab === 'data-mgmt') loadBackupsList();
     if (tab === 'agents') loadAgentActivity();
+    if (tab === 'validations') { loadRunsActivity(true); _startRunsPolling(); }
+    if (tab === 'deployments') { loadRunsDeploymentHistory(); _startRunsPolling(); }
+    if (tab !== 'validations' && tab !== 'deployments') _stopRunsPolling();
 }
 
 async function loadDeploymentHistory() {
@@ -15872,13 +15875,8 @@ let _runsCurrentTab = 'validations';
 let _runsPollTimer = null;
 
 function switchRunsTab(tab) {
-    _runsCurrentTab = tab;
-    document.querySelectorAll('#page-runs .obs-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('#page-runs .obs-tab-content').forEach(c => c.classList.add('hidden'));
-    const tabBtn = document.getElementById(`runs-tab-${tab}`);
-    const content = document.getElementById(`runs-content-${tab}`);
-    if (tabBtn) tabBtn.classList.add('active');
-    if (content) content.classList.remove('hidden');
+    // Legacy — redirect to obs tab
+    switchObsTab(tab);
 }
 
 function _startRunsPolling() {
@@ -16681,21 +16679,16 @@ function _aoStepStats(step, steps, jobs) {
 }
 
 function _aoModelChips(step, routingMap) {
-    const agents = AO_STEP_AGENTS[step.action] || [];
-    if (!agents.length) return '';
-
     const tasks = AO_STEP_TASKS[step.action] || [];
-    if (!tasks.length) return '';
+    if (!tasks.length) {
+        return '<span class="ao-model-chip ao-model-chip-static">Platform logic</span>';
+    }
 
-    const seen = new Set();
     return tasks.map(task => {
         const route = routingMap[_aoNormalizeTaskKey(task)] || {};
         const model = route.model_name || route.model_id || route.display_name || 'Configured model';
-        const label = _truncateModel(model);
-        if (seen.has(label)) return '';
-        seen.add(label);
         const reason = route.reason ? ` title="${escapeHtml(route.reason)}"` : '';
-        return `<span class="ao-model-chip"${reason}>${escapeHtml(label)}</span>`;
+        return `<span class="ao-model-chip"${reason}>${escapeHtml(_truncateModel(model))}</span>`;
     }).join('');
 }
 

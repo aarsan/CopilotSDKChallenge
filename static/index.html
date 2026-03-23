@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=274">
+    <link rel="stylesheet" href="/static/styles.css?v=275">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -96,13 +96,9 @@
                     <span class="nav-icon">📜</span> Governance
                     <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span>
                 </button>
-                <button class="nav-btn" id="nav-runs" onclick="navigateTo('runs')">
-                    <span class="nav-icon">🔄</span> Pipeline Runs
-                    <span class="nav-badge" id="nav-runs-badge" style="display:none"></span>
-                    <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span>
-                </button>
                 <button class="nav-btn" id="nav-activity" onclick="navigateTo('activity')">
                     <span class="nav-icon">📡</span> Observability
+                    <span class="nav-badge" id="nav-runs-badge" style="display:none"></span>
                     <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span>
                 </button>
 
@@ -181,7 +177,7 @@
                             <div class="stat-number" id="stat-review">—</div>
                             <div class="stat-label">Under Review</div>
                         </div>
-                        <div class="stat-card clickable" onclick="navigateTo('runs')" title="View Pipeline Runs">
+                        <div class="stat-card clickable" onclick="navigateTo('activity'); setTimeout(() => switchObsTab('validations'), 100)" title="View Pipeline Runs">
                             <div class="stat-number stat-validating" id="stat-validating">—</div>
                             <div class="stat-label">Validating</div>
                         </div>
@@ -319,7 +315,7 @@
                     <div class="dashboard-section">
                         <div class="dash-section-header">
                             <h3 class="section-title">Recent Activity</h3>
-                            <button class="btn btn-xs btn-ghost" onclick="navigateTo('runs')" title="View all pipeline runs">View All →</button>
+                            <button class="btn btn-xs btn-ghost" onclick="navigateTo('activity'); setTimeout(() => switchObsTab('validations'), 100)" title="View all pipeline runs">View All →</button>
                         </div>
                         <div class="dash-activity-feed" id="dash-activity-feed">
                             <div class="dash-activity-empty">
@@ -361,7 +357,7 @@
                                     <div class="svc-stat-sublabel">Ready to provision</div>
                                 </div>
                             </div>
-                            <div class="svc-stat-card svc-stat-onboarding-card" style="cursor:pointer" onclick="navigateTo('runs')" title="View Pipeline Runs">
+                            <div class="svc-stat-card svc-stat-onboarding-card" style="cursor:pointer" onclick="navigateTo('activity'); setTimeout(() => switchObsTab('validations'), 100)" title="View Pipeline Runs">
                                 <div class="svc-stat-icon">🚀</div>
                                 <div class="svc-stat-body">
                                     <div class="svc-stat-number" id="svc-stat-onboarding">0</div>
@@ -536,70 +532,6 @@
             </div>
 
             <!-- ═══ PAGE: Pipeline Runs (unified run view) ═══ -->
-            <div class="page page-scroll hidden" id="page-runs">
-                <div class="page-inner">
-                    <!-- Unified Summary Bar -->
-                    <div class="obs-summary" id="runs-summary">
-                        <div class="obs-stat">
-                            <span class="obs-stat-num activity-pulse" id="runs-running">0</span>
-                            <span class="obs-stat-label">Running</span>
-                        </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-ok" id="runs-succeeded">0</span>
-                            <span class="obs-stat-label">Succeeded</span>
-                        </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-fail" id="runs-failed">0</span>
-                            <span class="obs-stat-label">Failed</span>
-                        </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-torn" id="runs-torn-down">0</span>
-                            <span class="obs-stat-label">Torn Down</span>
-                        </div>
-                        <div class="obs-stat">
-                            <span class="obs-stat-num obs-stat-ok" id="runs-approved">0</span>
-                            <span class="obs-stat-label">Approved</span>
-                        </div>
-                    </div>
-
-                    <!-- Tabs: Service Validations | Deployments -->
-                    <div class="obs-tabs" id="runs-tabs">
-                        <button class="obs-tab active" id="runs-tab-validations" onclick="switchRunsTab('validations')">🔬 Service Validations</button>
-                        <button class="obs-tab" id="runs-tab-deployments" onclick="switchRunsTab('deployments')">🚀 Deployments</button>
-                    </div>
-
-                    <!-- Tab: Service Validations -->
-                    <div class="obs-tab-content" id="runs-content-validations">
-                        <div class="activity-summary" id="runs-activity-summary">
-                            <div class="activity-stat">
-                                <span class="activity-stat-num" id="runs-validating">0</span>
-                                <span class="activity-stat-label">Awaiting</span>
-                            </div>
-                            <div class="activity-stat">
-                                <span class="activity-stat-num activity-stat-fail" id="runs-val-failed">0</span>
-                                <span class="activity-stat-label">Failed</span>
-                            </div>
-                        </div>
-                        <div class="activity-feed" id="runs-activity-feed">
-                            <div class="activity-empty">
-                                <span class="activity-empty-icon">🔬</span>
-                                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab: Deployments -->
-                    <div class="obs-tab-content hidden" id="runs-content-deployments">
-                        <div class="obs-deploy-feed" id="runs-deploy-feed">
-                            <div class="activity-empty">
-                                <span class="activity-empty-icon">🚀</span>
-                                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
             <!-- ═══ PAGE: Observability ═══════════════════════ -->
             <div class="page page-scroll hidden" id="page-activity">
                 <div class="page-inner">
@@ -689,6 +621,8 @@
                     <!-- Tabs -->
                     <div class="obs-tabs">
                         <button class="obs-tab active" id="obs-tab-agents" onclick="switchObsTab('agents')">🧭 Onboarding Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                         <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
                     </div>
@@ -808,6 +742,61 @@
                             <div class="data-mgmt-section">
                                 <h4 class="data-mgmt-section-title">🗂️ Database Schema</h4>
                                 <p class="data-mgmt-section-desc">DDL scripts for all InfraForge tables are available at <code>scripts/create_tables.sql</code>.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Service Validations -->
+                    <div class="obs-tab-content hidden" id="obs-content-validations">
+                        <!-- Unified Summary Bar -->
+                        <div class="obs-summary" id="runs-summary">
+                            <div class="obs-stat">
+                                <span class="obs-stat-num activity-pulse" id="runs-running">0</span>
+                                <span class="obs-stat-label">Running</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-ok" id="runs-succeeded">0</span>
+                                <span class="obs-stat-label">Succeeded</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-fail" id="runs-failed">0</span>
+                                <span class="obs-stat-label">Failed</span>
+                            </div>
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-ok" id="runs-approved">0</span>
+                                <span class="obs-stat-label">Approved</span>
+                            </div>
+                        </div>
+                        <div class="activity-summary" id="runs-activity-summary">
+                            <div class="activity-stat">
+                                <span class="activity-stat-num" id="runs-validating">0</span>
+                                <span class="activity-stat-label">Awaiting</span>
+                            </div>
+                            <div class="activity-stat">
+                                <span class="activity-stat-num activity-stat-fail" id="runs-val-failed">0</span>
+                                <span class="activity-stat-label">Failed</span>
+                            </div>
+                        </div>
+                        <div class="activity-feed" id="runs-activity-feed">
+                            <div class="activity-empty">
+                                <span class="activity-empty-icon">🔬</span>
+                                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Deployments -->
+                    <div class="obs-tab-content hidden" id="obs-content-deployments">
+                        <div class="obs-summary" style="margin-bottom: 0.75rem">
+                            <div class="obs-stat">
+                                <span class="obs-stat-num obs-stat-torn" id="runs-torn-down">0</span>
+                                <span class="obs-stat-label">Torn Down</span>
+                            </div>
+                        </div>
+                        <div class="obs-deploy-feed" id="runs-deploy-feed">
+                            <div class="activity-empty">
+                                <span class="activity-empty-icon">🚀</span>
+                                <p>No deployments yet. Deploy a template from the Template Catalog.</p>
                             </div>
                         </div>
                     </div>
