@@ -5312,6 +5312,50 @@ async def validate_template(template_id: str, request: Request):
         heal_count = 0
         error_detail = None
 
+        def _track_tmpl(event_json: str):
+            """Populate _active_validations so the observability page can show live events."""
+            try:
+                evt = json.loads(event_json.strip())
+            except Exception:
+                return
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            tracker = _active_validations.get(_tmpl_id)
+            if not tracker:
+                tracker = {
+                    "status": "running",
+                    "service_name": _tmpl_name,
+                    "started_at": now,
+                    "updated_at": now,
+                    "phase": "",
+                    "step": 0,
+                    "progress": 0,
+                    "rg_name": rg_name,
+                    "events": [],
+                    "error": "",
+                }
+                _active_validations[_tmpl_id] = tracker
+            tracker["updated_at"] = now
+            if evt.get("phase"):
+                tracker["phase"] = evt["phase"]
+            if evt.get("progress"):
+                tracker["progress"] = evt["progress"]
+            if evt.get("detail"):
+                tracker["detail"] = evt["detail"]
+                tracker["events"].append({
+                    "type": evt.get("type", ""),
+                    "phase": evt.get("phase", ""),
+                    "detail": evt["detail"],
+                    "time": now,
+                })
+                if len(tracker["events"]) > 200:
+                    tracker["events"] = tracker["events"][-200:]
+            if evt.get("type") == "done":
+                tracker["status"] = "succeeded"
+                tracker["progress"] = 1.0
+            elif evt.get("type") == "error":
+                tracker["status"] = "failed"
+                tracker["error"] = evt.get("detail", "")
+
         # Record pipeline run at the start
         await create_pipeline_run(
             _run_id, _tmpl_id, "template_validation",
@@ -5360,7 +5404,8 @@ async def validate_template(template_id: str, request: Request):
                 is_blueprint=is_blueprint,
                 svc_ids=svc_ids,
             ):
-                # Capture event for storage
+                # Capture event for storage + live tracking
+                _track_tmpl(line)
                 try:
                     evt = json.loads(line.strip())
                     collected_events.append(evt)
@@ -5421,6 +5466,12 @@ async def validate_template(template_id: str, request: Request):
                 except Exception:
                     pass
 
+            # Clean up live tracker after a delay
+            async def _cleanup_tmpl():
+                await asyncio.sleep(300)
+                _active_validations.pop(_tmpl_id, None)
+            asyncio.create_task(_cleanup_tmpl())
+
     return StreamingResponse(
         _tracked_stream(),
         media_type="application/x-ndjson",
@@ -5440,6 +5491,13 @@ async def get_template_pipeline_runs(template_id: str):
     for r in runs:
         r.pop("summary_json", None)
         r.pop("pipeline_events_json", None)
+        # Merge live in-memory events for running runs
+        live = _active_validations.get(template_id)
+        if live and r.get("status") == "running":
+            r["events"] = live.get("events", [])
+            r["phase"] = live.get("phase", "")
+            r["progress"] = live.get("progress", 0)
+            r["detail"] = live.get("detail", "")
     return JSONResponse(runs)
 
 
@@ -5450,6 +5508,14 @@ async def get_all_template_validation_runs_endpoint():
     for r in runs:
         r.pop("summary_json", None)
         r.pop("pipeline_events_json", None)
+        # Merge live in-memory events for running runs
+        tmpl_id = r.get("service_id", "")
+        live = _active_validations.get(tmpl_id)
+        if live and r.get("status") == "running":
+            r["events"] = live.get("events", [])
+            r["phase"] = live.get("phase", "")
+            r["progress"] = live.get("progress", 0)
+            r["detail"] = live.get("detail", "")
     return JSONResponse(runs)
 
 
