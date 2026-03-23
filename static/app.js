@@ -3116,7 +3116,7 @@ function openServicePipelineRun(serviceId, runIndex) {
         showToast('No event data saved for this run', 'info');
         return;
     }
-    const pLabel = { onboarding: 'Onboarding', api_version_update: 'API Version Update', infra_testing: 'Infrastructure Testing' }[run.pipeline_type] || run.pipeline_type;
+    const pLabel = { onboarding: 'Service Onboarding Pipeline', api_version_update: 'API Version Update', infra_testing: 'Infrastructure Testing', template_validation: 'Template Validation Pipeline' }[run.pipeline_type] || run.pipeline_type;
     const icon = { completed: '✅', failed: '❌', running: '🔄', interrupted: '⏸️' }[run.status] || '🚀';
     openPipelineOverlay(pLabel, icon, serviceId);
     const canvas = document.getElementById('pipeline-canvas');
@@ -3954,10 +3954,10 @@ async function _pollBatchActivity() {
                         cta.innerHTML = `
                             <div class="tmpl-test-banner tmpl-test-validating">
                                 <span class="tmpl-awaiting-spinner"></span>
-                                <strong>All services onboarded</strong> — Running template validation pipeline…
+                                <strong>All services onboarded</strong> — Running Template Validation Pipeline…
                             </div>`;
                     }
-                    showToast('✅ All services onboarded — starting template validation…', 'success');
+                    showToast('✅ All services onboarded — starting Template Validation Pipeline…', 'success');
                     runFullValidation(tplId);
                 } else {
                     showToast('⚠️ Some services failed to onboard. Fix the issues and try again.', 'warning');
@@ -7016,7 +7016,7 @@ function _renderTemplatePipelineRuns(runs, templateId) {
         <div class="run-item run-item-${r.status || 'unknown'}">
             <div class="run-item-header" onclick="toggleRunDetail(this)">
                 <span class="run-item-status ${statusClass(r.status)}">${statusIcon(r.status)}</span>
-                <span class="run-item-pipeline">Template Validation</span>
+                <span class="run-item-pipeline">Template Validation Pipeline</span>
                 ${healCount > 0 ? `<span class="run-item-heals" title="${healCount} heal cycle(s)">🔧 ${healCount}</span>` : ''}
                 <span class="run-item-duration">${dur}</span>
                 <span class="run-item-date">${started}</span>
@@ -15951,7 +15951,7 @@ function _renderRunsActivityFeed(data) {
         feed.innerHTML = `
             <div class="activity-empty">
                 <span class="activity-empty-icon">🔬</span>
-                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
+                <p>No service onboarding pipeline runs yet. Onboard a service to trigger the pipeline.</p>
             </div>`;
         return;
     }
@@ -16044,7 +16044,7 @@ function _renderTemplateValidationFeed(runs) {
         feed.innerHTML = `
             <div class="activity-empty">
                 <span class="activity-empty-icon">🧪</span>
-                <p>No template validation runs yet. Validate a template from the Template Catalog to see runs here.</p>
+                <p>No template validation pipeline runs yet. Validate a template from the Template Catalog to see runs here.</p>
             </div>`;
         return;
     }
@@ -16161,7 +16161,7 @@ function _renderTemplateValidationCard(run) {
                 </div>
             </div>
             <div class="activity-card-meta">
-                <span class="activity-pipeline-type">Template Validation</span>
+                <span class="activity-pipeline-type">Template Validation Pipeline</span>
                 ${healBadge}
                 <span class="activity-badge ${s.cls}">${s.text}</span>
                 <span class="activity-time" title="${escapeHtml(startTime)}">Started ${escapeHtml(timeAgo)}</span>
@@ -16189,7 +16189,7 @@ async function resumeTemplatePipelineRun(runId, templateId) {
             showToast(`Resume failed: ${err.detail || res.statusText}`, 'error');
             return;
         }
-        openPipelineOverlay('Resuming Template Validation', '▶', templateId);
+        openPipelineOverlay('Resuming Template Validation Pipeline', '▶', templateId);
         const canvas = document.getElementById('pipeline-canvas');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -16234,7 +16234,7 @@ async function replayTemplatePipelineRun(runId, templateId) {
         }
         const tmplName = run.template_name || templateId;
         const statusIcon = { completed: '✅', failed: '❌', running: '🔄', interrupted: '⏸️' }[run.status] || '🚀';
-        openPipelineOverlay(`Template Validation — ${tmplName}`, statusIcon, templateId);
+        openPipelineOverlay(`Template Validation Pipeline — ${tmplName}`, statusIcon, templateId);
         const canvas = document.getElementById('pipeline-canvas');
         if (canvas) {
             for (const event of run.events) {
@@ -16705,7 +16705,7 @@ function _renderActivityCard(job) {
                 </div>
             </div>
             <div class="activity-card-meta">
-                ${job.pipeline_type ? `<span class="activity-pipeline-type">${escapeHtml(({onboarding:'Onboarding',api_version_update:'API Version Update',infra_testing:'Infrastructure Testing'})[job.pipeline_type] || job.pipeline_type)}</span>` : ''}
+                ${job.pipeline_type ? `<span class="activity-pipeline-type">${escapeHtml(({onboarding:'Service Onboarding Pipeline',api_version_update:'API Version Update',infra_testing:'Infrastructure Testing',template_validation:'Template Validation Pipeline'})[job.pipeline_type] || job.pipeline_type)}</span>` : ''}
                 <span class="activity-badge ${statusClass}">${statusText}</span>
                 ${timeHtml}
             </div>

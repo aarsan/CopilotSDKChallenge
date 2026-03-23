@@ -621,8 +621,8 @@
                     <!-- Tabs -->
                     <div class="obs-tabs">
                         <button class="obs-tab active" id="obs-tab-agents" onclick="switchObsTab('agents')">🧭 Onboarding Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
-                        <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Validations <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
-                        <button class="obs-tab" id="obs-tab-tmpl-validations" onclick="switchObsTab('tmpl-validations')">🧪 Template Validations <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab" id="obs-tab-validations" onclick="switchObsTab('validations')">🔬 Service Onboarding Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab" id="obs-tab-tmpl-validations" onclick="switchObsTab('tmpl-validations')">🧪 Template Validation Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
                         <button class="obs-tab" id="obs-tab-deployments" onclick="switchObsTab('deployments')">🚀 Deployments</button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                         <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
@@ -747,7 +747,7 @@
                         </div>
                     </div>
 
-                    <!-- Tab: Service Validations -->
+                    <!-- Tab: Service Onboarding Pipeline -->
                     <div class="obs-tab-content hidden" id="obs-content-validations">
                         <!-- Unified Summary Bar -->
                         <div class="obs-summary" id="runs-summary">
@@ -781,12 +781,12 @@
                         <div class="activity-feed" id="runs-activity-feed">
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">🔬</span>
-                                <p>No service validation activity yet. Onboard a service to trigger automated validation.</p>
+                                <p>No service onboarding pipeline runs yet. Onboard a service to trigger the pipeline.</p>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Tab: Template Validations -->
+                    <!-- Tab: Template Validation Pipeline -->
                     <div class="obs-tab-content hidden" id="obs-content-tmpl-validations">
                         <div class="obs-summary" id="tmpl-val-summary">
                             <div class="obs-stat">
@@ -809,7 +809,7 @@
                         <div class="activity-feed" id="tmpl-val-feed">
                             <div class="activity-empty">
                                 <span class="activity-empty-icon">🧪</span>
-                                <p>No template validation runs yet. Validate a template from the Template Catalog to see runs here.</p>
+                                <p>No template validation pipeline runs yet. Validate a template from the Template Catalog to see runs here.</p>
                             </div>
                         </div>
                     </div>
@@ -1444,7 +1444,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=307"></script>
+    <script src="/static/app.js?v=308"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">
