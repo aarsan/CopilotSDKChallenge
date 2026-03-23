@@ -16681,16 +16681,21 @@ function _aoStepStats(step, steps, jobs) {
 }
 
 function _aoModelChips(step, routingMap) {
-    const tasks = AO_STEP_TASKS[step.action] || [];
-    if (!tasks.length) {
-        return '<span class="ao-model-chip ao-model-chip-static">Platform logic</span>';
-    }
+    const agents = AO_STEP_AGENTS[step.action] || [];
+    if (!agents.length) return '';
 
+    const tasks = AO_STEP_TASKS[step.action] || [];
+    if (!tasks.length) return '';
+
+    const seen = new Set();
     return tasks.map(task => {
         const route = routingMap[_aoNormalizeTaskKey(task)] || {};
         const model = route.model_name || route.model_id || route.display_name || 'Configured model';
+        const label = _truncateModel(model);
+        if (seen.has(label)) return '';
+        seen.add(label);
         const reason = route.reason ? ` title="${escapeHtml(route.reason)}"` : '';
-        return `<span class="ao-model-chip"${reason}>${escapeHtml(_truncateModel(model))}</span>`;
+        return `<span class="ao-model-chip"${reason}>${escapeHtml(label)}</span>`;
     }).join('');
 }
 
