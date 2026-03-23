@@ -4523,6 +4523,62 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
     return rows
 
 
+async def get_step_invocations(step_name: str | None = None, limit: int = 10) -> list[dict]:
+    """Get recent step invocations across all pipeline runs.
+
+    Joins pipeline_checkpoints with pipeline_runs to provide full context
+    for each step execution including the correlation run_id, service name,
+    and overall run status.
+
+    If step_name is provided, returns invocations for that specific step.
+    Otherwise returns invocations grouped by step name.
+    """
+    backend = await get_backend()
+    if step_name:
+        rows = await backend.execute(
+            f"SELECT TOP {int(limit)} "
+            "  cp.run_id, cp.step_name, cp.step_index, cp.status AS step_status, "
+            "  cp.artifacts_json, cp.completed_at, cp.duration_secs, "
+            "  pr.service_id, pr.pipeline_type, pr.status AS run_status, "
+            "  pr.started_at AS run_started_at, pr.completed_at AS run_completed_at, "
+            "  pr.heal_count, pr.error_detail, pr.semver, "
+            "  s.name AS service_name "
+            "FROM pipeline_checkpoints cp "
+            "JOIN pipeline_runs pr ON cp.run_id = pr.run_id "
+            "LEFT JOIN services s ON pr.service_id = s.id "
+            "WHERE cp.step_name = ? "
+            "ORDER BY cp.completed_at DESC",
+            (step_name,),
+        )
+    else:
+        rows = await backend.execute(
+            f"SELECT TOP {int(limit) * 12} "
+            "  cp.run_id, cp.step_name, cp.step_index, cp.status AS step_status, "
+            "  cp.artifacts_json, cp.completed_at, cp.duration_secs, "
+            "  pr.service_id, pr.pipeline_type, pr.status AS run_status, "
+            "  pr.started_at AS run_started_at, pr.completed_at AS run_completed_at, "
+            "  pr.heal_count, pr.error_detail, pr.semver, "
+            "  s.name AS service_name "
+            "FROM pipeline_checkpoints cp "
+            "JOIN pipeline_runs pr ON cp.run_id = pr.run_id "
+            "LEFT JOIN services s ON pr.service_id = s.id "
+            "ORDER BY cp.completed_at DESC",
+            (),
+        )
+
+    for r in rows:
+        if isinstance(r.get("artifacts_json"), str):
+            try:
+                r["artifacts"] = json.loads(r["artifacts_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["artifacts"] = {}
+        else:
+            r["artifacts"] = {}
+        # Remove raw JSON field from response
+        r.pop("artifacts_json", None)
+    return rows
+
+
 # ══════════════════════════════════════════════════════════════
 # PIPELINE CHECKPOINTS — Step-level persistence for resumability
 # ══════════════════════════════════════════════════════════════

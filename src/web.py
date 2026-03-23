@@ -92,6 +92,7 @@ from src.database import (
     get_pipeline_runs,
     get_pipeline_checkpoint,
     get_resumable_runs,
+    get_step_invocations,
     mark_pipeline_resuming,
     has_running_pipeline,
     get_service,
@@ -11497,6 +11498,36 @@ async def get_service_pipeline_runs(service_id: str, limit: int = 20):
 
     runs = await get_pipeline_runs(service_id, limit=min(limit, 100))
     return JSONResponse(runs)
+
+
+@app.get("/api/pipeline/step-invocations")
+async def get_pipeline_step_invocations(step: str | None = None, limit: int = 10):
+    """Get recent step invocations across all pipeline runs.
+
+    Each invocation includes the correlation run_id, service context,
+    step status, duration, and artifacts. Useful for tracing a pipeline
+    through each of its 12 steps.
+
+    Query params:
+        step  — filter to a specific step name (e.g. 'generate_arm')
+        limit — max invocations per step (default 10, max 50)
+    """
+    rows = await get_step_invocations(
+        step_name=step,
+        limit=min(int(limit), 50),
+    )
+
+    if step:
+        return JSONResponse({"step": step, "invocations": rows})
+
+    # Group by step_name for the all-steps view
+    grouped: dict[str, list] = {}
+    for r in rows:
+        sn = r.get("step_name", "unknown")
+        grouped.setdefault(sn, [])
+        if len(grouped[sn]) < int(limit):
+            grouped[sn].append(r)
+    return JSONResponse({"steps": grouped})
 
 
 @app.get("/api/services/{service_id:path}/governance-reviews")

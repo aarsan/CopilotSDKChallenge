@@ -10733,6 +10733,197 @@ tr[class*="ns-group-"] > td:first-child {
     min-height: 220px;
 }
 
+/* ── Step Invocation History ─────────────────────────────── */
+
+.ao-step-invocations-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    padding: 0.35rem 0;
+    border-top: 1px solid var(--border-subtle);
+    margin-top: 0.3rem;
+    user-select: none;
+}
+
+.ao-step-invocations-toggle:hover {
+    color: var(--accent-blue);
+}
+
+.ao-step-invocations-arrow {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+
+.ao-step-invocations-panel {
+    margin-top: 0.4rem;
+    overflow-x: auto;
+}
+
+.ao-invoc-loading,
+.ao-invoc-empty {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    padding: 0.5rem 0;
+}
+
+.ao-invoc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.74rem;
+}
+
+.ao-invoc-table th {
+    text-align: left;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 0.35rem 0.45rem;
+    border-bottom: 1px solid var(--border-default);
+    white-space: nowrap;
+}
+
+.ao-invoc-table td {
+    padding: 0.4rem 0.45rem;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    vertical-align: top;
+}
+
+.ao-invoc-row:hover td {
+    background: rgba(88, 166, 255, 0.04);
+}
+
+.ao-invoc-corr-id {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--accent-blue);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.ao-invoc-svc {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ao-invoc-dur,
+.ao-invoc-time {
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+}
+
+.ao-invoc-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.15rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.66rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+
+.ao-invoc-ok {
+    color: #3fb950;
+    background: rgba(63, 185, 80, 0.10);
+    border-color: rgba(63, 185, 80, 0.25);
+}
+
+.ao-invoc-fail {
+    color: #f85149;
+    background: rgba(248, 81, 73, 0.10);
+    border-color: rgba(248, 81, 73, 0.25);
+}
+
+.ao-invoc-running {
+    color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.10);
+    border-color: rgba(88, 166, 255, 0.25);
+}
+
+.ao-invoc-other {
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-color: var(--border-subtle);
+}
+
+.ao-invoc-logs-btn {
+    border: 1px solid rgba(88, 166, 255, 0.25);
+    background: rgba(88, 166, 255, 0.08);
+    color: var(--accent-blue);
+    border-radius: 999px;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.66rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.ao-invoc-logs-btn:hover {
+    background: rgba(88, 166, 255, 0.16);
+}
+
+.ao-invoc-logs-row td {
+    padding: 0;
+    border-bottom: 1px solid var(--border-default);
+}
+
+.ao-invoc-logs-content {
+    padding: 0.65rem 0.7rem;
+    background: var(--bg-tertiary);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.ao-invoc-log-header {
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 0.2rem;
+}
+
+.ao-invoc-log-line {
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.ao-invoc-log-key {
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-right: 0.3rem;
+}
+
+.ao-invoc-log-error {
+    color: #f85149;
+}
+
+.ao-invoc-log-pre {
+    margin: 0.3rem 0 0;
+    padding: 0.55rem 0.65rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    overflow-x: auto;
+    max-height: 260px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 @media (max-width: 1100px) {
     .ao-truth-banner {
         grid-template-columns: 1fr;

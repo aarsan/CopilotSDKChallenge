@@ -870,10 +870,11 @@ async function loadAllData() {
 /** Populate the compact health strip on the dashboard (fire-and-forget). */
 async function loadDashboardHealth() {
     const _dashHealthMap = {
-        sql:         { item: 'dash-health-sql',   latency: 'dash-hlat-sql' },
-        backend_api: { item: 'dash-health-api',   latency: 'dash-hlat-api' },
-        entra_id:    { item: 'dash-health-entra',  latency: 'dash-hlat-entra' },
-        workiq:      { item: 'dash-health-workiq', latency: 'dash-hlat-workiq' },
+        sql:         { item: 'dash-health-sql',      latency: 'dash-hlat-sql' },
+        frontend:    { item: 'dash-health-frontend',  latency: 'dash-hlat-frontend' },
+        backend_api: { item: 'dash-health-api',       latency: 'dash-hlat-api' },
+        entra_id:    { item: 'dash-health-entra',     latency: 'dash-hlat-entra' },
+        workiq:      { item: 'dash-health-workiq',    latency: 'dash-hlat-workiq' },
     };
 
     for (const key of Object.keys(_dashHealthMap)) {
@@ -15139,10 +15140,11 @@ let _obsCurrentTab = 'agents';
 // ── System Health Checks ─────────────────────────────────────
 
 const _HEALTH_SERVICES = {
-    sql:         { interval: 30, lastChecked: null, checking: false, row: 'health-check-sql',   detail: 'health-detail-sql',   latency: 'health-latency-sql',   checked: 'health-checked-sql',   next: 'health-next-sql',   endpoint: 'health-endpoint-sql',   location: 'health-location-sql' },
-    backend_api: { interval: 30, lastChecked: null, checking: false, row: 'health-check-api',   detail: 'health-detail-api',   latency: 'health-latency-api',   checked: 'health-checked-api',   next: 'health-next-api',   endpoint: 'health-endpoint-api',   location: 'health-location-api' },
-    entra_id:    { interval: 45, lastChecked: null, checking: false, row: 'health-check-entra', detail: 'health-detail-entra', latency: 'health-latency-entra', checked: 'health-checked-entra', next: 'health-next-entra', endpoint: 'health-endpoint-entra', location: 'health-location-entra' },
-    workiq:      { interval: 45, lastChecked: null, checking: false, row: 'health-check-workiq',detail: 'health-detail-workiq',latency: 'health-latency-workiq',checked: 'health-checked-workiq',next: 'health-next-workiq',endpoint: 'health-endpoint-workiq',location: 'health-location-workiq' },
+    sql:         { interval: 30, lastChecked: null, checking: false, row: 'health-check-sql',      detail: 'health-detail-sql',      latency: 'health-latency-sql',      checked: 'health-checked-sql',      next: 'health-next-sql',      endpoint: 'health-endpoint-sql',      location: 'health-location-sql' },
+    frontend:    { interval: 30, lastChecked: null, checking: false, row: 'health-check-frontend', detail: 'health-detail-frontend', latency: 'health-latency-frontend', checked: 'health-checked-frontend', next: 'health-next-frontend', endpoint: 'health-endpoint-frontend', location: 'health-location-frontend' },
+    backend_api: { interval: 30, lastChecked: null, checking: false, row: 'health-check-api',      detail: 'health-detail-api',      latency: 'health-latency-api',      checked: 'health-checked-api',      next: 'health-next-api',      endpoint: 'health-endpoint-api',      location: 'health-location-api' },
+    entra_id:    { interval: 45, lastChecked: null, checking: false, row: 'health-check-entra',    detail: 'health-detail-entra',    latency: 'health-latency-entra',    checked: 'health-checked-entra',    next: 'health-next-entra',    endpoint: 'health-endpoint-entra',    location: 'health-location-entra' },
+    workiq:      { interval: 45, lastChecked: null, checking: false, row: 'health-check-workiq',   detail: 'health-detail-workiq',   latency: 'health-latency-workiq',   checked: 'health-checked-workiq',   next: 'health-next-workiq',   endpoint: 'health-endpoint-workiq',   location: 'health-location-workiq' },
 };
 let _healthTimerInterval = null;
 
@@ -16836,13 +16838,14 @@ async function loadAgentActivity() {
 
         const stepCards = steps.map(step => {
             const stats = _aoStepStats(step, steps, jobs);
+            const stepAction = step.action || step.name;
             return `
                 <article class="ao-step-card">
                     <div class="ao-step-card-top">
                         <span class="ao-step-num">${step.step_order}</span>
                         <div>
                             <div class="ao-step-name">${escapeHtml(step.name)}</div>
-                            <div class="ao-step-action">${escapeHtml(_aoFormatStepAction(step.action))}</div>
+                            <div class="ao-step-action">${escapeHtml(_aoFormatStepAction(stepAction))}</div>
                         </div>
                     </div>
                     <p class="ao-step-desc">${escapeHtml(step.description || '')}</p>
@@ -16856,6 +16859,11 @@ async function loadAgentActivity() {
                         <span class="ao-step-metric">${stats.completed} completed</span>
                         <span class="ao-step-metric">on failure: ${escapeHtml(_aoFormatStepAction(step.on_failure || 'abort'))}</span>
                     </div>
+                    <div class="ao-step-invocations-toggle" onclick="toggleStepInvocations(this, '${escapeHtml(step.name)}')">
+                        <span class="ao-step-invocations-arrow">▶</span>
+                        <span class="ao-step-section-label">Recent invocations</span>
+                    </div>
+                    <div class="ao-step-invocations-panel hidden" data-step="${escapeHtml(step.name)}"></div>
                 </article>`;
         }).join('');
 
@@ -16973,6 +16981,127 @@ async function loadAgentActivity() {
                 <p style="font-size:0.7rem;color:var(--text-muted)">${escapeHtml(String(err))}</p>
             </div>`;
     }
+}
+
+// ── Step Invocation History ─────────────────────────────────
+
+const _aoStepInvocationsCache = {};
+
+async function toggleStepInvocations(toggleEl, stepName) {
+    const card = toggleEl.closest('.ao-step-card');
+    const panel = card.querySelector('.ao-step-invocations-panel');
+    const arrow = toggleEl.querySelector('.ao-step-invocations-arrow');
+    if (!panel) return;
+
+    const isOpen = !panel.classList.contains('hidden');
+    if (isOpen) {
+        panel.classList.add('hidden');
+        arrow.textContent = '▶';
+        return;
+    }
+
+    arrow.textContent = '▼';
+    panel.classList.remove('hidden');
+
+    // Load if not cached
+    if (!_aoStepInvocationsCache[stepName]) {
+        panel.innerHTML = '<div class="ao-invoc-loading">Loading invocations…</div>';
+        try {
+            const data = await _aoFetchJson(`/api/pipeline/step-invocations?step=${encodeURIComponent(stepName)}&limit=10`);
+            _aoStepInvocationsCache[stepName] = data.invocations || [];
+        } catch (err) {
+            panel.innerHTML = `<div class="ao-invoc-loading" style="color:var(--text-muted)">Failed to load: ${escapeHtml(String(err))}</div>`;
+            return;
+        }
+    }
+
+    const invocations = _aoStepInvocationsCache[stepName];
+    if (!invocations.length) {
+        panel.innerHTML = '<div class="ao-invoc-empty">No invocations recorded for this step yet.</div>';
+        return;
+    }
+
+    panel.innerHTML = `
+        <table class="ao-invoc-table">
+            <thead>
+                <tr>
+                    <th>Correlation ID</th>
+                    <th>Service</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Completed</th>
+                    <th>Run Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                ${invocations.map(inv => {
+                    const dur = inv.duration_secs != null ? `${Number(inv.duration_secs).toFixed(1)}s` : '—';
+                    const svcName = inv.service_name || inv.service_id || '—';
+                    const stepSt = inv.step_status || 'completed';
+                    const runSt = inv.run_status || 'unknown';
+                    const completedAt = inv.completed_at ? _timeAgo(inv.completed_at) : '—';
+                    const stepCls = stepSt === 'completed' ? 'ao-invoc-ok' : stepSt === 'failed' ? 'ao-invoc-fail' : 'ao-invoc-other';
+                    const runCls = runSt === 'succeeded' || runSt === 'completed' ? 'ao-invoc-ok'
+                                 : runSt === 'failed' ? 'ao-invoc-fail'
+                                 : runSt === 'running' ? 'ao-invoc-running'
+                                 : 'ao-invoc-other';
+                    const hasArtifacts = inv.artifacts && Object.keys(inv.artifacts).length > 0;
+                    return `
+                        <tr class="ao-invoc-row" data-run-id="${escapeHtml(inv.run_id)}">
+                            <td><span class="ao-invoc-corr-id" title="Correlation ID: ${escapeHtml(inv.run_id)}">${escapeHtml(inv.run_id)}</span></td>
+                            <td class="ao-invoc-svc">${escapeHtml(svcName)}</td>
+                            <td><span class="ao-invoc-badge ${stepCls}">${escapeHtml(stepSt)}</span></td>
+                            <td class="ao-invoc-dur">${escapeHtml(dur)}</td>
+                            <td class="ao-invoc-time">${escapeHtml(completedAt)}</td>
+                            <td><span class="ao-invoc-badge ${runCls}">${escapeHtml(runSt)}</span></td>
+                            <td>${hasArtifacts ? `<button class="ao-invoc-logs-btn" onclick="toggleInvocationLogs(this, '${escapeHtml(inv.run_id)}', '${escapeHtml(stepName)}')">Logs</button>` : ''}</td>
+                        </tr>
+                        <tr class="ao-invoc-logs-row hidden" id="ao-logs-${escapeHtml(inv.run_id)}-${escapeHtml(stepName)}">
+                            <td colspan="7"><div class="ao-invoc-logs-content"></div></td>
+                        </tr>`;
+                }).join('')}
+            </tbody>
+        </table>`;
+}
+
+function toggleInvocationLogs(btn, runId, stepName) {
+    const logsRow = document.getElementById(`ao-logs-${runId}-${stepName}`);
+    if (!logsRow) return;
+
+    const isOpen = !logsRow.classList.contains('hidden');
+    if (isOpen) {
+        logsRow.classList.add('hidden');
+        btn.textContent = 'Logs';
+        return;
+    }
+
+    logsRow.classList.remove('hidden');
+    btn.textContent = 'Hide';
+
+    const invocations = _aoStepInvocationsCache[stepName] || [];
+    const inv = invocations.find(i => i.run_id === runId);
+    const content = logsRow.querySelector('.ao-invoc-logs-content');
+    if (!content || !inv) return;
+
+    const parts = [];
+    parts.push(`<div class="ao-invoc-log-header">Pipeline Run: <span class="ao-invoc-corr-id">${escapeHtml(runId)}</span></div>`);
+
+    if (inv.service_id) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Service ID:</span> ${escapeHtml(inv.service_id)}</div>`);
+    if (inv.pipeline_type) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Pipeline:</span> ${escapeHtml(inv.pipeline_type)}</div>`);
+    if (inv.semver) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Version:</span> v${escapeHtml(inv.semver)}</div>`);
+    if (inv.heal_count) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Heals:</span> ${inv.heal_count}</div>`);
+    if (inv.run_started_at) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Run started:</span> ${escapeHtml(inv.run_started_at)}</div>`);
+    if (inv.run_completed_at) parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Run completed:</span> ${escapeHtml(inv.run_completed_at)}</div>`);
+    if (inv.error_detail) parts.push(`<div class="ao-invoc-log-line ao-invoc-log-error"><span class="ao-invoc-log-key">Error:</span> ${escapeHtml(inv.error_detail)}</div>`);
+
+    // Artifacts
+    if (inv.artifacts && Object.keys(inv.artifacts).length > 0) {
+        parts.push(`<div class="ao-invoc-log-line"><span class="ao-invoc-log-key">Artifacts:</span></div>`);
+        parts.push(`<pre class="ao-invoc-log-pre">${escapeHtml(JSON.stringify(inv.artifacts, null, 2))}</pre>`);
+    }
+
+    content.innerHTML = parts.join('');
 }
 
 /** Show the detail panel for a clicked agent card */
