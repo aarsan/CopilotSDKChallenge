@@ -3083,6 +3083,12 @@ function _renderPipelineRuns(runs, serviceId) {
 
         let cardHtml = _renderActivityCard(job);
 
+        // Add Stop button for running pipelines
+        if (r.status === 'running' && r.run_id) {
+            const stopBtn = `<button class="btn btn-xs btn-stop-pipeline" onclick="event.stopPropagation(); stopPipelineByRunId('${escapeHtml(r.run_id)}')" title="Stop this pipeline">⏹ Stop</button>`;
+            cardHtml = cardHtml.replace('<div class="activity-card-actions">', `<div class="activity-card-actions">${stopBtn} `);
+        }
+
         // Add Resume button for interrupted (resumable) runs
         if (r.status === 'interrupted' && r.last_completed_step != null) {
             const resumeBtn = `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); resumePipelineRun('${escapeHtml(r.run_id)}', '${escapeHtml(serviceId)}')" title="Resume from step ${r.last_completed_step + 2}">▶ Resume</button>`;
@@ -4686,6 +4692,32 @@ async function stopPipeline() {
     } catch (err) {
         showToast(`Stop error: ${err.message}`, 'error');
         if (btn) { btn.disabled = false; btn.textContent = '⏹ Stop'; }
+    }
+}
+
+/** Stop a pipeline by its run ID (used from observability cards) */
+async function stopPipelineByRunId(runId) {
+    if (!runId) { showToast('No run ID to stop', 'warning'); return; }
+    try {
+        const res = await fetch(`/api/pipelines/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            showToast(`Stop failed: ${err.detail || res.statusText}`, 'error');
+            return;
+        }
+        const data = await res.json();
+        if (data.status === 'already_finished') {
+            showToast(`Pipeline already finished (${data.pipeline_status})`, 'info');
+        } else {
+            showToast('Pipeline stop requested — finishing current step…', 'info');
+        }
+        // Refresh the runs list after a short delay
+        setTimeout(() => {
+            if (typeof loadTemplateValidationRuns === 'function') loadTemplateValidationRuns(true);
+            if (typeof loadRunsServiceOnboarding === 'function') loadRunsServiceOnboarding(true);
+        }, 3000);
+    } catch (err) {
+        showToast(`Stop error: ${err.message}`, 'error');
     }
 }
 
@@ -7061,7 +7093,8 @@ function _renderTemplatePipelineRuns(runs, templateId) {
         if (r.status === 'interrupted' && r.last_completed_step != null && r.run_id) {
             actionBtn = `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); resumeTemplatePipelineRun('${escapeHtml(r.run_id)}', '${escapeHtml(templateId)}')" title="Resume from step ${r.last_completed_step + 2}">▶ Resume</button>`;
         } else if (isRunning && liveTracker && liveTracker.running) {
-            actionBtn = `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); scrollToLiveProgress()" title="Watch this run in real time">👁 Watch Live</button>`;
+            actionBtn = `<button class="btn btn-xs btn-stop-pipeline" onclick="event.stopPropagation(); stopPipelineByRunId('${escapeHtml(r.run_id)}')" title="Stop this pipeline">⏹ Stop</button> ` +
+                `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); scrollToLiveProgress()" title="Watch this run in real time">👁 Watch Live</button>`;
         } else if (hasEvents) {
             actionBtn = `<button class="btn btn-xs btn-replay" onclick="event.stopPropagation(); expandPipelineRun(this, '${escapeHtml(templateId)}', ${idx})" title="View the deployment flowchart for this run">📊 View</button>`;
         }
@@ -16195,6 +16228,7 @@ function _renderTemplateValidationCard(run) {
 
     // Watch Live button for running runs
     if (run.status === 'running') {
+        actionHtml += `<button class="btn btn-xs btn-stop-pipeline" onclick="event.stopPropagation(); stopPipelineByRunId('${escapeHtml(run.run_id)}')" title="Stop this pipeline">⏹ Stop</button> `;
         actionHtml += `<button class="btn btn-xs btn-replay btn-live-pulse" onclick="event.stopPropagation(); watchLiveTemplatePipeline('${escapeHtml(tmplId)}')" title="Watch this pipeline in real time">👁 Watch Live</button> `;
     }
 
