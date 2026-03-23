@@ -5269,68 +5269,123 @@ async def seed_orchestration_processes() -> int:
             ],
         },
         # ─────────────────────────────────────────────────────
-        # 5. TEMPLATE VALIDATION
+        # 5. TEMPLATE VALIDATION (10-step pipeline)
         # ─────────────────────────────────────────────────────
         {
             "id": "template_validation",
             "name": "Template Validation",
             "description": (
-                "Full lifecycle validation of a template: structural tests, "
-                "ARM deploy, self-heal, and promotion."
+                "Full lifecycle validation of a template: recompose, "
+                "structural tests, ARM deploy with self-heal, infra testing, "
+                "and promotion. 10 named steps."
             ),
             "trigger_event": "validation_requested",
             "steps": [
                 {
                     "step_order": 1,
-                    "name": "Run structural tests",
+                    "name": "Initialize",
                     "description": (
-                        "Run the template test suite. All 7 test categories must pass."
+                        "Load template, conflict check, create pipeline run, "
+                        "configure model routing."
                     ),
-                    "action": "run_template_tests",
+                    "action": "initialize_template",
                     "on_success": "next",
-                    "on_failure": "heal_and_retry",
+                    "on_failure": "abort",
                 },
                 {
                     "step_order": 2,
-                    "name": "What-If analysis",
+                    "name": "Recompose / Verify",
                     "description": (
-                        "Run ARM What-If to preview changes without deploying. "
-                        "Shows what would be created, modified, or deleted."
+                        "Blueprint: recompose from pinned service versions. "
+                        "Standalone: verify template content is loaded."
                     ),
-                    "action": "what_if_analysis",
+                    "action": "recompose_template",
                     "on_success": "next",
-                    "on_failure": "heal_and_retry",
+                    "on_failure": "abort",
                 },
                 {
                     "step_order": 3,
-                    "name": "Deploy to temp RG",
+                    "name": "Structural Test",
                     "description": (
-                        "Actually deploy to a temporary resource group. "
-                        "Stream progress events with per-resource status. "
-                        "If failure: run self-heal loop (up to 5 attempts)."
+                        "Run the 7-category structural test suite: JSON, "
+                        "schema, parameters, resources, outputs, tags, naming."
                     ),
-                    "action": "deploy_to_temp_rg",
+                    "action": "structural_test",
                     "on_success": "next",
-                    "on_failure": "mark_failed",
-                    "config_json": '{"max_heal_attempts": 5, "cleanup": true}',
+                    "on_failure": "next",
                 },
                 {
                     "step_order": 4,
-                    "name": "Cleanup temp RG",
+                    "name": "Auto-Heal Structural",
                     "description": (
-                        "Delete the temporary resource group after validation. "
-                        "This is fire-and-forget — don't block on it."
+                        "Fix structural failures from step 3 using LLM "
+                        "(CODE_FIXING). Re-runs structural tests after fix."
                     ),
-                    "action": "cleanup_rg",
+                    "action": "auto_heal_structural",
                     "on_success": "next",
                     "on_failure": "next",
                 },
                 {
                     "step_order": 5,
-                    "name": "Promote template",
+                    "name": "Pre-Validate ARM",
                     "description": (
-                        "Set template status='validated', update active_version. "
-                        "Template is ready for publishing/approval."
+                        "Validate ARM references and expression syntax. "
+                        "Auto-fix missing variable/parameter references."
+                    ),
+                    "action": "pre_validate_arm",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 6,
+                    "name": "Check Availability",
+                    "description": (
+                        "Check Azure VM quota in target region. Switch to "
+                        "fallback region if capacity is exceeded."
+                    ),
+                    "action": "check_availability",
+                    "on_success": "next",
+                    "on_failure": "abort",
+                },
+                {
+                    "step_order": 7,
+                    "name": "ARM Deploy",
+                    "description": (
+                        "Deploy to a temporary resource group with self-healing "
+                        "loop (up to 5 attempts). Deep heal for blueprints."
+                    ),
+                    "action": "arm_deploy_template",
+                    "on_success": "next",
+                    "on_failure": "mark_failed",
+                    "config_json": '{"max_heal_attempts": 5}',
+                },
+                {
+                    "step_order": 8,
+                    "name": "Infra Testing",
+                    "description": (
+                        "Generate and run AI-powered infrastructure smoke "
+                        "tests against the deployed resources."
+                    ),
+                    "action": "infra_testing_template",
+                    "on_success": "next",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 9,
+                    "name": "Cleanup",
+                    "description": (
+                        "Delete the temporary validation resource group."
+                    ),
+                    "action": "cleanup_template",
+                    "on_success": "next",
+                    "on_failure": "next",
+                },
+                {
+                    "step_order": 10,
+                    "name": "Promote Template",
+                    "description": (
+                        "Save validated version, update template status to "
+                        "'validated', complete pipeline run."
                     ),
                     "action": "promote_template",
                     "on_success": "done",
