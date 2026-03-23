@@ -4524,13 +4524,15 @@ async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
 
 
 async def get_all_template_validation_runs(limit: int = 50) -> list[dict]:
-    """Get recent template validation pipeline runs across ALL templates, newest first."""
+    """Get recent template validation pipeline runs across ALL templates, newest first.
+
+    Identifies template runs by joining on catalog_templates (service_id = template id).
+    """
     backend = await get_backend()
     rows = await backend.execute(
         f"SELECT TOP {int(limit)} pr.*, ct.name AS template_name "
         "FROM pipeline_runs pr "
-        "LEFT JOIN catalog_templates ct ON pr.service_id = ct.id "
-        "WHERE pr.pipeline_type = 'template_validation' "
+        "INNER JOIN catalog_templates ct ON pr.service_id = ct.id "
         "ORDER BY pr.started_at DESC",
         (),
     )
