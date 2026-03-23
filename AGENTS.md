@@ -244,10 +244,10 @@ These are persistent preferences for how the agent should behave in this workspa
   ```
   fix: distinguish governance approval from onboarding in service detail
 
-  Services that are catalog-approved but haven't been onboarded were
-  showing a green "Approved" badge alongside the "Onboard" button.
-  Added a new display status (approved_not_onboarded) with a blue badge
-  and explicit messaging that the service needs ARM template generation.
+  Services that had not completed AI generation and deployment validation
+  were showing the same "Approved" badge as fully onboarded services.
+  Split the UI state so only deployment-validated services render as
+  approved and incomplete onboarding remains explicit.
   ```
 - **Never commit secrets, logs, or build artifacts.** Respect `.gitignore`.
 - **Check `git status` before ending a session.** All work must be committed.

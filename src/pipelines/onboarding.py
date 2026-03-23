@@ -8,7 +8,7 @@ service onboarding flow:
   2. check_dependency_gates  — validate required deps are fully onboarded
   3. analyze_standards       — fetch org standards
   4. plan_architecture       — LLM planning call
-  5. generate_arm            — ARM template generation (skeleton or LLM)
+    5. generate_arm            — ARM template generation via LLM
   6. generate_policy         — Azure Policy generation
   7. governance_review       — CISO + CTO structured review gate
   8. validate_arm_deploy     — HealingLoop with all checks
@@ -848,7 +848,7 @@ async def step_plan_architecture(ctx: PipelineContext, step: StepDef):
 
 @runner.step("generate_arm")
 async def step_generate_arm(ctx: PipelineContext, step: StepDef):
-    """Phase 3: ARM template generation (skeleton or LLM)."""
+    """Phase 3: ARM template generation via LLM."""
     if ctx.extra.get("skip_generation"):
         # Init event for existing version
         tmpl_meta = extract_meta(ctx.template)
@@ -866,7 +866,7 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
         return
 
     from src.database import create_service_version, get_backend
-    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton, generate_arm_template_with_copilot
+    from src.tools.arm_generator import generate_arm_template_with_copilot
     from src.web import ensure_copilot_client
 
     svc = ctx.extra["svc"]
@@ -884,43 +884,36 @@ async def step_generate_arm(ctx: PipelineContext, step: StepDef):
         ctx.progress(0.1),
     )
 
-    if has_builtin_skeleton(ctx.service_id):
-        template_dict = generate_arm_template(ctx.service_id)
-        ctx.template = json.dumps(template_dict, indent=2)
-        ctx.gen_source = "built-in skeleton"
-        yield emit("llm_reasoning", "generating",
-                    f"📦 Using built-in ARM skeleton for {ctx.service_id}", ctx.progress(0.3))
-    else:
-        yield emit("llm_reasoning", "generating",
-                    f"No built-in skeleton — {_gen_model} generating ARM template…", ctx.progress(0.2))
-        try:
-            _gen_client = await ensure_copilot_client()
-            if _gen_client is None:
-                raise RuntimeError("Copilot SDK not available for ARM generation")
-            ctx.template = await generate_arm_template_with_copilot(
-                ctx.service_id, svc["name"], _gen_client, _gen_model_id,
-                standards_context=standards_ctx,
-                planning_context=planning_response,
-                region=ctx.region,
-                governance_context=governance_ctx,
-            )
-        except Exception as gen_err:
-            from src.database import fail_service_validation
-            logger.error(f"ARM generation failed for {ctx.service_id}: {gen_err}", exc_info=True)
-            await fail_service_validation(ctx.service_id, f"ARM generation failed: {gen_err}")
-            raise StepFailure(
-                f"ARM template generation failed: {str(gen_err)[:300]}",
-                healable=False, phase="generate_arm",
-                actions=[
-                    {"id": "retry", "label": "Retry Generation",
-                     "description": "Try generating the ARM template again",
-                     "style": "primary"},
-                    {"id": "end_pipeline", "label": "End Pipeline",
-                     "description": "Stop and investigate the error",
-                     "style": "danger"},
-                ],
-            )
-        ctx.gen_source = f"Copilot SDK ({_gen_model})"
+    yield emit("llm_reasoning", "generating",
+                f"{_gen_model} generating ARM template…", ctx.progress(0.2))
+    try:
+        _gen_client = await ensure_copilot_client()
+        if _gen_client is None:
+            raise RuntimeError("Copilot SDK not available for ARM generation")
+        ctx.template = await generate_arm_template_with_copilot(
+            ctx.service_id, svc["name"], _gen_client, _gen_model_id,
+            standards_context=standards_ctx,
+            planning_context=planning_response,
+            region=ctx.region,
+            governance_context=governance_ctx,
+        )
+    except Exception as gen_err:
+        from src.database import fail_service_validation
+        logger.error(f"ARM generation failed for {ctx.service_id}: {gen_err}", exc_info=True)
+        await fail_service_validation(ctx.service_id, f"ARM generation failed: {gen_err}")
+        raise StepFailure(
+            f"ARM template generation failed: {str(gen_err)[:300]}",
+            healable=False, phase="generate_arm",
+            actions=[
+                {"id": "retry", "label": "Retry Generation",
+                 "description": "Try generating the ARM template again",
+                 "style": "primary"},
+                {"id": "end_pipeline", "label": "End Pipeline",
+                 "description": "Stop and investigate the error",
+                 "style": "danger"},
+            ],
+        )
+    ctx.gen_source = f"Copilot SDK ({_gen_model})"
 
     # Validate we have JSON
     if not ctx.template or not ctx.template.strip():
@@ -1382,7 +1375,7 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
     # Catch missing variable/parameter references before starting the
     # expensive deploy loop.  This is especially important for templates
     # that were LLM-generated and may have stale references.
-    from src.pipeline_helpers import validate_arm_references
+    from src.pipeline_helpers import validate_arm_references, validate_arm_expression_syntax
     try:
         _pre_tmpl = json.loads(ctx.template) if isinstance(ctx.template, str) else ctx.template
         ref_errors = validate_arm_references(_pre_tmpl)
@@ -1670,6 +1663,50 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
                     f"✓ Static policy check passed — {report.passed_checks}/{report.total_checks} checks",
                     ctx.progress(att_base + 0.08), step=attempt)
         await update_service_version_status(ctx.service_id, ctx.version_num, "validating", policy_check=report.to_dict())
+
+        syntax_errors = validate_arm_expression_syntax(template_json)
+        if syntax_errors:
+            error_msg = "; ".join(syntax_errors)
+            if is_last:
+                if _regen_count < MAX_REGEN - 1:
+                    _regen_count += 1
+                    async for line in _regenerate_template(ctx, _regen_count, standards_ctx, error_msg, "local_expression_validation"):
+                        yield line
+                    tmpl_meta = extract_meta(ctx.template)
+                    attempt = 0
+                    continue
+                await update_service_version_status(ctx.service_id, ctx.version_num, "failed", validation_result={"error": error_msg, "phase": "local_expression_validation"})
+                await fail_service_validation(ctx.service_id, f"Local ARM expression validation failed: {error_msg}")
+                raise StepFailure(
+                    "Local ARM expression validation failed before Azure What-If",
+                    healable=False,
+                    phase="local_expression_validation",
+                    actions=[
+                        {"id": "retry", "label": "Retry Pipeline",
+                         "description": "Re-run with a fresh generation attempt",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    failure_context={"errors": syntax_errors[:10]},
+                )
+
+            yield emit(
+                "healing", "fixing_template",
+                "Local ARM expression validation found a syntax issue before Azure What-If — auto-healing template…",
+                ctx.progress(att_base + 0.09),
+                step=attempt,
+                error_summary=error_msg[:500],
+            )
+            _pre_fix = ctx.template
+            ctx.template, _strategy = await copilot_fix_two_phase(ctx.template, error_msg, standards_ctx, planning_response, ctx.heal_history)
+            yield emit("llm_reasoning", "strategy", f"Strategy: {_strategy[:500]}", step=attempt)
+            ctx.heal_history.append({"step": len(ctx.heal_history) + 1, "phase": "local_expression_validation", "error": error_msg[:500], "fix_summary": summarize_fix(_pre_fix, ctx.template), "strategy": _strategy})
+            tmpl_meta = extract_meta(ctx.template)
+            await update_service_version_template(ctx.service_id, ctx.version_num, ctx.template, "copilot-healed")
+            yield emit("healing_done", "template_fixed", f"Fix applied: {_strategy[:200]} — revalidating before Azure What-If…", ctx.progress(att_base + 0.095), step=attempt)
+            continue
 
         # ── What-If ──
         res_types_str = ", ".join(tmpl_meta["resource_types"][:5]) or "unknown"

@@ -12,7 +12,7 @@ infrastructure required to run InfraForge. It performs 9 steps:
 | Step | Action | Creates / Configures |
 |------|--------|----------------------|
 | 1 | Resource Group | Azure Resource Group in the target region |
-| 2 | Azure SQL | SQL Server (Azure AD-only auth) + Database (Basic tier, ~$5/mo) + firewall rules |
+| 2 | Azure SQL | SQL Server (Azure AD-only auth) + Database (Basic tier, ~$5/mo) + managed firewall rule |
 | 3 | Entra ID | App Registration with client secret, redirect URI, optional claims, group claims |
 | 4 | RBAC & Providers | Contributor role assignment + 12 resource provider registrations |
 | 5 | GitHub | Token + organization detection via `gh` CLI |
@@ -251,6 +251,13 @@ DNS propagation delay, firewall rules not yet active, or Azure AD token issue.
 - Wait 2-3 minutes and try `python web_start.py` - the app retries on startup
 - Verify your IP is listed in the SQL Server firewall rules (Azure Portal > SQL Server > Networking)
 - Re-authenticate: `az login --tenant <tenant-id>`
+
+InfraForge setup and runtime startup now use the same managed SQL firewall rule.
+
+Additional checks:
+- Confirm the Azure CLI identity can update SQL server firewall rules.
+- Confirm the rule name matches `INFRAFORGE_SQL_FIREWALL_RULE_NAME` if you override it.
+- Expect a short propagation delay after the rule update; startup retries the SQL connection with bounded backoff.
 
 ### "ODBC Driver 18 not detected"
 

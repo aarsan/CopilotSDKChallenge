@@ -170,6 +170,52 @@ async def _require_service(service_id: str) -> dict:
     return svc
 
 
+async def _load_service_template_dict(
+    service_id: str,
+    *,
+    chosen_version: int | None = None,
+    allow_draft: bool = True,
+) -> tuple[dict | None, dict | None]:
+    """Load a service ARM template from stored versions only."""
+    if chosen_version is not None:
+        ver = await get_service_version(service_id, int(chosen_version))
+        if ver and ver.get("arm_template"):
+            try:
+                return json.loads(ver["arm_template"]), {
+                    "source": "catalog",
+                    "version": ver.get("version"),
+                    "semver": ver.get("semver"),
+                }
+            except Exception:
+                return None, None
+        return None, None
+
+    active = await get_active_service_version(service_id)
+    if active and active.get("arm_template"):
+        try:
+            return json.loads(active["arm_template"]), {
+                "source": "catalog",
+                "version": active.get("version"),
+                "semver": active.get("semver"),
+            }
+        except Exception:
+            pass
+
+    if allow_draft:
+        draft = await get_latest_service_version(service_id)
+        if draft and draft.get("arm_template"):
+            try:
+                return json.loads(draft["arm_template"]), {
+                    "source": "draft",
+                    "version": draft.get("version"),
+                    "semver": draft.get("semver", "0.0.0-draft"),
+                }
+            except Exception:
+                pass
+
+    return None, None
+
+
 async def _reject_if_pipeline_running(template_id: str) -> None:
     """Raise 409 Conflict if a pipeline is already running for this template.
 
@@ -311,10 +357,7 @@ async def _deep_heal_composed_template(
     ``on_event`` is an async callable for streaming progress events.
     """
     import uuid as _dh_uuid
-    from src.tools.arm_generator import (
-        generate_arm_template, has_builtin_skeleton,
-        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER,
-    )
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
     from src.tools.deploy_engine import execute_deployment
 
     async def _emit(evt: dict):
@@ -330,15 +373,7 @@ async def _deep_heal_composed_template(
         svc = await get_service(sid)
         if not svc:
             continue
-        ver = await get_active_service_version(sid)
-        arm = None
-        if ver and ver.get("arm_template"):
-            try:
-                arm = json.loads(ver["arm_template"])
-            except Exception:
-                pass
-        if not arm and has_builtin_skeleton(sid):
-            arm = generate_arm_template(sid)
+        arm, _version_info = await _load_service_template_dict(sid)
         if arm:
             resource_type_map[sid] = arm
 
@@ -551,7 +586,7 @@ async def _deep_heal_composed_template(
                 all_arms[sid] = arm
 
     # Recompose using the shared composition helper
-    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references, validate_arm_expression_syntax
 
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources = []
@@ -607,6 +642,16 @@ async def _deep_heal_composed_template(
     composed_json = _sanitize_dns_zone_names(composed_json)
     composed = json.loads(composed_json)
 
+    syntax_errors = validate_arm_expression_syntax(composed)
+    if syntax_errors:
+        message = "; ".join(syntax_errors[:5])
+        await _emit({
+            "phase": "deep_heal_failed",
+            "detail": f"Recomposed template failed local ARM syntax validation: {message}",
+            "errors": syntax_errors[:10],
+        })
+        raise ValueError(f"Recomposed template failed local ARM syntax validation: {message}")
+
     # ── Step 6: Save new template version ────────────────────
     try:
         new_tmpl_ver = await create_template_version(
@@ -658,9 +703,27 @@ import src.web_shared as _ws
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start/stop the Copilot SDK client with the server lifecycle."""
-    # Auto-fix SQL firewall before DB init (best-effort, won't block if it fails)
+    # Auto-fix SQL firewall before DB init (best-effort unless strict startup is enabled)
     from src.sql_firewall import ensure_sql_firewall
-    await ensure_sql_firewall()
+    from src.config import SQL_FIREWALL_STRICT_STARTUP
+
+    firewall_result = await ensure_sql_firewall()
+    if firewall_result.success:
+        logger.info(
+            "Startup SQL firewall preflight succeeded for %s on server '%s'",
+            firewall_result.ip,
+            firewall_result.server,
+        )
+    else:
+        logger.warning(
+            "Startup SQL firewall preflight did not complete: %s (%s)",
+            firewall_result.reason,
+            firewall_result.message or "no details",
+        )
+        if SQL_FIREWALL_STRICT_STARTUP and firewall_result.attempted:
+            raise RuntimeError(
+                f"Startup SQL firewall preflight failed: {firewall_result.reason}. {firewall_result.message}".strip()
+            )
 
     logger.info("Initializing database...")
     await init_db()
@@ -1003,12 +1066,11 @@ async def get_approved_services_for_templates():
 
     Only services with status='approved' and an active version (with an ARM
     template) are returned.  Each service includes the list of *extra*
-    parameters the skeleton exposes beyond the standard set (resourceName,
+    parameters the template exposes beyond the standard set (resourceName,
     location, environment, projectName, ownerEmail, costCenter) so the
     template-builder UI can show parameter checkboxes.
     """
     try:
-        from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
         import json as _json
 
         STANDARD_PARAMS = {
@@ -1077,22 +1139,9 @@ async def get_approved_services_for_templates():
                 if ver_num == active_ver:
                     active_params = ver_params
 
-            # Fallback: if no versions found, try built-in skeleton
-            if not versions_list and has_builtin_skeleton(service_id):
-                tpl = generate_arm_template(service_id)
-                if tpl:
-                    active_params = _extract_params(tpl.get("parameters", {}))
-                    versions_list = [{
-                        "version": 0,
-                        "status": "builtin",
-                        "semver": "",
-                        "is_active": True,
-                        "parameters": active_params,
-                        "changelog": "Built-in skeleton",
-                        "created_at": "",
-                    }]
+            if not versions_list:
+                continue
 
-            # Use active version params as the top-level default
             if not active_params and versions_list:
                 active_params = versions_list[0]["parameters"]
 
@@ -1144,7 +1193,6 @@ async def compose_template_from_services(request: Request):
     deduplicating shared standard parameters and prefixing resource-specific
     names with an index when quantity > 1.
     """
-    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton
     import json as _json
 
     body = await _parse_body_required(request)
@@ -1183,54 +1231,25 @@ async def compose_template_from_services(request: Request):
 
         # Get the ARM template — use specific version if requested
         tpl_dict = None
+        version_info = None
         if chosen_version is not None:
-            ver = await get_service_version(sid, int(chosen_version))
-            if ver and ver.get("arm_template"):
-                try:
-                    tpl_dict = _json.loads(ver["arm_template"])
-                    pinned_versions[sid] = {
-                        "version": int(chosen_version),
-                        "semver": ver.get("semver"),
-                    }
-                except Exception:
-                    pass
+            tpl_dict, version_info = await _load_service_template_dict(sid, chosen_version=int(chosen_version), allow_draft=False)
             if not tpl_dict:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Version {chosen_version} of '{sid}' has no ARM template",
                 )
         else:
-            active = await get_active_service_version(sid)
-            if active and active.get("arm_template"):
-                try:
-                    tpl_dict = _json.loads(active["arm_template"])
-                    pinned_versions[sid] = {
-                        "version": active.get("version"),
-                        "semver": active.get("semver"),
-                    }
-                except Exception:
-                    pass
-            # Fallback: draft version from auto-prep (not yet pipeline-validated)
-            if not tpl_dict:
-                draft = await get_latest_service_version(sid)
-                if draft and draft.get("arm_template"):
-                    try:
-                        tpl_dict = _json.loads(draft["arm_template"])
-                        pinned_versions[sid] = {
-                            "version": draft.get("version"),
-                            "semver": draft.get("semver", "0.0.0-draft"),
-                        }
-                    except Exception:
-                        pass
-        if not tpl_dict and has_builtin_skeleton(sid):
-            tpl_dict = generate_arm_template(sid)
-            if sid not in pinned_versions:
-                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
+            tpl_dict, version_info = await _load_service_template_dict(sid)
         if not tpl_dict:
             raise HTTPException(
                 status_code=400,
                 detail=f"No ARM template available for '{sid}'",
             )
+        pinned_versions[sid] = {
+            "version": version_info.get("version"),
+            "semver": version_info.get("semver"),
+        }
 
         service_templates.append({
             "svc": svc,
@@ -1262,34 +1281,12 @@ async def compose_template_from_services(request: Request):
         dep_svc = await get_service(dep_sid)
         if not dep_svc:
             continue
-        dep_tpl = None
-        dep_active = await get_active_service_version(dep_sid)
-        if dep_active and dep_active.get("arm_template"):
-            try:
-                dep_tpl = _json.loads(dep_active["arm_template"])
-                pinned_versions[dep_sid] = {
-                    "version": dep_active.get("version"),
-                    "semver": dep_active.get("semver"),
-                }
-            except Exception:
-                pass
-        # Fallback: draft version from auto-prep
-        if not dep_tpl:
-            dep_draft = await get_latest_service_version(dep_sid)
-            if dep_draft and dep_draft.get("arm_template"):
-                try:
-                    dep_tpl = _json.loads(dep_draft["arm_template"])
-                    pinned_versions[dep_sid] = {
-                        "version": dep_draft.get("version"),
-                        "semver": dep_draft.get("semver", "0.0.0-draft"),
-                    }
-                except Exception:
-                    pass
-        if not dep_tpl and has_builtin_skeleton(dep_sid):
-            dep_tpl = generate_arm_template(dep_sid)
-            if dep_sid not in pinned_versions:
-                pinned_versions[dep_sid] = {"version": 0, "semver": "0.0.0-builtin"}
+        dep_tpl, dep_version_info = await _load_service_template_dict(dep_sid)
         if dep_tpl:
+            pinned_versions[dep_sid] = {
+                "version": dep_version_info.get("version"),
+                "semver": dep_version_info.get("semver"),
+            }
             service_templates.append({
                 "svc": dep_svc,
                 "template": dep_tpl,
@@ -1299,8 +1296,8 @@ async def compose_template_from_services(request: Request):
             logger.info(f"Auto-added dependency: {dep_sid} ({item['action']})")
 
     # ── Compose the combined ARM template ─────────────────────
-    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, _STANDARD_TAGS
-    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references, validate_arm_expression_syntax
 
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources = []
@@ -1370,6 +1367,16 @@ async def compose_template_from_services(request: Request):
                 }
 
     content_str = _json.dumps(composed, indent=2)
+
+    syntax_errors = validate_arm_expression_syntax(composed)
+    if syntax_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Composed template failed local ARM expression validation",
+                "errors": syntax_errors[:10],
+            },
+        )
 
     # Build a template ID from the name
     template_id = "composed-" + name.lower().replace(" ", "-")[:50]
@@ -2163,7 +2170,7 @@ async def compliance_remediate_plan(template_id: str, request: Request):
 
     # ── Check for newer compliant service versions (upgrade check) ──
     # For each service dependency with violations, check if a newer version
-    # of that service's ARM skeleton exists and is already compliant.
+    # of that service's ARM template exists and is already compliant.
     # If yes → recommend upgrade instead of AI fix.
     # If no  → still pull the latest version's ARM for the AI to fix.
     for sid in dep_service_ids:
@@ -4113,10 +4120,7 @@ async def _recompose_with_pinned(
 
     Returns a dict with recompose results including the new version.
     """
-    from src.tools.arm_generator import (
-        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
-        has_builtin_skeleton,
-    )
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
     from src.template_engine import analyze_dependencies
     import json as _json
 
@@ -4291,7 +4295,7 @@ async def _recompose_with_pinned(
         svc = await _require_service(sid)
 
         tpl_dict = None
-        version_info = {"service_id": sid, "name": svc.get("name", sid), "source": "builtin"}
+        version_info = {"service_id": sid, "name": svc.get("name", sid), "source": "unresolved"}
 
         # Check if there's a pinned version to use
         pin = existing_pinned.get(sid)
@@ -4340,11 +4344,6 @@ async def _recompose_with_pinned(
                     }
                 except Exception:
                     pass
-        if not tpl_dict and has_builtin_skeleton(sid):
-            tpl_dict = generate_arm_template(sid)
-            version_info["source"] = "builtin"
-            if sid not in pinned_versions:
-                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
         if not tpl_dict:
             raise HTTPException(
                 status_code=400, detail=f"No ARM template available for '{sid}'",
@@ -4369,34 +4368,12 @@ async def _recompose_with_pinned(
         dep_svc = await get_service(dep_sid)
         if not dep_svc:
             continue
-        dep_tpl = None
-        dep_active = await get_active_service_version(dep_sid)
-        if dep_active and dep_active.get("arm_template"):
-            try:
-                dep_tpl = _json.loads(dep_active["arm_template"])
-                pinned_versions[dep_sid] = {
-                    "version": dep_active.get("version"),
-                    "semver": dep_active.get("semver"),
-                }
-            except Exception:
-                pass
-        # Fallback: draft version from auto-prep
-        if not dep_tpl:
-            dep_draft = await get_latest_service_version(dep_sid)
-            if dep_draft and dep_draft.get("arm_template"):
-                try:
-                    dep_tpl = _json.loads(dep_draft["arm_template"])
-                    pinned_versions[dep_sid] = {
-                        "version": dep_draft.get("version"),
-                        "semver": dep_draft.get("semver", "0.0.0-draft"),
-                    }
-                except Exception:
-                    pass
-        if not dep_tpl and has_builtin_skeleton(dep_sid):
-            dep_tpl = generate_arm_template(dep_sid)
-            if dep_sid not in pinned_versions:
-                pinned_versions[dep_sid] = {"version": 0, "semver": "0.0.0-builtin"}
+        dep_tpl, dep_version_info = await _load_service_template_dict(dep_sid)
         if dep_tpl:
+            pinned_versions[dep_sid] = {
+                "version": dep_version_info.get("version"),
+                "semver": dep_version_info.get("semver"),
+            }
             service_templates.append({
                 "svc": dep_svc,
                 "template": dep_tpl,
@@ -4406,7 +4383,7 @@ async def _recompose_with_pinned(
             logger.info(f"Recompose auto-added dependency: {dep_sid}")
 
     # ── Compose ───────────────────────────────────────────────
-    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references
+    from src.pipeline_helpers import resolve_variables_for_composition, build_composed_variables, validate_arm_references, validate_arm_expression_syntax
 
     combined_params = dict(_STANDARD_PARAMETERS)
     combined_resources: list[dict] = []
@@ -4470,6 +4447,16 @@ async def _recompose_with_pinned(
     content_str = _sanitize_dns_zone_names(content_str)
 
     composed = _json.loads(content_str)
+    syntax_errors = validate_arm_expression_syntax(composed)
+    if syntax_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Recomposed template failed local ARM expression validation",
+                "errors": syntax_errors[:10],
+            },
+        )
+
     combined_params = composed.get("parameters", {})
     param_list = [
         {"name": k, "type": v.get("type", "string"), "required": "defaultValue" not in v}
@@ -4950,12 +4937,9 @@ async def get_template_composition(template_id: str):
         latest_int = ver_info.get("latest_version") or active_int
         latest_semver = ver_info.get("latest_semver") or active_semver
 
-        # Check if the pinned version still exists in service_versions
-        # Version 0 with "builtin" semver is an in-memory sentinel, not a real
-        # DB row — it should never be flagged as "removed".
+        # Check if the pinned version still exists in service_versions.
         pinned_missing = False
-        is_builtin_pin = pinned_int == 0 and pinned_semver and "builtin" in pinned_semver
-        if pinned_int is not None and not is_builtin_pin:
+        if pinned_int is not None:
             pinned_missing = not pinned_exists_map.get((sid, pinned_int), False)
 
         # If no pinned version recorded, we DON'T know what version is
@@ -7082,7 +7066,7 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                 }) + "\n"
 
                 try:
-                    from src.tools.arm_generator import generate_arm_template, has_builtin_skeleton, generate_arm_template_with_copilot
+                    from src.tools.arm_generator import generate_arm_template_with_copilot
                     from src.pipeline_helpers import sanitize_template, inject_standard_tags
 
                     # Clean up only draft/failed versions — approved versions
@@ -7108,18 +7092,14 @@ async def update_api_version_pipeline(service_id: str, request: Request):
                         "progress": 0.06,
                     }) + "\n"
 
-                    if has_builtin_skeleton(service_id):
-                        _regen_tpl = json.dumps(generate_arm_template(service_id), indent=2)
-                        _regen_source = "built-in skeleton (auto-recovery)"
-                    else:
-                        _copilot = await ensure_copilot_client()
-                        if _copilot is None:
-                            raise RuntimeError("Copilot SDK not available")
-                        _regen_tpl = await generate_arm_template_with_copilot(
-                            service_id, svc.get("name", service_id),
-                            _copilot, _gen_model_id, region=region,
-                        )
-                        _regen_source = f"Copilot SDK auto-recovery ({_gen_model})"
+                    _copilot = await ensure_copilot_client()
+                    if _copilot is None:
+                        raise RuntimeError("Copilot SDK not available")
+                    _regen_tpl = await generate_arm_template_with_copilot(
+                        service_id, svc.get("name", service_id),
+                        _copilot, _gen_model_id, region=region,
+                    )
+                    _regen_source = f"Copilot SDK auto-recovery ({_gen_model})"
 
                     # Validate the regenerated template
                     _regen_parsed = json.loads(_regen_tpl)
@@ -8800,10 +8780,7 @@ async def template_feedback(template_id: str, request: Request):
     This is the human-in-the-loop channel for the autonomous orchestrator.
     """
     from src.orchestrator import analyze_template_feedback
-    from src.tools.arm_generator import (
-        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
-        has_builtin_skeleton,
-    )
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
     from src.template_engine import analyze_dependencies
     import json as _json
 
@@ -8850,35 +8827,13 @@ async def template_feedback(template_id: str, request: Request):
         svc = await get_service(sid)
         if not svc:
             continue
-        tpl_dict = None
-        active = await get_active_service_version(sid)
-        if active and active.get("arm_template"):
-            try:
-                tpl_dict = _json.loads(active["arm_template"])
-                pinned_versions[sid] = {
-                    "version": active.get("version"),
-                    "semver": active.get("semver"),
-                }
-            except Exception:
-                pass
-        # Fallback: draft version from auto-prep
-        if not tpl_dict:
-            draft = await get_latest_service_version(sid)
-            if draft and draft.get("arm_template"):
-                try:
-                    tpl_dict = _json.loads(draft["arm_template"])
-                    pinned_versions[sid] = {
-                        "version": draft.get("version"),
-                        "semver": draft.get("semver", "0.0.0-draft"),
-                    }
-                except Exception:
-                    pass
-        if not tpl_dict and has_builtin_skeleton(sid):
-            tpl_dict = generate_arm_template(sid)
-            if sid not in pinned_versions:
-                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
+        tpl_dict, version_info = await _load_service_template_dict(sid)
         if not tpl_dict:
             continue
+        pinned_versions[sid] = {
+            "version": version_info.get("version"),
+            "semver": version_info.get("semver"),
+        }
         service_templates.append({
             "svc": svc,
             "template": tpl_dict,
@@ -9113,10 +9068,7 @@ async def revise_template(template_id: str, request: Request):
     from src.orchestrator import (
         check_revision_policy, analyze_template_feedback,
     )
-    from src.tools.arm_generator import (
-        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
-        has_builtin_skeleton,
-    )
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
     from src.template_engine import analyze_dependencies
     import json as _json
 
@@ -9323,39 +9275,15 @@ async def revise_template(template_id: str, request: Request):
                     yield emit("log", "onboard", "warning", f"Service {sid} not found — skipping")
                     continue
 
-                tpl_dict = None
-                active = await get_active_service_version(sid)
-                if active and active.get("arm_template"):
-                    try:
-                        tpl_dict = _json.loads(active["arm_template"])
-                        pinned_versions[sid] = {
-                            "version": active.get("version"),
-                            "semver": active.get("semver"),
-                        }
-                        yield emit("log", "onboard", "running",
-                                   f"● {svc.get('name', sid)} — loaded from catalog")
-                    except Exception:
-                        pass
-                # Fallback: draft version from auto-prep
-                if not tpl_dict:
-                    draft = await get_latest_service_version(sid)
-                    if draft and draft.get("arm_template"):
-                        try:
-                            tpl_dict = _json.loads(draft["arm_template"])
-                            pinned_versions[sid] = {
-                                "version": draft.get("version"),
-                                "semver": draft.get("semver", "0.0.0-draft"),
-                            }
-                            yield emit("log", "onboard", "running",
-                                       f"● {svc.get('name', sid)} — loaded draft from auto-prep")
-                        except Exception:
-                            pass
-                if not tpl_dict and has_builtin_skeleton(sid):
-                    tpl_dict = generate_arm_template(sid)
-                    if sid not in pinned_versions:
-                        pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
+                tpl_dict, version_info = await _load_service_template_dict(sid)
+                if tpl_dict:
+                    pinned_versions[sid] = {
+                        "version": version_info.get("version"),
+                        "semver": version_info.get("semver"),
+                    }
+                    source_label = "loaded from catalog" if version_info.get("source") == "catalog" else "loaded draft from AI preparation"
                     yield emit("log", "onboard", "running",
-                               f"● {svc.get('name', sid)} — generated ARM skeleton")
+                               f"● {svc.get('name', sid)} — {source_label}")
                 if not tpl_dict:
                     yield emit("log", "onboard", "warning",
                                f"○ {svc.get('name', sid)} — no template available")
@@ -9561,10 +9489,7 @@ async def compose_template_from_prompt(request: Request):
         check_revision_policy, determine_services_from_prompt,
         resolve_composition_dependencies,
     )
-    from src.tools.arm_generator import (
-        _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER, generate_arm_template,
-        has_builtin_skeleton,
-    )
+    from src.tools.arm_generator import _STANDARD_PARAMETERS, _TEMPLATE_WRAPPER
     from src.template_engine import analyze_dependencies
     import json as _json
 
@@ -9630,35 +9555,13 @@ async def compose_template_from_prompt(request: Request):
         svc = await get_service(sid)
         if not svc:
             continue
-        tpl_dict = None
-        active = await get_active_service_version(sid)
-        if active and active.get("arm_template"):
-            try:
-                tpl_dict = _json.loads(active["arm_template"])
-                pinned_versions[sid] = {
-                    "version": active.get("version"),
-                    "semver": active.get("semver"),
-                }
-            except Exception:
-                pass
-        # Fallback: draft version from auto-prep
-        if not tpl_dict:
-            draft = await get_latest_service_version(sid)
-            if draft and draft.get("arm_template"):
-                try:
-                    tpl_dict = _json.loads(draft["arm_template"])
-                    pinned_versions[sid] = {
-                        "version": draft.get("version"),
-                        "semver": draft.get("semver", "0.0.0-draft"),
-                    }
-                except Exception:
-                    pass
-        if not tpl_dict and has_builtin_skeleton(sid):
-            tpl_dict = generate_arm_template(sid)
-            if sid not in pinned_versions:
-                pinned_versions[sid] = {"version": 0, "semver": "0.0.0-builtin"}
+        tpl_dict, version_info = await _load_service_template_dict(sid)
         if not tpl_dict:
             continue
+        pinned_versions[sid] = {
+            "version": version_info.get("version"),
+            "semver": version_info.get("semver"),
+        }
 
         # Find quantity for this service
         qty = 1
@@ -11729,7 +11632,7 @@ async def onboard_service_endpoint(service_id: str, request: Request):
     """One-click service onboarding: auto-generate ARM template and run full validation.
 
     New pipeline:
-    1. Auto-generate ARM template from resource type (built-in skeleton or Copilot)
+    1. Auto-generate ARM template from resource type via Copilot SDK
     2. Static policy check against org-wide governance policies + security standards
     3. ARM What-If deployment preview
     4. ARM deployment to validation resource group

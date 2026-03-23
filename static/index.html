@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=271">
+    <link rel="stylesheet" href="/static/styles.css?v=272">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -672,40 +672,40 @@
 
                     <!-- Tabs -->
                     <div class="obs-tabs">
-                        <button class="obs-tab active" id="obs-tab-agents" onclick="switchObsTab('agents')">🤖 Agent Activity <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
+                        <button class="obs-tab active" id="obs-tab-agents" onclick="switchObsTab('agents')">🧭 Onboarding Pipeline <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span></button>
                         <button class="obs-tab" id="obs-tab-azure-resources" onclick="switchObsTab('azure-resources')">☁️ Azure Resources</button>
                         <button class="obs-tab" id="obs-tab-data-mgmt" onclick="switchObsTab('data-mgmt')">💾 Data Management</button>
                     </div>
 
-                    <!-- Tab: Agent Activity -->
+                    <!-- Tab: Onboarding Pipeline -->
                     <div class="obs-tab-content" id="obs-content-agents">
                         <!-- Copilot SDK powered header -->
                         <div class="analytics-tech-header" style="margin-bottom:0.75rem">
                             <span class="tech-badge-copilot-lg">GITHUB COPILOT SDK</span>
-                            <span class="analytics-tech-subtitle">Multi-agent orchestration with model routing, streaming, and autonomous healing</span>
+                            <span class="analytics-tech-subtitle">Truth-sourced from the live onboarding process definition, activity feed, and model routing table</span>
                         </div>
                         <!-- Compact summary strip -->
                         <div class="ao-summary" id="ao-summary">
-                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-agent-ct">0</span><span class="ao-sum-lbl">Agents</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-agent-ct">0</span><span class="ao-sum-lbl">Steps</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-ok" id="ao-call-ct">0</span><span class="ao-sum-lbl">SDK Calls</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-ok" id="ao-call-ct">0</span><span class="ao-sum-lbl">Running</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-err" id="ao-err-ct">0</span><span class="ao-sum-lbl">Errors</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-err" id="ao-err-ct">0</span><span class="ao-sum-lbl">Failed</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-lat-avg">—</span><span class="ao-sum-lbl">Avg Latency</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val" id="ao-lat-avg">—</span><span class="ao-sum-lbl">Approved</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-score" id="ao-score-avg">50</span><span class="ao-sum-lbl">Avg Score</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-score" id="ao-score-avg">0%</span><span class="ao-sum-lbl">Avg Progress</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-miss" id="ao-miss-ct">0</span><span class="ao-sum-lbl">Misses</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-miss" id="ao-miss-ct">0</span><span class="ao-sum-lbl">Tracked Services</span></div>
                             <div class="ao-sum-sep"></div>
-                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-improve" id="ao-improve-ct">0</span><span class="ao-sum-lbl">Improvements</span></div>
+                            <div class="ao-sum-item"><span class="ao-sum-val ao-val-improve" id="ao-improve-ct">0</span><span class="ao-sum-lbl">With Events</span></div>
                         </div>
 
-                        <!-- Org chart tree -->
+                        <!-- Onboarding pipeline view -->
                         <div class="ao-org" id="ao-org">
                             <div class="activity-empty">
-                                <span class="activity-empty-icon">🤖</span>
-                                <p>Loading agent registry…</p>
+                                <span class="activity-empty-icon">🧭</span>
+                                <p>Loading onboarding pipeline…</p>
                             </div>
                         </div>
 
@@ -1410,7 +1410,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=296"></script>
+    <script src="/static/app.js?v=297"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

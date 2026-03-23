@@ -709,18 +709,19 @@ if ($SkipSql) {
     if ($LASTEXITCODE -ne 0) { Write-Warn "Could not enable public network access - continuing..." }
     else { Write-Ok "Public network access enabled" }
 
-    # Firewall: add current IP
+    # Firewall: add current IP using the same managed rule name as runtime startup
     Write-Host "  Detecting public IP for firewall rule..."
     $publicIp = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content.Trim()
+    $managedFirewallRuleName = if ($env:INFRAFORGE_SQL_FIREWALL_RULE_NAME) { $env:INFRAFORGE_SQL_FIREWALL_RULE_NAME } else { "infraforge-dev-auto" }
 
     az sql server firewall-rule create `
         --server $SqlServerName `
         --resource-group $ResourceGroup `
-        --name "infraforge-setup-$($publicIp -replace '\.', '-')" `
+        --name $managedFirewallRuleName `
         --start-ip-address $publicIp `
         --end-ip-address $publicIp `
         -o none 2>&1
-    Write-Ok "Firewall rule added for IP: $publicIp"
+    Write-Ok "Managed firewall rule '$managedFirewallRuleName' set to IP: $publicIp"
 
     # Allow Azure services
     az sql server firewall-rule create `

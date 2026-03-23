@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import time
+import asyncio
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Optional
@@ -114,33 +115,55 @@ class AzureSQLBackend(DatabaseBackend):
     async def init(self) -> None:
         import pyodbc
 
-        token_struct = self._get_token_struct()
+        from src.config import SQL_FIREWALL_CONNECT_RETRIES
+        from src.sql_firewall import (
+            ensure_sql_firewall,
+            extract_blocked_ip,
+            get_firewall_retry_delay,
+            is_sql_firewall_block_error,
+        )
 
-        try:
-            conn = pyodbc.connect(
-                self.connection_string,
-                attrs_before={1256: token_struct},  # SQL_COPT_SS_ACCESS_TOKEN
-            )
-        except pyodbc.ProgrammingError as exc:
-            # Firewall block → parse blocked IP from error, fix rule, retry
-            err_msg = str(exc)
-            if "is not allowed to access the server" in err_msg:
-                import asyncio
-                import re
-                # Extract the blocked IP from: "Client with IP address '1.2.3.4'"
-                ip_match = re.search(r"Client with IP address '([^']+)'", err_msg)
-                blocked_ip = ip_match.group(1) if ip_match else None
-                logger.warning(f"SQL connection blocked by firewall (IP: {blocked_ip}) — attempting auto-fix and retry")
-                from src.sql_firewall import ensure_sql_firewall
-                await ensure_sql_firewall(blocked_ip=blocked_ip)
-                await asyncio.sleep(5)  # firewall rules can take a few seconds to propagate
-                token_struct = self._get_token_struct()
+        conn = None
+        max_attempts = max(1, SQL_FIREWALL_CONNECT_RETRIES + 1)
+
+        for attempt_index in range(max_attempts):
+            token_struct = self._get_token_struct()
+            try:
                 conn = pyodbc.connect(
                     self.connection_string,
-                    attrs_before={1256: token_struct},
+                    attrs_before={1256: token_struct},  # SQL_COPT_SS_ACCESS_TOKEN
                 )
-            else:
-                raise
+                break
+            except pyodbc.Error as exc:
+                err_msg = str(exc)
+                if not is_sql_firewall_block_error(err_msg):
+                    raise
+
+                blocked_ip = extract_blocked_ip(err_msg)
+                logger.warning(
+                    "SQL connection blocked by firewall (IP: %s) on attempt %d/%d — attempting auto-fix",
+                    blocked_ip or "unknown",
+                    attempt_index + 1,
+                    max_attempts,
+                )
+                remediation = await ensure_sql_firewall(blocked_ip=blocked_ip)
+                if not remediation.success:
+                    logger.warning(
+                        "SQL firewall remediation did not complete: %s (%s)",
+                        remediation.reason,
+                        remediation.message or "no details",
+                    )
+                if attempt_index >= max_attempts - 1:
+                    raise RuntimeError(
+                        f"Azure SQL firewall blocked the connection after {max_attempts} attempts. "
+                        f"Last remediation result: {remediation.reason}. {remediation.message}".strip()
+                    ) from exc
+
+                await asyncio.sleep(get_firewall_retry_delay(attempt_index))
+
+        if conn is None:
+            raise RuntimeError("Azure SQL connection could not be established after firewall remediation")
+
         try:
             cursor = conn.cursor()
             # Create tables if they don't exist (T-SQL syntax)
@@ -3233,8 +3256,8 @@ async def is_service_fully_validated(service_id: str) -> tuple[bool, str]:
 
     Returns ``(is_validated, reason)``.
 
-    A service auto-approved by the orchestrator has ``reviewed_by='orchestrator'``
-    and no ``validated_at`` on its active version.  A fully validated service has
+    A service that has not completed the full pipeline may still have an
+    orchestrator-created draft marker. A fully validated service has
     ``reviewed_by='Deployment Validated'`` (set only by ``set_active_service_version``
     at pipeline completion).
     """
@@ -3243,8 +3266,8 @@ async def is_service_fully_validated(service_id: str) -> tuple[bool, str]:
         return False, "not_found"
     if svc.get("status") != "approved":
         return False, f"status={svc.get('status')}"
-    if svc.get("reviewed_by") == "orchestrator":
-        return False, "auto_approved_stub"
+    if svc.get("reviewed_by") in {"orchestrator", "auto_prepped"}:
+        return False, "not_validated"
     if svc.get("reviewed_by") != "Deployment Validated":
         return False, f"reviewed_by={svc.get('reviewed_by')}"
     active = await get_active_service_version(service_id)
@@ -4808,8 +4831,8 @@ async def seed_orchestration_processes() -> int:
                     "name": "Check dependency gates",
                     "description": (
                         "Inspect all required external dependencies of this service type. "
-                        "For each dependency that exists only as an auto-approved stub "
-                        "(reviewed_by='orchestrator', no validated_at), run the full "
+                        "For each dependency that exists only as a prepped draft "
+                        "(reviewed_by in {'orchestrator','auto_prepped'}, no validated_at), run the full "
                         "onboarding pipeline inline before proceeding. Skip dependencies "
                         "that are created_by_template (inline), optional, or already "
                         "fully validated (reviewed_by='Deployment Validated')."
@@ -4847,7 +4870,7 @@ async def seed_orchestration_processes() -> int:
                     "step_order": 5,
                     "name": "Generate ARM template",
                     "description": (
-                        "Generate ARM template via built-in skeleton or Copilot SDK. "
+                        "Generate ARM template via Copilot SDK. "
                         "Sanitize, inject standard tags, stamp metadata. "
                         "Create service version with status=validating."
                     ),
@@ -4966,7 +4989,7 @@ async def seed_orchestration_processes() -> int:
                     "name": "Gather selected services",
                     "description": (
                         "For each selected service, fetch its active ARM template version. "
-                        "If no version exists, check for builtin skeletons."
+                        "If none exists, fall back to an AI-generated draft version when available."
                     ),
                     "action": "gather_service_templates",
                     "on_success": "next",

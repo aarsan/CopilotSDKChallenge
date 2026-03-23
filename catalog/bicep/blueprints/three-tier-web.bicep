@@ -31,7 +31,6 @@ var tags = {
   project: projectName
   managedBy: 'InfraForge'
   blueprint: '3-tier-web'
-  deployedAt: utcNow('yyyy-MM-dd')
 }
 
 // ══════════════════════════════════════════════════════════════

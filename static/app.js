@@ -2010,11 +2010,8 @@ function _renderVersionedWorkflow(svc, versions, activeVersion, apiVersionStatus
     const hasVersions = versions.length > 0;
     const latestVersion = versions.length > 0 ? versions[0] : null;
 
-    // Distinguish governance approval from full onboarding
-    const displayStatus = (status === 'approved' && !activeVersion)
-        ? 'approved_not_onboarded' : status;
-    const displayLabel = displayStatus === 'approved_not_onboarded'
-        ? '📋 Catalog Approved' : (statusLabels[status] || status);
+    const displayStatus = status;
+    const displayLabel = statusLabels[status] || status;
 
     body.innerHTML = `
         <div class="detail-meta">
@@ -2080,7 +2077,7 @@ function _renderChildResources(childResources, parentResource) {
             if (c.has_active_version) {
                 badge = '<span class="child-res-status child-res-approved">✅ Onboarded</span>';
             } else if (c.status === 'approved') {
-                badge = '<span class="child-res-status child-res-pending">📋 Approved</span>';
+                badge = '<span class="child-res-status child-res-pending">⚠️ Needs validation</span>';
             } else if (c.status === 'not_in_catalog') {
                 badge = '<span class="child-res-status child-res-missing">—</span>';
             } else {
@@ -2123,26 +2120,6 @@ function _renderOnboardButton(svc, status, latestVersion, apiVersionStatus, vers
                    ⬆ Update API (${escapeHtml(apiVersionStatus.template_api_version)} → ${escapeHtml(apiVersionStatus.latest_stable)})
                </button>`;
         }
-    }
-
-    // ── Auto-approved stub (never went through real onboarding) ──
-    const isStub = status === 'approved' && svc.reviewed_by === 'orchestrator';
-    if (isStub) {
-        const stubVer = latestVersion ? ` (stub v${latestVersion.semver || latestVersion.version + '.0.0'})` : '';
-        return `
-        <div class="svc-status-card svc-status-ready" id="validation-card">
-            <div class="svc-status-row">
-                <span class="svc-status-icon">⚠️</span>
-                <div class="svc-status-info">
-                    <div class="svc-status-title">Needs Full Onboarding${stubVer}</div>
-                    <div class="svc-status-sub">Auto-approved with a skeleton template — never validated through the pipeline. Run onboarding to generate, validate, and deploy a real ARM template.</div>
-                </div>
-            </div>
-            <div class="svc-status-actions">
-                <button class="btn btn-sm btn-accent" onclick="triggerOnboarding('${escapeHtml(svc.id)}')">🚀 Onboard Service</button>
-            </div>
-            <div class="validation-log" id="validation-log"></div>
-        </div>`;
     }
 
     // ── Onboarded ──
@@ -4974,8 +4951,8 @@ function _renderActionRequired(logEl, event) {
     const unvalidatedDeps = event.unvalidated_dependencies || [];
     if (event.failure_category === 'dependency_failed' && unvalidatedDeps.length) {
         const depItems = unvalidatedDeps.map(dep => {
-            const reasonLabel = dep.reason === 'auto_approved_stub' ? 'auto-approved stub'
-                              : dep.reason === 'not_validated' ? 'not validated'
+            const reasonLabel = dep.reason === 'auto_approved_stub' ? 'needs validation'
+                              : dep.reason === 'not_validated' ? 'needs validation'
                               : dep.reason === 'no_active_version' ? 'no active version'
                               : dep.reason;
             return `
@@ -16543,165 +16520,456 @@ function _timeShort(isoStr) {
 
 
 // ══════════════════════════════════════════════════════════════
-// AGENT ACTIVITY — Org-chart style agent dashboard
+// ONBOARDING OBSERVABILITY — Truth-sourced pipeline view
 // ══════════════════════════════════════════════════════════════
 
-const AO_CAT_META = {
-    'Interactive':             { icon: '💬', color: '#3b82f6', role: 'User-Facing' },
-    'Orchestrator':            { icon: '🎯', color: '#8b5cf6', role: 'Routing & Planning' },
-    'Standards':               { icon: '📋', color: '#06b6d4', role: 'Policy Extraction' },
-    'ARM Generation':          { icon: '🏗️', color: '#f59e0b', role: 'Template Authoring' },
-    'Deployment Pipeline':     { icon: '🚀', color: '#10b981', role: 'Deploy & Heal' },
-    'Compliance':              { icon: '🛡️', color: '#ef4444', role: 'Policy Enforcement' },
-    'Artifact & Healing':      { icon: '🔧', color: '#ec4899', role: 'Fix & Generate' },
-    'Infrastructure Testing':  { icon: '🧪', color: '#14b8a6', role: 'Verify & Test' },
-    'Governance Review':       { icon: '⚖️', color: '#6366f1', role: 'Review Gates' },
-    'Analysis':                { icon: '📈', color: '#0ea5e9', role: 'Upgrade & Compat' },
+const AO_STEP_TASKS = {
+    initialize: ['planning', 'code_generation', 'policy_generation'],
+    check_dependency_gates: ['validation_analysis'],
+    analyze_standards: ['validation_analysis'],
+    plan_architecture: ['planning'],
+    generate_arm: ['code_generation'],
+    generate_policy: ['policy_generation'],
+    governance_review: ['validation_analysis'],
+    validate_arm_deploy: ['validation_analysis', 'code_fixing'],
+    infra_testing: ['validation_analysis'],
+    deploy_policy: [],
+    cleanup: [],
+    promote_service: [],
 };
 
-// Individual agent icons based on their key — gives each card a unique "avatar"
-const AO_AGENT_ICONS = {
-    web_chat: '💬', governance_agent: '📜', ciso_advisor: '🔐', concierge: '🛎️',
-    gap_analyst: '🔍', arm_template_editor: '✏️', policy_checker: '📋', request_parser: '🧩',
-    standards_extractor: '📄',
-    arm_modifier: '🛠️', arm_generator: '🏗️',
-    template_healer: '💊', error_culprit_detector: '🎯', deploy_failure_analyst: '📊',
-    remediation_planner: '📝', remediation_executor: '⚡',
-    artifact_generator: '✨', policy_fixer: '🩹', deep_template_healer: '🔬', llm_reasoner: '🧠',
-    infra_tester: '🧪', infra_test_analyzer: '🔎',
-    ciso_reviewer: '🛡️', cto_reviewer: '🏛️',
-    upgrade_analyst: '📈',
+const AO_STEP_AGENTS = {
+    initialize: [],
+    check_dependency_gates: [],
+    analyze_standards: [],
+    plan_architecture: [
+        { key: 'llm_reasoner', action: 'Produces the architecture plan that the template generator follows.' },
+    ],
+    generate_arm: [
+        { key: 'arm_generator', action: 'Authors the ARM template from the service type, standards, and planning output.' },
+    ],
+    generate_policy: [
+        { key: 'policy_generator', action: 'Generates the Azure Policy definition used later for runtime checks.' },
+    ],
+    governance_review: [
+        { key: 'ciso_reviewer', action: 'Runs the blocking security and compliance review.' },
+        { key: 'cto_reviewer', action: 'Runs the advisory architecture and cost review.' },
+        { key: 'llm_reasoner', action: 'If blocked, analyzes the review findings and proposes a repair strategy.' },
+        { key: 'deep_template_healer', action: 'If blocked, rewrites the template to satisfy governance findings.' },
+    ],
+    validate_arm_deploy: [
+        { key: 'llm_reasoner', action: 'Analyzes validation, What-If, and deployment failures to determine the fix strategy.' },
+        { key: 'deep_template_healer', action: 'Applies structural ARM fixes during the healing loop.' },
+        { key: 'policy_fixer', action: 'Adjusts generated policy JSON when live resources fail policy evaluation.' },
+        { key: 'template_healer', action: 'Triggers a full regeneration path when incremental healing is exhausted.' },
+        { key: 'arm_generator', action: 'Regenerates a fresh ARM template from the new plan when a full retry is needed.' },
+    ],
+    infra_testing: [
+        { key: 'infra_tester', action: 'Writes resource-specific smoke tests against the deployed validation environment.' },
+        { key: 'infra_test_analyzer', action: 'Analyzes failed tests and feeds remediation guidance back into the pipeline.' },
+    ],
+    deploy_policy: [],
+    cleanup: [],
+    promote_service: [],
 };
 
-// Cached API data for detail panel
 let _aoData = null;
+
+function _aoSetSummary(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+async function _aoFetchJson(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+    return res.json();
+}
+
+function _aoNormalizeTaskKey(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+function _aoTitleCase(value) {
+    return String(value || '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+}
+
+function _aoBuildRoutingMap(routingTable) {
+    const map = {};
+    (routingTable || []).forEach(entry => {
+        const key = _aoNormalizeTaskKey(entry.task || entry.name);
+        if (!key) return;
+        map[key] = entry;
+    });
+    return map;
+}
+
+function _aoBuildAgentRegistry(agents) {
+    const registry = {};
+    (agents || []).forEach(agent => {
+        if (!agent || !agent.key) return;
+        registry[agent.key] = agent;
+    });
+    return registry;
+}
+
+function _aoFormatStepAction(action) {
+    return String(action || '').replace(/_/g, ' ');
+}
+
+function _aoStatusLabel(job) {
+    if (job.is_running) return 'Running';
+    if (job.status === 'approved') return 'Approved';
+    if (job.status === 'validation_failed') return 'Failed';
+    if (job.status === 'validating') return 'Queued';
+    return _aoTitleCase(String(job.status || 'unknown').replace(/_/g, ' '));
+}
+
+function _aoStatusClass(job) {
+    if (job.is_running) return 'running';
+    if (job.status === 'approved') return 'approved';
+    if (job.status === 'validation_failed') return 'failed';
+    return 'idle';
+}
+
+function _aoProgressPercent(job) {
+    const raw = Number(job.progress || 0);
+    const pct = raw <= 1 ? raw * 100 : raw;
+    return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
+function _aoCompletedNames(job) {
+    return new Set((job.steps_completed || []).map(name => String(name || '').toLowerCase()));
+}
+
+function _aoActiveStepIndex(job, steps) {
+    if (!job || !job.is_running) return -1;
+    const completedCount = Array.isArray(job.steps_completed) ? job.steps_completed.length : 0;
+    return Math.min(completedCount, Math.max((steps || []).length - 1, 0));
+}
+
+function _aoStepStats(step, steps, jobs) {
+    let active = 0;
+    let completed = 0;
+
+    (jobs || []).forEach(job => {
+        if (job.status === 'approved') {
+            completed += 1;
+            return;
+        }
+        const completedNames = _aoCompletedNames(job);
+        if (completedNames.has(String(step.name || '').toLowerCase())) {
+            completed += 1;
+            return;
+        }
+        if (_aoActiveStepIndex(job, steps) === steps.indexOf(step)) {
+            active += 1;
+        }
+    });
+
+    return { active, completed };
+}
+
+function _aoModelChips(step, routingMap) {
+    const tasks = AO_STEP_TASKS[step.action] || [];
+    if (!tasks.length) {
+        return '<span class="ao-model-chip ao-model-chip-static">Platform logic</span>';
+    }
+
+    return tasks.map(task => {
+        const route = routingMap[_aoNormalizeTaskKey(task)] || {};
+        const model = route.model_name || route.model_id || route.display_name || 'Configured model';
+        const reason = route.reason ? ` title="${escapeHtml(route.reason)}"` : '';
+        return `<span class="ao-model-chip"${reason}>${escapeHtml(_truncateModel(model))}</span>`;
+    }).join('');
+}
+
+function _aoAgentMarkup(step, agentRegistry) {
+    const entries = AO_STEP_AGENTS[step.action] || [];
+    if (!entries.length) {
+        return `
+            <div class="ao-step-agent-empty">
+                <span class="ao-step-agent-empty-label">No named Copilot agent</span>
+                <span class="ao-step-agent-empty-copy">This step is driven by platform logic, database state, or Azure operations rather than a dedicated prompt-backed agent.</span>
+            </div>`;
+    }
+
+    return entries.map(entry => {
+        const agent = agentRegistry[entry.key] || {};
+        const displayName = agent.name || _aoTitleCase(entry.key.replace(/_/g, ' '));
+        const summary = entry.action || agent.description || 'Active in this step.';
+        const description = agent.description || '';
+        const task = agent.task || '';
+
+        return `
+            <div class="ao-step-agent-row">
+                <div class="ao-step-agent-copy">
+                    <div class="ao-step-agent-name-row">
+                        <span class="ao-step-agent-name">${escapeHtml(displayName)}</span>
+                        ${task ? `<span class="ao-step-agent-task">${escapeHtml(task)}</span>` : ''}
+                    </div>
+                    <div class="ao-step-agent-action">${escapeHtml(summary)}</div>
+                    ${description ? `<div class="ao-step-agent-desc">${escapeHtml(description)}</div>` : ''}
+                </div>
+                <button class="ao-step-agent-btn" onclick="viewAgentPrompt('${entry.key}')">View Prompt</button>
+            </div>`;
+    }).join('');
+}
+
+function _aoEventList(job, latestRun) {
+    const events = (job.events && job.events.length ? job.events : (latestRun?.events || [])) || [];
+    return events.slice(-4).reverse();
+}
+
+function _aoEventText(evt) {
+    const phase = evt.phase || evt.stage || evt.status || evt.type || 'event';
+    const detail = evt.detail || evt.message || evt.error || '';
+    return {
+        phase: _aoFormatStepAction(phase),
+        detail: detail || 'No detail captured for this event.',
+    };
+}
+
+function _aoRunHeadline(job, latestRun) {
+    if (job.is_running && job.detail) return job.detail;
+    if (job.error) return job.error;
+    const summary = latestRun?.summary || {};
+    if (job.status === 'approved') {
+        const resources = summary.resources || summary.resource_count || 0;
+        const heals = summary.heal_count || summary.issues_resolved || 0;
+        return `${resources} resource(s) validated${heals ? `, ${heals} issue(s) auto-healed` : ''}`;
+    }
+    if (summary.error) return summary.error;
+    return latestRun?.status ? _aoTitleCase(String(latestRun.status).replace(/_/g, ' ')) : 'No recent run details available.';
+}
+
+function _aoStepStrip(job, steps) {
+    const completed = _aoCompletedNames(job);
+    const activeIndex = _aoActiveStepIndex(job, steps);
+
+    return (steps || []).map((step, index) => {
+        let state = 'pending';
+        if (job.status === 'approved' || completed.has(String(step.name || '').toLowerCase())) {
+            state = 'done';
+        } else if (job.is_running && index === activeIndex) {
+            state = 'active';
+        } else if (job.status === 'validation_failed' && index === Math.max((job.steps_completed || []).length, 0)) {
+            state = 'failed';
+        }
+
+        return `<span class="ao-run-step ao-run-step-${state}" title="${escapeHtml(step.name || '')}">${index + 1}</span>`;
+    }).join('');
+}
+
+function _aoSummaryCopy(process, jobs, activitySummary) {
+    const total = jobs.length;
+    const approved = activitySummary.approved || 0;
+    const running = activitySummary.running || 0;
+    const failed = activitySummary.failed || 0;
+    const avgProgress = total
+        ? Math.round(jobs.reduce((sum, job) => sum + _aoProgressPercent(job), 0) / total)
+        : 0;
+    const withEvents = jobs.filter(job => (job.events || []).length > 0).length;
+
+    _aoSetSummary('ao-agent-ct', String((process.steps || []).length));
+    _aoSetSummary('ao-call-ct', String(running));
+    _aoSetSummary('ao-err-ct', String(failed));
+    _aoSetSummary('ao-lat-avg', String(approved));
+    _aoSetSummary('ao-score-avg', `${avgProgress}%`);
+    _aoSetSummary('ao-miss-ct', String(total));
+    _aoSetSummary('ao-improve-ct', String(withEvents));
+}
 
 async function loadAgentActivity() {
     const org = document.getElementById('ao-org');
     if (!org) return;
 
-    try {
-        const res = await fetch('/api/agents/activity');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        _aoData = data;
-
-        const agents = data.agents || [];
-        const counters = data.counters || {};
-        const routing = data.routing_table || [];
-
-        // Build model lookup from routing table
-        const taskModelMap = {};
-        routing.forEach(r => { taskModelMap[r.task] = r.model_name || r.model_id || r.task; });
-
-        // Compute summary stats
-        let totalCalls = 0, totalErrors = 0, totalMs = 0;
-        Object.values(counters).forEach(c => {
-            totalCalls += c.calls || 0;
-            totalErrors += c.errors || 0;
-            totalMs += c.total_ms || 0;
-        });
-        const avgLatency = totalCalls > 0 ? Math.round(totalMs / totalCalls) : 0;
-
-        const _s = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-        _s('ao-agent-ct', agents.length);
-        _s('ao-call-ct', totalCalls.toLocaleString());
-        _s('ao-err-ct', totalErrors);
-        _s('ao-lat-avg', totalCalls > 0 ? `${avgLatency}ms` : '—');
-
-        // Performance data from extended API
-        const scores = data.scores || {};
-        const missesData = data.misses || {};
-        const feedbackData = data.feedback_summary || {};
-        const pendingImprovements = data.pending_improvements || [];
-
-        // Compute summary performance stats
-        const allScores = Object.values(scores).map(s => s.performance_score || 50);
-        const avgScore = allScores.length > 0 ? Math.round(allScores.reduce((a, b) => a + b, 0) / allScores.length) : 50;
-        const totalMisses = Object.values(scores).reduce((sum, s) => sum + (s.total_misses || 0), 0);
-        _s('ao-score-avg', avgScore);
-        _s('ao-miss-ct', totalMisses);
-        _s('ao-improve-ct', pendingImprovements.length);
-
-        // Group agents by category
-        const categories = {};
-        agents.forEach(a => {
-            if (!categories[a.category]) categories[a.category] = [];
-            categories[a.category].push(a);
-        });
-
-        // ── Render org chart ──
-        let html = '';
-
-        // Hub node
-        html += `<div class="ao-hub">
-            <div class="ao-hub-icon">⚙️</div>
-            <div class="ao-hub-label">InfraForge Agent Network</div>
-            <div class="ao-hub-sub">${agents.length} agents · ${Object.keys(categories).length} teams · Copilot SDK</div>
+    org.innerHTML = `
+        <div class="activity-empty">
+            <span class="activity-empty-icon">🧭</span>
+            <p>Loading real onboarding pipeline data…</p>
         </div>`;
-        html += `<div class="ao-trunk"></div>`;
 
-        // Category groups
-        const catEntries = Object.entries(categories);
-        html += `<div class="ao-branches">`;
+    try {
+        const [process, activity, routingData, agentData] = await Promise.all([
+            _aoFetchJson('/api/orchestration/processes/service_onboarding'),
+            _aoFetchJson('/api/activity'),
+            _aoFetchJson('/api/settings/model-routing'),
+            _aoFetchJson('/api/agents/activity'),
+        ]);
 
-        catEntries.forEach(([cat, catAgents]) => {
-            const meta = AO_CAT_META[cat] || { icon: '🤖', color: '#6b7280', role: cat };
+        const steps = process.steps || [];
+        const jobs = activity.jobs || [];
+        const activitySummary = activity.summary || {};
+        const routingMap = _aoBuildRoutingMap(routingData.routing_table || []);
+        const agentRegistry = _aoBuildAgentRegistry(agentData.agents || []);
 
-            html += `<div class="ao-branch">`;
-            html += `<div class="ao-branch-head" style="--cat-color: ${meta.color}">
-                <span class="ao-branch-icon">${meta.icon}</span>
-                <span class="ao-branch-name">${cat}</span>
-                <span class="ao-branch-role">${meta.role}</span>
-                <span class="ao-branch-count">${catAgents.length}</span>
-            </div>`;
-            html += `<div class="ao-branch-rail" style="--cat-color: ${meta.color}"></div>`;
-            html += `<div class="ao-cards">`;
+        _aoSummaryCopy(process, jobs, activitySummary);
 
-            catAgents.forEach(a => {
-                const agentKey = a.name.toUpperCase().replace(/\s+/g, '_');
-                const c = counters[agentKey] || counters[a.key.toUpperCase()] || counters[a.key] || {};
-                const calls = c.calls || 0;
-                const errors = c.errors || 0;
-                const model = taskModelMap[a.task] || a.task;
-                const agentIcon = AO_AGENT_ICONS[a.key] || meta.icon;
-                const isActive = calls > 0;
+        const featuredJobs = jobs.slice(0, 6);
+        const runEntries = await Promise.all(featuredJobs.map(async job => {
+            if (job.is_running) return [job.service_id, null];
+            try {
+                const runs = await _aoFetchJson(`/api/services/${encodeURIComponent(job.service_id)}/pipeline-runs?limit=1`);
+                return [job.service_id, Array.isArray(runs) && runs.length ? runs[0] : null];
+            } catch (_) {
+                return [job.service_id, null];
+            }
+        }));
+        const latestRuns = Object.fromEntries(runEntries);
 
-                // Performance score badge
-                const sc = scores[agentKey] || scores[a.key.toUpperCase()] || scores[a.key] || {};
-                const perfScore = sc.performance_score ?? 50;
-                const scoreCls = perfScore >= 90 ? 'ao-score-excellent' : perfScore >= 70 ? 'ao-score-good' : perfScore >= 50 ? 'ao-score-fair' : perfScore >= 30 ? 'ao-score-attention' : 'ao-score-critical';
-                const missCount = sc.total_misses || 0;
+        _aoData = {
+            process,
+            activity,
+            routing: routingData,
+            latestRuns,
+            agents: agentData.agents || [],
+        };
 
-                html += `<div class="ao-card ${isActive ? 'ao-card-hot' : ''}" data-agent-key="${a.key}" onclick="showAgentDetail('${a.key}')" style="--cat-color: ${meta.color}">
-                    <div class="ao-card-score-badge ${scoreCls}" title="Performance: ${perfScore}/100">${perfScore}</div>
-                    <div class="ao-card-avatar" style="background: ${meta.color}22; border-color: ${meta.color}66">
-                        <span class="ao-card-avatar-icon">${agentIcon}</span>
+        const stepCards = steps.map(step => {
+            const stats = _aoStepStats(step, steps, jobs);
+            return `
+                <article class="ao-step-card">
+                    <div class="ao-step-card-top">
+                        <span class="ao-step-num">${step.step_order}</span>
+                        <div>
+                            <div class="ao-step-name">${escapeHtml(step.name)}</div>
+                            <div class="ao-step-action">${escapeHtml(_aoFormatStepAction(step.action))}</div>
+                        </div>
                     </div>
-                    <div class="ao-card-name">${a.name}</div>
-                    <div class="ao-card-role">${_truncateModel(model)}</div>
-                    <div class="ao-card-desc">${a.description.length > 90 ? a.description.substring(0, 87) + '…' : a.description}</div>
-                    <div class="ao-card-footer">
-                        ${isActive
-                            ? `<span class="ao-card-calls">${calls}</span><span class="ao-card-calls-lbl">calls</span>${errors > 0 ? `<span class="ao-card-errs">${errors} err</span>` : ''}${missCount > 0 ? `<span class="ao-card-misses">${missCount} miss</span>` : ''}`
-                            : `<span class="ao-card-idle">Idle</span>`}
-                        <span class="ao-card-sdk">SDK</span>
+                    <p class="ao-step-desc">${escapeHtml(step.description || '')}</p>
+                    <div class="ao-step-agents-block">
+                        <div class="ao-step-section-label">Agents on this step</div>
+                        <div class="ao-step-agents-list">${_aoAgentMarkup(step, agentRegistry)}</div>
                     </div>
+                    <div class="ao-step-models">${_aoModelChips(step, routingMap)}</div>
+                    <div class="ao-step-metrics">
+                        <span class="ao-step-metric">${stats.active} live</span>
+                        <span class="ao-step-metric">${stats.completed} completed</span>
+                        <span class="ao-step-metric">on failure: ${escapeHtml(_aoFormatStepAction(step.on_failure || 'abort'))}</span>
+                    </div>
+                </article>`;
+        }).join('');
+
+        const jobCards = featuredJobs.length
+            ? featuredJobs.map(job => {
+                const latestRun = latestRuns[job.service_id];
+                const events = _aoEventList(job, latestRun);
+                const progress = _aoProgressPercent(job);
+                const meta = job.template_meta || {};
+                const summary = latestRun?.summary || {};
+                const semver = latestRun?.semver || latestRun?.summary?.semver || summary.semver || '—';
+                const updatedAt = job.updated_at || job.started_at || latestRun?.updated_at || latestRun?.started_at || '';
+
+                return `
+                    <article class="ao-run-card ao-run-card-${_aoStatusClass(job)}">
+                        <div class="ao-run-header">
+                            <div>
+                                <div class="ao-run-name">${escapeHtml(job.service_name || job.service_id)}</div>
+                                <div class="ao-run-id">${escapeHtml(job.service_id)}</div>
+                            </div>
+                            <div class="ao-run-header-right">
+                                <span class="ao-run-badge ao-run-badge-${_aoStatusClass(job)}">${_aoStatusLabel(job)}</span>
+                                <span class="ao-run-time">${updatedAt ? _timeAgo(updatedAt) : 'No timestamp'}</span>
+                            </div>
+                        </div>
+
+                        <div class="ao-run-headline">${escapeHtml(_aoRunHeadline(job, latestRun))}</div>
+
+                        <div class="activity-progress">
+                            <div class="activity-progress-track">
+                                <div class="activity-progress-fill ${job.is_running ? 'activity-progress-animated' : ''}" style="width:${progress}%"></div>
+                            </div>
+                            <span class="activity-progress-pct">${progress}%</span>
+                        </div>
+
+                        <div class="ao-run-step-strip">${_aoStepStrip(job, steps)}</div>
+
+                        <div class="ao-run-meta">
+                            <span class="ao-run-meta-chip">v${escapeHtml(String(semver))}</span>
+                            <span class="ao-run-meta-chip">attempt ${Number(job.attempt || 1)}/${Number(job.max_attempts || 1)}</span>
+                            ${job.region ? `<span class="ao-run-meta-chip">${escapeHtml(job.region)}</span>` : ''}
+                            ${meta.resource_count ? `<span class="ao-run-meta-chip">${meta.resource_count} resource(s)</span>` : ''}
+                            ${summary.policy_checks ? `<span class="ao-run-meta-chip">policy ${escapeHtml(String(summary.policy_checks))}</span>` : ''}
+                        </div>
+
+                        ${job.error ? `<div class="activity-error">${escapeHtml(job.error)}</div>` : ''}
+
+                        <div class="ao-run-events">
+                            <div class="ao-run-events-title">Recent pipeline events</div>
+                            ${events.length ? events.map(evt => {
+                                const parsed = _aoEventText(evt);
+                                return `
+                                    <div class="ao-run-event">
+                                        <span class="ao-run-event-phase">${escapeHtml(parsed.phase)}</span>
+                                        <span class="ao-run-event-detail">${escapeHtml(parsed.detail)}</span>
+                                    </div>`;
+                            }).join('') : '<div class="ao-run-event ao-run-event-empty">No streamed events captured yet.</div>'}
+                        </div>
+                    </article>`;
+            }).join('')
+            : `
+                <div class="activity-empty ao-onboard-empty">
+                    <span class="activity-empty-icon">✅</span>
+                    <p>No onboarding runs are active right now.</p>
+                    <p class="activity-empty-sub">This panel will populate automatically when a service enters the onboarding pipeline.</p>
                 </div>`;
-            });
 
-            html += `</div></div>`;
-        });
+        org.innerHTML = `
+            <div class="ao-onboard-shell">
+                <section class="ao-truth-banner">
+                    <div>
+                        <div class="ao-truth-title">${escapeHtml(process.name || 'Service Onboarding')}</div>
+                        <p class="ao-truth-copy">${escapeHtml(process.description || 'Live onboarding telemetry sourced directly from the database-defined pipeline and active validation tracker.')}</p>
+                    </div>
+                    <div class="ao-truth-facts">
+                        <span class="ao-truth-chip">/api/orchestration/processes/service_onboarding</span>
+                        <span class="ao-truth-chip">/api/activity</span>
+                        <span class="ao-truth-chip">/api/settings/model-routing</span>
+                    </div>
+                </section>
 
-        html += `</div>`;
-        org.innerHTML = html;
+                <section class="ao-stage-grid">
+                    ${stepCards}
+                </section>
+
+                <section class="ao-live-section">
+                    <div class="ao-live-header">
+                        <div>
+                            <div class="ao-live-title">Tracked service runs</div>
+                            <div class="ao-live-subtitle">Showing active and recent onboarding outcomes with per-step progress.</div>
+                        </div>
+                        <div class="ao-live-rollup">
+                            <span>${activitySummary.running || 0} running</span>
+                            <span>${activitySummary.approved || 0} approved</span>
+                            <span>${activitySummary.failed || 0} failed</span>
+                        </div>
+                    </div>
+                    <div class="ao-run-grid">${jobCards}</div>
+                </section>
+            </div>`;
 
     } catch (err) {
-        console.warn('Agent activity load failed:', err);
+        console.warn('Onboarding observability load failed:', err);
+        _aoSetSummary('ao-agent-ct', '0');
+        _aoSetSummary('ao-call-ct', '0');
+        _aoSetSummary('ao-err-ct', '0');
+        _aoSetSummary('ao-lat-avg', '0');
+        _aoSetSummary('ao-score-avg', '0%');
+        _aoSetSummary('ao-miss-ct', '0');
+        _aoSetSummary('ao-improve-ct', '0');
         org.innerHTML = `
             <div class="activity-empty">
                 <span class="activity-empty-icon">⚠️</span>
-                <p>Failed to load agent activity data.</p>
+                <p>Failed to load onboarding observability.</p>
                 <p style="font-size:0.7rem;color:var(--text-muted)">${escapeHtml(String(err))}</p>
             </div>`;
     }

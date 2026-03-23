@@ -386,11 +386,8 @@ flowchart TD
     START(["🚀 Onboard Service Request"]) --> P0["Phase 0: Model Routing Init"]
     P0 --> P1["Phase 1: Load Org Standards"]
     P1 --> P2["Phase 2: Architecture Planning\n🧠 o3-mini (reasoning)"]
-    P2 --> P3{"Built-in\nSkeleton?"}
-    P3 -- Yes --> SKEL["Use Pre-tested Skeleton"]
-    P3 -- No --> GEN["Phase 3: Generate ARM Template\n✨ claude-sonnet-4"]
-    SKEL --> GUARD["Inject Parameter Defaults\n_ensure_parameter_defaults()"]
-    GEN --> GUARD
+    P2 --> GEN["Phase 3: Generate ARM Template\n✨ claude-sonnet-4"]
+    GEN --> GUARD["Inject Parameter Defaults\n_ensure_parameter_defaults()"]
     GUARD --> P35["Phase 3.5: Generate Azure Policy\n✨ claude-sonnet-4"]
     P35 --> LOOP_START(["Healing Loop — Attempt 1/5"])
 
@@ -576,12 +573,8 @@ flowchart TD
                     <span class="phase-model">claude-sonnet-4</span>
                 </div>
                 <p>
-                    Two paths:
+                    The code generation model produces an ARM template guided by the architecture plan + org standards.
                 </p>
-                <ul>
-                    <li><strong>Built-in skeleton exists</strong> — Uses a pre-tested, hand-crafted template. No LLM call needed.</li>
-                    <li><strong>No skeleton</strong> — The code generation model produces an ARM template guided by the architecture plan + org standards.</li>
-                </ul>
                 <p>After generation, post-processing runs: sanitize resource names, inject required tags,
                    strip foreign properties, stamp metadata, and a safety guard (<code>_ensure_parameter_defaults</code>)
                    injects missing <code>defaultValue</code> on every parameter.</p>

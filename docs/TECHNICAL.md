@@ -236,7 +236,7 @@ Templates are composed from approved services — no manual IaC authoring requir
 1. Select approved services from the catalog
 2. Set quantity per service (e.g., 2 SQL databases)
 3. Choose which parameters to expose in the template
-4. The compose endpoint merges ARM skeletons into a single template
+4. The compose endpoint merges stored service ARM templates into a single template
 5. Standard parameters (resourceName, location, environment, etc.) are shared
 
 ## File Structure
@@ -256,7 +256,7 @@ src/
   azure_sync.py       — Azure Resource Provider sync engine
   config.py           — Environment configuration, system message
   tools/              — Copilot SDK tool definitions (26 tools)
-    arm_generator.py  — ARM template skeleton registry (~21 resource types)
+    arm_generator.py  — ARM generation/editing helpers (Copilot SDK)
     deploy_engine.py  — ARM SDK deployment (azure-mgmt-resource)
     service_catalog.py — Service approval tools (5 tools)
     ...

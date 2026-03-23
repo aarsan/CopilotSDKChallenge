@@ -46,10 +46,7 @@ async def auto_onboard_service(
         get_service, upsert_service, create_service_version,
         get_process,
     )
-    from src.tools.arm_generator import (
-        generate_arm_template, has_builtin_skeleton,
-        generate_arm_template_with_copilot,
-    )
+    from src.tools.arm_generator import generate_arm_template_with_copilot
     from src.template_engine import RESOURCE_DEPENDENCIES
 
     async def _emit(msg: str, phase: str = "onboarding"):
@@ -99,7 +96,7 @@ async def auto_onboard_service(
         "category": category,
         "status": "not_approved",  # Needs full pipeline before approval
         "risk_tier": risk_tier,
-        "review_notes": "Auto-prepped by orchestrator — draft ARM template ready, needs full pipeline onboarding",
+        "review_notes": "Auto-prepped by orchestrator — AI-generated draft ARM template ready, needs full pipeline onboarding",
         "reviewed_by": "auto_prepped",
     }
 
@@ -117,10 +114,11 @@ async def auto_onboard_service(
     # ── Step 3: Generate ARM template ─────────────────────────
     arm_dict = None
 
-    if has_builtin_skeleton(resource_type):
-        arm_dict = generate_arm_template(resource_type)
-        await _emit(f"Using builtin ARM skeleton")
-    elif copilot_client:
+    if not copilot_client:
+        from src.web import ensure_copilot_client
+        copilot_client = await ensure_copilot_client()
+
+    if copilot_client:
         await _emit(f"Generating ARM template via LLM…")
         try:
             from src.copilot_helpers import get_model_for_task, Task
@@ -203,7 +201,6 @@ async def resolve_composition_dependencies(
     from src.database import get_service, get_active_service_version, get_process
     from src.database import get_latest_service_version
     from src.template_engine import RESOURCE_DEPENDENCIES
-    from src.tools.arm_generator import has_builtin_skeleton
 
     async def _emit(msg: str, phase: str = "dependency_resolution"):
         logger.info(f"[dep-resolver] {msg}")
@@ -259,16 +256,17 @@ async def resolve_composition_dependencies(
                     auto_added.append(dep_type)
                     await _emit(f"✅ {dep_type} found in catalog — adding to composition")
                     continue
-                elif has_builtin_skeleton(dep_type):
+                draft = await get_latest_service_version(dep_type)
+                if draft and draft.get("arm_template"):
                     resolved.append({
                         "service_id": dep_type,
                         "reason": dep["reason"],
-                        "action": "added",
-                        "detail": "Approved with builtin skeleton",
+                        "action": "added_prepped",
+                        "detail": f"Using draft v{draft.get('version', '?')} until full validation completes",
                     })
                     provides.add(dep_type)
                     auto_added.append(dep_type)
-                    await _emit(f"✅ {dep_type} approved with builtin skeleton — adding")
+                    await _emit(f"⚠️ {dep_type} has a draft ARM template — adding to composition")
                     continue
 
             # Check if already prepped (has draft ARM template, needs pipeline)
@@ -284,17 +282,6 @@ async def resolve_composition_dependencies(
                     provides.add(dep_type)
                     auto_added.append(dep_type)
                     await _emit(f"⚠️ {dep_type} prepped (draft) — adding to composition (needs pipeline)")
-                    continue
-                elif has_builtin_skeleton(dep_type):
-                    resolved.append({
-                        "service_id": dep_type,
-                        "reason": dep["reason"],
-                        "action": "added_prepped",
-                        "detail": "Prepped with builtin skeleton (not yet validated)",
-                    })
-                    provides.add(dep_type)
-                    auto_added.append(dep_type)
-                    await _emit(f"⚠️ {dep_type} prepped with skeleton — adding to composition")
                     continue
 
             # Not in catalog or not approved — auto-prep

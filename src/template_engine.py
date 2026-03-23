@@ -563,15 +563,20 @@ def build_composite_validation_template(
     parent_resources = copy.deepcopy(parent_arm.get("resources", []))
     child_resources = copy.deepcopy(child_arm.get("resources", []))
 
+    def _format_arm_function_arg(value: str) -> str:
+        if value.startswith("[") and value.endswith("]"):
+            return value[1:-1]
+        return f"'{value}'"
+
     # Build parent resource IDs for dependsOn injection
     parent_ids = []
     for r in parent_resources:
         rtype = r.get("type", "")
         rname = r.get("name", "")
         if rtype and rname:
-            parent_ids.append(f"[resourceId('{rtype}', {rname})]"
-                              if rname.startswith("[") else
-                              f"[resourceId('{rtype}', '{rname}')]")
+            parent_ids.append(
+                f"[resourceId('{rtype}', {_format_arm_function_arg(rname)})]"
+            )
 
     # Add dependency from child resources to parent resources
     for r in child_resources:

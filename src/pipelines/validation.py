@@ -36,6 +36,7 @@ from src.pipeline_helpers import (
     build_final_params,
     is_quota_or_capacity_error,
     find_available_regions,
+    validate_arm_expression_syntax,
 )
 
 logger = logging.getLogger("infraforge.pipeline.validation")
@@ -218,6 +219,88 @@ async def stream_validation(
             "detail": step_detail,
             "context": step_context,
         }) + "\n"
+
+        syntax_errors = validate_arm_expression_syntax(current_tpl)
+        if syntax_errors:
+            error_msg = "; ".join(syntax_errors)
+            if is_last:
+                yield json.dumps({
+                    "type": "action_required",
+                    "phase": "local_validation_failed",
+                    "detail": "Local ARM expression validation failed before Azure What-If. The template needs a manual fix or regeneration.",
+                    "failure_category": "local_expression_validation",
+                    "pipeline": "validation",
+                    "service_id": template_id,
+                    "actions": [
+                        {"id": "retry", "label": "Retry Validation",
+                         "description": "Re-run the full validation pipeline",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    "context": {
+                        "template_id": template_id,
+                        "version_num": version_num,
+                        "region": region,
+                        "errors": syntax_errors[:10],
+                    },
+                }) + "\n"
+                break
+
+            yield json.dumps({
+                "phase": "healing",
+                "detail": "Local ARM expression validation found a syntax issue before Azure What-If — adjusting the template…",
+                "error_summary": error_msg[:500],
+            }) + "\n"
+
+            pre_fix = json.dumps(current_tpl, indent=2) if isinstance(current_tpl, dict) else str(current_tpl)
+            try:
+                fixed_json = await copilot_heal_template(
+                    content=pre_fix,
+                    error=error_msg,
+                    previous_attempts=heal_history,
+                    parameters=extract_param_values(current_tpl),
+                )
+                fix_summary = summarize_fix(pre_fix, fixed_json)
+                heal_history.append({
+                    "step": len(heal_history) + 1,
+                    "phase": "local_expression_validation",
+                    "error": error_msg[:500],
+                    "fix_summary": fix_summary,
+                })
+                current_tpl = json.loads(fixed_json)
+                current_params = build_final_params(current_tpl, user_params)
+                yield json.dumps({
+                    "phase": "healed",
+                    "detail": f"Template adjusted after local syntax validation: {fix_summary}",
+                    "fix_summary": fix_summary,
+                }) + "\n"
+                continue
+            except Exception as heal_err:
+                yield json.dumps({
+                    "type": "action_required",
+                    "phase": "heal_failed",
+                    "detail": f"Local ARM syntax validation failed, and the auto-healer could not repair it: {heal_err}",
+                    "failure_category": "local_expression_validation",
+                    "pipeline": "validation",
+                    "service_id": template_id,
+                    "actions": [
+                        {"id": "retry", "label": "Retry Validation",
+                         "description": "Re-run the full validation pipeline",
+                         "style": "primary"},
+                        {"id": "end_pipeline", "label": "End Pipeline",
+                         "description": "Stop and review the template manually",
+                         "style": "danger"},
+                    ],
+                    "context": {
+                        "template_id": template_id,
+                        "version_num": version_num,
+                        "region": region,
+                        "errors": syntax_errors[:10],
+                    },
+                }) + "\n"
+                break
 
         try:
             result = await execute_deployment(

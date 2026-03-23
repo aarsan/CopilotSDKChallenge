@@ -278,7 +278,7 @@ CopilotSDKChallenge/
 │   │   ├── github_publisher.py  # GitHub repo/PR publishing
 │   │   ├── service_catalog.py   # Service approval tools
 │   │   ├── governance_tools.py  # Security standards, compliance, policies
-│   │   ├── arm_generator.py     # ARM skeleton registry
+│   │   ├── arm_generator.py     # ARM generation/editing helpers
 │   │   └── static_policy_validator.py  # Static ARM template validation
 │   └── templates/
 │       ├── __init__.py

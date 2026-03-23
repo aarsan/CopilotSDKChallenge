@@ -24,7 +24,6 @@ var tags = {
   environment: environment
   project: projectName
   managedBy: 'InfraForge'
-  deployedAt: utcNow('yyyy-MM-dd')
 }
 
 // ── SKU mapping per environment ─────────────────────────────

@@ -1,27 +1,16 @@
-"""ARM Template Auto-Generator.
+"""ARM template generation and editing helpers.
 
-Generates basic, policy-compliant ARM templates for Azure resource types.
-Uses built-in skeletons for common resource types and falls back to the
-Copilot SDK for unknown types.
-
-Each generated template follows these principles:
-- Standard parameters: location, resourceName, environment, tags
-- Location always uses [resourceGroup().location] as default
-- Required tags from governance policies are included
-- Minimal required properties for the resource type
-- Proper API versions
+InfraForge now generates ARM templates exclusively through the Copilot SDK.
+This module keeps the shared template metadata/constants plus helper routines
+for generation, modification, and template post-processing.
 """
 
 import json
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger("infraforge.tools.arm_generator")
 
-# ══════════════════════════════════════════════════════════════
-# ARM TEMPLATE SKELETON REGISTRY
-# ══════════════════════════════════════════════════════════════
 
 _STANDARD_PARAMETERS = {
     "resourceName": {
@@ -71,978 +60,8 @@ _TEMPLATE_WRAPPER = {
 }
 
 
-def _make_template(resources: list, extra_params: dict | None = None,
-                   outputs: dict | None = None) -> dict:
-    """Build a complete ARM template with standard parameters + resources."""
-    params = dict(_STANDARD_PARAMETERS)
-    if extra_params:
-        params.update(extra_params)
-
-    template = dict(_TEMPLATE_WRAPPER)
-    template["parameters"] = params
-    template["variables"] = {}
-    template["resources"] = resources
-    template["outputs"] = outputs or {}
-    return template
-
-
-# ──────────────────────────────────────────────────────────────
-# BUILT-IN SKELETONS — one per resource type
-# ──────────────────────────────────────────────────────────────
-
-_SKELETONS: dict[str, callable] = {}
-
-
-def _register(resource_type: str):
-    """Decorator to register an ARM skeleton generator."""
-    def decorator(fn):
-        _SKELETONS[resource_type.lower()] = fn
-        return fn
-    return decorator
-
-
-# ── Networking ────────────────────────────────────────────────
-
-@_register("Microsoft.Network/virtualNetworks")
-def _vnet():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/virtualNetworks",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "addressSpace": {
-                    "addressPrefixes": ["10.0.0.0/16"]
-                },
-                "subnets": [
-                    {
-                        "name": "default",
-                        "properties": {
-                            "addressPrefix": "10.0.1.0/24"
-                        }
-                    }
-                ]
-            }
-        }],
-        extra_params={
-            "addressPrefix": {
-                "type": "string",
-                "defaultValue": "10.0.0.0/16",
-                "metadata": {"description": "Address space CIDR for the VNet"},
-            },
-            "subnetPrefix": {
-                "type": "string",
-                "defaultValue": "10.0.1.0/24",
-                "metadata": {"description": "Default subnet CIDR"},
-            },
-        },
-        outputs={
-            "vnetId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/virtualNetworks', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/networkSecurityGroups")
-def _nsg():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/networkSecurityGroups",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "securityRules": [
-                    {
-                        "name": "DenyAllInbound",
-                        "properties": {
-                            "priority": 4096,
-                            "direction": "Inbound",
-                            "access": "Deny",
-                            "protocol": "*",
-                            "sourceAddressPrefix": "*",
-                            "sourcePortRange": "*",
-                            "destinationAddressPrefix": "*",
-                            "destinationPortRange": "*"
-                        }
-                    }
-                ]
-            }
-        }],
-        outputs={
-            "nsgId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/networkSecurityGroups', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/publicIPAddresses")
-def _public_ip():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/publicIPAddresses",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "sku": {
-                "name": "Standard",
-                "tier": "Regional"
-            },
-            "properties": {
-                "publicIPAllocationMethod": "Static",
-                "publicIPAddressVersion": "IPv4"
-            }
-        }],
-        outputs={
-            "publicIpId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/publicIPAddresses', parameters('resourceName'))]"
-            },
-            "ipAddress": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).ipAddress]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/azureFirewalls")
-def _azure_firewall():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/azureFirewalls",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "sku": {
-                    "name": "AZFW_VNet",
-                    "tier": "Standard"
-                },
-                "threatIntelMode": "Alert"
-            }
-        }],
-        outputs={
-            "firewallId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/azureFirewalls', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/firewallPolicies")
-def _firewall_policy():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/firewallPolicies",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "sku": {
-                    "name": "Standard"
-                },
-                "threatIntelMode": "Alert"
-            }
-        }],
-        outputs={
-            "policyId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/firewallPolicies', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/virtualNetworks/subnets")
-def _subnet():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/virtualNetworks/subnets",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "addressPrefix": "10.0.1.0/24"
-            }
-        }],
-        extra_params={
-            "subnetAddressPrefix": {
-                "type": "string",
-                "defaultValue": "10.0.1.0/24",
-                "metadata": {"description": "Address prefix for the subnet"},
-            }
-        },
-        outputs={
-            "subnetId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Network/applicationGateways")
-def _appgw():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/applicationGateways",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "sku": {
-                    "name": "Standard_v2",
-                    "tier": "Standard_v2",
-                    "capacity": 1
-                },
-                "gatewayIPConfigurations": [],
-                "frontendIPConfigurations": [],
-                "frontendPorts": [],
-                "backendAddressPools": [],
-                "backendHttpSettingsCollection": [],
-                "httpListeners": [],
-                "requestRoutingRules": []
-            }
-        }]
-    )
-
-
-@_register("Microsoft.Network/dnszones")
-def _dns_zone():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Network/dnszones",
-            "apiVersion": "2018-05-01",
-            "name": "[parameters('resourceName')]",
-            "location": "global",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "zoneType": "Public"
-            }
-        }],
-        outputs={
-            "zoneId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Network/dnszones', parameters('resourceName'))]"
-            },
-            "nameServers": {
-                "type": "array",
-                "value": "[reference(resourceId('Microsoft.Network/dnszones', parameters('resourceName'))).nameServers]"
-            }
-        }
-    )
-
-
-# ── Compute ───────────────────────────────────────────────────
-
-@_register("Microsoft.Web/serverfarms")
-def _app_service_plan():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Web/serverfarms",
-            "apiVersion": "2023-12-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "sku": {
-                "name": "B1",
-                "tier": "Basic",
-                "size": "B1",
-                "capacity": 1
-            },
-            "kind": "linux",
-            "properties": {
-                "reserved": True
-            }
-        }],
-        extra_params={
-            "skuName": {
-                "type": "string",
-                "defaultValue": "B1",
-                "allowedValues": ["B1", "B2", "B3", "S1", "S2", "S3", "P1v3", "P2v3"],
-                "metadata": {"description": "App Service Plan SKU"},
-            },
-        },
-        outputs={
-            "planId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Web/serverfarms', parameters('resourceName'))]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Web/sites")
-def _app_service():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Web/sites",
-            "apiVersion": "2023-12-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "kind": "app,linux",
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "httpsOnly": True,
-                "siteConfig": {
-                    "minTlsVersion": "1.2",
-                    "ftpsState": "Disabled",
-                    "remoteDebuggingEnabled": False,
-                    "http20Enabled": True
-                }
-            }
-        }],
-        outputs={
-            "defaultHostname": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).defaultHostName]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.ContainerInstance/containerGroups")
-def _aci():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.ContainerInstance/containerGroups",
-            "apiVersion": "2023-05-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "containers": [
-                    {
-                        "name": "[parameters('resourceName')]",
-                        "properties": {
-                            "image": "mcr.microsoft.com/hello-world",
-                            "resources": {
-                                "requests": {
-                                    "cpu": 1,
-                                    "memoryInGB": 1.5
-                                }
-                            },
-                            "ports": [{"port": 80, "protocol": "TCP"}]
-                        }
-                    }
-                ],
-                "osType": "Linux",
-                "restartPolicy": "OnFailure",
-                "ipAddress": {
-                    "type": "Private",
-                    "ports": [{"port": 80, "protocol": "TCP"}]
-                }
-            }
-        }]
-    )
-
-
-@_register("Microsoft.App/containerApps")
-def _container_apps():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.App/containerApps",
-            "apiVersion": "2024-03-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "configuration": {
-                    "ingress": {
-                        "external": False,
-                        "targetPort": 80,
-                        "transport": "http"
-                    }
-                },
-                "template": {
-                    "containers": [
-                        {
-                            "name": "[parameters('resourceName')]",
-                            "image": "mcr.microsoft.com/hello-world",
-                            "resources": {
-                                "cpu": 0.5,
-                                "memory": "1Gi"
-                            }
-                        }
-                    ],
-                    "scale": {
-                        "minReplicas": 0,
-                        "maxReplicas": 3
-                    }
-                }
-            }
-        }]
-    )
-
-
-@_register("Microsoft.ContainerService/managedClusters")
-def _aks():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.ContainerService/managedClusters",
-            "apiVersion": "2024-01-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "dnsPrefix": "[parameters('resourceName')]",
-                "agentPoolProfiles": [
-                    {
-                        "name": "default",
-                        "count": 1,
-                        "vmSize": "Standard_DS2_v2",
-                        "mode": "System",
-                        "osType": "Linux"
-                    }
-                ],
-                "networkProfile": {
-                    "networkPlugin": "azure",
-                    "networkPolicy": "calico"
-                },
-                "addonProfiles": {
-                    "azurePolicy": {"enabled": True}
-                }
-            }
-        }],
-        extra_params={
-            "nodeCount": {
-                "type": "int",
-                "defaultValue": 1,
-                "minValue": 1,
-                "maxValue": 10,
-                "metadata": {"description": "Number of nodes in the default pool"},
-            },
-            "vmSize": {
-                "type": "string",
-                "defaultValue": "Standard_DS2_v2",
-                "metadata": {"description": "VM size for cluster nodes"},
-            },
-        }
-    )
-
-
-@_register("Microsoft.Compute/virtualMachines")
-def _vm():
-    return _make_template(
-        resources=[
-            {
-                "type": "Microsoft.Compute/virtualMachines",
-                "apiVersion": "2024-03-01",
-                "name": "[parameters('resourceName')]",
-                "location": "[parameters('location')]",
-                "tags": _STANDARD_TAGS,
-                "identity": {"type": "SystemAssigned"},
-                "properties": {
-                    "hardwareProfile": {"vmSize": "[parameters('vmSize')]"},
-                    "osProfile": {
-                        "computerName": "[parameters('resourceName')]",
-                        "adminUsername": "azureuser",
-                        "linuxConfiguration": {
-                            "disablePasswordAuthentication": True,
-                            "ssh": {
-                                "publicKeys": [{
-                                    "path": "/home/azureuser/.ssh/authorized_keys",
-                                    "keyData": "[parameters('sshPublicKey')]",
-                                }],
-                            },
-                            "patchSettings": {"patchMode": "AutomaticByPlatform"},
-                        },
-                    },
-                    "storageProfile": {
-                        "imageReference": {
-                            "publisher": "Canonical",
-                            "offer": "ubuntu-24_04-lts",
-                            "sku": "server",
-                            "version": "latest",
-                        },
-                        "osDisk": {
-                            "createOption": "FromImage",
-                            "managedDisk": {
-                                "storageAccountType": "Premium_LRS",
-                            },
-                        },
-                    },
-                    "networkProfile": {
-                        "networkInterfaces": [{
-                            "id": "[parameters('nicId')]",
-                        }],
-                    },
-                    "securityProfile": {
-                        "encryptionAtHost": True,
-                    },
-                    "diagnosticsProfile": {
-                        "bootDiagnostics": {
-                            "enabled": True,
-                        },
-                    },
-                },
-            },
-        ],
-        extra_params={
-            "vmSize": {
-                "type": "string",
-                "defaultValue": "Standard_DS2_v2",
-                "metadata": {"description": "VM size"},
-            },
-            "sshPublicKey": {
-                "type": "secureString",
-                "metadata": {"description": "SSH public key for admin user authentication"},
-            },
-            "nicId": {
-                "type": "string",
-                "defaultValue": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('resourceName'), '-nic'))]",
-                "metadata": {"description": "Resource ID of the network interface for the VM"},
-            },
-        },
-    )
-
-
-# ── Databases ─────────────────────────────────────────────────
-
-@_register("Microsoft.Sql/servers")
-def _sql_server():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Sql/servers",
-            "apiVersion": "2023-08-01-preview",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "minimalTlsVersion": "1.2",
-                "publicNetworkAccess": "Disabled",
-                "administrators": {
-                    "azureADOnlyAuthentication": True,
-                    "administratorType": "ActiveDirectory",
-                    "principalType": "Group",
-                    "login": "SQL Admins",
-                    "sid": "00000000-0000-0000-0000-000000000000",
-                    "tenantId": "[subscription().tenantId]"
-                }
-            }
-        }],
-        outputs={
-            "serverId": {
-                "type": "string",
-                "value": "[resourceId('Microsoft.Sql/servers', parameters('resourceName'))]"
-            },
-            "fqdn": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).fullyQualifiedDomainName]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Sql/servers/databases")
-def _sql_db():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Sql/servers/databases",
-            "apiVersion": "2023-08-01-preview",
-            "name": "[format('{0}/{1}', parameters('serverName'), parameters('resourceName'))]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "sku": {
-                "name": "GP_S_Gen5_1",
-                "tier": "GeneralPurpose"
-            },
-            "properties": {
-                "collation": "SQL_Latin1_General_CP1_CI_AS",
-                "maxSizeBytes": 34359738368,
-                "zoneRedundant": False,
-                "requestedBackupStorageRedundancy": "Local"
-            }
-        }],
-        extra_params={
-            "serverName": {
-                "type": "string",
-                "metadata": {"description": "Name of the parent SQL Server"},
-            },
-        }
-    )
-
-
-@_register("Microsoft.DBforPostgreSQL/flexibleServers")
-def _pg_flex():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.DBforPostgreSQL/flexibleServers",
-            "apiVersion": "2023-12-01-preview",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "sku": {
-                "name": "Standard_B1ms",
-                "tier": "Burstable"
-            },
-            "properties": {
-                "version": "16",
-                "storage": {
-                    "storageSizeGB": 32
-                },
-                "backup": {
-                    "backupRetentionDays": 7,
-                    "geoRedundantBackup": "Disabled"
-                },
-                "highAvailability": {
-                    "mode": "Disabled"
-                },
-                "authConfig": {
-                    "activeDirectoryAuth": "Enabled",
-                    "passwordAuth": "Disabled"
-                }
-            }
-        }]
-    )
-
-
-@_register("Microsoft.DocumentDB/databaseAccounts")
-def _cosmos():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.DocumentDB/databaseAccounts",
-            "apiVersion": "2024-02-15-preview",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "kind": "GlobalDocumentDB",
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "databaseAccountOfferType": "Standard",
-                "consistencyPolicy": {
-                    "defaultConsistencyLevel": "Session"
-                },
-                "locations": [
-                    {
-                        "locationName": "[parameters('location')]",
-                        "failoverPriority": 0
-                    }
-                ],
-                "publicNetworkAccess": "Disabled",
-                "minimalTlsVersion": "Tls12",
-                "disableLocalAuth": True
-            }
-        }]
-    )
-
-
-@_register("Microsoft.Cache/Redis")
-def _redis():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Cache/Redis",
-            "apiVersion": "2023-08-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "sku": {
-                    "name": "Basic",
-                    "family": "C",
-                    "capacity": 0
-                },
-                "enableNonSslPort": False,
-                "minimumTlsVersion": "1.2",
-                "publicNetworkAccess": "Disabled",
-                "redisConfiguration": {}
-            }
-        }]
-    )
-
-
-# ── Security & Identity ──────────────────────────────────────
-
-@_register("Microsoft.KeyVault/vaults")
-def _keyvault():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.KeyVault/vaults",
-            "apiVersion": "2023-07-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "tenantId": "[subscription().tenantId]",
-                "sku": {
-                    "family": "A",
-                    "name": "standard"
-                },
-                "enableRbacAuthorization": True,
-                "enableSoftDelete": True,
-                "softDeleteRetentionInDays": 90,
-                "enablePurgeProtection": True,
-                "publicNetworkAccess": "Disabled",
-                "networkAcls": {
-                    "defaultAction": "Deny",
-                    "bypass": "AzureServices"
-                }
-            }
-        }]
-    )
-
-
-@_register("Microsoft.ManagedIdentity/userAssignedIdentities")
-def _managed_identity():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
-            "apiVersion": "2023-01-31",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-        }],
-        outputs={
-            "principalId": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).principalId]"
-            },
-            "clientId": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).clientId]"
-            }
-        }
-    )
-
-
-# ── Storage ───────────────────────────────────────────────────
-
-@_register("Microsoft.Storage/storageAccounts")
-def _storage():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Storage/storageAccounts",
-            "apiVersion": "2023-05-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "kind": "StorageV2",
-            "sku": {
-                "name": "Standard_LRS"
-            },
-            "properties": {
-                "supportsHttpsTrafficOnly": True,
-                "minimumTlsVersion": "TLS1_2",
-                "allowBlobPublicAccess": False,
-                "publicNetworkAccess": "Disabled",
-                "encryption": {
-                    "services": {
-                        "blob": {"enabled": True, "keyType": "Account"},
-                        "file": {"enabled": True, "keyType": "Account"}
-                    },
-                    "keySource": "Microsoft.Storage"
-                },
-                "networkAcls": {
-                    "defaultAction": "Deny",
-                    "bypass": "AzureServices"
-                }
-            }
-        }],
-        extra_params={
-            "skuName": {
-                "type": "string",
-                "defaultValue": "Standard_LRS",
-                "allowedValues": ["Standard_LRS", "Standard_GRS", "Standard_ZRS",
-                                  "Premium_LRS", "Premium_ZRS"],
-                "metadata": {"description": "Storage account SKU"},
-            }
-        }
-    )
-
-
-# ── Monitoring ────────────────────────────────────────────────
-
-@_register("Microsoft.OperationalInsights/workspaces")
-def _log_analytics():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.OperationalInsights/workspaces",
-            "apiVersion": "2023-09-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "properties": {
-                "sku": {
-                    "name": "PerGB2018"
-                },
-                "retentionInDays": 30,
-                "publicNetworkAccessForIngestion": "Enabled",
-                "publicNetworkAccessForQuery": "Enabled"
-            }
-        }],
-        outputs={
-            "workspaceId": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).customerId]"
-            }
-        }
-    )
-
-
-@_register("Microsoft.Insights/components")
-def _app_insights():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.Insights/components",
-            "apiVersion": "2020-02-02",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "kind": "web",
-            "properties": {
-                "Application_Type": "web",
-                "RetentionInDays": 90,
-                "publicNetworkAccessForIngestion": "Enabled",
-                "publicNetworkAccessForQuery": "Enabled"
-            }
-        }],
-        outputs={
-            "instrumentationKey": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).InstrumentationKey]"
-            },
-            "connectionString": {
-                "type": "string",
-                "value": "[reference(parameters('resourceName')).ConnectionString]"
-            }
-        }
-    )
-
-
-# ── AI ────────────────────────────────────────────────────────
-
-@_register("Microsoft.CognitiveServices/accounts")
-def _cognitive():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.CognitiveServices/accounts",
-            "apiVersion": "2024-04-01-preview",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "kind": "CognitiveServices",
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "sku": {
-                "name": "S0"
-            },
-            "properties": {
-                "publicNetworkAccess": "Disabled",
-                "disableLocalAuth": True,
-                "customSubDomainName": "[parameters('resourceName')]",
-                "networkAcls": {
-                    "defaultAction": "Deny"
-                }
-            }
-        }]
-    )
-
-
-@_register("Microsoft.MachineLearningServices/workspaces")
-def _ml_workspace():
-    return _make_template(
-        resources=[{
-            "type": "Microsoft.MachineLearningServices/workspaces",
-            "apiVersion": "2024-04-01",
-            "name": "[parameters('resourceName')]",
-            "location": "[parameters('location')]",
-            "tags": _STANDARD_TAGS,
-            "identity": {
-                "type": "SystemAssigned"
-            },
-            "properties": {
-                "friendlyName": "[parameters('resourceName')]",
-                "publicNetworkAccess": "Disabled"
-            }
-        }]
-    )
-
-
-# ══════════════════════════════════════════════════════════════
-# GENERATOR API
-# ══════════════════════════════════════════════════════════════
-
-def get_supported_resource_types() -> list[str]:
-    """Return the list of resource types with built-in skeletons."""
-    return sorted(_SKELETONS.keys(), key=str.lower)
-
-
-def has_builtin_skeleton(resource_type: str) -> bool:
-    """Check if a built-in ARM skeleton exists for this resource type."""
-    return resource_type.lower() in _SKELETONS
-
-
-def generate_arm_template(resource_type: str) -> Optional[dict]:
-    """Generate a basic ARM template for the given Azure resource type.
-
-    Returns the template as a dict, or None if no built-in skeleton exists.
-    For unknown types, use generate_arm_template_with_copilot().
-    """
-    gen_fn = _SKELETONS.get(resource_type.lower())
-    if gen_fn is None:
-        return None
-
-    template = gen_fn()
-    logger.info(
-        f"Generated ARM template for {resource_type}: "
-        f"{len(template.get('resources', []))} resource(s), "
-        f"{len(template.get('parameters', {}))} parameter(s)"
-    )
-    return template
-
-
-def generate_arm_template_json(resource_type: str) -> Optional[str]:
-    """Generate and return as a formatted JSON string."""
-    template = generate_arm_template(resource_type)
-    if template is None:
-        return None
-    return json.dumps(template, indent=2)
-
-
 def strip_foreign_resources(template_json: str, service_id: str) -> str:
-    """Remove resources that don't match the service's own resource type.
-
-    Service ARM templates should contain ONLY the service's own resource(s).
-    Dependencies (VNets, NICs, Public IPs, etc.) are added by the composition
-    layer at compose time and by a test wrapper at validation time — they
-    should never be stored in the service template itself.
-
-    This function preserves:
-    - Resources whose type matches ``service_id`` (case-insensitive)
-    - Resources whose type is a child of ``service_id``
-      (e.g. ``Microsoft.Sql/servers/databases`` is kept for ``Microsoft.Sql/servers``)
-
-    It removes any foreign resources and cleans up orphaned dependsOn
-    references that pointed to the removed resources.
-    """
+    """Remove resources that don't match the service's own resource type."""
     try:
         tpl = json.loads(template_json)
     except (json.JSONDecodeError, TypeError):
@@ -1058,29 +77,24 @@ def strip_foreign_resources(template_json: str, service_id: str) -> str:
 
     for res in resources:
         rtype = (res.get("type") or "").lower()
-        # Keep if it matches or is a child type
         if rtype == own_type or rtype.startswith(own_type + "/"):
             kept.append(res)
         else:
             removed_ids.add(rtype)
-            # Also track the resourceId patterns for dependsOn cleanup
             rname = res.get("name", "")
             if rname:
                 removed_ids.add(rname.lower())
 
     if len(kept) == len(resources):
-        return template_json  # Nothing removed
+        return template_json
 
     removed_types = [r.get("type", "?") for r in resources if r not in kept]
 
-    # Guard: if ALL resources would be removed, the template likely has a
-    # type mismatch (e.g. LLM used wrong resource type).  Return the
-    # original unchanged rather than silently producing an empty template.
     if not kept:
         logger.error(
             f"[strip_foreign] {service_id}: would remove ALL {len(resources)} "
-            f"resource(s) — none matched '{service_id}'.  Types present: "
-            f"{removed_types}.  Returning original template unchanged."
+            f"resource(s) — none matched '{service_id}'. Types present: "
+            f"{removed_types}. Returning original template unchanged."
         )
         return template_json
 
@@ -1089,7 +103,6 @@ def strip_foreign_resources(template_json: str, service_id: str) -> str:
         f"resource(s): {removed_types}"
     )
 
-    # Clean up dependsOn references to removed resources
     for res in kept:
         depends = res.get("dependsOn", [])
         if depends:
@@ -1114,24 +127,7 @@ async def modify_arm_template_with_copilot(
     copilot_client,
     model: str = "gpt-4.1",
 ) -> str:
-    """Use the Copilot SDK to modify an existing ARM template based on a user prompt.
-
-    Takes the current ARM template and a natural-language modification request,
-    sends both to the LLM, and returns the modified template.
-
-    Args:
-        existing_template: The current ARM template JSON string to modify
-        modification_prompt: Natural-language description of the desired changes
-        resource_type: Azure resource type (for context)
-        copilot_client: Initialized CopilotClient instance
-        model: LLM model ID to use for generation
-
-    Returns:
-        Modified ARM template as a JSON string
-
-    Raises:
-        ValueError: If the LLM fails to produce a valid ARM template after retries
-    """
+    """Use the Copilot SDK to modify an existing ARM template based on a user prompt."""
     prompt = (
         f"You are modifying an existing ARM template for Azure resource type '{resource_type}'.\n\n"
         f"--- CURRENT ARM TEMPLATE ---\n"
@@ -1146,12 +142,10 @@ async def modify_arm_template_with_copilot(
         "- Preserve ALL existing parameters, resources, outputs, and tags unless the modification explicitly asks to remove them\n"
         "- EVERY parameter MUST keep a defaultValue\n"
         "- Keep contentVersion, $schema, and metadata sections intact\n"
-        "- Maintain correct property nesting: sku, identity, tags, kind at resource root; "
-        "resource-specific config inside 'properties'\n"
+        "- Maintain correct property nesting: sku, identity, tags, kind at resource root; resource-specific config inside 'properties'\n"
         "- Use the LATEST STABLE API version — never downgrade\n"
         "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
-        "- If the modification asks for something that doesn't make sense for this resource type, "
-        "still return the template with a best-effort change and add a comment in the template metadata\n"
+        "- If the modification asks for something that doesn't make sense for this resource type, still return the template with a best-effort change and add a comment in the template metadata\n"
     )
 
     from src.copilot_helpers import copilot_send
@@ -1206,118 +200,69 @@ async def generate_arm_template_with_copilot(
     region: str = "",
     governance_context: str = "",
 ) -> str:
-    """Use the Copilot SDK to generate an ARM template for an unknown resource type.
-
-    This is the EXECUTE phase — the model receives the architecture plan from the
-    PLAN phase and produces the ARM template. It doesn't need to reason about what
-    to build — it just follows the plan.
-
-    Args:
-        resource_type: Azure resource type (e.g. Microsoft.Sql/servers)
-        service_name: Human-readable service name
-        copilot_client: Initialized CopilotClient instance
-        model: LLM model ID to use for generation
-        standards_context: Optional organization standards context to inject
-        planning_context: Architecture plan from the reasoning model (PLAN phase)
-        region: Target Azure region
-        governance_context: Security & governance requirements from CISO policies
-    """
+    """Use the Copilot SDK to generate an ARM template for a resource type."""
     prompt = (
         f"Generate a minimal ARM template (JSON) for deploying the Azure resource type "
         f"'{resource_type}' (service: {service_name}).\n\n"
     )
 
-    # ── Child resource type: inject parent requirement ──
     from src.template_engine import get_parent_resource_type
     _parent_type = get_parent_resource_type(resource_type)
     if _parent_type:
         prompt += (
             f"## CRITICAL — CHILD RESOURCE TYPE\n"
-            f"'{resource_type}' is a CHILD resource of '{_parent_type}'. "
-            f"Child resources CANNOT exist without their parent in Azure.\n"
+            f"'{resource_type}' is a CHILD resource of '{_parent_type}'. Child resources CANNOT exist without their parent in Azure.\n"
             f"You MUST include the parent resource ({_parent_type}) in the same template.\n"
             f"Use one of these approaches:\n"
-            f"1. Define the parent resource first, then define the child as a separate "
-            f"resource with name like \"[concat(parameters('parentName'), '/childName')]\" "
-            f"and a dependsOn reference to the parent\n"
+            f"1. Define the parent resource first, then define the child as a separate resource with name like \"[concat(parameters('parentName'), '/childName')]\" and a dependsOn reference to the parent\n"
             f"2. Define the child as a nested resource inside the parent's resources array\n\n"
-            f"The parent resource should have minimal configuration — just enough to be "
-            f"deployable. The child resource is the primary focus.\n\n"
+            f"The parent resource should have minimal configuration — just enough to be deployable. The child resource is the primary focus.\n\n"
         )
 
-    # Inject region-aware naming context
     from src.config import region_abbr as _region_abbr
     _region = region or "eastus2"
     _abbr = _region_abbr(_region)
     prompt += (
         f"### Naming Convention\n"
         f"Deployment region: {_region} (abbreviation: {_abbr})\n"
-        f"Resource names MUST include the region abbreviation '{_abbr}' — "
-        f"NEVER use a different region in the name.\n"
+        f"Resource names MUST include the region abbreviation '{_abbr}' — NEVER use a different region in the name.\n"
         f"Pattern: {{resourceType}}-{{project}}-{{environment}}-{_abbr}-{{instance}}\n"
         f"Example: infraforge-sql-dev-{_abbr}-001\n\n"
     )
 
-    # Inject the architecture plan from the PLAN phase
     if planning_context:
         prompt += (
             "--- ARCHITECTURE PLAN (follow this plan precisely) ---\n"
             f"{planning_context}\n"
             "--- END PLAN ---\n\n"
-            "Follow the architecture plan above. It specifies the resources, security "
-            "configurations, parameters, and properties to include.\n\n"
-            "CRITICAL: EVERY parameter in the template MUST have a \"defaultValue\". "
-            "This template is deployed with parameters={} for validation, so any "
-            "parameter without a default will cause a deployment failure. "
-            "Use sensible defaults (e.g. resourceName → \"infraforge-resource\", "
-            "location → \"[resourceGroup().location]\").\n\n"
-            "MINIMAL INFRASTRUCTURE: Unless the plan explicitly says otherwise, use "
-            "a SINGLE availability zone (or omit 'zones' entirely) — NEVER specify "
-            "zones: [\"1\",\"2\",\"3\"]. NAT Gateways and many resources FAIL with "
-            "multiple zones. Set zoneRedundant=false, geoRedundantBackup='Disabled', "
-            "requestedBackupStorageRedundancy='Local'. Only add HA/redundancy if the "
-            "plan explicitly requests it.\n\n"
+            "Follow the architecture plan above. It specifies the resources, security configurations, parameters, and properties to include.\n\n"
+            "CRITICAL: EVERY parameter in the template MUST have a \"defaultValue\". This template is deployed with parameters={} for validation, so any parameter without a default will cause a deployment failure. Use sensible defaults (e.g. resourceName → \"infraforge-resource\", location → \"[resourceGroup().location]\").\n\n"
+            "MINIMAL INFRASTRUCTURE: Unless the plan explicitly says otherwise, use a SINGLE availability zone (or omit 'zones' entirely) — NEVER specify zones: [\"1\",\"2\",\"3\"]. NAT Gateways and many resources FAIL with multiple zones. Set zoneRedundant=false, geoRedundantBackup='Disabled', requestedBackupStorageRedundancy='Local'. Only add HA/redundancy if the plan explicitly requests it.\n\n"
         )
     else:
         prompt += (
             "Requirements:\n"
-            "- Include standard parameters — EVERY parameter MUST have a defaultValue "
-            "(this template is deployed with parameters={} for validation):\n"
-            "  resourceName (string, default \"infraforge-resource\"), "
-            "location (string, default \"[resourceGroup().location]\"), "
-            "environment (string, default \"dev\"), "
-            "projectName (string, default \"infraforge\"), "
-            "ownerEmail (string, default \"platform-team@company.com\"), "
-            "costCenter (string, default \"IT-0001\")\n"
+            "- Include standard parameters — EVERY parameter MUST have a defaultValue (this template is deployed with parameters={} for validation):\n"
+            "  resourceName (string, default \"infraforge-resource\"), location (string, default \"[resourceGroup().location]\"), environment (string, default \"dev\"), projectName (string, default \"infraforge\"), ownerEmail (string, default \"platform-team@company.com\"), costCenter (string, default \"IT-0001\")\n"
             "- Include tags: environment, owner, costCenter, project, managedBy=InfraForge\n"
-            "- Use the LATEST STABLE (GA) API version for this resource type — never "
-            "use preview versions unless no GA version exists\n"
+            "- Use the LATEST STABLE (GA) API version for this resource type — never use preview versions unless no GA version exists\n"
             "- Include minimal required properties only\n"
-            "- SINGLE ZONE / NO REDUNDANCY: Do NOT specify multiple availability zones. "
-            "Either omit the 'zones' property entirely or set it to at most [\"1\"]. "
-            "Many resources (NAT Gateways, some LBs) fail with multiple zones. "
-            "Use requestedBackupStorageRedundancy='Local', geoRedundantBackup='Disabled', "
-            "zoneRedundant=false. Only add HA/redundancy if explicitly requested.\n"
-            "- Enable managed identity (SystemAssigned) if the resource supports it — "
-            "identity block goes at RESOURCE ROOT, not inside properties\n"
+            "- SINGLE ZONE / NO REDUNDANCY: Do NOT specify multiple availability zones. Either omit the 'zones' property entirely or set it to at most [\"1\"]. Many resources (NAT Gateways, some LBs) fail with multiple zones. Use requestedBackupStorageRedundancy='Local', geoRedundantBackup='Disabled', zoneRedundant=false. Only add HA/redundancy if explicitly requested.\n"
+            "- Enable managed identity (SystemAssigned) if the resource supports it — identity block goes at RESOURCE ROOT, not inside properties\n"
             "- sku goes at RESOURCE ROOT level, not inside properties\n"
             "- Set httpsOnly/minTlsVersion where applicable (inside properties)\n"
             "- Disable public network access where applicable\n"
-            "- Do NOT include diagnostic settings or Log Analytics dependencies\n"
-            "\n"
+            "- NEVER use utcNow() except in a parameter defaultValue expression; do not place utcNow() in variables, tags, resource properties, or outputs\n"
+            "- Do NOT include diagnostic settings or Log Analytics dependencies\n\n"
             "### Property Nesting (CRITICAL — wrong nesting causes deployment failures)\n"
-            "Resource root level: type, apiVersion, name, location, kind, sku, identity, "
-            "tags, zones, dependsOn\n"
+            "Resource root level: type, apiVersion, name, location, kind, sku, identity, tags, zones, dependsOn\n"
             "Inside 'properties': ALL resource-specific configuration\n"
             "WRONG: {\"properties\": {\"sku\": ...}}  CORRECT: {\"sku\": ..., \"properties\": {...}}\n"
         )
 
     prompt += (
         "- CRITICAL: The template MUST contain ONLY resources of type "
-        f"'{resource_type}' (or its child types). Do NOT include dependency "
-        "resources like VNets, NICs, Public IPs, Managed Identities, etc. "
-        "Dependencies are handled separately by the composition layer. "
-        "Use parameters to reference external dependency resource IDs.\n"
+        f"'{resource_type}' (or its child types). Do NOT include dependency resources like VNets, NICs, Public IPs, Managed Identities, etc. Dependencies are handled separately by the composition layer. Use parameters to reference external dependency resource IDs.\n"
         "- Return ONLY the raw JSON — no markdown fences, no explanation\n"
     )
 
@@ -1347,8 +292,7 @@ async def generate_arm_template_with_copilot(
             if attempt > 1:
                 actual_prompt += (
                     f"\n\nPREVIOUS ATTEMPT FAILED: {last_error}\n"
-                    "Return ONLY the raw JSON object starting with {{ and ending with }}. "
-                    "No markdown fences, no explanation text, no comments."
+                    "Return ONLY the raw JSON object starting with {{ and ending with }}. No markdown fences, no explanation text, no comments."
                 )
 
             raw = await copilot_send(
@@ -1361,22 +305,17 @@ async def generate_arm_template_with_copilot(
             )
             result = _extract_json_from_llm_response(raw)
 
-            # Validate it's valid JSON
             parsed = json.loads(result)
 
-            # Sanity check: must have $schema or resources to be an ARM template
             if not isinstance(parsed, dict) or ("resources" not in parsed and "$schema" not in parsed):
                 raise json.JSONDecodeError("Response is valid JSON but not an ARM template", result, 0)
 
-            # Validate the template contains the expected resource type
             _generated_types = [
                 r.get("type", "").lower()
                 for r in parsed.get("resources", [])
                 if isinstance(r, dict) and r.get("type")
             ]
             _expected_type = resource_type.lower()
-            # For child resource types (e.g. Microsoft.Network/virtualNetworks/subnets),
-            # also accept the parent type (Microsoft.Network/virtualNetworks)
             _expected_parent = "/".join(resource_type.split("/")[:2]).lower() if resource_type.count("/") >= 2 else None
             _type_match = any(
                 _expected_type in t or (_expected_parent and _expected_parent in t)
@@ -1385,8 +324,7 @@ async def generate_arm_template_with_copilot(
             if not _type_match and _generated_types:
                 raise ValueError(
                     f"Generated template contains {_generated_types} but expected "
-                    f"'{resource_type}'. The template MUST include a resource of "
-                    f"type '{resource_type}'. Do not generate unrelated resource types."
+                    f"'{resource_type}'. The template MUST include a resource of type '{resource_type}'. Do not generate unrelated resource types."
                 )
 
             logger.info(f"Copilot generated ARM template for {resource_type} (attempt {attempt})")
@@ -1401,29 +339,18 @@ async def generate_arm_template_with_copilot(
 
 
 def _extract_json_from_llm_response(text: str) -> str:
-    """Extract JSON from an LLM response that may contain markdown fences or extra text.
-
-    Handles common LLM output patterns:
-    - Raw JSON (ideal)
-    - ```json ... ``` wrapped
-    - ``` ... ``` wrapped (no language tag)
-    - JSON embedded in explanatory text
-    """
+    """Extract JSON from an LLM response that may contain markdown fences or extra text."""
     text = text.strip()
 
-    # 1. Strip markdown code fences (```json ... ``` or ``` ... ```)
     fence_match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
     if fence_match:
         text = fence_match.group(1).strip()
 
-    # 2. If it already starts with {, try it directly
     if text.startswith('{'):
         return text
 
-    # 3. Try to find the outermost JSON object in the text
     brace_start = text.find('{')
     if brace_start != -1:
-        # Walk forward to find the matching closing brace
         depth = 0
         in_string = False
         escape_next = False
@@ -1447,5 +374,4 @@ def _extract_json_from_llm_response(text: str) -> str:
                 if depth == 0:
                     return text[brace_start:i + 1]
 
-    # 4. Nothing worked, return as-is and let the caller handle the error
     return text
