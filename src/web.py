@@ -9254,11 +9254,46 @@ async def revise_template(template_id: str, request: Request):
                                        "Try being more specific about what resources you need."})
                 return
 
-            # ── Phase 3: Service onboarding ───────────────────────
+            # ── Phase 3: Service approval gate ─────────────────────
             new_service_ids = feedback_result["new_service_ids"]
+            current_service_ids = set(tmpl.get("service_ids") or [])
+            added_service_ids = [sid for sid in new_service_ids if sid not in current_service_ids]
+
+            if added_service_ids:
+                yield emit("step", "approval", "running",
+                           f"Checking approval status for {len(added_service_ids)} new service(s)…")
+                not_approved = []
+                for sid in added_service_ids:
+                    svc = await get_service(sid)
+                    if not svc or svc.get("status") != "approved":
+                        status = svc.get("status", "not found") if svc else "not in catalog"
+                        not_approved.append({"service_id": sid, "status": status,
+                                             "name": svc.get("name", sid.split('/')[-1]) if svc else sid.split('/')[-1]})
+                        yield emit("log", "approval", "warning",
+                                   f"⚠ {sid.split('/')[-1]} — {status}")
+
+                if not_approved:
+                    names = ", ".join(s["name"] for s in not_approved)
+                    yield emit("step", "approval", "error",
+                               f"Blocked: {len(not_approved)} service(s) not approved — {names}")
+                    yield emit("result", "done", "blocked",
+                               f"Cannot add non-approved services to this template. "
+                               f"The following services must be approved first: {names}. "
+                               f"Go to the Service Catalog and run the onboarding pipeline for each service before adding them here.",
+                               {"status": "blocked",
+                                "reason": "service_not_approved",
+                                "not_approved_services": not_approved,
+                                "policy_check": policy_result,
+                                "analysis": analysis})
+                    return
+
+                yield emit("step", "approval", "success",
+                           f"All {len(added_service_ids)} new service(s) are approved")
+
             yield emit("step", "analyze", "success",
                        f"Identified {len(new_service_ids)} service(s) for composition")
 
+            # ── Phase 4: Load service templates ───────────────────
             yield emit("step", "onboard", "running",
                        f"Preparing {len(new_service_ids)} service template(s)…")
 
@@ -9542,6 +9577,28 @@ async def compose_template_from_prompt(request: Request):
     )
 
     final_service_ids = dep_result["final_service_ids"]
+
+    # ── Step 3b: Service approval gate ────────────────────────
+    not_approved = []
+    for sid in final_service_ids:
+        svc = await get_service(sid)
+        if not svc or svc.get("status") != "approved":
+            status = svc.get("status", "not found") if svc else "not in catalog"
+            not_approved.append({
+                "service_id": sid,
+                "status": status,
+                "name": svc.get("name", sid.split('/')[-1]) if svc else sid.split('/')[-1],
+            })
+    if not_approved:
+        names = ", ".join(s["name"] for s in not_approved)
+        return JSONResponse({
+            "status": "blocked",
+            "reason": "service_not_approved",
+            "not_approved_services": not_approved,
+            "policy_check": policy_result,
+            "message": f"Cannot compose template — the following services are not approved: {names}. "
+                       f"Go to the Service Catalog and run the onboarding pipeline for each service before composing.",
+        }, status_code=422)
 
     # ── Step 4: Gather ARM templates ──────────────────────────
     STANDARD_PARAMS = {
