@@ -6970,12 +6970,21 @@ function showTemplateDetail(templateId) {
 
         <!-- Delete template -->
         <div class="detail-section tmpl-danger-section">
+            <button class="btn btn-sm btn-secondary" onclick="findTemplateExperts('${escapeHtml(tmpl.id)}')">
+                🔍 Find an Expert
+            </button>
             <button class="btn btn-sm btn-secondary" onclick="openCloneTemplateModal('${escapeHtml(tmpl.id)}', '${escapeHtml(tmpl.name)}')">
                 📋 Clone Template
             </button>
             <button class="btn btn-sm btn-danger" onclick="deleteTemplate('${escapeHtml(tmpl.id)}')">
                 🗑 Delete Template
             </button>
+        </div>
+
+        <!-- Work IQ Expert Results -->
+        <div id="tmpl-expert-results" class="detail-section" style="display:none;">
+            <h4>🔍 Subject Matter Experts</h4>
+            <div id="tmpl-expert-body"></div>
         </div>
     `;
 
@@ -12112,6 +12121,33 @@ function closeTemplateDetail() {
     // Scroll panel body to top for next open
     const body = overlay.querySelector('.detail-panel-body');
     if (body) body.scrollTop = 0;
+}
+
+// ── Find an Expert (Work IQ) ────────────────────────────────
+
+async function findTemplateExperts(templateId) {
+    const resultsDiv = document.getElementById('tmpl-expert-results');
+    const bodyDiv = document.getElementById('tmpl-expert-body');
+    if (!resultsDiv || !bodyDiv) return;
+
+    resultsDiv.style.display = '';
+    bodyDiv.innerHTML = '<div class="compose-loading">🔍 Searching for subject matter experts…</div>';
+    resultsDiv.scrollIntoView({ behavior: 'smooth' });
+
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/find-experts`);
+        const data = await res.json();
+        if (data.ok) {
+            const sourceLabel = data.source === 'workiq'
+                ? '<span class="svc-id" style="margin-left:0.5rem;">via Work IQ</span>'
+                : `<span style="margin-left:0.5rem;">${_copilotBadge()}</span>`;
+            bodyDiv.innerHTML = `<div class="tmpl-expert-content">${sourceLabel}${marked.parse(data.experts || 'No experts found.')}</div>`;
+        } else {
+            bodyDiv.innerHTML = `<div class="tmpl-test-banner tmpl-test-failed">⚠️ ${escapeHtml(data.error || 'Could not find experts.')}</div>`;
+        }
+    } catch (err) {
+        bodyDiv.innerHTML = `<div class="tmpl-test-banner tmpl-test-failed">⚠️ Failed to query experts: ${escapeHtml(err.message)}</div>`;
+    }
 }
 
 // ── Design Mode Toggle ──────────────────────────────────────

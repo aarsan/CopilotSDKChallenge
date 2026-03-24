@@ -33,16 +33,24 @@ Structure: **Hook → Pain → Vision → Live Demo → Architecture → Impact 
 
 My customers in FSI are doing this by hand today. If you're at a large enterprise, like my customers, and your team decides they want to start using a new Azure service — say Azure SQL DB — how long does it take before it's actually approved, secured, and ready for anyone to deploy? Honestly, it could be weeks or months. And it's not because the service itself is complicated. 
 
-It's because there are several activities that all have to happen first: someone has to write the infrastructure-as-code - that could be Terraform, ARM Templates, Bicep, etc., someone has to build the CI/CD pipelines (Jenkins, Azure Devops Pipelines, GitHub Actions, etc.), someone has to author the governance policies, and then it all goes through a security and architecture review. Each of those requires different specialists, each having their own SLAs and priorities.
+It's because there are several activities that all have to happen first: someone has to write the infrastructure-as-code - that could be Terraform, ARM Templates, Bicep, etc., someone has to build the CI/CD pipelines (Jenkins, Azure Devops Pipelines, GitHub Actions, etc.), 
 
-"When you look at what platform engineering teams actually spend their time on, it's overwhelmingly these four activities. That's not a technology problem — it's an automation problem. And that's what this tool, using the Copilot SDK, solves."
+The idea behind this software is, it allows an organization to use Azure - or any Cloud for that matter - in a secure, compliant way. It gives you the repeatability and versioning of your infrastructure without anyone writing a line of code. These tasks were typically performed by a DevOps or Automation team. 
+
+
+**** SHOW SOME DEMOS *****
+
+In order for a service to be usable, the end user is typically delivered a pipeline which they can run and provision their service. What this software does is automates all that. I can either:
+
+1. onboard a new service or
+2. Create templates using onboarded services. 
+
+
+
 
 **[0:45–2:30] — The Four Bottlenecks (narrate while live demo loads)**
-- Walk through the **four costly processes** that InfraForge eliminates — speak conversationally, no slides:
 
   1. **Writing IaC templates** — *"When a platform engineer sits down to write an ARM or Bicep template for a new service, they're not just writing infrastructure code. They have to read through Azure resource provider documentation to understand every property and API version. They have to cross-reference their organization's security standards — encryption requirements, network isolation rules, managed identity mandates — and translate each one into template parameters and conditions. They wire up diagnostics, tagging, RBAC assignments, and private endpoints. Then they test it, fix the cryptic deployment errors, test again, get it through code review, and document it. That's 1–2 weeks of a senior engineer's time — for a single service. Multiply that by every new Azure service the org wants to adopt, and you see why platform teams have year-long backlogs. InfraForge generates production-ready, standards-compliant templates in minutes — with your org's policies already baked in."*
-
-  2. **Building pipelines** — *"Every new service needs CI/CD — deployment automation, validation, rollback. InfraForge generates GitHub Actions and Azure DevOps pipelines automatically."*
 
   3. **Authoring governance policies** — *"CISOs need Azure Policy definitions for every approved service — encryption, network rules, SKU restrictions. InfraForge's CISO Agent writes those from your org's security standards, through conversation."*
 

@@ -4110,6 +4110,7 @@ def _run_structural_tests(
             resource_type_set = {
                 (r.get("type") or "").lower() for r in resources if isinstance(r, dict)
             }
+            from src.template_engine import get_parent_resource_type
             missing_types = []
             for sid in expected_service_ids:
                 sid_lower = sid.lower()
@@ -4118,6 +4119,14 @@ def _run_structural_tests(
                     rt == sid_lower or rt.startswith(sid_lower + "/")
                     for rt in resource_type_set
                 )
+                # Child resources (e.g. subnets) are often defined inline
+                # within the parent resource's properties rather than as
+                # separate top-level resources.  Treat them as present when
+                # the parent resource exists in the template.
+                if not found:
+                    parent_type = get_parent_resource_type(sid)
+                    if parent_type and parent_type.lower() in resource_type_set:
+                        found = True
                 if not found:
                     missing_types.append(sid)
             comp_ok = not missing_types
@@ -8777,6 +8786,124 @@ async def arm_template_qa(template_id: str, request: Request):
             status_code=500,
             content={"answer": f"Error generating response: {str(exc)[:200]}"},
         )
+
+
+# ══════════════════════════════════════════════════════════════
+# TEMPLATE EXPERTS — FIND SMEs VIA WORK IQ
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/catalog/templates/{template_id}/find-experts")
+async def template_find_experts(template_id: str):
+    """Query Work IQ to find subject matter experts for this template's contents.
+
+    Extracts resource types, services, and key concepts from the template's
+    ARM content and asks Work IQ to identify people with relevant expertise.
+
+    Returns: { "ok": true, "experts": "..." } or { "ok": false, "error": "..." }
+    """
+    from src.workiq_client import get_workiq_client
+    from src.database import get_template_version
+
+    tmpl = await _require_template(template_id)
+
+    # ── Build a description of the template contents ──────────
+    arm_content = ""
+    active_ver = tmpl.get("active_version") or 1
+    try:
+        ver_row = await get_template_version(template_id, active_ver)
+        if ver_row and ver_row.get("arm_template"):
+            arm_content = ver_row["arm_template"]
+    except Exception as exc:
+        logger.warning(f"[find-experts] Failed to load ARM content: {exc}")
+
+    # Extract resource types from the ARM template for a focused query
+    resource_types = []
+    if arm_content:
+        try:
+            arm_json = json.loads(arm_content)
+            for res in arm_json.get("resources", []):
+                rt = res.get("type", "")
+                if rt:
+                    resource_types.append(rt)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Build the expert search query
+    template_name = tmpl.get("name", template_id)
+    if resource_types:
+        resource_list = ", ".join(dict.fromkeys(resource_types))  # deduplicate, preserve order
+        query = (
+            f"Who are the subject matter experts experienced with "
+            f"{resource_list}? This is for the '{template_name}' "
+            f"infrastructure template. Include people who have worked on "
+            f"similar Azure infrastructure, written architecture docs, "
+            f"or participated in design reviews for these services."
+        )
+    else:
+        query = (
+            f"Who are the subject matter experts experienced with "
+            f"'{template_name}' infrastructure? Include people who have "
+            f"worked on similar Azure infrastructure, written architecture "
+            f"docs, or participated in design reviews."
+        )
+
+    client = get_workiq_client()
+    result = await client.find_experts(query)
+
+    if result.ok:
+        return JSONResponse({"ok": True, "experts": result.text, "source": "workiq"})
+
+    # ── Fallback: use Copilot SDK to recommend expert profiles ──
+    logger.info(f"[find-experts] Work IQ unavailable, falling back to LLM: {result.error}")
+    try:
+        from src.copilot_helpers import copilot_send
+        from src.model_router import get_model_for_task, Task
+
+        copilot_client = await ensure_copilot_client()
+        model = get_model_for_task(Task.CHAT)
+
+        # Truncate ARM content for the prompt
+        arm_snippet = arm_content[:30_000] if arm_content else ""
+
+        system_prompt = (
+            "You are an expert in Azure infrastructure and enterprise platform engineering. "
+            "The user wants to find subject matter experts for a given infrastructure template. "
+            "Based on the template's resource types and architecture, recommend the types of "
+            "experts and roles that would be most relevant. Format your response as a Markdown "
+            "list with expert role titles, required skills, and why they're relevant to this "
+            "template. If an ARM template is provided, reference specific resources from it."
+        )
+
+        if resource_types:
+            resource_list = ", ".join(dict.fromkeys(resource_types))
+        else:
+            resource_list = template_name
+
+        user_prompt = f"Template: **{template_name}**\nResource types: {resource_list}\n"
+        if arm_snippet:
+            user_prompt += f"\n--- ARM TEMPLATE ---\n{arm_snippet}\n--- END ---\n"
+        user_prompt += (
+            "\nRecommend the subject matter experts (roles, skills, and areas of expertise) "
+            "that would be most valuable for reviewing, deploying, or maintaining this template. "
+            "Include both Azure-specific and general infrastructure expertise."
+        )
+
+        answer = await copilot_send(
+            copilot_client,
+            model=model,
+            system_prompt=system_prompt,
+            prompt=user_prompt,
+            timeout=30.0,
+            agent_name="find-experts",
+        )
+        return JSONResponse({
+            "ok": True,
+            "experts": answer or "No expert recommendations could be generated.",
+            "source": "copilot",
+        })
+    except Exception as exc:
+        logger.error(f"[find-experts] LLM fallback failed: {exc}")
+        return JSONResponse({"ok": False, "error": result.error})
 
 
 # ══════════════════════════════════════════════════════════════
