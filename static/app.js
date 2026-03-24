@@ -12948,6 +12948,50 @@ async function submitPromptCompose() {
 
         if (!res.ok) {
             if (promptSection) promptSection.style.display = '';
+
+            // ── Special handling: offer to onboard unapproved services ──
+            if (data.reason === 'service_not_approved' && data.not_approved_services?.length) {
+                const svcs = data.not_approved_services;
+                const listHtml = svcs.map(s =>
+                    `<li><strong>${escapeHtml(s.name)}</strong> — <span class="text-muted">${escapeHtml(s.status)}</span></li>`
+                ).join('');
+                resultDiv.innerHTML = `
+                    <div class="tmpl-revision-error" style="padding:0.8rem">
+                        <div style="margin-bottom:0.5rem"><strong>⚠️ Services need onboarding</strong></div>
+                        <div style="margin-bottom:0.5rem; font-size:0.85rem">
+                            The following services must be onboarded before they can be composed into a template:
+                        </div>
+                        <ul style="margin:0.3rem 0 0.6rem 1.2rem; font-size:0.85rem">${listHtml}</ul>
+                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
+                            <button class="btn btn-primary btn-sm" id="compose-onboard-missing-btn">
+                                🔧 Onboard These Services
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="this.closest('.tmpl-revision-error').remove()">
+                                Dismiss
+                            </button>
+                        </div>
+                    </div>`;
+
+                const onboardBtn = document.getElementById('compose-onboard-missing-btn');
+                if (onboardBtn) {
+                    const savedPrompt = prompt;
+                    onboardBtn.onclick = async () => {
+                        closeModal('modal-template-onboard');
+                        for (const s of svcs) {
+                            showToast(`Onboarding ${s.name}…`, 'info');
+                            try {
+                                await triggerOnboarding(s.service_id);
+                            } catch (e) {
+                                showToast(`Failed to onboard ${s.name}: ${e.message}`, 'error');
+                                return;
+                            }
+                        }
+                        showToast('All services onboarded — you can now compose your template', 'success');
+                    };
+                }
+                return;
+            }
+
             resultDiv.innerHTML = `<div class="tmpl-revision-error">❌ ${escapeHtml(data.detail || data.message || 'Compose failed')}</div>`;
             return;
         }
