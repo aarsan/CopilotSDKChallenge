@@ -11408,11 +11408,36 @@ async def generate_azure_policy_for_version(service_id: str, version: int, reque
 
 
 @app.get("/api/services/{service_id:path}/pipeline-runs")
-async def get_service_pipeline_runs(service_id: str, limit: int = 20):
-    """Get recent pipeline runs for a service."""
+async def get_service_pipeline_runs(service_id: str, limit: int = 20, slim: int = 0):
+    """Get recent pipeline runs for a service.
 
-    runs = await get_pipeline_runs(service_id, limit=min(limit, 100))
+    Query params:
+        slim — if 1, omit the large pipeline_events_json for faster loading
+    """
+    runs = await get_pipeline_runs(service_id, limit=min(limit, 100), include_events=slim == 0)
     return JSONResponse(runs)
+
+
+@app.post("/api/pipeline-runs/batch-latest")
+async def batch_latest_pipeline_runs(request: Request):
+    """Get the latest pipeline run for each service in a single request.
+
+    Body: { "service_ids": ["svc1", "svc2", ...] }
+    Returns: { "svc1": {...run...}, "svc2": {...run...} }
+
+    Excludes pipeline_events_json for fast loading. Used by the
+    observability page to avoid N+1 individual endpoint calls.
+    """
+    from src.database import get_latest_pipeline_runs_batch
+    body = await request.json()
+    service_ids = body.get("service_ids", [])
+    if not isinstance(service_ids, list) or len(service_ids) > 50:
+        return JSONResponse({"error": "service_ids must be a list of <= 50 IDs"}, status_code=400)
+    result = await get_latest_pipeline_runs_batch(service_ids)
+    # Strip raw JSON columns
+    for r in result.values():
+        r.pop("summary_json", None)
+    return JSONResponse(result)
 
 
 @app.get("/api/pipeline/step-invocations")
