@@ -11,8 +11,7 @@
       "defaultValue": "[resourceGroup().location]"
     },
     "environment": {
-      "type": "string",
-      "defaultValue": "dev"
+      "type": "string"
     },
     "projectName": {
       "type": "string",

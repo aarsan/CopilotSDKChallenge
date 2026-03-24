@@ -39,7 +39,7 @@
     },
     "environment": {
       "type": "string",
-      "defaultValue": "dev",
+
       "allowedValues": [
         "dev",
         "test",

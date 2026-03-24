@@ -29,152 +29,145 @@ Structure: **Hook → Pain → Vision → Live Demo → Architecture → Impact 
 ### 🎬 OPENING — "Months to Minutes" (Minutes 0:00–2:30)
 
 **[0:00–0:45] — The Hook (no slides, just you talking)**
-"If you're at a large enterprise, like my customers in FSI, and your team decides they want to start using a new Azure service — say Cosmos DB — how long does it take before it's actually approved, secured, and ready for anyone to deploy?"
+"I decided to enter this hackathon because since I using github copilot, I quickly realized everything was about to change significantly. Specifically, handwriting code was going to disappear. I'm a Cloud Solution Architect in FSI. I focus on infrastructure but I also write code - up until about a year ago. Prior to Microsoft, I wrote a lot of infrastructure code - ARM templates, Cloud Formation templates, Terraform, and Bicep. As well as lots of Python, PowerShell, and Pipeline YAML files.
 
-"The honest answer is **months**. And it's not because the service itself is complicated. It's because there are several activities that all have to happen first: someone has to write the infrastructure-as-code - that could be Terraform, ARM Templates, Bicep, etc., someone has to build the CI/CD pipelines (Jenkins, Azure Devops Pipelines, GitHub Actions, etc.), someone has to author the governance policies, and then it all goes through a security and architecture review. Each of those requires different specialists, each having their own SLAs and priorities.
+My customers in FSI are doing this by hand today. If you're at a large enterprise, like my customers, and your team decides they want to start using a new Azure service — say Azure SQL DB — how long does it take before it's actually approved, secured, and ready for anyone to deploy? Honestly, it could be weeks or months. And it's not because the service itself is complicated. 
+
+It's because there are several activities that all have to happen first: someone has to write the infrastructure-as-code - that could be Terraform, ARM Templates, Bicep, etc., someone has to build the CI/CD pipelines (Jenkins, Azure Devops Pipelines, GitHub Actions, etc.), someone has to author the governance policies, and then it all goes through a security and architecture review. Each of those requires different specialists, each having their own SLAs and priorities.
 
 "When you look at what platform engineering teams actually spend their time on, it's overwhelmingly these four activities. That's not a technology problem — it's an automation problem. And that's what this tool, using the Copilot SDK, solves."
-
-
 
 **[0:45–2:30] — The Four Bottlenecks (narrate while live demo loads)**
 - Walk through the **four costly processes** that InfraForge eliminates — speak conversationally, no slides:
 
-
   1. **Writing IaC templates** — *"When a platform engineer sits down to write an ARM or Bicep template for a new service, they're not just writing infrastructure code. They have to read through Azure resource provider documentation to understand every property and API version. They have to cross-reference their organization's security standards — encryption requirements, network isolation rules, managed identity mandates — and translate each one into template parameters and conditions. They wire up diagnostics, tagging, RBAC assignments, and private endpoints. Then they test it, fix the cryptic deployment errors, test again, get it through code review, and document it. That's 1–2 weeks of a senior engineer's time — for a single service. Multiply that by every new Azure service the org wants to adopt, and you see why platform teams have year-long backlogs. InfraForge generates production-ready, standards-compliant templates in minutes — with your org's policies already baked in."*
-
 
   2. **Building pipelines** — *"Every new service needs CI/CD — deployment automation, validation, rollback. InfraForge generates GitHub Actions and Azure DevOps pipelines automatically."*
 
-
   3. **Authoring governance policies** — *"CISOs need Azure Policy definitions for every approved service — encryption, network rules, SKU restrictions. InfraForge's CISO Agent writes those from your org's security standards, through conversation."*
-
 
   4. **Infrastructure reviews** — *"Security and architecture reviews take days and require senior engineers. InfraForge runs a CISO Agent and CTO Agent review autonomously — seconds instead of days."*
 
-  
 - **Transition:** *"So those are the four bottlenecks. Let me show you what it looks like when AI handles all of them."*
 
 ---
 
-### 🖥️ LIVE DEMO — "Zero to Deployed in 5 Minutes" (Minutes 2:30–14:00)
+### 🖥️ LIVE DEMO (Minutes 2:30–17:00)
 
 > **This is your superweapon.** The other finalists will show slides. You will show a live, working system.
 > Pre-warm the server and have everything loaded before your slot.
 
-#### Demo Segment 1: The Service Catalog & Governance (2:30–4:30)
+#### Demo Segment 1: Service Onboarding Pipeline (2:30–8:00)
+
+> **Lead with the flagship.** This is what InfraForge was built for — taking a service from "not approved" to "production-ready" autonomously.
 
 **What to show:**
 1. Open InfraForge web UI (show Entra ID login — you're already authenticated)
-2. Show the **Dashboard** — point out stats (1,239 services cached, Design Mode toggle, System Health)
-3. Navigate to **Service Catalog** — show the 1,239 Azure services synced from ARM
-4. Filter by "Approved" status — show only 2 are approved
-5. Click a service → show the **detail drawer** with governance info, approved SKUs, approved regions, policies
-6. **Narrate:** *"This is the IT team's view. Out of 1,239 Azure services, only 2 are approved for production. Not because we're restrictive — but because each service needs security policies, compliant ARM templates, and validated deployment patterns. Today, getting a service to this state takes a platform engineer 2–4 weeks. InfraForge does it in minutes."*
-
-**Why this segment scores points:**
-- Enterprise applicability (30 pts): Real governance workflow
-- Security & governance (15 pts): Approval status, policies, SKU restrictions
-- Azure integration (25 pts): Live ARM metadata sync, Azure SQL
-
-#### Demo Segment 2: AI-Powered Service Onboarding Pipeline (4:30–9:00)
-
-> **This is the showstopper.** No other finalist will have a 12-step autonomous AI pipeline.
-
-**What to show:**
-1. Pick a non-approved service (e.g., Azure Container Registry or Cosmos DB)
-2. Click **"Onboard"** — the full-screen pipeline view launches
-3. Walk through the 12 steps AS THEY EXECUTE:
-   - **Step 1–2:** "Pipeline Setup / Dependency Validation — it checks what this service needs"
-   - **Step 3:** "Standards Analysis — it reads our org's 11 security standards from the database"
-   - **Step 4:** "AI Planning — the Copilot SDK agent analyzes the service and plans the architecture" *(point out model routing: GPT-4.1 for planning)*
-   - **Step 5:** "ARM Template Generation — the SDK generates a production-ready ARM template" *(point out: Claude Sonnet for code generation — multi-model routing!)*
-   - **Step 6:** "Azure Policy Generation — auto-generates governance policies"
-   - **Step 7:** "**CISO Agent Review + CTO Agent Review** — two AI reviewers independently validate the output against security standards and architecture best practices"
-   - **Step 8:** "Validate & Deploy — ARM What-If preview, then real deployment to Azure, with **auto-healing** if anything fails (up to 5 retries)"
-   - **Step 9:** "Infrastructure Tests — AI writes and runs smoke tests"
-   - **Step 10–11:** "Policy deployment + cleanup"
-   - **Step 12:** "Published as v1.0.0 Approved — now available to every developer in the org"
-4. **If a step fails during the demo** — even better! Say: *"Watch this — the pipeline detected a validation error. It's now running the Template Healer agent to auto-fix the issue and retry."* This is a **feature, not a bug**.
+2. Navigate to the **Service Catalog** — briefly show the catalog with 1,239 Azure services synced from ARM
+3. Point out only a handful are approved — *"Out of 1,239 services, only a few have been through the full governance lifecycle. Each one took a platform engineer 2–4 weeks. InfraForge does it in minutes."*
+4. Pick a non-approved service (e.g., Azure Container Registry or Cosmos DB)
+5. Click **"Onboard"** — the full-screen pipeline view launches
+6. Walk through the key steps AS THEY EXECUTE:
+   - **Setup & Standards:** *"The pipeline reads our organization's 11 security standards from the database — these are the rules every template must comply with."*
+   - **AI Planning:** *"The Copilot SDK planner agent analyzes the service and architects the template."* *(point out model routing: GPT-4.1 for planning)*
+   - **ARM Template Generation:** *"Now the code generation agent — Claude Sonnet — writes a production-ready ARM template."* *(multi-model routing!)*
+   - **CISO & CTO Review:** *"Two independent AI reviewers validate the output against security standards and architecture best practices."*
+   - **Validate & Deploy:** *"ARM What-If previews the deployment, then it goes live to Azure."*
+7. **Template Healing (key moment):** If a validation or deployment error occurs, highlight it:
+   - *"Watch this — the pipeline detected a validation error. It's now running the Template Healer agent to auto-diagnose the failure, fix the ARM template, and retry. Up to 5 automatic retries. This is self-healing infrastructure-as-code."*
+   - If the pipeline succeeds on first try, mention healing: *"If that deployment had failed — say, an invalid SKU or a missing dependency — the Healer agent would automatically diagnose the error, patch the template, and retry. No human intervention needed."*
+8. Show the final result: service published as v1.0.0 Approved with ARM template, policies, and deployment validation complete.
 
 **Narration during pipeline:**
-> *"What you're watching is 12 specialized Copilot SDK agents working in sequence. Each agent is task-specific — there's a planner, a code generator, a CISO reviewer, a CTO reviewer, a healer. They're not hardcoded prompts — they're database-backed agent definitions that IT can edit without a server restart. This entire pipeline — from 'not approved' to 'production-ready with policies' — runs autonomously."*
+> *"What you're watching is 12 specialized Copilot SDK agents working in sequence. Each agent is task-specific — there's a planner, a code generator, a CISO reviewer, a CTO reviewer, a healer. They're not hardcoded prompts — they're database-backed agent definitions that IT can edit without a server restart. And the auto-healing is critical — in the real world, ARM deployments fail all the time due to region constraints, SKU availability, API quirks. The Healer agent reads the error, understands the template context, and fixes it autonomously."*
 
 **Why this segment scores points:**
-- Enterprise applicability (30 pts): Full enterprise onboarding lifecycle
+- Enterprise applicability (30 pts): Full enterprise onboarding lifecycle with self-healing
 - Azure integration (25 pts): Real ARM deployment, What-If, Azure Policy
-- Operational readiness (15 pts): Auto-healing, observability, versioning
+- Operational readiness (15 pts): Auto-healing, retry logic, versioning
 - Security & governance (15 pts): CISO agent, CTO agent, standards enforcement
 
-#### Demo Segment 3: Infrastructure Designer Chat (9:00–11:30)
+#### Demo Segment 2: Upgrade Analyst (8:00–11:00)
+
+> **Show depth beyond onboarding.** The Upgrade Analyst proves these agents solve real, ongoing operational problems — not just day-one setup.
 
 **What to show:**
-1. Navigate to **Infrastructure Designer** (the chat interface)
-2. Type: *"I need a web application with a SQL database and Key Vault for secrets"*
-3. Watch the agent:
-   - Show the **tool activity spinners** (🔍 Searching catalog, 🛡️ Checking governance, 💰 Estimating cost)
-   - It searches the catalog first (catalog-first pattern)
-   - It checks service approval status
-   - It composes or generates the infrastructure
-   - It produces a **live Mermaid architecture diagram** rendered inline
-4. Follow up: *"Generate a design document for this"*
-   - Show the full design document with executive summary, resource inventory, compliance results, cost breakdown, and approval signature block
-5. **If time permits:** Show the "Ideal Design" mode toggle — switch to it and ask the same question. Show how it suggests non-approved services and offers to submit approval requests with timelines.
+1. Open an already-onboarded service (one with an active ARM template — the one you just onboarded works perfectly)
+2. Point out the **"Check for Updates"** feature — show that a newer API version is available
+3. Click **"Analyze Upgrade"** — the Upgrade Analyst agent launches
+4. Walk through the streaming analysis as it runs:
+   - "It reads the actual ARM template from the database"
+   - "It queries Azure for all available API versions"
+   - "The Upgrade Analyst agent analyzes compatibility between the current and target API versions"
+5. Show the **analysis result** — verdict (safe / caution / breaking), breaking changes, deprecations, new features, migration effort
+6. **Follow-up chat:** Type a question in the inline chat — e.g., *"Will this upgrade affect my private endpoint configuration?"*
+   - Show the agent streaming a context-aware response, referencing the actual template properties
+
+**Narration:**
+> *"Now that the service is onboarded, the lifecycle doesn't stop. Azure publishes new API versions constantly, and knowing whether it's safe to upgrade requires reading release notes, comparing schemas, and cross-referencing your actual template. The Upgrade Analyst does all of that — it reads your real ARM template, queries Azure for version history, and gives you a grounded compatibility analysis. And you can chat with it — it knows your template, your dependencies, your composition context."*
 
 **Why this segment scores points:**
-- Storytelling (15 pts): Natural conversation → production infrastructure
-- Azure integration (25 pts): Copilot SDK multi-model, live tool calls
-- Enterprise applicability (30 pts): Design documents, approval workflows
+- Enterprise applicability (30 pts): Every Azure customer managing API versions faces this pain
+- Azure integration (25 pts): Live Azure API version lookup, ARM template analysis, Copilot SDK streaming
+- Storytelling (15 pts): Natural progression — onboard a service, then immediately show Day 2 operations
 
-#### Demo Segment 4: Fabric IQ & Work IQ (11:30–13:00)
+#### Demo Segment 3: Observability — Pipeline Runs & Agent Activity (11:00–14:00)
+
+> **Show the operational maturity.** This is what separates a demo from a production system.
 
 **What to show:**
-1. Navigate to **Fabric Analytics** page — show the OneLake sync, Power BI dashboard concept
-2. In the chat, type: *"Search our organization for any prior discussions about container orchestration"*
-   - Show the **Work IQ** integration (MCP server) querying M365 organizational data
-   - Results from emails, Teams messages, SharePoint documents
-3. **Narrate:** *"InfraForge doesn't just generate infrastructure — it connects to your organization's institutional knowledge through Work IQ. Before generating anything new, it can find existing architecture discussions, related documents, and subject matter experts across M365."*
+1. Navigate to the **Observability** page
+2. **Pipeline Runs tab:**
+   - Show the list of pipeline runs — the onboarding you just ran should appear
+   - Click into a run to show per-step details: which agent ran, which model was used, duration, success/failure status
+   - *"Every pipeline execution is fully auditable. You can see exactly which agents ran, what models they used, how long each step took, and whether healing was triggered."*
+3. **Agent Activity tab:**
+   - Show the real-time log of all agent invocations across the system
+   - Point out the model routing column — different agents using different models (GPT-4.1, Claude Sonnet, GPT-4.1 mini)
+   - *"Every agent call, every model selection, every tool invocation is logged. Platform teams get full observability into what the AI is doing and why. This isn't a black box — it's an auditable, enterprise-grade system."*
+4. Briefly show system health / model routing stats if visible
+
+**Narration:**
+> *"Observability is what makes this production-ready. Enterprise CISOs and compliance teams need to know exactly what the AI did, which model made which decision, and whether a template was healed. This page gives them that. Every agent call is a database record — you can query it, export it, build compliance reports from it."*
 
 **Why this segment scores points:**
-- Bonus: Work IQ / Fabric IQ (15 pts) — this is a significant differentiator
-- Azure integration (25 pts): Fabric, OneLake, Power BI, M365
+- Operational readiness (15 pts): Full observability, audit logging, monitoring
+- Security & governance (15 pts): Auditability for compliance
+- Enterprise applicability (30 pts): Production operations, not just a prototype
 
-#### Demo Segment 5: Quick Win — Observability (13:00–14:00)
+#### Demo Segment 4 (if time permits): Governance Deep Dive (14:00–15:30)
+
+> **Only if you're ahead of schedule.** This reinforces the governance story.
 
 **What to show:**
-1. Navigate to **Observability** page
-2. Show agent activity, model routing stats, system health
-3. **Narrate:** *"Every agent call, every model selection, every tool invocation is logged. Platform teams get full observability into what the AI is doing and why."*
+1. Navigate to the **Service Catalog** and filter by "Approved" status
+2. Click an approved service → show the detail drawer with governance info: approved SKUs, approved regions, policies, standards compliance
+3. Show a non-approved service for contrast — *"This service hasn't gone through the pipeline yet. No template, no policies, no deployment validation."*
+4. Briefly show the **Organization Standards** — the 11 security standards that drive all AI generation
+5. **Narrate:** *"This is the governance layer. IT defines the rules — encryption requirements, network isolation, managed identity mandates — as natural language standards. The AI agents read these rules and enforce them automatically in every template they generate. CISOs define policy through conversation, not YAML."*
 
 **Why this segment scores points:**
-- Operational readiness (15 pts): Observability, monitoring, logging
+- Security & governance (15 pts): Standards engine, approval workflows
+- Enterprise applicability (30 pts): Real governance model
 
 ---
 
-### 📊 ARCHITECTURE DEEP DIVE (Minutes 14:00–17:00)
+### 📊 ARCHITECTURE & CLOSE (Minutes 15:30–20:00)
 
-**[14:00–15:30] — Architecture Slide (Slide 2)**
+> Adjust start time based on whether you showed the governance segment.
+
+**[15:30–17:00] — Architecture Overview**
 - Show the architecture diagram from your existing slide
-- Walk through the 7-step pipeline visually
 - Emphasize three architectural decisions:
-  1. **"Catalog-first, generate-second"** — *"The AI always searches approved templates before generating. This means 80% of requests are fulfilled from tested, versioned patterns."*
-  2. **"DB-backed agents, not hardcoded prompts"** — *"We have 24 agents. Each one's instructions, model preference, and temperature are stored in Azure SQL. IT can iterate on agent behavior without deploying code."*
+  1. **"DB-backed agents, not hardcoded prompts"** — *"We have 24 agents. Each one's instructions, model preference, and temperature are stored in Azure SQL. IT can iterate on agent behavior without deploying code."*
+  2. **"Multi-model routing"** — *"Different tasks use different models. Planning uses GPT-4.1. Code generation uses Claude Sonnet. Classification uses GPT-4.1 mini. The router is data-driven — you can change model assignments in the database."*
   3. **"ARM SDK native — no CLI dependencies"** — *"Deployment uses the ARM SDK directly. No az CLI, no Terraform binary, no Bicep compiler on the deploy path. Machine-native, auditable, deterministic."*
-
-**[15:30–17:00] — Differentiator Highlights**
-- **Multi-model routing:** *"Different tasks use different models. Planning uses GPT-4.1 for structured reasoning. Code generation uses Claude Sonnet for high-quality IaC. Classification uses GPT-4.1 mini for speed. The router is data-driven — you can change model assignments in the database."*
-- **Organization Standards Engine:** *"CISOs define standards in natural language — 'all storage must use encryption at rest,' 'managed identity required for all compute.' These standards are stored as declarative rules in Azure SQL and automatically injected into every AI generation prompt. The AI doesn't just generate infrastructure — it generates compliant infrastructure."*
-- **Enterprise Auth:** *"Every action is identity-aware. Entra ID SSO, group-based access control, and identity-aware resource tagging — the deployer's name and cost center are automatically embedded in every resource tag."*
-
----
-
-### 🎯 IMPACT & CLOSE (Minutes 17:00–20:00)
 
 **[17:00–18:30] — Business Impact**
 - *"With InfraForge, a service that took 2–4 weeks to approve and onboard now takes under 10 minutes."*
 - *"Templates generated once are reused by every team in the org — that's the flywheel effect."*
 - *"CISOs define policy through conversation, not YAML. Platform engineers are unblocked from repetitive work. App teams self-serve. Everyone wins."*
-- *"This is the same pattern that every Microsoft customer with a platform engineering team is trying to solve. InfraForge is the reference implementation."*
+- *"This is the same pattern that every Microsoft customer with a platform engineering team is trying to solve."*
 
 **[18:30–19:30] — Why Copilot SDK**
 - *"This couldn't exist without the Copilot SDK. The SDK gave us:"*

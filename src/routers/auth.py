@@ -552,8 +552,38 @@ async def _check_sql():
     except Exception as e:
         return {"status": "unhealthy", "message": str(e)[:300]}
 
+async def _check_frontend():
+    import time as _time
+    try:
+        import httpx
+        from src.config import WEB_PORT
+        t0 = _time.monotonic()
+        url = f"http://localhost:{WEB_PORT}/static/index.html"
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.head(url)
+            latency = round((_time.monotonic() - t0) * 1000, 1)
+            if resp.status_code == 200:
+                return {"status": "healthy", "latency_ms": latency}
+            return {"status": "degraded", "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"status": "unhealthy", "message": str(e)[:300]}
+
 async def _check_backend_api():
-    return {"status": "healthy", "latency_ms": 0}
+    import time as _time
+    try:
+        import httpx
+        from src.config import WEB_PORT
+        t0 = _time.monotonic()
+        # Use /api/version (lightweight, non-recursive) to verify API is responding
+        url = f"http://localhost:{WEB_PORT}/api/version"
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(url)
+            latency = round((_time.monotonic() - t0) * 1000, 1)
+            if resp.status_code == 200:
+                return {"status": "healthy", "latency_ms": latency}
+            return {"status": "degraded", "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"status": "unhealthy", "message": str(e)[:300]}
 
 async def _check_entra_id():
     import time as _time
@@ -564,17 +594,16 @@ async def _check_entra_id():
                 "status": "unhealthy",
                 "message": "Entra ID not configured (missing ENTRA_CLIENT_ID, ENTRA_TENANT_ID, or ENTRA_CLIENT_SECRET)",
             }
-        import urllib.request
+        import httpx
         from src.config import ENTRA_AUTHORITY
         t0 = _time.monotonic()
         url = f"{ENTRA_AUTHORITY}/v2.0/.well-known/openid-configuration"
-        req = urllib.request.Request(url, method="GET")
-        req.add_header("User-Agent", "InfraForge-HealthCheck/1.0")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, headers={"User-Agent": "InfraForge-HealthCheck/1.0"})
             latency = round((_time.monotonic() - t0) * 1000, 1)
-            if resp.status == 200:
+            if resp.status_code == 200:
                 return {"status": "healthy", "latency_ms": latency}
-            return {"status": "degraded", "message": f"HTTP {resp.status}"}
+            return {"status": "degraded", "message": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"status": "unhealthy", "message": str(e)[:300]}
 
@@ -595,6 +624,7 @@ async def _check_workiq():
 
 _HEALTH_CHECKERS = {
     "sql": _check_sql,
+    "frontend": _check_frontend,
     "backend_api": _check_backend_api,
     "entra_id": _check_entra_id,
     "workiq": _check_workiq,
@@ -625,11 +655,12 @@ def _get_service_meta():
                 break
 
     entra_endpoint = ENTRA_AUTHORITY or "Not configured"
-    backend_endpoint = f"http://localhost:{WEB_PORT}"
+    base_url = f"http://localhost:{WEB_PORT}"
 
     return {
         "sql":         {"endpoint": sql_endpoint, "location": sql_location},
-        "backend_api": {"endpoint": backend_endpoint, "location": "Local"},
+        "frontend":    {"endpoint": base_url, "location": "Local"},
+        "backend_api": {"endpoint": f"{base_url}/api", "location": "Local"},
         "entra_id":    {"endpoint": entra_endpoint, "location": "Global"},
         "workiq":      {"endpoint": "MCP stdio", "location": "Local"},
     }
