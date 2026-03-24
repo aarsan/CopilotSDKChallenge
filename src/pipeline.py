@@ -363,6 +363,7 @@ class PipelineContext:
 
         # ── Progress tracking ────────────────────────────────
         self.current_step: int = 0
+        self.current_step_name: str = ""
         self.total_steps: int = 0
         self.steps_completed: list[str] = []
 
@@ -455,6 +456,7 @@ class PipelineContext:
             "max_heal_attempts": self.max_heal_attempts,
             "artifacts": safe_artifacts,
             "current_step": self.current_step,
+            "current_step_name": self.current_step_name,
             "total_steps": self.total_steps,
             "steps_completed": self.steps_completed,
             "deployed_rg": self.deployed_rg,
@@ -492,6 +494,7 @@ class PipelineContext:
         ctx.heal_attempts = data.get("heal_attempts", 0)
         ctx.artifacts = data.get("artifacts", {})
         ctx.current_step = data.get("current_step", 0)
+        ctx.current_step_name = data.get("current_step_name", "")
         ctx.total_steps = data.get("total_steps", 0)
         ctx.steps_completed = data.get("steps_completed", [])
         ctx.deployed_rg = data.get("deployed_rg")
@@ -582,7 +585,16 @@ class HealingLoop:
                         step=attempt,
                     )
 
-                    new_template, strategy = await self.heal_fn(self.ctx, e.error)
+                    try:
+                        new_template, strategy = await asyncio.wait_for(
+                            self.heal_fn(self.ctx, e.error),
+                            timeout=300.0,
+                        )
+                    except asyncio.TimeoutError:
+                        raise StepFailure(
+                            "LLM heal timed out after 300s",
+                            healable=False, phase="healing",
+                        )
                     self.ctx.template = new_template
                     self.ctx.update_template_meta()
                     self.ctx.heal_history.append({
@@ -701,6 +713,93 @@ class PipelineRunner:
     def add_finalizer(self, fn: FinalizerFn):
         """Imperatively register a cleanup function."""
         self._finalizers.append(fn)
+
+    # ── Step execution with timeout + abort ──────────────────
+
+    # Default per-step timeout (seconds).  Individual steps can
+    # override via ``step.config["timeout"]`` in the DB.
+    DEFAULT_STEP_TIMEOUT: int = 1800   # 30 min
+
+    # Sub-timeout for queue reads inside _run_step_timed.  Keeps
+    # the consumer loop responsive to abort signals.
+    _QUEUE_IDLE_TIMEOUT: float = 20.0
+
+    async def _run_step_timed(
+        self,
+        handler: StepHandler,
+        ctx: PipelineContext,
+        step: StepDef,
+    ) -> AsyncGenerator[str, None]:
+        """Run a step handler with a wall-clock timeout and abort propagation.
+
+        Launches the handler as a producer task that puts yielded NDJSON
+        lines into a queue.  The consumer loop reads from the queue with
+        a rolling deadline and checks for abort signals between reads.
+
+        Raises ``StepFailure`` on timeout or abort.
+        """
+        import time as _time
+
+        step_timeout = step.config.get("timeout", self.DEFAULT_STEP_TIMEOUT)
+        deadline = _time.monotonic() + step_timeout
+        q: asyncio.Queue[str | None] = asyncio.Queue()
+
+        _sentinel = None  # marks "producer finished"
+
+        async def _producer():
+            try:
+                async for line in handler(ctx, step):
+                    await q.put(line)
+            finally:
+                await q.put(_sentinel)
+
+        task = asyncio.create_task(_producer())
+
+        try:
+            while True:
+                # Check abort between queue reads
+                if ctx.abort_requested:
+                    task.cancel()
+                    raise StepFailure(
+                        "Pipeline aborted by user",
+                        healable=False, phase=step.name,
+                    )
+
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    task.cancel()
+                    raise StepFailure(
+                        f"Step '{step.name}' timed out after {step_timeout}s",
+                        healable=False, phase=step.name,
+                    )
+
+                try:
+                    wait = min(self._QUEUE_IDLE_TIMEOUT, remaining)
+                    item = await asyncio.wait_for(q.get(), timeout=wait)
+                except asyncio.TimeoutError:
+                    continue  # loop back to check abort / deadline
+
+                if item is _sentinel:
+                    # Producer finished — propagate any exception
+                    if task.done() and not task.cancelled():
+                        exc = task.exception()
+                        if exc is not None:
+                            raise exc
+                    return
+
+                yield item
+        except (StepFailure, PipelineAbort):
+            raise
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     # ── Introspection ────────────────────────────────────────
 
@@ -902,6 +1001,9 @@ class PipelineRunner:
                     step_idx += 1
                     continue
 
+                # Track current step name for observability
+                ctx.current_step_name = step.name
+
                 # Log step start
                 logger.info(
                     f"[Pipeline:{ctx.process_id}] Step {step.order}: "
@@ -920,7 +1022,7 @@ class PipelineRunner:
                         )
                         return
 
-                    async for line in handler(ctx, step):
+                    async for line in self._run_step_timed(handler, ctx, step):
                         yield line
 
                     # ── Step succeeded ────────────────────────
@@ -959,7 +1061,16 @@ class PipelineRunner:
                             f"(attempt {ctx.heal_attempts}/{ctx.max_heal_attempts})",
                             progress=ctx.progress(0.5),
                         )
-                        new_template, strategy = await ctx.heal_fn(ctx, e.error)
+                        try:
+                            new_template, strategy = await asyncio.wait_for(
+                                ctx.heal_fn(ctx, e.error),
+                                timeout=300.0,
+                            )
+                        except asyncio.TimeoutError:
+                            raise StepFailure(
+                                "LLM heal timed out after 300s",
+                                healable=False, phase="healing",
+                            )
                         ctx.template = new_template
                         ctx.update_template_meta()
                         ctx.heal_history.append({

@@ -1809,30 +1809,41 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
 
         _deploy_task = asyncio.create_task(_do_deploy())
 
-        # Forward deploy-engine progress as NDJSON heartbeats
-        while not _deploy_task.done():
-            try:
-                evt = await asyncio.wait_for(_deploy_q.get(), timeout=20)
-                detail = evt.get("detail", "Deployment in progress…")
-                yield emit("progress", "deploy_progress", detail,
-                           ctx.progress(att_base + 0.17), step=attempt)
-            except asyncio.TimeoutError:
-                # Heartbeat — keeps HTTP stream alive even when Azure
-                # is silently provisioning resources
-                yield emit("progress", "deploy_heartbeat",
-                           "Deployment in progress — waiting for Azure…",
-                           ctx.progress(att_base + 0.17), step=attempt)
-
-        # Drain any remaining queued events
-        while not _deploy_q.empty():
-            try:
-                evt = _deploy_q.get_nowait()
-                detail = evt.get("detail", "")
-                if detail:
+        # Forward deploy-engine progress as NDJSON heartbeats.
+        # The try/finally ensures the inner deploy task is cancelled
+        # if the outer step is aborted or cancelled.
+        try:
+            while not _deploy_task.done():
+                try:
+                    evt = await asyncio.wait_for(_deploy_q.get(), timeout=20)
+                    detail = evt.get("detail", "Deployment in progress…")
                     yield emit("progress", "deploy_progress", detail,
-                               ctx.progress(att_base + 0.18), step=attempt)
-            except asyncio.QueueEmpty:
-                break
+                               ctx.progress(att_base + 0.17), step=attempt)
+                except asyncio.TimeoutError:
+                    # Heartbeat — keeps HTTP stream alive even when Azure
+                    # is silently provisioning resources
+                    yield emit("progress", "deploy_heartbeat",
+                               "Deployment in progress — waiting for Azure…",
+                               ctx.progress(att_base + 0.17), step=attempt)
+
+            # Drain any remaining queued events
+            while not _deploy_q.empty():
+                try:
+                    evt = _deploy_q.get_nowait()
+                    detail = evt.get("detail", "")
+                    if detail:
+                        yield emit("progress", "deploy_progress", detail,
+                                   ctx.progress(att_base + 0.18), step=attempt)
+                except asyncio.QueueEmpty:
+                    break
+        except (asyncio.CancelledError, Exception):
+            if not _deploy_task.done():
+                _deploy_task.cancel()
+                try:
+                    await _deploy_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            raise
 
         deploy_result = _deploy_task.result()
         deploy_status = deploy_result.get("status", "unknown")

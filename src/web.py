@@ -700,6 +700,59 @@ from src.web_shared import (
 import src.web_shared as _ws
 
 
+# ── Pipeline stuck-detection watchdog ─────────────────────────
+# Tunable thresholds (seconds).  The watchdog scans _active_pipelines
+# every 60s, using the tracker's updated_at timestamp to detect stale runs.
+STUCK_WARN_SECS: int = 600      # 10 min — log WARNING
+STUCK_ABORT_SECS: int = 1800    # 30 min — auto-abort
+
+async def _pipeline_watchdog():
+    """Background task: detect stuck pipelines and auto-abort them."""
+    from src.pipeline import _active_pipelines
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(timezone.utc)
+            for run_id, ctx in list(_active_pipelines.items()):
+                entity_id = ctx.service_id or ctx.template_id
+                tracker = _active_validations.get(entity_id, {})
+                updated_at_str = tracker.get("updated_at", "")
+                if not updated_at_str:
+                    continue
+                try:
+                    last_event = datetime.fromisoformat(
+                        updated_at_str.replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    continue
+
+                idle_secs = (now - last_event).total_seconds()
+
+                if idle_secs >= STUCK_ABORT_SECS and not ctx.abort_requested:
+                    logger.warning(
+                        "[watchdog] Auto-aborting pipeline %s (step=%s) "
+                        "— no progress for %ds",
+                        run_id, ctx.current_step_name, int(idle_secs),
+                    )
+                    ctx.request_abort()
+                    try:
+                        await complete_pipeline_run(
+                            run_id, "interrupted",
+                            error_detail=f"Auto-aborted: no progress for {int(idle_secs)}s",
+                        )
+                    except Exception:
+                        pass
+                elif idle_secs >= STUCK_WARN_SECS:
+                    logger.warning(
+                        "[watchdog] Pipeline %s (step=%s) appears stuck "
+                        "— no progress for %ds",
+                        run_id, ctx.current_step_name, int(idle_secs),
+                    )
+        except Exception as e:
+            logger.debug(f"[watchdog] Iteration error: {e}")
+
+
 # ── Lifespan ─────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -752,9 +805,14 @@ async def lifespan(app: FastAPI):
     from src.azure_sync import fetch_azure_service_count
     _aio.create_task(fetch_azure_service_count())
 
+    # Start pipeline stuck-detection watchdog
+    _watchdog_task = _aio.create_task(_pipeline_watchdog())
+
     logger.info("InfraForge web server ready")
     yield
     logger.info("Shutting down Copilot SDK client...")
+    # Cancel the pipeline watchdog
+    _watchdog_task.cancel()
     # Clean up active sessions
     for session_data in active_sessions.values():
         try:
@@ -5520,6 +5578,54 @@ async def get_all_template_validation_runs_endpoint():
 
 
 # ── Pipeline Abort ────────────────────────────────────────────
+
+@app.get("/api/pipelines/active")
+async def get_active_pipelines():
+    """Return all currently running pipelines with live status.
+
+    Merges ``_active_pipelines`` (execution context) with
+    ``_active_validations`` (event tracking) to produce a single
+    snapshot showing current step, progress, and elapsed time.
+    """
+    import time as _time
+    from src.pipeline import _active_pipelines
+
+    result = []
+    now_iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+    for run_id, ctx in _active_pipelines.items():
+        entity_id = ctx.service_id or ctx.template_id
+        tracker = _active_validations.get(entity_id, {})
+        started_at = tracker.get("started_at", "")
+        elapsed = 0.0
+        if started_at:
+            try:
+                from datetime import datetime, timezone
+                t0 = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
+            except Exception:
+                pass
+
+        result.append({
+            "run_id": run_id,
+            "process_id": ctx.process_id,
+            "service_id": ctx.service_id,
+            "template_id": ctx.template_id,
+            "current_step": ctx.current_step,
+            "current_step_name": ctx.current_step_name,
+            "total_steps": ctx.total_steps,
+            "progress": tracker.get("progress", 0),
+            "status": tracker.get("status", "running"),
+            "phase": tracker.get("phase", ""),
+            "detail": tracker.get("detail", ""),
+            "started_at": started_at,
+            "updated_at": tracker.get("updated_at", now_iso),
+            "rg_name": ctx.rg_name,
+            "region": ctx.region,
+            "elapsed_secs": round(elapsed, 1),
+        })
+
+    return JSONResponse(result)
+
 
 @app.post("/api/pipelines/{run_id}/abort")
 async def abort_pipeline(run_id: str):
