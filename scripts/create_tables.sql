@@ -686,6 +686,14 @@ IF NOT EXISTS (
 ALTER TABLE pipeline_runs ADD resume_count INT DEFAULT 0;
 GO
 
+-- Migration: last_event_at column on pipeline_runs (stuck detection)
+IF NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'last_event_at'
+)
+ALTER TABLE pipeline_runs ADD last_event_at NVARCHAR(50) DEFAULT NULL;
+GO
+
 -- ── Orchestration Processes ─────────────────────────────────
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'orchestration_processes')

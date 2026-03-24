@@ -969,6 +969,13 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     )
     ALTER TABLE pipeline_runs ADD resume_count INT DEFAULT 0
     """,
+    # ── last_event_at column — timestamp of last progress event (for stuck detection) ──
+    """IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('pipeline_runs') AND name = 'last_event_at'
+    )
+    ALTER TABLE pipeline_runs ADD last_event_at NVARCHAR(50) DEFAULT NULL
+    """,
     # ── Pipeline Checkpoints table — step-level persistence for resumability ──
     """
     IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'pipeline_checkpoints')
@@ -4395,6 +4402,7 @@ async def complete_pipeline_run(
     error_detail: str | None = None,
     heal_count: int = 0,
     events_json: str | None = None,
+    last_event_at: str | None = None,
 ) -> None:
     """Mark a pipeline run as completed/failed/interrupted."""
     backend = await get_backend()
@@ -4436,6 +4444,10 @@ async def complete_pipeline_run(
     if events_json is not None:
         updates.append("pipeline_events_json = ?")
         params.append(events_json)
+
+    # Persist the timestamp of the last progress event (for stuck detection post-mortem)
+    updates.append("last_event_at = ?")
+    params.append(last_event_at or now)
 
     params.append(run_id)
     await backend.execute_write(
