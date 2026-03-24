@@ -6949,7 +6949,14 @@ function showTemplateDetail(templateId) {
             <div id="tmpl-revision-result" class="tmpl-revision-result" style="display:none;"></div>
         </div>
 
-        <!-- Compliance scan results (populated on demand) -->
+        <!-- Compliance Scan -->
+        <div class="detail-section tmpl-scan-section">
+            <h4>🛡️ Compliance Scan</h4>
+            <p style="color:var(--text-secondary); margin:0 0 0.75rem;">Scan this template against all active organization policies and standards.</p>
+            <button class="btn btn-sm tmpl-scan-btn" onclick="triggerComplianceScan('${escapeHtml(tmpl.id)}')">
+                🔍 Scan for Compliance
+            </button>
+        </div>
         <div id="tmpl-scan-results" style="display:none;"></div>
 
         <!-- Pipeline Runs — visual history with flowchart replay -->
@@ -8513,12 +8520,19 @@ async function _saveComplianceProfile(templateId, profile) {
 
 // ── Compliance Scan ─────────────────────────────────────────
 
+async function triggerComplianceScan(templateId) {
+    const resultsEl = document.getElementById('tmpl-scan-results');
+    if (resultsEl) resultsEl.style.display = 'block';
+    await runComplianceScan(templateId);
+}
+
 let _lastScanData = null;
 
 async function runComplianceScan(templateId) {
     const resultsEl = document.getElementById('tmpl-scan-results');
     if (!resultsEl) return;
 
+    resultsEl.style.display = 'block';
     _lastScanData = null;
 
     // Show loading
