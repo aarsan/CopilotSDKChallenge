@@ -16388,7 +16388,7 @@ async function replayTemplatePipelineRun(runId, templateId) {
 }
 
 /** Watch a live running template validation — replay cached events and navigate to template detail. */
-function watchLiveTemplatePipeline(templateId) {
+async function watchLiveTemplatePipeline(templateId) {
     // Option 1: If there's an active in-browser tracker with events, open overlay and replay
     const tracker = _activeTemplateValidations[templateId];
     if (tracker && tracker.events && tracker.events.length > 0) {
@@ -16421,7 +16421,53 @@ function watchLiveTemplatePipeline(templateId) {
         return;
     }
 
-    // Option 2: Navigate to template detail where the live view is rendered
+    // Option 2: No in-browser tracker — fetch live state from backend
+    try {
+        const res = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pipeline-runs`);
+        if (res.ok) {
+            const runs = await res.json();
+            const runningRun = runs.find(r => r.status === 'running');
+            if (runningRun) {
+                const tmplName = runningRun.template_name || templateId;
+                openPipelineOverlay(`Template Validation Pipeline — ${tmplName}`, '🔄', templateId);
+                if (runningRun.run_id) _activePipelineRunId = runningRun.run_id;
+                const canvas = document.getElementById('pipeline-canvas');
+                // Replay any events already collected by the backend
+                const existingEvents = runningRun.events || [];
+                if (canvas) {
+                    for (const event of existingEvents) {
+                        _renderDeployProgress(canvas, event, 'validate');
+                    }
+                }
+                // Poll the backend for new events until the run finishes
+                let lastEventCount = existingEvents.length;
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const pollRes = await fetch(`/api/catalog/templates/${encodeURIComponent(templateId)}/pipeline-runs`);
+                        if (!pollRes.ok) return;
+                        const pollRuns = await pollRes.json();
+                        const current = pollRuns.find(r => r.run_id === runningRun.run_id);
+                        if (!current) { clearInterval(pollInterval); return; }
+                        const currentEvents = current.events || [];
+                        if (currentEvents.length > lastEventCount && canvas) {
+                            for (const event of currentEvents.slice(lastEventCount)) {
+                                _renderDeployProgress(canvas, event, 'validate');
+                            }
+                            lastEventCount = currentEvents.length;
+                        }
+                        if (current.status !== 'running') {
+                            clearInterval(pollInterval);
+                            const stopBtn = document.getElementById('pipeline-stop-btn');
+                            if (stopBtn) stopBtn.classList.add('hidden');
+                        }
+                    } catch (_) { /* ignore polling errors */ }
+                }, 2000);
+                return;
+            }
+        }
+    } catch (_) { /* fall through to template detail */ }
+
+    // Option 3: Nothing running — navigate to template detail
     navigateTo('catalog');
     setTimeout(() => showTemplateDetail(templateId), 200);
 }
