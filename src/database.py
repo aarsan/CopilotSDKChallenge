@@ -4499,28 +4499,78 @@ async def has_running_pipeline(service_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-async def get_pipeline_runs(service_id: str, limit: int = 20) -> list[dict]:
-    """Get recent pipeline runs for a service, newest first."""
+async def get_pipeline_runs(service_id: str, limit: int = 20, *, include_events: bool = True) -> list[dict]:
+    """Get recent pipeline runs for a service, newest first.
+
+    When include_events=False, the large pipeline_events_json column is
+    excluded from the query for much faster loading.
+    """
     backend = await get_backend()
-    rows = await backend.execute(
-        f"SELECT TOP {limit} * FROM pipeline_runs WHERE service_id = ? ORDER BY started_at DESC",
-        (service_id,),
-    )
+    if include_events:
+        rows = await backend.execute(
+            f"SELECT TOP {limit} * FROM pipeline_runs WHERE service_id = ? ORDER BY started_at DESC",
+            (service_id,),
+        )
+    else:
+        rows = await backend.execute(
+            f"SELECT TOP {limit} id, run_id, service_id, pipeline_type, status, "
+            "version_num, semver, started_at, completed_at, duration_secs, "
+            "summary_json, error_detail, created_by, heal_count, "
+            "last_completed_step, resume_count "
+            "FROM pipeline_runs WHERE service_id = ? ORDER BY started_at DESC",
+            (service_id,),
+        )
     for r in rows:
         if isinstance(r.get("summary_json"), str):
             try:
                 r["summary"] = json.loads(r["summary_json"])
             except (json.JSONDecodeError, TypeError):
                 r["summary"] = {}
-        # Parse pipeline_events_json if present
-        if isinstance(r.get("pipeline_events_json"), str):
-            try:
-                r["events"] = json.loads(r["pipeline_events_json"])
-            except (json.JSONDecodeError, TypeError):
+        if include_events:
+            if isinstance(r.get("pipeline_events_json"), str):
+                try:
+                    r["events"] = json.loads(r["pipeline_events_json"])
+                except (json.JSONDecodeError, TypeError):
+                    r["events"] = []
+            else:
                 r["events"] = []
         else:
             r["events"] = []
     return rows
+
+
+async def get_latest_pipeline_runs_batch(service_ids: list[str]) -> dict[str, dict]:
+    """Get the latest pipeline run for each service ID in one query.
+
+    Returns a dict mapping service_id -> latest run (without events).
+    Uses ROW_NUMBER to pick the newest run per service efficiently.
+    """
+    if not service_ids:
+        return {}
+    backend = await get_backend()
+    placeholders = ",".join("?" for _ in service_ids)
+    rows = await backend.execute(
+        f"SELECT * FROM ("
+        f"  SELECT id, run_id, service_id, pipeline_type, status, "
+        f"  version_num, semver, started_at, completed_at, duration_secs, "
+        f"  summary_json, error_detail, created_by, heal_count, "
+        f"  last_completed_step, resume_count, "
+        f"  ROW_NUMBER() OVER (PARTITION BY service_id ORDER BY started_at DESC) AS rn "
+        f"  FROM pipeline_runs WHERE service_id IN ({placeholders})"
+        f") ranked WHERE rn = 1",
+        tuple(service_ids),
+    )
+    result: dict[str, dict] = {}
+    for r in rows:
+        if isinstance(r.get("summary_json"), str):
+            try:
+                r["summary"] = json.loads(r["summary_json"])
+            except (json.JSONDecodeError, TypeError):
+                r["summary"] = {}
+        r["events"] = []
+        r.pop("rn", None)
+        result[r["service_id"]] = r
+    return result
 
 
 async def get_all_template_validation_runs(limit: int = 50) -> list[dict]:

@@ -17206,16 +17206,21 @@ async function loadAgentActivity() {
         _aoSummaryCopy(process, jobs, activitySummary);
 
         const featuredJobs = jobs.slice(0, 6);
-        const runEntries = await Promise.all(featuredJobs.map(async job => {
-            if (job.is_running) return [job.service_id, null];
+        // Batch-fetch latest pipeline runs in one request instead of N individual calls
+        const nonRunningIds = featuredJobs
+            .filter(job => !job.is_running)
+            .map(job => job.service_id);
+        let latestRuns = {};
+        if (nonRunningIds.length > 0) {
             try {
-                const runs = await _aoFetchJson(`/api/services/${encodeURIComponent(job.service_id)}/pipeline-runs?limit=1`);
-                return [job.service_id, Array.isArray(runs) && runs.length ? runs[0] : null];
-            } catch (_) {
-                return [job.service_id, null];
-            }
-        }));
-        const latestRuns = Object.fromEntries(runEntries);
+                const batchRes = await fetch('/api/pipeline-runs/batch-latest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ service_ids: nonRunningIds }),
+                });
+                if (batchRes.ok) latestRuns = await batchRes.json();
+            } catch (_) { /* ignore — cards will just show less detail */ }
+        }
 
         _aoData = {
             process,
