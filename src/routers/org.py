@@ -232,39 +232,46 @@ async def list_available_tools():
     from src.tools import get_all_tools
 
     all_tools = get_all_tools()
+
+    # The tools are returned in lifecycle order by get_all_tools().
+    # We know the exact order from tools/__init__.py:
+    _ordered_categories = [
+        # (start_index, count, category_name)
+        (0, 6, "Service Governance"),
+        (6, 4, "Standards & Compliance"),
+        (10, 5, "Template Catalog"),
+        (15, 4, "Code Generation"),
+        (19, 2, "Architecture & Design"),
+        (21, 2, "Cost & Validation"),
+        (23, 5, "Deployment"),
+        (28, 1, "Analytics"),
+        (29, 3, "Org Intelligence"),
+        (32, 1, "Output"),
+        (33, 1, "Publishing"),
+    ]
+
     grouped: dict[str, list[dict]] = {}
+    for start, count, cat in _ordered_categories:
+        items = []
+        for i in range(start, min(start + count, len(all_tools))):
+            tool = all_tools[i]
+            name = getattr(tool, "name", None) or getattr(tool, "__name__", None) or str(tool)
+            doc = getattr(tool, "description", None) or getattr(tool, "__doc__", "") or ""
+            first_line = doc.strip().split("\n")[0][:100] if doc.strip() else name
+            items.append({"name": name, "description": first_line})
+        if items:
+            grouped[cat] = items
 
-    for tool in all_tools:
-        # Extract tool metadata
-        name = getattr(tool, "__name__", str(tool))
-        doc = getattr(tool, "__doc__", "") or ""
-        first_line = doc.strip().split("\n")[0] if doc.strip() else name
-
-        # Categorize based on module
-        module = getattr(tool, "__module__", "")
-        if "governance" in module or "policy" in module or "compliance" in module:
-            cat = "Governance & Compliance"
-        elif "catalog" in module:
-            cat = "Template Catalog"
-        elif "deploy" in module or "arm" in module:
-            cat = "Deployment"
-        elif "cost" in module:
-            cat = "Cost & Validation"
-        elif "diagram" in module or "design" in module:
-            cat = "Architecture & Design"
-        elif "github" in module or "devops" in module:
-            cat = "CI/CD & Publishing"
-        elif "bicep" in module or "terraform" in module:
-            cat = "Code Generation"
-        elif "workiq" in module:
-            cat = "Org Intelligence"
-        elif "save" in module:
-            cat = "Output"
-        elif "service" in module:
-            cat = "Service Catalog"
-        else:
-            cat = "General"
-
-        grouped.setdefault(cat, []).append({"name": name, "description": first_line})
+    # Catch any tools beyond the mapped range
+    mapped_count = sum(c for _, c, _ in _ordered_categories)
+    if len(all_tools) > mapped_count:
+        extra = []
+        for tool in all_tools[mapped_count:]:
+            name = getattr(tool, "name", None) or getattr(tool, "__name__", None) or str(tool)
+            doc = getattr(tool, "description", None) or getattr(tool, "__doc__", "") or ""
+            first_line = doc.strip().split("\n")[0][:100] if doc.strip() else name
+            extra.append({"name": name, "description": first_line})
+        if extra:
+            grouped["Other"] = extra
 
     return JSONResponse(grouped)
