@@ -33,7 +33,8 @@ USAGE
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from src.model_router import Task
 
 
@@ -45,6 +46,15 @@ class AgentSpec:
     system_prompt: str
     task: Task
     timeout: int = 60  # seconds
+    # ── Org workforce fields ──
+    org_unit_id: str | None = None
+    role_title: str = ""
+    goals: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    reports_to_agent_id: str | None = None
+    avatar_color: str = "#6366f1"
+    chat_enabled: bool = False
+    category: str = "headless"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1806,12 +1816,26 @@ async def load_agents_from_db() -> int:
             AGENTS.pop(agent_id, None)
             continue
 
+        # Parse JSON fields
+        goals_raw = row.get("goals_json", "[]")
+        goals = json.loads(goals_raw) if isinstance(goals_raw, str) and goals_raw else []
+        tools_raw = row.get("tools_json", "[]")
+        tools_list = json.loads(tools_raw) if isinstance(tools_raw, str) and tools_raw else []
+
         spec = AgentSpec(
             name=row.get("name", agent_id),
             description=row.get("description", ""),
             system_prompt=row.get("system_prompt", ""),
             task=task_enum,
             timeout=row.get("timeout", 60),
+            org_unit_id=row.get("org_unit_id"),
+            role_title=row.get("role_title", ""),
+            goals=goals,
+            tools=tools_list,
+            reports_to_agent_id=row.get("reports_to_agent_id"),
+            avatar_color=row.get("avatar_color", "#6366f1"),
+            chat_enabled=bool(row.get("chat_enabled", False)),
+            category=row.get("category", "headless"),
         )
         AGENTS[agent_id] = spec
         count += 1

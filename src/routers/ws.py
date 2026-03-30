@@ -636,3 +636,244 @@ async def websocket_chat(websocket: WebSocket):
             await sender_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ── Module-level session store for dynamic agents ────────────
+dynamic_agent_sessions: dict = {}
+
+
+# ── WebSocket: Dynamic Agent Chat ────────────────────────────
+
+@router.websocket("/ws/agent/{agent_id}")
+async def websocket_dynamic_agent(websocket: WebSocket, agent_id: str):
+    """WebSocket endpoint for chatting with any user-defined agent.
+
+    Uses the same protocol as /ws/chat. The agent's system_prompt, goals,
+    and tool restrictions are loaded from the agent_definitions table.
+    """
+    from src.agents import AGENTS, AgentSpec
+    from src.tools import get_all_tools
+
+    await websocket.accept()
+
+    session_token: Optional[str] = None
+    user_context: Optional[UserContext] = None
+
+    # ── Serialised send infrastructure ───────────────────────
+    send_queue: asyncio.Queue = asyncio.Queue()
+    ws_closed = False
+    loop = asyncio.get_running_loop()
+
+    async def _ws_sender():
+        nonlocal ws_closed
+        while True:
+            msg = await send_queue.get()
+            if msg is None:
+                break
+            if ws_closed:
+                continue
+            try:
+                await websocket.send_json(msg)
+            except (WebSocketDisconnect, RuntimeError):
+                ws_closed = True
+            except Exception:
+                ws_closed = True
+
+    sender_task = asyncio.create_task(_ws_sender())
+
+    def _enqueue(data: dict):
+        if ws_closed:
+            return
+        loop.call_soon_threadsafe(send_queue.put_nowait, data)
+
+    try:
+        # ── Resolve agent ────────────────────────────────────
+        agent: AgentSpec | None = AGENTS.get(agent_id)
+        if not agent:
+            # Try loading from DB directly
+            from src.database import get_agent_definition
+            row = await get_agent_definition(agent_id)
+            if not row:
+                await websocket.send_json({"type": "error", "message": f"Agent '{agent_id}' not found"})
+                await websocket.close()
+                return
+
+        # ── Step 1: Authenticate ─────────────────────────────
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+
+        if auth_msg.get("type") != "auth":
+            await websocket.send_json({"type": "error", "message": "Expected auth message"})
+            await websocket.close()
+            return
+
+        session_token = auth_msg.get("sessionToken", "")
+        user_context = await get_user_context(session_token)
+
+        if not user_context:
+            await websocket.send_json({"type": "error", "message": "Invalid or expired session"})
+            await websocket.close()
+            return
+
+        # ── Step 2: Build personalized session ───────────────
+        client = await ensure_copilot_client()
+        if client is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Copilot SDK is not available.",
+            })
+            await websocket.close()
+            return
+
+        # Build system message from agent spec + goals
+        system_parts = [agent.system_prompt]
+        if agent.role_title:
+            system_parts.insert(0, f"Your role: {agent.role_title}")
+        if agent.goals:
+            goals_text = "\n".join(f"- {g}" for g in agent.goals)
+            system_parts.append(f"\nYour goals:\n{goals_text}")
+        system_parts.append(user_context.to_prompt_context())
+        personalized_system_message = "\n".join(system_parts)
+
+        # Build tool list — filter by agent's tools_json if specified
+        all_tools = get_all_tools()
+        if agent.tools:
+            allowed_names = set(agent.tools)
+            tools = [t for t in all_tools if getattr(t, "__name__", "") in allowed_names]
+            if not tools:
+                tools = all_tools  # Fallback if no matches
+        else:
+            tools = all_tools
+
+        try:
+            copilot_session = await client.create_session({
+                "model": get_active_model(),
+                "streaming": True,
+                "tools": tools,
+                "system_message": {"content": personalized_system_message},
+                "on_permission_request": approve_all,
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Copilot session for agent {agent_id}: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to create chat session: {e}",
+            })
+            await websocket.close()
+            return
+
+        session_key = f"{session_token}:{agent_id}"
+        dynamic_agent_sessions[session_key] = {
+            "copilot_session": copilot_session,
+            "user_context": user_context,
+            "agent_id": agent_id,
+            "connected_at": time.time(),
+        }
+        await websocket.send_json({
+            "type": "auth_ok",
+            "user": {
+                "displayName": user_context.display_name,
+                "email": user_context.email,
+                "department": user_context.department,
+                "team": user_context.team,
+            },
+            "agent": {
+                "id": agent_id,
+                "name": agent.name,
+                "role_title": agent.role_title,
+                "avatar_color": agent.avatar_color,
+            },
+        })
+
+        # ── Step 3: Chat loop ────────────────────────────────
+        while True:
+            data = await websocket.receive_json()
+
+            if data.get("type") == "message":
+                user_message = data.get("content", "").strip()
+                if not user_message:
+                    continue
+
+                request_record = {
+                    "timestamp": time.time(),
+                    "user": user_context.email,
+                    "department": user_context.department,
+                    "cost_center": user_context.cost_center,
+                    "prompt": user_message[:200],
+                    "resource_types": [],
+                    "estimated_cost": 0.0,
+                    "from_catalog": False,
+                }
+
+                response_chunks: list[str] = []
+                done_event = asyncio.Event()
+
+                def on_event(event):
+                    try:
+                        evt_type = event.type.value
+                        if evt_type == "assistant.message_delta":
+                            delta = event.data.delta_content or ""
+                            response_chunks.append(delta)
+                            _enqueue({"type": "delta", "content": delta})
+                        elif evt_type == "assistant.message":
+                            full_content = event.data.content or ""
+                            if full_content:
+                                _enqueue({"type": "done", "content": full_content})
+                        elif evt_type in ("tool.call", "tool.execution_start"):
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "running"})
+                        elif evt_type in ("tool.result", "tool.execution_complete"):
+                            tool_name = getattr(event.data, 'name', 'unknown')
+                            _enqueue({"type": "tool_call", "name": tool_name, "status": "complete"})
+                        elif evt_type == "session.idle":
+                            loop.call_soon_threadsafe(done_event.set)
+                    except Exception as e:
+                        logger.error(f"Dynamic agent event handler error: {e}")
+                        loop.call_soon_threadsafe(done_event.set)
+
+                unsubscribe = copilot_session.on(on_event)
+
+                _ws_msg_start = time.time()
+                try:
+                    await copilot_session.send({"prompt": user_message})
+                    await asyncio.wait_for(done_event.wait(), timeout=120)
+                except asyncio.TimeoutError:
+                    _enqueue({"type": "error", "message": "Request timed out."})
+                finally:
+                    unsubscribe()
+
+                await asyncio.sleep(0.05)
+
+                full_response = "".join(response_chunks)
+                await save_chat_message(session_token, "user", user_message)
+                await save_chat_message(session_token, "assistant", full_response)
+                await log_usage(request_record)
+
+                from src.copilot_helpers import _record_activity
+                _record_activity(
+                    agent_name=agent_id.upper(),
+                    model=get_active_model(),
+                    status="ok",
+                    duration_ms=(time.time() - _ws_msg_start) * 1000,
+                    prompt_len=len(user_message),
+                    response_len=len(full_response),
+                )
+
+            elif data.get("type") == "ping":
+                _enqueue({"type": "pong"})
+
+    except WebSocketDisconnect:
+        ws_closed = True
+        logger.info(f"Dynamic agent disconnected: {agent_id} / {user_context.email if user_context else 'unknown'}")
+    except Exception as e:
+        ws_closed = True
+        logger.error(f"Dynamic agent WebSocket error ({agent_id}): {e}")
+    finally:
+        ws_closed = True
+        send_queue.put_nowait(None)
+        sender_task.cancel()
+        try:
+            await sender_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        if session_token:
+            dynamic_agent_sessions.pop(f"{session_token}:{agent_id}", None)

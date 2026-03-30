@@ -298,6 +298,7 @@ function showApp() {
     document.getElementById('app-screen').classList.remove('hidden');
 
     if (currentUser) {
+        window._currentUser = currentUser;
         const initials = currentUser.displayName
             .split(' ')
             .map(n => n[0])
@@ -355,6 +356,9 @@ function navigateTo(page) {
         activity: ['Observability', ''],
         chat: ['Infrastructure Designer', ''],
         admin: ['Admin Settings', ''],
+        org: ['Organization', 'Org Chart & Departments'],
+        agents: ['Agent Workforce', 'AI Agents & Roles'],
+        processes: ['Processes', 'Workflows & Pipelines'],
     };
     // Tech-branded subtitles (as HTML badges)
     const subtitleBadges = {
@@ -418,6 +422,21 @@ function navigateTo(page) {
         loadEnforcementMode();
     }
 
+    // Load org chart when switching to org page
+    if (page === 'org') {
+        loadOrgChart();
+    }
+
+    // Load agent workforce when switching to agents page
+    if (page === 'agents') {
+        loadAgentWorkforce();
+    }
+
+    // Load processes when switching to processes page
+    if (page === 'processes') {
+        loadProcesses();
+    }
+
     currentPage = page;
 }
 
@@ -442,6 +461,15 @@ function updatePageActions(page) {
 
         case 'chat':
             actions.innerHTML = '<button class="btn btn-sm btn-ghost" onclick="clearChat()" title="New conversation">🗒️ New Chat</button>';
+            break;
+        case 'org':
+            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openNewOrgUnitModal()">＋ New Department</button>';
+            break;
+        case 'agents':
+            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openAgentBuilder()">＋ New Agent</button>';
+            break;
+        case 'processes':
+            actions.innerHTML = '<button class="btn btn-sm btn-primary" onclick="openNewProcessModal()">＋ New Process</button>';
             break;
         default:
             actions.innerHTML = '';
@@ -18092,3 +18120,932 @@ function _escapeHtml(str) {
     div.textContent = str;
     return div.innerHTML;
 }
+
+// ══════════════════════════════════════════════════════════════
+// ORG CHART PAGE
+// ══════════════════════════════════════════════════════════════
+
+let _orgChartData = null;
+
+async function loadOrgChart() {
+    try {
+        const res = await fetch('/api/org/chart', { headers: { 'X-Session-Token': sessionToken } });
+        if (!res.ok) throw new Error('Failed to load org chart');
+        _orgChartData = await res.json();
+        renderOrgChart(_orgChartData);
+    } catch (e) {
+        console.error('loadOrgChart error:', e);
+        document.getElementById('org-tree').innerHTML =
+            '<p style="color: var(--text-secondary); text-align: center;">Failed to load org chart.</p>';
+    }
+}
+
+function renderOrgChart(data) {
+    // CEO card — show logged-in admin name
+    const ceoName = document.getElementById('org-ceo-name');
+    if (ceoName && window._currentUser) {
+        ceoName.textContent = window._currentUser.displayName || 'CEO';
+    }
+
+    const tree = document.getElementById('org-tree');
+    const units = data.units || [];
+    const unassigned = data.unassigned_agents || [];
+
+    let html = '';
+    for (const unit of units) {
+        html += renderOrgUnitCard(unit);
+    }
+    if (unassigned.length) {
+        html += `<div class="org-unit-card" style="border-style: dashed;">
+            <div class="org-unit-header">
+                <span class="org-unit-icon">📎</span>
+                <span class="org-unit-name">Unassigned Agents</span>
+            </div>
+            <div class="org-unit-agents">${unassigned.map(a => renderAgentChip(a)).join('')}</div>
+        </div>`;
+    }
+    tree.innerHTML = html || '<p style="color: var(--text-secondary); text-align: center;">No departments yet. Create one to get started.</p>';
+}
+
+function renderOrgUnitCard(unit) {
+    const agents = unit.agents || [];
+    const children = unit.children || [];
+    const agentChips = agents.map(a => renderAgentChip(a)).join('');
+    const childCards = children.map(c => renderOrgUnitCard(c)).join('');
+
+    return `<div class="org-unit-card" onclick="openOrgUnitEditor('${unit.id}')" style="border-left: 3px solid ${unit.color || '#6366f1'}">
+        <div class="org-unit-header">
+            <span class="org-unit-icon">${unit.icon || '🏢'}</span>
+            <span class="org-unit-name">${_escapeHtml(unit.name)}</span>
+            <span class="org-unit-type-badge">${unit.type || 'department'}</span>
+        </div>
+        <div class="org-unit-desc">${_escapeHtml(unit.description || '')}</div>
+        <div class="org-unit-agents">${agentChips || '<span style="font-size:0.75rem;color:var(--text-muted)">No agents assigned</span>'}</div>
+        ${children.length ? `<div style="margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.75rem;">${childCards}</div>` : ''}
+        <div class="org-unit-actions">
+            <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); openOrgUnitEditor('${unit.id}')">✏️ Edit</button>
+            <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); deleteOrgUnit('${unit.id}')">🗑️ Delete</button>
+        </div>
+    </div>`;
+}
+
+function renderAgentChip(agent) {
+    const color = agent.avatar_color || '#6366f1';
+    const name = agent.name || agent.id;
+    return `<span class="org-unit-agent-chip"><span class="org-unit-agent-dot" style="background:${color}"></span>${_escapeHtml(name)}</span>`;
+}
+
+function openNewOrgUnitModal() {
+    openOrgUnitEditor(null);
+}
+
+function openOrgUnitEditor(unitId) {
+    const unit = unitId ? findOrgUnit(unitId) : null;
+    const isNew = !unit;
+
+    const allUnits = _flattenOrgUnits(_orgChartData?.units || []);
+    const parentOptions = allUnits
+        .filter(u => u.id !== unitId)
+        .map(u => `<option value="${u.id}" ${unit?.parent_id === u.id ? 'selected' : ''}>${_escapeHtml(u.name)}</option>`)
+        .join('');
+
+    const html = `<div class="modal-overlay" id="org-unit-modal" onclick="if(event.target===this)this.remove()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>${isNew ? 'New Department' : 'Edit ' + _escapeHtml(unit.name)}</h2>
+                <button class="modal-close" onclick="document.getElementById('org-unit-modal').remove()">×</button>
+            </div>
+            <div class="agent-builder-form">
+                <div>
+                    <label>Name</label>
+                    <input type="text" id="org-unit-name" class="input" value="${_escapeHtml(unit?.name || '')}" placeholder="e.g. Platform Engineering">
+                </div>
+                <div>
+                    <label>Type</label>
+                    <select id="org-unit-type" class="input">
+                        <option value="department" ${unit?.type === 'department' ? 'selected' : ''}>Department</option>
+                        <option value="team" ${unit?.type === 'team' ? 'selected' : ''}>Team</option>
+                        <option value="squad" ${unit?.type === 'squad' ? 'selected' : ''}>Squad</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Parent Unit</label>
+                    <select id="org-unit-parent" class="input">
+                        <option value="">None (top-level)</option>
+                        ${parentOptions}
+                    </select>
+                </div>
+                <div>
+                    <label>Description</label>
+                    <textarea id="org-unit-desc" class="input" rows="3" placeholder="What does this unit do?">${_escapeHtml(unit?.description || '')}</textarea>
+                </div>
+                <div>
+                    <label>Color</label>
+                    <div class="agent-color-picker">
+                        ${['#6366f1','#ef4444','#22c55e','#f59e0b','#3b82f6','#ec4899','#8b5cf6','#14b8a6'].map(c =>
+                            `<div class="agent-color-swatch ${(unit?.color || '#6366f1') === c ? 'selected' : ''}" style="background:${c}" onclick="selectOrgColor(this,'${c}')"></div>`
+                        ).join('')}
+                    </div>
+                    <input type="hidden" id="org-unit-color" value="${unit?.color || '#6366f1'}">
+                </div>
+                <div>
+                    <label>Icon (emoji)</label>
+                    <input type="text" id="org-unit-icon" class="input" value="${unit?.icon || ''}" placeholder="🏢" style="width:80px;">
+                </div>
+            </div>
+            <div class="modal-footer">
+                ${!isNew ? `<button class="btn btn-sm" style="color:#ef4444;margin-right:auto;" onclick="deleteOrgUnit('${unitId}'); document.getElementById('org-unit-modal').remove();">Delete</button>` : ''}
+                <button class="btn btn-secondary" onclick="document.getElementById('org-unit-modal').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveOrgUnit('${unitId || ''}')">Save</button>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function selectOrgColor(el, color) {
+    el.closest('.agent-color-picker').querySelectorAll('.agent-color-swatch').forEach(s => s.classList.remove('selected'));
+    el.classList.add('selected');
+    document.getElementById('org-unit-color').value = color;
+}
+
+async function saveOrgUnit(unitId) {
+    const body = {
+        name: document.getElementById('org-unit-name').value.trim(),
+        type: document.getElementById('org-unit-type').value,
+        parent_id: document.getElementById('org-unit-parent').value || null,
+        description: document.getElementById('org-unit-desc').value.trim(),
+        color: document.getElementById('org-unit-color').value,
+        icon: document.getElementById('org-unit-icon').value.trim(),
+    };
+    if (!body.name) return alert('Name is required');
+
+    const url = unitId ? `/api/org/units/${unitId}` : '/api/org/units';
+    const method = unitId ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken }, body: JSON.stringify(body) });
+    if (!res.ok) { alert('Failed to save'); return; }
+    document.getElementById('org-unit-modal')?.remove();
+    loadOrgChart();
+}
+
+async function deleteOrgUnit(unitId) {
+    if (!confirm('Delete this org unit?')) return;
+    const res = await fetch(`/api/org/units/${unitId}`, { method: 'DELETE', headers: { 'X-Session-Token': sessionToken } });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.detail || 'Cannot delete — has children or agents');
+        return;
+    }
+    loadOrgChart();
+}
+
+function findOrgUnit(unitId) {
+    if (!_orgChartData) return null;
+    const search = (units) => {
+        for (const u of units) {
+            if (u.id === unitId) return u;
+            if (u.children) {
+                const found = search(u.children);
+                if (found) return found;
+            }
+        }
+        return null;
+    };
+    return search(_orgChartData.units || []);
+}
+
+function _flattenOrgUnits(units) {
+    const result = [];
+    for (const u of units) {
+        result.push(u);
+        if (u.children) result.push(..._flattenOrgUnits(u.children));
+    }
+    return result;
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// AGENT WORKFORCE PAGE
+// ══════════════════════════════════════════════════════════════
+
+let _allAgents = [];
+let _allOrgUnits = [];
+let _availableTools = {};
+
+async function loadAgentWorkforce() {
+    try {
+        const [agentsRes, unitsRes] = await Promise.all([
+            fetch('/api/org/agents', { headers: { 'X-Session-Token': sessionToken } }),
+            fetch('/api/org/units', { headers: { 'X-Session-Token': sessionToken } }),
+        ]);
+        _allAgents = await agentsRes.json();
+        _allOrgUnits = await unitsRes.json();
+
+        // Populate unit filter dropdown
+        const unitFilter = document.getElementById('agent-unit-filter');
+        if (unitFilter) {
+            unitFilter.innerHTML = '<option value="">All Departments</option>' +
+                _allOrgUnits.map(u => `<option value="${u.id}">${_escapeHtml(u.name)}</option>`).join('');
+        }
+
+        renderAgentGrid(_allAgents);
+    } catch (e) {
+        console.error('loadAgentWorkforce error:', e);
+    }
+}
+
+function filterAgents() {
+    const search = (document.getElementById('agent-search')?.value || '').toLowerCase();
+    const unitFilter = document.getElementById('agent-unit-filter')?.value || '';
+    const statusFilter = document.getElementById('agent-status-filter')?.value || '';
+
+    let filtered = _allAgents;
+    if (search) {
+        filtered = filtered.filter(a =>
+            (a.name || '').toLowerCase().includes(search) ||
+            (a.role_title || '').toLowerCase().includes(search) ||
+            (a.description || '').toLowerCase().includes(search)
+        );
+    }
+    if (unitFilter) {
+        filtered = filtered.filter(a => a.org_unit_id === unitFilter);
+    }
+    if (statusFilter === 'enabled') {
+        filtered = filtered.filter(a => a.enabled);
+    } else if (statusFilter === 'disabled') {
+        filtered = filtered.filter(a => !a.enabled);
+    }
+    renderAgentGrid(filtered);
+}
+
+function renderAgentGrid(agents) {
+    const grid = document.getElementById('agent-grid');
+    if (!grid) return;
+
+    if (!agents.length) {
+        grid.innerHTML = '<p style="color: var(--text-secondary); text-align: center; grid-column: 1/-1;">No agents found.</p>';
+        return;
+    }
+
+    grid.innerHTML = agents.map(a => {
+        const initials = (a.name || 'A').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+        const color = a.avatar_color || '#6366f1';
+        const unit = _allOrgUnits.find(u => u.id === a.org_unit_id);
+        const unitName = unit ? unit.name : '';
+        const toolsCount = (() => { try { const t = typeof a.tools_json === 'string' ? JSON.parse(a.tools_json || '[]') : (a.tools_json || []); return t.length; } catch { return 0; } })();
+        const enabled = a.enabled !== undefined ? a.enabled : true;
+        const chatEnabled = a.chat_enabled;
+
+        return `<div class="agent-card" style="opacity: ${enabled ? 1 : 0.6}">
+            <div class="agent-card-header">
+                <div class="agent-avatar" style="background: ${color}">${initials}</div>
+                <div class="agent-card-info">
+                    <div class="agent-card-name">${_escapeHtml(a.name)}</div>
+                    <div class="agent-card-role">${_escapeHtml(a.role_title || a.task || '')}</div>
+                </div>
+            </div>
+            <div class="agent-card-badges">
+                ${unitName ? `<span class="agent-badge agent-badge-unit">${_escapeHtml(unitName)}</span>` : ''}
+                <span class="agent-badge">${a.category || 'headless'}</span>
+                ${chatEnabled ? '<span class="agent-badge agent-badge-chat">💬 Chat</span>' : ''}
+                ${!enabled ? '<span class="agent-badge agent-badge-disabled">Disabled</span>' : ''}
+                ${toolsCount > 0 ? `<span class="agent-badge">${toolsCount} tools</span>` : ''}
+            </div>
+            <div class="agent-card-desc">${_escapeHtml(a.description || '')}</div>
+            <div class="agent-card-footer">
+                <button class="btn btn-sm btn-secondary" onclick="openAgentBuilder('${a.id}')">✏️ Edit</button>
+                ${chatEnabled ? `<button class="btn btn-sm btn-primary" onclick="chatWithAgent('${a.id}')">💬 Chat</button>` : ''}
+                <button class="btn btn-sm btn-ghost" onclick="toggleAgent('${a.id}', ${!enabled})">${enabled ? '🔒 Disable' : '✅ Enable'}</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function toggleAgent(agentId, enabled) {
+    await fetch(`/api/org/agents/${agentId}/toggle`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken },
+        body: JSON.stringify({ enabled }),
+    });
+    loadAgentWorkforce();
+}
+
+function chatWithAgent(agentId) {
+    _selectedChatAgentId = agentId;
+    const agent = _allAgents.find(a => a.id === agentId);
+    if (agent) {
+        document.getElementById('chat-agent-name').textContent = agent.name;
+        document.getElementById('chat-agent-dot').style.background = agent.avatar_color || '#6366f1';
+    }
+    navigateTo('chat');
+    // Reconnect WebSocket to dynamic agent endpoint
+    reconnectWSForAgent(agentId);
+}
+
+async function loadAvailableTools() {
+    if (Object.keys(_availableTools).length) return;
+    try {
+        const res = await fetch('/api/org/tools', { headers: { 'X-Session-Token': sessionToken } });
+        _availableTools = await res.json();
+    } catch (e) {
+        console.error('loadAvailableTools error:', e);
+    }
+}
+
+async function openAgentBuilder(agentId) {
+    await loadAvailableTools();
+    const agent = agentId ? _allAgents.find(a => a.id === agentId) : null;
+    const isNew = !agent;
+
+    const unitOptions = _allOrgUnits.map(u =>
+        `<option value="${u.id}" ${agent?.org_unit_id === u.id ? 'selected' : ''}>${_escapeHtml(u.name)}</option>`
+    ).join('');
+
+    const agentOptions = _allAgents
+        .filter(a => a.id !== agentId)
+        .map(a => `<option value="${a.id}" ${agent?.reports_to_agent_id === a.id ? 'selected' : ''}>${_escapeHtml(a.name)}</option>`)
+        .join('');
+
+    const goals = (() => { try { const g = typeof agent?.goals_json === 'string' ? JSON.parse(agent.goals_json || '[]') : (agent?.goals_json || []); return g; } catch { return []; } })();
+    const selectedTools = (() => { try { const t = typeof agent?.tools_json === 'string' ? JSON.parse(agent.tools_json || '[]') : (agent?.tools_json || []); return new Set(t); } catch { return new Set(); } })();
+
+    let toolsHtml = '';
+    for (const [category, tools] of Object.entries(_availableTools)) {
+        toolsHtml += `<div style="grid-column:1/-1;font-size:0.78rem;font-weight:600;color:var(--text-secondary);margin-top:0.4rem;">${_escapeHtml(category)}</div>`;
+        for (const tool of tools) {
+            toolsHtml += `<label class="agent-tool-checkbox">
+                <input type="checkbox" value="${_escapeHtml(tool.name)}" ${selectedTools.has(tool.name) ? 'checked' : ''}>
+                ${_escapeHtml(tool.name)}
+            </label>`;
+        }
+    }
+
+    const colors = ['#6366f1','#ef4444','#22c55e','#f59e0b','#3b82f6','#ec4899','#8b5cf6','#14b8a6','#f97316','#06b6d4'];
+    const currentColor = agent?.avatar_color || '#6366f1';
+
+    const html = `<div class="modal-overlay" id="agent-builder-modal" onclick="if(event.target===this)this.remove()">
+        <div class="modal-content" style="max-width:700px;">
+            <div class="modal-header">
+                <h2>${isNew ? '🤖 New Agent' : '✏️ Edit ' + _escapeHtml(agent.name)}</h2>
+                <button class="modal-close" onclick="document.getElementById('agent-builder-modal').remove()">×</button>
+            </div>
+            <div class="agent-builder-form">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                    <div>
+                        <label>Name</label>
+                        <input type="text" id="ab-name" class="input" value="${_escapeHtml(agent?.name || '')}" placeholder="e.g. Security Reviewer">
+                    </div>
+                    <div>
+                        <label>Role Title</label>
+                        <input type="text" id="ab-role" class="input" value="${_escapeHtml(agent?.role_title || '')}" placeholder="e.g. Senior Security Analyst">
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                    <div>
+                        <label>Department</label>
+                        <select id="ab-unit" class="input">
+                            <option value="">Unassigned</option>
+                            ${unitOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label>Reports To</label>
+                        <select id="ab-reports-to" class="input">
+                            <option value="">CEO (top-level)</option>
+                            ${agentOptions}
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label>Description</label>
+                    <input type="text" id="ab-desc" class="input" value="${_escapeHtml(agent?.description || '')}" placeholder="What does this agent do?">
+                </div>
+                <div>
+                    <label>System Prompt</label>
+                    <textarea id="ab-prompt" class="input" rows="6" placeholder="You are a...">${_escapeHtml(agent?.system_prompt || '')}</textarea>
+                </div>
+                <div>
+                    <label>Goals</label>
+                    <div class="agent-goals-input" id="ab-goals-container">
+                        ${goals.map(g => `<span class="agent-goal-tag">${_escapeHtml(g)}<span class="agent-goal-tag-remove" onclick="this.parentElement.remove()">×</span></span>`).join('')}
+                        <input type="text" id="ab-goal-input" placeholder="Type a goal and press Enter" style="border:none;background:none;outline:none;flex:1;min-width:120px;font-size:0.78rem;color:var(--text-primary);" onkeydown="if(event.key==='Enter'){event.preventDefault();addGoalTag(this.value);this.value='';}">
+                    </div>
+                </div>
+                <div>
+                    <label>Tools (leave empty for all tools)</label>
+                    <div class="agent-tools-grid" id="ab-tools-grid">
+                        ${toolsHtml}
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+                    <div>
+                        <label>Task Type</label>
+                        <select id="ab-task" class="input">
+                            ${['CHAT','PLANNING','CODE_GENERATION','CODE_FIXING','POLICY_GENERATION','VALIDATION_ANALYSIS','GOVERNANCE_REVIEW'].map(t =>
+                                `<option value="${t}" ${agent?.task === t ? 'selected' : ''}>${t}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label>Category</label>
+                        <select id="ab-category" class="input">
+                            ${['interactive','headless'].map(c =>
+                                `<option value="${c}" ${agent?.category === c ? 'selected' : ''}>${c}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                </div>
+                <div style="display:flex;gap:2rem;align-items:flex-start;">
+                    <div>
+                        <label>Avatar Color</label>
+                        <div class="agent-color-picker">
+                            ${colors.map(c =>
+                                `<div class="agent-color-swatch ${currentColor === c ? 'selected' : ''}" style="background:${c}" onclick="selectAgentColor(this,'${c}')"></div>`
+                            ).join('')}
+                        </div>
+                        <input type="hidden" id="ab-color" value="${currentColor}">
+                    </div>
+                    <div style="display:flex;gap:1.5rem;margin-top:0.5rem;">
+                        <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;">
+                            <input type="checkbox" id="ab-chat-enabled" ${agent?.chat_enabled ? 'checked' : ''}> Chat Enabled
+                        </label>
+                        <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;">
+                            <input type="checkbox" id="ab-enabled" ${(agent?.enabled !== undefined ? agent.enabled : true) ? 'checked' : ''}> Enabled
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                ${!isNew ? `<button class="btn btn-sm" style="color:#ef4444;margin-right:auto;" onclick="deleteAgent('${agentId}')">Delete Agent</button>` : ''}
+                <button class="btn btn-secondary" onclick="document.getElementById('agent-builder-modal').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveAgent('${agentId || ''}')">${isNew ? 'Create Agent' : 'Save Changes'}</button>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function addGoalTag(text) {
+    text = text.trim();
+    if (!text) return;
+    const container = document.getElementById('ab-goals-container');
+    const input = document.getElementById('ab-goal-input');
+    const tag = document.createElement('span');
+    tag.className = 'agent-goal-tag';
+    tag.innerHTML = `${_escapeHtml(text)}<span class="agent-goal-tag-remove" onclick="this.parentElement.remove()">×</span>`;
+    container.insertBefore(tag, input);
+}
+
+function selectAgentColor(el, color) {
+    el.closest('.agent-color-picker').querySelectorAll('.agent-color-swatch').forEach(s => s.classList.remove('selected'));
+    el.classList.add('selected');
+    document.getElementById('ab-color').value = color;
+}
+
+async function saveAgent(agentId) {
+    const goals = Array.from(document.querySelectorAll('#ab-goals-container .agent-goal-tag'))
+        .map(el => el.textContent.replace('×', '').trim())
+        .filter(Boolean);
+    const tools = Array.from(document.querySelectorAll('#ab-tools-grid input[type="checkbox"]:checked'))
+        .map(cb => cb.value);
+
+    const body = {
+        name: document.getElementById('ab-name').value.trim(),
+        description: document.getElementById('ab-desc').value.trim(),
+        system_prompt: document.getElementById('ab-prompt').value,
+        task: document.getElementById('ab-task').value,
+        category: document.getElementById('ab-category').value,
+        role_title: document.getElementById('ab-role').value.trim(),
+        org_unit_id: document.getElementById('ab-unit').value || null,
+        reports_to_agent_id: document.getElementById('ab-reports-to').value || null,
+        goals_json: goals,
+        tools_json: tools,
+        avatar_color: document.getElementById('ab-color').value,
+        chat_enabled: document.getElementById('ab-chat-enabled').checked,
+        enabled: document.getElementById('ab-enabled').checked,
+    };
+
+    if (!body.name) return alert('Name is required');
+    if (!body.system_prompt) return alert('System prompt is required');
+
+    const url = agentId ? `/api/org/agents/${agentId}` : '/api/org/agents';
+    const method = agentId ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.detail || 'Failed to save agent');
+        return;
+    }
+    document.getElementById('agent-builder-modal')?.remove();
+    loadAgentWorkforce();
+}
+
+async function deleteAgent(agentId) {
+    if (!confirm('Delete this agent? This cannot be undone.')) return;
+    const res = await fetch(`/api/org/agents/${agentId}`, {
+        method: 'DELETE',
+        headers: { 'X-Session-Token': sessionToken },
+    });
+    if (!res.ok) { alert('Failed to delete'); return; }
+    document.getElementById('agent-builder-modal')?.remove();
+    loadAgentWorkforce();
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// PROCESSES PAGE
+// ══════════════════════════════════════════════════════════════
+
+let _allProcesses = [];
+let _selectedProcessId = null;
+
+async function loadProcesses() {
+    try {
+        const res = await fetch('/api/processes', { headers: { 'X-Session-Token': sessionToken } });
+        _allProcesses = await res.json();
+        renderProcessList();
+        if (_selectedProcessId) {
+            selectProcess(_selectedProcessId);
+        }
+    } catch (e) {
+        console.error('loadProcesses error:', e);
+    }
+}
+
+function renderProcessList() {
+    const list = document.getElementById('process-list');
+    if (!list) return;
+
+    if (!_allProcesses.length) {
+        list.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 1rem;">No processes yet.</p>';
+        return;
+    }
+
+    list.innerHTML = _allProcesses.map(p => {
+        const typeBadgeClass = `process-type-badge process-type-badge-${p.type || 'pipeline'}`;
+        return `<div class="process-list-item ${p.id === _selectedProcessId ? 'selected' : ''}" onclick="selectProcess('${p.id}')">
+            <div class="process-list-item-name">${_escapeHtml(p.name)}</div>
+            <div class="process-list-item-meta">
+                <span class="${typeBadgeClass}">${p.type || 'pipeline'}</span>
+                <span>${p.status || 'draft'}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function selectProcess(procId) {
+    _selectedProcessId = procId;
+    renderProcessList();
+
+    const emptyEl = document.getElementById('process-detail-empty');
+    const detailEl = document.getElementById('process-detail');
+    if (emptyEl) emptyEl.style.display = 'none';
+    if (detailEl) detailEl.style.display = '';
+
+    try {
+        const res = await fetch(`/api/processes/${procId}`, { headers: { 'X-Session-Token': sessionToken } });
+        const proc = await res.json();
+        renderProcessDetail(proc);
+    } catch (e) {
+        console.error('selectProcess error:', e);
+    }
+}
+
+function renderProcessDetail(proc) {
+    const header = document.getElementById('process-detail-header');
+    const stepsList = document.getElementById('process-steps-list');
+
+    header.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+            <h3 style="margin:0; flex:1;">${_escapeHtml(proc.name)}</h3>
+            <button class="btn btn-sm btn-ghost" onclick="openEditProcessModal('${proc.id}')">✏️ Edit</button>
+            <button class="btn btn-sm btn-ghost" onclick="deleteProcess('${proc.id}')" style="color:#ef4444;">🗑️</button>
+        </div>
+        <p>${_escapeHtml(proc.description || '')}</p>
+        <div style="display:flex;gap:0.5rem;font-size:0.75rem;color:var(--text-muted);">
+            <span class="process-type-badge process-type-badge-${proc.type || 'pipeline'}">${proc.type || 'pipeline'}</span>
+            <span>Status: ${proc.status || 'draft'}</span>
+        </div>`;
+
+    const steps = proc.steps || [];
+    let stepsHtml = '';
+    for (let i = 0; i < steps.length; i++) {
+        const s = steps[i];
+        const typeIcon = s.step_type === 'approval' ? '✅' : s.step_type === 'condition' ? '❓' : '🤖';
+        const agentName = s.agent_id ? (_allAgents.find(a => a.id === s.agent_id)?.name || s.agent_id) : '—';
+
+        stepsHtml += `<div class="process-step-card">
+            <div class="process-step-order">${i + 1}</div>
+            <div class="process-step-info">
+                <div class="process-step-name"><span class="process-step-type-icon">${typeIcon}</span>${_escapeHtml(s.name)}</div>
+                <div class="process-step-meta">${s.step_type} · Agent: ${_escapeHtml(agentName)} · On fail: ${s.on_failure || 'abort'}</div>
+            </div>
+            <div class="process-step-actions">
+                <button class="btn btn-sm btn-ghost" onclick="openEditStepModal('${proc.id}', ${s.id})">✏️</button>
+                <button class="btn btn-sm btn-ghost" onclick="deleteStep('${proc.id}', ${s.id})" style="color:#ef4444;">×</button>
+            </div>
+        </div>`;
+        if (i < steps.length - 1) {
+            stepsHtml += '<div class="process-step-connector">↓</div>';
+        }
+    }
+    stepsHtml += `<button class="btn btn-sm btn-secondary" style="margin-top:0.75rem;width:100%;" onclick="openAddStepModal('${proc.id}', ${steps.length + 1})">＋ Add Step</button>`;
+    stepsList.innerHTML = stepsHtml;
+}
+
+function openNewProcessModal() {
+    openProcessFormModal(null);
+}
+
+function openEditProcessModal(procId) {
+    const proc = _allProcesses.find(p => p.id === procId);
+    openProcessFormModal(proc);
+}
+
+function openProcessFormModal(proc) {
+    const isNew = !proc;
+    const html = `<div class="modal-overlay" id="process-modal" onclick="if(event.target===this)this.remove()">
+        <div class="modal-content" style="max-width:500px;">
+            <div class="modal-header">
+                <h2>${isNew ? '🔄 New Process' : '✏️ Edit Process'}</h2>
+                <button class="modal-close" onclick="document.getElementById('process-modal').remove()">×</button>
+            </div>
+            <div class="agent-builder-form">
+                <div>
+                    <label>Name</label>
+                    <input type="text" id="proc-name" class="input" value="${_escapeHtml(proc?.name || '')}" placeholder="e.g. Infrastructure Review Pipeline">
+                </div>
+                <div>
+                    <label>Description</label>
+                    <textarea id="proc-desc" class="input" rows="3" placeholder="What does this process do?">${_escapeHtml(proc?.description || '')}</textarea>
+                </div>
+                <div>
+                    <label>Type</label>
+                    <select id="proc-type" class="input">
+                        <option value="pipeline" ${proc?.type === 'pipeline' ? 'selected' : ''}>Pipeline (AI agent chain)</option>
+                        <option value="approval" ${proc?.type === 'approval' ? 'selected' : ''}>Approval (human sign-off)</option>
+                        <option value="hybrid" ${proc?.type === 'hybrid' ? 'selected' : ''}>Hybrid (both)</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Department</label>
+                    <select id="proc-unit" class="input">
+                        <option value="">None</option>
+                        ${_allOrgUnits.map(u => `<option value="${u.id}" ${proc?.org_unit_id === u.id ? 'selected' : ''}>${_escapeHtml(u.name)}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label>Status</label>
+                    <select id="proc-status" class="input">
+                        <option value="draft" ${proc?.status === 'draft' ? 'selected' : ''}>Draft</option>
+                        <option value="active" ${proc?.status === 'active' ? 'selected' : ''}>Active</option>
+                        <option value="archived" ${proc?.status === 'archived' ? 'selected' : ''}>Archived</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="document.getElementById('process-modal').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveProcess('${proc?.id || ''}')">${isNew ? 'Create' : 'Save'}</button>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function saveProcess(procId) {
+    const body = {
+        name: document.getElementById('proc-name').value.trim(),
+        description: document.getElementById('proc-desc').value.trim(),
+        type: document.getElementById('proc-type').value,
+        org_unit_id: document.getElementById('proc-unit').value || null,
+        status: document.getElementById('proc-status').value,
+    };
+    if (!body.name) return alert('Name is required');
+
+    const url = procId ? `/api/processes/${procId}` : '/api/processes';
+    const method = procId ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken }, body: JSON.stringify(body) });
+    if (!res.ok) { alert('Failed to save'); return; }
+    document.getElementById('process-modal')?.remove();
+    const data = await res.json();
+    _selectedProcessId = data.id || procId;
+    loadProcesses();
+}
+
+async function deleteProcess(procId) {
+    if (!confirm('Delete this process and all its steps?')) return;
+    const res = await fetch(`/api/processes/${procId}`, { method: 'DELETE', headers: { 'X-Session-Token': sessionToken } });
+    if (!res.ok) { alert('Failed to delete'); return; }
+    _selectedProcessId = null;
+    document.getElementById('process-detail').style.display = 'none';
+    document.getElementById('process-detail-empty').style.display = '';
+    loadProcesses();
+}
+
+function openAddStepModal(procId, stepOrder) {
+    openStepFormModal(procId, null, stepOrder);
+}
+
+function openEditStepModal(procId, stepId) {
+    // Fetch the step from the rendered process
+    const proc = _allProcesses.find(p => p.id === procId);
+    // We need to fetch steps
+    fetch(`/api/processes/${procId}/steps`, { headers: { 'X-Session-Token': sessionToken } })
+        .then(r => r.json())
+        .then(steps => {
+            const step = steps.find(s => s.id === stepId);
+            openStepFormModal(procId, step, step?.step_order || 1);
+        });
+}
+
+function openStepFormModal(procId, step, stepOrder) {
+    const isNew = !step;
+    const agentOptions = _allAgents.map(a =>
+        `<option value="${a.id}" ${step?.agent_id === a.id ? 'selected' : ''}>${_escapeHtml(a.name)}</option>`
+    ).join('');
+
+    const html = `<div class="modal-overlay" id="step-modal" onclick="if(event.target===this)this.remove()">
+        <div class="modal-content" style="max-width:500px;">
+            <div class="modal-header">
+                <h2>${isNew ? 'Add Step' : 'Edit Step'}</h2>
+                <button class="modal-close" onclick="document.getElementById('step-modal').remove()">×</button>
+            </div>
+            <div class="agent-builder-form">
+                <div>
+                    <label>Step Name</label>
+                    <input type="text" id="step-name" class="input" value="${_escapeHtml(step?.name || '')}" placeholder="e.g. Security Review">
+                </div>
+                <div>
+                    <label>Step Type</label>
+                    <select id="step-type" class="input">
+                        <option value="ai_task" ${step?.step_type === 'ai_task' ? 'selected' : ''}>🤖 AI Task</option>
+                        <option value="approval" ${step?.step_type === 'approval' ? 'selected' : ''}>✅ Approval Gate</option>
+                        <option value="condition" ${step?.step_type === 'condition' ? 'selected' : ''}>❓ Condition</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Agent</label>
+                    <select id="step-agent" class="input">
+                        <option value="">None</option>
+                        ${agentOptions}
+                    </select>
+                </div>
+                <div>
+                    <label>On Failure</label>
+                    <select id="step-on-failure" class="input">
+                        <option value="abort" ${step?.on_failure === 'abort' ? 'selected' : ''}>Abort</option>
+                        <option value="skip" ${step?.on_failure === 'skip' ? 'selected' : ''}>Skip</option>
+                        <option value="retry" ${step?.on_failure === 'retry' ? 'selected' : ''}>Retry</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="document.getElementById('step-modal').remove()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveStep('${procId}', ${step?.id || 'null'}, ${stepOrder})">${isNew ? 'Add' : 'Save'}</button>
+            </div>
+        </div>
+    </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function saveStep(procId, stepId, stepOrder) {
+    const body = {
+        name: document.getElementById('step-name').value.trim(),
+        step_type: document.getElementById('step-type').value,
+        agent_id: document.getElementById('step-agent').value || null,
+        on_failure: document.getElementById('step-on-failure').value,
+        step_order: stepOrder,
+    };
+    if (!body.name) return alert('Name is required');
+
+    let res;
+    if (stepId) {
+        res = await fetch(`/api/processes/${procId}/steps/${stepId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken },
+            body: JSON.stringify(body),
+        });
+    } else {
+        res = await fetch(`/api/processes/${procId}/steps`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': sessionToken },
+            body: JSON.stringify(body),
+        });
+    }
+    if (!res.ok) { alert('Failed to save step'); return; }
+    document.getElementById('step-modal')?.remove();
+    selectProcess(procId);
+}
+
+async function deleteStep(procId, stepId) {
+    if (!confirm('Delete this step?')) return;
+    await fetch(`/api/processes/${procId}/steps/${stepId}`, { method: 'DELETE', headers: { 'X-Session-Token': sessionToken } });
+    selectProcess(procId);
+}
+
+
+// ══════════════════════════════════════════════════════════════
+// CHAT AGENT SELECTOR
+// ══════════════════════════════════════════════════════════════
+
+let _selectedChatAgentId = null; // null = default WEB_CHAT_AGENT
+let _chatAgentDropdownVisible = false;
+
+function toggleChatAgentDropdown() {
+    const dropdown = document.getElementById('chat-agent-dropdown');
+    _chatAgentDropdownVisible = !_chatAgentDropdownVisible;
+    if (_chatAgentDropdownVisible) {
+        loadChatAgentList();
+        dropdown.style.display = '';
+        // Position below the selector
+        const sel = document.getElementById('chat-agent-selector');
+        const rect = sel.getBoundingClientRect();
+        dropdown.style.top = (rect.bottom + 4) + 'px';
+        dropdown.style.left = rect.left + 'px';
+    } else {
+        dropdown.style.display = 'none';
+    }
+}
+
+async function loadChatAgentList() {
+    const dropdown = document.getElementById('chat-agent-dropdown');
+    try {
+        const res = await fetch('/api/org/agents/chat-enabled', { headers: { 'X-Session-Token': sessionToken } });
+        const agents = await res.json();
+
+        let html = `<div class="chat-agent-dropdown-item ${!_selectedChatAgentId ? 'selected' : ''}" onclick="switchChatAgent(null, 'InfraForge Chat', '#6366f1')">
+            <span class="chat-agent-selector-dot" style="background:#6366f1"></span>
+            InfraForge Chat (default)
+        </div>`;
+        for (const a of agents) {
+            const color = a.avatar_color || '#6366f1';
+            html += `<div class="chat-agent-dropdown-item ${_selectedChatAgentId === a.id ? 'selected' : ''}" onclick="switchChatAgent('${a.id}', '${_escapeHtml(a.name)}', '${color}')">
+                <span class="chat-agent-selector-dot" style="background:${color}"></span>
+                ${_escapeHtml(a.name)}
+                <span style="font-size:0.7rem;color:var(--text-muted);margin-left:auto;">${_escapeHtml(a.role_title || '')}</span>
+            </div>`;
+        }
+        dropdown.innerHTML = html;
+    } catch (e) {
+        dropdown.innerHTML = '<div style="padding:0.75rem;color:var(--text-muted);font-size:0.82rem;">Failed to load agents</div>';
+    }
+}
+
+function switchChatAgent(agentId, name, color) {
+    _selectedChatAgentId = agentId;
+    document.getElementById('chat-agent-name').textContent = name;
+    document.getElementById('chat-agent-dot').style.background = color;
+    document.getElementById('chat-agent-dropdown').style.display = 'none';
+    _chatAgentDropdownVisible = false;
+
+    // Reconnect WebSocket
+    reconnectWSForAgent(agentId);
+}
+
+function reconnectWSForAgent(agentId) {
+    // Close existing WS
+    if (ws) {
+        ws.onclose = null;
+        ws.close();
+        ws = null;
+    }
+    // Clear chat
+    clearChat();
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const path = agentId ? `/ws/agent/${agentId}` : '/ws/chat';
+    const wsUrl = `${protocol}//${window.location.host}${path}`;
+
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'auth', sessionToken }));
+        updateConnectionStatus('connected');
+    };
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleWSMessage(data);
+    };
+    ws.onclose = () => {
+        updateConnectionStatus('disconnected');
+        setTimeout(() => {
+            if (sessionToken) reconnectWSForAgent(_selectedChatAgentId);
+        }, 3000);
+    };
+    ws.onerror = () => {
+        updateConnectionStatus('disconnected');
+    };
+}
+
+// Close agent dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    if (_chatAgentDropdownVisible &&
+        !e.target.closest('#chat-agent-selector') &&
+        !e.target.closest('#chat-agent-dropdown')) {
+        document.getElementById('chat-agent-dropdown').style.display = 'none';
+        _chatAgentDropdownVisible = false;
+    }
+});

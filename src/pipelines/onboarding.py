@@ -1996,9 +1996,34 @@ async def step_validate_arm_deploy(ctx: PipelineContext, step: StepDef):
         all_policy_compliant = True
 
         if ctx.generated_policy and resource_details:
-            for _pol_attempt in range(1, MAX_POLICY_HEAL + 1):
-                _policy_rule = ctx.generated_policy.get("properties", ctx.generated_policy).get("policyRule", {})
-                _policy_effect = _policy_rule.get("then", {}).get("effect", "deny")
+            # ── Self-referential conflict detection ──
+            # If the generated policy categorically denies the resource
+            # type being onboarded (e.g. GOV-006 "Public IP Restriction"
+            # while onboarding Microsoft.Network/publicIPAddresses), policy
+            # compliance will ALWAYS fail and healing can never fix it.
+            # Detect this upfront and skip the expensive healing loop.
+            _policy_rule = ctx.generated_policy.get("properties", ctx.generated_policy).get("policyRule", {})
+            _policy_effect = _policy_rule.get("then", {}).get("effect", "deny")
+            _self_referential = False
+            if _policy_effect.lower() in ("deny", "audit"):
+                _self_referential = _policy_targets_own_type(_policy_rule.get("if", {}), ctx.service_id)
+
+            if _self_referential:
+                yield emit(
+                    "progress", "policy_self_ref",
+                    f"⚠️ Generated policy categorically restricts {ctx.service_id.split('/')[-1]} — "
+                    f"this is a self-referential conflict during onboarding. "
+                    f"Skipping policy compliance loop (resource deployed successfully).",
+                    ctx.progress(att_base + 0.30), step=attempt,
+                )
+                logger.info(
+                    "Skipping policy compliance for %s — self-referential conflict "
+                    "(policy denies the resource type being onboarded)", ctx.service_id,
+                )
+                all_policy_compliant = True
+
+            elif True:  # guard scope for the existing for-loop
+             for _pol_attempt in range(1, MAX_POLICY_HEAL + 1):
                 yield emit("progress", "policy_testing",
                             f"🛡️ Evaluating {len(resource_details)} resource(s) against Azure Policy (effect: {_policy_effect})…",
                             ctx.progress(att_base + 0.27), step=attempt)

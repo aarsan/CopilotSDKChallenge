@@ -794,6 +794,9 @@ async def lifespan(app: FastAPI):
     from src.agents import load_agents_from_db
     agent_count = await load_agents_from_db()
     logger.info(f"Loaded {agent_count} agent definitions from database")
+    # Seed default org hierarchy (no-op if already populated)
+    from src.database import seed_default_org
+    await seed_default_org()
     logger.info("Deferring Copilot SDK client start (lazy init on first chat)...")
     _ws.copilot_client = None  # Will be started lazily on first WebSocket connection
     ensure_output_dir(OUTPUT_DIR)
@@ -851,10 +854,14 @@ from src.routers.auth import router as auth_router
 from src.routers.admin import router as admin_router
 from src.routers.deployment import router as deployment_router
 from src.routers.ws import router as ws_router
+from src.routers.org import router as org_router
+from src.routers.processes import router as processes_router
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(deployment_router)
 app.include_router(ws_router)
+app.include_router(org_router)
+app.include_router(processes_router)
 
 # Serve static files (HTML, CSS, JS)
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")

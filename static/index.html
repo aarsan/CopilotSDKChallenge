@@ -7,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <link rel="stylesheet" href="/static/styles.css?v=282">
+    <link rel="stylesheet" href="/static/styles.css?v=283">
     <!-- Mermaid for architecture diagrams -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <!-- Marked for markdown rendering -->
@@ -106,6 +106,18 @@
                     <span class="nav-icon">💬</span> Infrastructure Designer
                     <span class="nav-tech-dot nav-tech-dot-copilot" title="Powered by Copilot SDK"></span>
                 </button>
+
+                <div class="nav-section-title" style="margin-top: 0.5rem">🏛️ Organization</div>
+                <button class="nav-btn" id="nav-org" onclick="navigateTo('org')">
+                    <span class="nav-icon">🏗️</span> Org Chart
+                </button>
+                <button class="nav-btn" id="nav-agents" onclick="navigateTo('agents')">
+                    <span class="nav-icon">🤖</span> Agent Workforce
+                </button>
+                <button class="nav-btn" id="nav-processes" onclick="navigateTo('processes')">
+                    <span class="nav-icon">🔄</span> Processes
+                </button>
+
                 <button class="nav-btn" id="nav-admin" onclick="navigateTo('admin')">
                     <span class="nav-icon">⚙️</span> Admin
                 </button>
@@ -834,6 +846,63 @@
             </div>
 
 
+            <!-- ═══ PAGE: Org Chart ═══════════════════════════ -->
+            <div class="page page-scroll hidden" id="page-org">
+                <div class="page-inner">
+                    <!-- CEO Card -->
+                    <div id="org-ceo-card" class="org-ceo-card">
+                        <div class="org-ceo-avatar">👔</div>
+                        <div class="org-ceo-info">
+                            <div class="org-ceo-name" id="org-ceo-name">CEO</div>
+                            <div class="org-ceo-role">Chief Executive Officer</div>
+                        </div>
+                    </div>
+                    <!-- Org tree rendered below -->
+                    <div id="org-tree" class="org-tree"></div>
+                </div>
+            </div>
+
+            <!-- ═══ PAGE: Agent Workforce ═════════════════════ -->
+            <div class="page page-scroll hidden" id="page-agents">
+                <div class="page-inner">
+                    <!-- Filters -->
+                    <div class="agent-filters" style="display: flex; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+                        <input type="text" id="agent-search" placeholder="Search agents…" class="input" style="flex: 1; min-width: 200px;" oninput="filterAgents()">
+                        <select id="agent-unit-filter" class="input" style="width: 200px;" onchange="filterAgents()">
+                            <option value="">All Departments</option>
+                        </select>
+                        <select id="agent-status-filter" class="input" style="width: 150px;" onchange="filterAgents()">
+                            <option value="">All</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <!-- Agent cards grid -->
+                    <div id="agent-grid" class="agent-grid"></div>
+                </div>
+            </div>
+
+            <!-- ═══ PAGE: Processes ═══════════════════════════ -->
+            <div class="page page-scroll hidden" id="page-processes">
+                <div class="page-inner" style="display: flex; gap: 1.25rem; min-height: 60vh;">
+                    <!-- Left panel: process list -->
+                    <div class="process-list-panel" id="process-list-panel">
+                        <div id="process-list" class="process-list"></div>
+                    </div>
+                    <!-- Right panel: step designer -->
+                    <div class="process-detail-panel" id="process-detail-panel">
+                        <div id="process-detail-empty" class="process-detail-empty">
+                            <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔄</div>
+                            <p style="color: var(--text-secondary);">Select a process to view and edit its steps</p>
+                        </div>
+                        <div id="process-detail" class="process-detail" style="display: none;">
+                            <div class="process-detail-header" id="process-detail-header"></div>
+                            <div id="process-steps-list" class="process-steps-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ═══ PAGE: Admin Settings ══════════════════════ -->
             <div class="page page-scroll hidden" id="page-admin">
                 <div class="page-inner">
@@ -859,6 +928,15 @@
 
             <!-- ═══ PAGE: Chat / Infrastructure Designer ═════ -->
             <div class="page page-chat hidden" id="page-chat">
+                <!-- Agent Selector -->
+                <div style="padding: 0.5rem 1rem 0; display: flex; align-items: center; gap: 0.75rem;">
+                    <div class="chat-agent-selector" id="chat-agent-selector" onclick="toggleChatAgentDropdown()">
+                        <span class="chat-agent-selector-dot" id="chat-agent-dot" style="background: #6366f1;"></span>
+                        <span class="chat-agent-selector-name" id="chat-agent-name">InfraForge Chat</span>
+                        <span class="chat-agent-selector-chevron">▾</span>
+                    </div>
+                    <div class="chat-agent-dropdown" id="chat-agent-dropdown" style="display: none;"></div>
+                </div>
                 <!-- Messages -->
                 <div class="messages-container" id="messages">
                     <!-- Chat Welcome -->
@@ -1445,7 +1523,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=318"></script>
+    <script src="/static/app.js?v=319"></script>
 
     <!-- ── Template Viewer Modal ─────────────────────────── -->
     <div id="modal-template-viewer" class="modal-overlay hidden" onclick="closeModalOnOverlay(event, 'modal-template-viewer')">

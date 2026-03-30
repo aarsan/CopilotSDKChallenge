@@ -150,7 +150,9 @@ Routes are split across `web.py` and `src/routers/`:
 | `routers/auth.py` | Auth, Settings, Analytics | 17 | `/`, `/api/auth/*`, `/api/settings/*`, `/api/agents/*`, `/api/analytics/usage`, `/api/activity` |
 | `routers/admin.py` | Admin, Approvals, Governance, Fabric | 21 | `/api/admin/*`, `/api/approvals/*`, `/api/governance/*`, `/api/analytics/dashboard`, `/api/fabric/*` |
 | `routers/deployment.py` | Deployments, Azure, Orchestration | 12 | `/api/deployments/*`, `/api/azure/*`, `/api/orchestration/*` |
-| `routers/ws.py` | WebSocket chat | 3 | `/ws/chat`, `/ws/governance-chat`, `/ws/concierge-chat` |
+| `routers/ws.py` | WebSocket chat | 4 | `/ws/chat`, `/ws/governance-chat`, `/ws/concierge-chat`, `/ws/agent/{agent_id}` |
+| `routers/org.py` | Org hierarchy, agent workforce, tools | 12 | `/api/org/chart`, `/api/org/units/*`, `/api/org/agents/*`, `/api/org/tools` |
+| `routers/processes.py` | User-defined processes | 9 | `/api/processes/*`, `/api/processes/{id}/steps/*` |
 | `web.py` (remaining) | Service catalog, templates, compliance, onboarding | ~60 | `/api/catalog/*`, `/api/services/*`, `/api/templates/*` |
 
 ### Shared State (`web_shared.py`)
@@ -202,12 +204,20 @@ Tables are created automatically on startup via `init_db()`.
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `agent_definitions` | DB-backed agent specs (prompts, config) | `id`, `name`, `system_prompt`, `task`, `timeout`, `enabled`, `version` |
+| `agent_definitions` | DB-backed agent specs (prompts, config) | `id`, `name`, `system_prompt`, `task`, `timeout`, `enabled`, `version`, `org_unit_id`, `role_title`, `goals_json`, `tools_json`, `reports_to_agent_id`, `avatar_color`, `chat_enabled` |
 | `agent_prompt_history` | Audit trail for prompt changes | `agent_id`, `version`, `system_prompt`, `changed_by` |
 | `orchestration_processes` | Pipeline workflow definitions | `id`, `name`, `trigger_event`, `enabled` |
 | `process_steps` | Steps within pipeline workflows | `process_id`, `step_order`, `action`, `on_success`, `on_failure` |
 | `pipeline_runs` | Execution history per pipeline run | `run_id`, `service_id`, `pipeline_type`, `status`, `heal_count` |
 | `governance_reviews` | CISO/CTO review decisions | `service_id`, `agent`, `verdict`, `gate_decision` |
+
+### Org Hierarchy & Processes Tables
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `org_units` | Org hierarchy (departments, teams, squads) | `id`, `name`, `type`, `parent_id` (self-FK), `description`, `color`, `icon`, `owner_email` |
+| `org_processes` | User-defined workflows & pipelines | `id`, `name`, `description`, `type` (pipeline/approval/hybrid), `org_unit_id`, `status` |
+| `org_process_steps` | Steps within user-defined processes | `process_id`, `step_order`, `step_type` (ai_task/approval/condition), `agent_id`, `config_json` |
 
 ### Governance Tables
 

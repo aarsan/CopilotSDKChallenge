@@ -576,9 +576,11 @@ async def copilot_send(
             unsub = session.on(on_event)
         
         # Enforce strict total timeout for the generation so it doesn't hang forever
+        # Pass timeout to send_and_wait so the SDK's internal deadline matches;
+        # outer wait_for is a backstop in case the SDK hangs past its own timeout.
         result = await asyncio.wait_for(
-            session.send_and_wait({"prompt": prompt}), 
-            timeout=timeout
+            session.send_and_wait({"prompt": prompt}, timeout=timeout), 
+            timeout=timeout + 5
         )
 
         response = ((result.data.content or "") if result else "").strip()

@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import time
+import uuid
 import asyncio
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -1147,6 +1148,69 @@ AZURE_SQL_SCHEMA_STATEMENTS = [
     """,
     """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_prompt_improvement_agent')
     CREATE INDEX idx_prompt_improvement_agent ON prompt_improvement_queue(agent_name, status)""",
+
+    # ── Org Hierarchy ──────────────────────────────────────────
+    """IF OBJECT_ID('org_units', 'U') IS NULL
+    CREATE TABLE org_units (
+        id              NVARCHAR(100) PRIMARY KEY,
+        name            NVARCHAR(200) NOT NULL,
+        type            NVARCHAR(50)  NOT NULL DEFAULT 'department',
+        parent_id       NVARCHAR(100) DEFAULT NULL,
+        description     NVARCHAR(MAX) DEFAULT '',
+        color           NVARCHAR(20)  DEFAULT '#6366f1',
+        icon            NVARCHAR(50)  DEFAULT '',
+        owner_email     NVARCHAR(200) DEFAULT NULL,
+        created_at      NVARCHAR(50)  NOT NULL,
+        updated_at      NVARCHAR(50)  NOT NULL,
+        FOREIGN KEY (parent_id) REFERENCES org_units(id)
+    )""",
+
+    # ── Extend agent_definitions with org columns ──────────────
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'org_unit_id')
+    ALTER TABLE agent_definitions ADD org_unit_id NVARCHAR(100) DEFAULT NULL""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'role_title')
+    ALTER TABLE agent_definitions ADD role_title NVARCHAR(100) DEFAULT ''""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'goals_json')
+    ALTER TABLE agent_definitions ADD goals_json NVARCHAR(MAX) DEFAULT '[]'""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'tools_json')
+    ALTER TABLE agent_definitions ADD tools_json NVARCHAR(MAX) DEFAULT '[]'""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'reports_to_agent_id')
+    ALTER TABLE agent_definitions ADD reports_to_agent_id NVARCHAR(100) DEFAULT NULL""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'avatar_color')
+    ALTER TABLE agent_definitions ADD avatar_color NVARCHAR(20) DEFAULT '#6366f1'""",
+    """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('agent_definitions') AND name = 'chat_enabled')
+    ALTER TABLE agent_definitions ADD chat_enabled BIT DEFAULT 0""",
+
+    # ── User-defined Processes ─────────────────────────────────
+    """IF OBJECT_ID('org_processes', 'U') IS NULL
+    CREATE TABLE org_processes (
+        id              NVARCHAR(100) PRIMARY KEY,
+        name            NVARCHAR(200) NOT NULL,
+        description     NVARCHAR(MAX) DEFAULT '',
+        type            NVARCHAR(20)  NOT NULL DEFAULT 'pipeline',
+        org_unit_id     NVARCHAR(100) DEFAULT NULL,
+        status          NVARCHAR(20)  DEFAULT 'draft',
+        created_by      NVARCHAR(200) DEFAULT NULL,
+        created_at      NVARCHAR(50)  NOT NULL,
+        updated_at      NVARCHAR(50)  NOT NULL,
+        FOREIGN KEY (org_unit_id) REFERENCES org_units(id)
+    )""",
+    """IF OBJECT_ID('org_process_steps', 'U') IS NULL
+    CREATE TABLE org_process_steps (
+        id              INT IDENTITY(1,1) PRIMARY KEY,
+        process_id      NVARCHAR(100) NOT NULL,
+        step_order      INT NOT NULL,
+        name            NVARCHAR(200) NOT NULL,
+        step_type       NVARCHAR(20)  NOT NULL DEFAULT 'ai_task',
+        agent_id        NVARCHAR(100) DEFAULT NULL,
+        config_json     NVARCHAR(MAX) DEFAULT '{}',
+        on_success      NVARCHAR(50)  DEFAULT 'next',
+        on_failure      NVARCHAR(50)  DEFAULT 'abort',
+        FOREIGN KEY (process_id) REFERENCES org_processes(id),
+        FOREIGN KEY (agent_id)   REFERENCES agent_definitions(id)
+    )""",
+    """IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_org_process_steps_process')
+    CREATE INDEX idx_org_process_steps_process ON org_process_steps(process_id, step_order)""",
 ]
 
 
@@ -5969,3 +6033,430 @@ async def update_agent_scores(
          agent_name, performance_score, reliability_score, speed_score,
          quality_score, now),
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# ORG HIERARCHY — CRUD
+# ══════════════════════════════════════════════════════════════
+
+async def create_org_unit(unit: dict) -> str:
+    """Create a new org unit. Returns the unit id."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    unit_id = unit.get("id") or f"org-{uuid.uuid4().hex[:8]}"
+    await backend.execute_write(
+        """INSERT INTO org_units
+           (id, name, type, parent_id, description, color, icon, owner_email,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            unit_id,
+            unit.get("name", "New Unit"),
+            unit.get("type", "department"),
+            unit.get("parent_id"),
+            unit.get("description", ""),
+            unit.get("color", "#6366f1"),
+            unit.get("icon", ""),
+            unit.get("owner_email"),
+            now,
+            now,
+        ),
+    )
+    return unit_id
+
+
+async def get_org_units() -> list[dict]:
+    """Return all org units as a flat list."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM org_units ORDER BY name", ()
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_org_unit(unit_id: str) -> dict | None:
+    """Return a single org unit by ID."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM org_units WHERE id = ?", (unit_id,)
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def update_org_unit(unit_id: str, updates: dict) -> bool:
+    """Update an org unit. Returns True if a row was modified."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    allowed = {"name", "type", "parent_id", "description", "color", "icon", "owner_email"}
+    set_clauses, params = [], []
+    for field, value in updates.items():
+        if field in allowed:
+            set_clauses.append(f"{field} = ?")
+            params.append(value)
+    if not set_clauses:
+        return False
+    set_clauses.append("updated_at = ?")
+    params.append(now)
+    params.append(unit_id)
+    count = await backend.execute_write(
+        f"UPDATE org_units SET {', '.join(set_clauses)} WHERE id = ?",
+        tuple(params),
+    )
+    return count > 0
+
+
+async def delete_org_unit(unit_id: str) -> bool:
+    """Delete an org unit if it has no children or agents. Returns True if deleted."""
+    backend = await get_backend()
+    # Check for children
+    children = await backend.execute(
+        "SELECT TOP 1 id FROM org_units WHERE parent_id = ?", (unit_id,)
+    )
+    if children:
+        return False
+    # Unset org_unit_id from agents in this unit
+    await backend.execute_write(
+        "UPDATE agent_definitions SET org_unit_id = NULL WHERE org_unit_id = ?",
+        (unit_id,),
+    )
+    # Unset org_unit_id from processes in this unit
+    await backend.execute_write(
+        "UPDATE org_processes SET org_unit_id = NULL WHERE org_unit_id = ?",
+        (unit_id,),
+    )
+    count = await backend.execute_write(
+        "DELETE FROM org_units WHERE id = ?", (unit_id,)
+    )
+    return count > 0
+
+
+async def get_org_chart() -> dict:
+    """Return the full org chart as a nested tree with agents per unit."""
+    units = await get_org_units()
+    agents = await get_all_agent_definitions()
+
+    # Group agents by org_unit_id
+    agents_by_unit: dict[str, list[dict]] = {}
+    unassigned_agents: list[dict] = []
+    for a in agents:
+        uid = a.get("org_unit_id")
+        if uid:
+            agents_by_unit.setdefault(uid, []).append(a)
+        else:
+            unassigned_agents.append(a)
+
+    # Build tree
+    unit_map = {u["id"]: {**u, "children": [], "agents": agents_by_unit.get(u["id"], [])} for u in units}
+    roots: list[dict] = []
+    for u in unit_map.values():
+        pid = u.get("parent_id")
+        if pid and pid in unit_map:
+            unit_map[pid]["children"].append(u)
+        else:
+            roots.append(u)
+
+    return {"units": roots, "unassigned_agents": unassigned_agents}
+
+
+# ══════════════════════════════════════════════════════════════
+# AGENT DEFINITIONS — extended CRUD for org workforce
+# ══════════════════════════════════════════════════════════════
+
+async def create_agent_definition(agent: dict) -> str:
+    """Create a new user-defined agent. Returns the agent id."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    agent_id = agent.get("id") or f"agent-{uuid.uuid4().hex[:8]}"
+
+    tools_val = agent.get("tools_json", "[]")
+    if isinstance(tools_val, list):
+        tools_val = json.dumps(tools_val)
+    goals_val = agent.get("goals_json", "[]")
+    if isinstance(goals_val, list):
+        goals_val = json.dumps(goals_val)
+
+    await backend.execute_write(
+        """INSERT INTO agent_definitions
+           (id, name, description, system_prompt, task, timeout,
+            category, enabled, version, org_unit_id, role_title,
+            goals_json, tools_json, reports_to_agent_id, avatar_color,
+            chat_enabled, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            agent_id,
+            agent.get("name", "New Agent"),
+            agent.get("description", ""),
+            agent.get("system_prompt", "You are a helpful AI agent."),
+            agent.get("task", "CHAT"),
+            agent.get("timeout", 60),
+            agent.get("category", "interactive"),
+            1 if agent.get("enabled", True) else 0,
+            agent.get("org_unit_id"),
+            agent.get("role_title", ""),
+            goals_val,
+            tools_val,
+            agent.get("reports_to_agent_id"),
+            agent.get("avatar_color", "#6366f1"),
+            1 if agent.get("chat_enabled", True) else 0,
+            now,
+            now,
+        ),
+    )
+    return agent_id
+
+
+async def delete_agent_definition(agent_id: str) -> bool:
+    """Delete an agent definition. Returns True if deleted."""
+    backend = await get_backend()
+    # Remove from process steps first
+    await backend.execute_write(
+        "UPDATE org_process_steps SET agent_id = NULL WHERE agent_id = ?",
+        (agent_id,),
+    )
+    # Clear reports_to references
+    await backend.execute_write(
+        "UPDATE agent_definitions SET reports_to_agent_id = NULL WHERE reports_to_agent_id = ?",
+        (agent_id,),
+    )
+    # Delete prompt history
+    await backend.execute_write(
+        "DELETE FROM agent_prompt_history WHERE agent_id = ?", (agent_id,)
+    )
+    count = await backend.execute_write(
+        "DELETE FROM agent_definitions WHERE id = ?", (agent_id,)
+    )
+    return count > 0
+
+
+async def get_chat_enabled_agents() -> list[dict]:
+    """Return all agents with chat_enabled = 1."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM agent_definitions WHERE chat_enabled = 1 AND enabled = 1 ORDER BY name",
+        (),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+# ══════════════════════════════════════════════════════════════
+# ORG PROCESSES — CRUD
+# ══════════════════════════════════════════════════════════════
+
+async def create_org_process(proc: dict) -> str:
+    """Create a new org process. Returns the process id."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    proc_id = proc.get("id") or f"proc-{uuid.uuid4().hex[:8]}"
+    await backend.execute_write(
+        """INSERT INTO org_processes
+           (id, name, description, type, org_unit_id, status, created_by,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            proc_id,
+            proc.get("name", "New Process"),
+            proc.get("description", ""),
+            proc.get("type", "pipeline"),
+            proc.get("org_unit_id"),
+            proc.get("status", "draft"),
+            proc.get("created_by"),
+            now,
+            now,
+        ),
+    )
+    return proc_id
+
+
+async def get_org_processes() -> list[dict]:
+    """Return all org processes."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM org_processes ORDER BY name", ()
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def get_org_process(proc_id: str) -> dict | None:
+    """Return a single process by ID."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM org_processes WHERE id = ?", (proc_id,)
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def update_org_process(proc_id: str, updates: dict) -> bool:
+    """Update an org process. Returns True if modified."""
+    backend = await get_backend()
+    now = datetime.now(timezone.utc).isoformat()
+    allowed = {"name", "description", "type", "org_unit_id", "status"}
+    set_clauses, params = [], []
+    for field, value in updates.items():
+        if field in allowed:
+            set_clauses.append(f"{field} = ?")
+            params.append(value)
+    if not set_clauses:
+        return False
+    set_clauses.append("updated_at = ?")
+    params.append(now)
+    params.append(proc_id)
+    count = await backend.execute_write(
+        f"UPDATE org_processes SET {', '.join(set_clauses)} WHERE id = ?",
+        tuple(params),
+    )
+    return count > 0
+
+
+async def delete_org_process(proc_id: str) -> bool:
+    """Delete a process and all its steps."""
+    backend = await get_backend()
+    await backend.execute_write(
+        "DELETE FROM org_process_steps WHERE process_id = ?", (proc_id,)
+    )
+    count = await backend.execute_write(
+        "DELETE FROM org_processes WHERE id = ?", (proc_id,)
+    )
+    return count > 0
+
+
+async def get_process_steps(proc_id: str) -> list[dict]:
+    """Return steps for a process, ordered by step_order."""
+    backend = await get_backend()
+    rows = await backend.execute(
+        "SELECT * FROM org_process_steps WHERE process_id = ? ORDER BY step_order",
+        (proc_id,),
+    )
+    return [dict(r) for r in rows] if rows else []
+
+
+async def add_process_step(proc_id: str, step: dict) -> int | None:
+    """Add a step to a process. Returns the step id."""
+    backend = await get_backend()
+    config = step.get("config_json", "{}")
+    if isinstance(config, dict):
+        config = json.dumps(config)
+    result = await backend.execute(
+        """INSERT INTO org_process_steps
+           (process_id, step_order, name, step_type, agent_id, config_json,
+            on_success, on_failure)
+           OUTPUT INSERTED.id
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            proc_id,
+            step.get("step_order", 1),
+            step.get("name", "New Step"),
+            step.get("step_type", "ai_task"),
+            step.get("agent_id"),
+            config,
+            step.get("on_success", "next"),
+            step.get("on_failure", "abort"),
+        ),
+    )
+    if result:
+        return result[0].get("id") if isinstance(result[0], dict) else result[0][0]
+    return None
+
+
+async def update_process_step(step_id: int, updates: dict) -> bool:
+    """Update a process step. Returns True if modified."""
+    backend = await get_backend()
+    allowed = {"step_order", "name", "step_type", "agent_id", "config_json",
+               "on_success", "on_failure"}
+    set_clauses, params = [], []
+    for field, value in updates.items():
+        if field in allowed:
+            if field == "config_json" and isinstance(value, dict):
+                value = json.dumps(value)
+            set_clauses.append(f"{field} = ?")
+            params.append(value)
+    if not set_clauses:
+        return False
+    params.append(step_id)
+    count = await backend.execute_write(
+        f"UPDATE org_process_steps SET {', '.join(set_clauses)} WHERE id = ?",
+        tuple(params),
+    )
+    return count > 0
+
+
+async def delete_process_step(step_id: int) -> bool:
+    """Delete a process step."""
+    backend = await get_backend()
+    count = await backend.execute_write(
+        "DELETE FROM org_process_steps WHERE id = ?", (step_id,)
+    )
+    return count > 0
+
+
+async def seed_default_org() -> None:
+    """Seed the default org structure if org_units is empty.
+
+    Creates a 'Platform Engineering' department and assigns all existing
+    hardcoded agents to it with appropriate role titles and chat_enabled flags.
+    """
+    backend = await get_backend()
+    existing = await backend.execute("SELECT TOP 1 id FROM org_units", ())
+    if existing:
+        return  # Already seeded
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Create departments
+    departments = [
+        ("platform-engineering", "Platform Engineering", "department",
+         "Core platform team — manages the infrastructure platform, templates, and governance.",
+         "#6366f1", "🏗️"),
+        ("security", "Security & Compliance", "department",
+         "Security governance, CISO advisory, and compliance frameworks.",
+         "#ef4444", "🔒"),
+        ("infrastructure", "Infrastructure Operations", "department",
+         "Template generation, healing, deployment, and testing.",
+         "#22c55e", "⚙️"),
+    ]
+    for uid, name, utype, desc, color, icon in departments:
+        await backend.execute_write(
+            """INSERT INTO org_units
+               (id, name, type, parent_id, description, color, icon, created_at, updated_at)
+               VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)""",
+            (uid, name, utype, desc, color, icon, now, now),
+        )
+
+    # Map agents → departments + role titles + chat_enabled
+    agent_assignments: dict[str, tuple[str, str, bool]] = {
+        # (org_unit_id, role_title, chat_enabled)
+        "web_chat":               ("platform-engineering", "Infrastructure Designer", True),
+        "governance_agent":       ("security",             "Governance Advisor", True),
+        "ciso_advisor":           ("security",             "CISO Advisor", True),
+        "concierge":              ("platform-engineering", "Concierge", True),
+        "gap_analyst":            ("platform-engineering", "Gap Analyst", False),
+        "arm_template_editor":    ("infrastructure",       "ARM Template Editor", False),
+        "policy_checker":         ("security",             "Policy Checker", False),
+        "request_parser":         ("platform-engineering", "Request Parser", False),
+        "standards_extractor":    ("security",             "Standards Extractor", False),
+        "arm_modifier":           ("infrastructure",       "ARM Modifier", False),
+        "arm_generator":          ("infrastructure",       "ARM Generator", False),
+        "template_healer":        ("infrastructure",       "Template Healer", False),
+        "error_culprit_detector": ("infrastructure",       "Error Culprit Detector", False),
+        "deploy_failure_analyst": ("infrastructure",       "Deployment Failure Analyst", False),
+        "remediation_planner":    ("security",             "Remediation Planner", False),
+        "remediation_executor":   ("security",             "Remediation Executor", False),
+        "artifact_generator":     ("platform-engineering", "Artifact Generator", False),
+        "policy_generator":       ("security",             "Policy Generator", False),
+        "policy_fixer":           ("security",             "Policy Fixer", False),
+        "deep_template_healer":   ("infrastructure",       "Deep Template Healer", False),
+        "llm_reasoner":           ("platform-engineering", "LLM Reasoner", False),
+        "upgrade_analyst":        ("platform-engineering", "Upgrade Analyst", False),
+        "infra_tester":           ("infrastructure",       "Infrastructure Tester", False),
+        "infra_test_analyzer":    ("infrastructure",       "Test Analyzer", False),
+        "ciso_reviewer":          ("security",             "CISO Reviewer", False),
+        "cto_reviewer":           ("platform-engineering", "CTO Reviewer", False),
+    }
+    for agent_id, (org_id, role, chat_flag) in agent_assignments.items():
+        await backend.execute_write(
+            """UPDATE agent_definitions
+               SET org_unit_id = ?, role_title = ?, chat_enabled = ?
+               WHERE id = ?""",
+            (org_id, role, 1 if chat_flag else 0, agent_id),
+        )
+
+    logger.info("Seeded default org structure with 3 departments and agent assignments")
